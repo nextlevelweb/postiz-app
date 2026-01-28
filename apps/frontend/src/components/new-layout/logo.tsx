@@ -5,10 +5,9 @@ export const Logo = () => {
     <img
       src="/logo-nextlevelweb.png"
       alt="NextLevelWeb Logo"
-      width="60"
-      height="60"
+      width={60}
+      height={60}
       className="mt-[8px] min-w-[60px] min-h-[60px] object-contain"
-      style={{ imageRendering: 'high-quality' }}
     />
   );
 };
