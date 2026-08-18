@@ -798,3 +798,8 @@ checksums:
     preview_comment_text_changed: 6a4298cc0304d150e0d150689fa049f4
     preview_no_comments_yet: e9bda0977d617e8ee0079feba73b3c3a
     some_files_failed_to_upload: 87c15cf17373c535da85470188df68c7
+    create: 757ccd28dd533ff3a933355273c1e32a
+    create_new_organization: 66a3ebeea4f71c289e0c378459d2516e
+    organization_settings: d31952131ad5f0ec72ad96f1ed11bef6
+    organization_name: e69fb0acbe75358352890a6f04e4b9c0
+    organization_name_description: fc0874a90542efd411fe73f8fa552ebb

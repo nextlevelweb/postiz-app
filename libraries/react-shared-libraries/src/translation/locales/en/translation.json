@@ -795,5 +795,10 @@
   "preview_comment_detach_hint": "Comments on selected text lose their highlight if the text is edited later.",
   "preview_comment_text_changed": "Text changed",
   "preview_no_comments_yet": "No comments yet. Select some text in the post to comment on it, or add a general comment.",
-  "some_files_failed_to_upload": "Some files failed to upload, please try again"
+  "some_files_failed_to_upload": "Some files failed to upload, please try again",
+  "create": "Create",
+  "create_new_organization": "Create New Organization",
+  "organization_settings": "Organization Settings",
+  "organization_name": "Organization name",
+  "organization_name_description": "The name shown in the organization switcher."
 }

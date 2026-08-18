@@ -793,5 +793,10 @@
   "preview_comment_detach_hint": "Bình luận trên đoạn văn bản được chọn sẽ mất nổi bật nếu văn bản bị chỉnh sửa sau đó.",
   "preview_comment_text_changed": "Nội dung đã thay đổi",
   "preview_no_comments_yet": "Chưa có bình luận nào. Chọn một đoạn văn bản trong bài viết để bình luận, hoặc thêm bình luận chung.",
-  "some_files_failed_to_upload": "Một số tệp không tải lên được, vui lòng thử lại"
+  "some_files_failed_to_upload": "Một số tệp không tải lên được, vui lòng thử lại",
+  "create": "Tạo",
+  "create_new_organization": "Tạo Tổ Chức Mới",
+  "organization_settings": "Cài Đặt Tổ Chức",
+  "organization_name": "Tên tổ chức",
+  "organization_name_description": "Tên được hiển thị trong bộ chuyển đổi tổ chức."
 }

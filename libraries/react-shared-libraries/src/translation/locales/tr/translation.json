@@ -793,5 +793,10 @@
   "preview_comment_detach_hint": "Seçili metindeki yorumlar, metin daha sonra değiştirilirse vurgusunu kaybeder.",
   "preview_comment_text_changed": "Metin değişti",
   "preview_no_comments_yet": "Henüz yorum yok. Yorum yapmak için gönderide bir metin seçin veya genel bir yorum ekleyin.",
-  "some_files_failed_to_upload": "Bazı dosyalar yüklenemedi, lütfen tekrar deneyin"
+  "some_files_failed_to_upload": "Bazı dosyalar yüklenemedi, lütfen tekrar deneyin",
+  "create": "Oluştur",
+  "create_new_organization": "Yeni Organizasyon Oluştur",
+  "organization_settings": "Organizasyon Ayarları",
+  "organization_name": "Organizasyon adı",
+  "organization_name_description": "Organizasyon değiştiricisinde gösterilen isim."
 }
