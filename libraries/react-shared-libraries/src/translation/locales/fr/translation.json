@@ -793,5 +793,10 @@
   "preview_comment_detach_hint": "Les commentaires sur le texte sélectionné perdent leur surlignement si le texte est modifié par la suite.",
   "preview_comment_text_changed": "Texte modifié",
   "preview_no_comments_yet": "Aucun commentaire pour le moment. Sélectionnez du texte dans la publication pour le commenter, ou ajoutez un commentaire général.",
-  "some_files_failed_to_upload": "Échec du téléversement de certains fichiers, veuillez réessayer."
+  "some_files_failed_to_upload": "Échec du téléversement de certains fichiers, veuillez réessayer.",
+  "create": "Créer",
+  "create_new_organization": "Créer une nouvelle organisation",
+  "organization_settings": "Paramètres de l'organisation",
+  "organization_name": "Nom de l'organisation",
+  "organization_name_description": "Le nom affiché dans le sélecteur d'organisation."
 }
