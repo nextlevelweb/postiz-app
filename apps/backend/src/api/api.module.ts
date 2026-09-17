@@ -3,8 +3,11 @@ import { AuthController } from '@gitroom/backend/api/routes/auth.controller';
 import { AuthService } from '@gitroom/backend/services/auth/auth.service';
 import { UsersController } from '@gitroom/backend/api/routes/users.controller';
 import { AuthMiddleware } from '@gitroom/backend/services/auth/auth.middleware';
-import { StripeController } from '@gitroom/backend/api/routes/stripe.controller';
 import { StripeService } from '@gitroom/nestjs-libraries/services/stripe.service';
+import { PaymentController } from '@gitroom/backend/api/routes/payment.controller';
+import { PaymentService } from '@gitroom/nestjs-libraries/services/payment/payment.service';
+import { PaymentProviderManager } from '@gitroom/nestjs-libraries/services/payment/payment.provider.manager';
+import { RevenueCatProvider } from '@gitroom/nestjs-libraries/services/payment/providers/revenuecat.provider';
 import { AnalyticsController } from '@gitroom/backend/api/routes/analytics.controller';
 import { PoliciesGuard } from '@gitroom/backend/services/auth/permissions/permissions.guard';
 import { PermissionsService } from '@gitroom/backend/services/auth/permissions/permissions.service';
@@ -24,13 +27,30 @@ import { PublicController } from '@gitroom/backend/api/routes/public.controller'
 import { RootController } from '@gitroom/backend/api/routes/root.controller';
 import { TrackService } from '@gitroom/nestjs-libraries/track/track.service';
 import { ShortLinkService } from '@gitroom/nestjs-libraries/short-linking/short.link.service';
-import { Nowpayments } from '@gitroom/nestjs-libraries/crypto/nowpayments';
 import { WebhookController } from '@gitroom/backend/api/routes/webhooks.controller';
 import { SignatureController } from '@gitroom/backend/api/routes/signature.controller';
 import { AutopostController } from '@gitroom/backend/api/routes/autopost.controller';
 import { SetsController } from '@gitroom/backend/api/routes/sets.controller';
 import { ThirdPartyController } from '@gitroom/backend/api/routes/third-party.controller';
 import { MonitorController } from '@gitroom/backend/api/routes/monitor.controller';
+import { NoAuthIntegrationsController } from '@gitroom/backend/api/routes/no.auth.integrations.controller';
+import { EnterpriseController } from '@gitroom/backend/api/routes/enterprise.controller';
+import { OAuthAppController } from '@gitroom/backend/api/routes/oauth-app.controller';
+import { ApprovedAppsController } from '@gitroom/backend/api/routes/approved-apps.controller';
+import {
+  OAuthController,
+  OAuthAuthorizedController,
+} from '@gitroom/backend/api/routes/oauth.controller';
+import { AnnouncementsController } from '@gitroom/backend/api/routes/announcements.controller';
+import { AdminController } from '@gitroom/backend/api/routes/admin.controller';
+import { AuthProviderManager } from '@gitroom/backend/services/auth/providers/providers.manager';
+import { GithubProvider } from '@gitroom/backend/services/auth/providers/github.provider';
+import { GoogleProvider } from '@gitroom/backend/services/auth/providers/google.provider';
+import { AppleProvider } from '@gitroom/backend/services/auth/providers/apple.provider';
+import { FarcasterProvider } from '@gitroom/backend/services/auth/providers/farcaster.provider';
+import { WalletProvider } from '@gitroom/backend/services/auth/providers/wallet.provider';
+import { OauthProvider } from '@gitroom/backend/services/auth/providers/oauth.provider';
+import { StripeController } from '@gitroom/backend/api/routes/stripe.controller';
 
 const authenticatedController = [
   UsersController,
@@ -47,20 +67,34 @@ const authenticatedController = [
   AutopostController,
   SetsController,
   ThirdPartyController,
+  OAuthAppController,
+  ApprovedAppsController,
+  OAuthAuthorizedController,
+  AnnouncementsController,
+  AdminController,
 ];
 @Module({
   imports: [UploadModule],
-  controllers: [
-    RootController,
-    StripeController,
-    AuthController,
-    PublicController,
-    MonitorController,
-    ...authenticatedController,
-  ],
+  controllers: process.env.MCP_ONLY
+    ? [RootController, OAuthController]
+    : [
+        RootController,
+        PaymentController,
+        StripeController,
+        AuthController,
+        PublicController,
+        MonitorController,
+        EnterpriseController,
+        NoAuthIntegrationsController,
+        OAuthController,
+        ...authenticatedController,
+      ],
   providers: [
     AuthService,
     StripeService,
+    PaymentService,
+    PaymentProviderManager,
+    RevenueCatProvider,
     OpenaiService,
     ExtractContentService,
     AuthMiddleware,
@@ -70,7 +104,13 @@ const authenticatedController = [
     IntegrationManager,
     TrackService,
     ShortLinkService,
-    Nowpayments,
+    AuthProviderManager,
+    GithubProvider,
+    GoogleProvider,
+    AppleProvider,
+    FarcasterProvider,
+    WalletProvider,
+    OauthProvider,
   ],
   get exports() {
     return [...this.imports, ...this.providers];

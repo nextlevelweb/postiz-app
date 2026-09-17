@@ -2,6 +2,7 @@ import {
   ArrayMinSize,
   IsBoolean,
   IsDefined,
+  IsIn,
   IsString,
   IsUrl,
   Matches,
@@ -10,6 +11,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { JSONSchema } from 'class-validator-jsonschema';
 
 export class RedditFlairDto {
   @IsString()
@@ -25,6 +27,9 @@ export class RedditSettingsDtoInner {
   @IsString()
   @MinLength(2)
   @IsDefined()
+  @JSONSchema({
+    description: 'Subreddit must start with /r',
+  })
   subreddit: string;
 
   @IsString()
@@ -33,8 +38,12 @@ export class RedditSettingsDtoInner {
   title: string;
 
   @IsString()
-  @MinLength(2)
+  @IsIn(['self', 'link', 'media'])
   @IsDefined()
+  @JSONSchema({
+    description:
+      "Must be one of self (text post), link (requires url), media (uploads the post's first attached image or mp4 video)",
+  })
   type: string;
 
   @IsUrl()

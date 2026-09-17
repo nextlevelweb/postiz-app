@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createReadStream, statSync } from 'fs';
+import { resolve, sep } from 'path';
 // @ts-ignore
 import mime from 'mime';
 async function* nodeStreamToIterator(stream: any) {
@@ -19,16 +20,22 @@ function iteratorToStream(iterator: any) {
     },
   });
 }
-export const GET = (
+export const GET = async (
   request: NextRequest,
   context: {
-    params: {
-      path: string[];
-    };
+    params: Promise<{
+      path?: string[];
+    }>;
   }
 ) => {
-  const filePath =
-    process.env.UPLOAD_DIRECTORY + '/' + context.params.path.join('/');
+  const { path } = await context.params;
+  const base = resolve(process.env.UPLOAD_DIRECTORY!);
+  const filePath = resolve(base, (path ?? []).join('/'));
+  // Confine reads to UPLOAD_DIRECTORY. resolve() collapses any `..` segments
+  // (including URL-decoded ones), so this blocks every path-traversal variant.
+  if (filePath !== base && !filePath.startsWith(base + sep)) {
+    return new NextResponse('Not found', { status: 404 });
+  }
   const response = createReadStream(filePath);
   const fileStats = statSync(filePath);
   const contentType = mime.getType(filePath) || 'application/octet-stream';

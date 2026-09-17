@@ -8,12 +8,11 @@ import {
   IsNumber,
   IsOptional,
   IsString,
-  MinLength,
   Validate,
   ValidateIf,
   ValidateNested,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { MediaDto } from '@gitroom/nestjs-libraries/dtos/media/media.dto';
 import {
   allProviders,
@@ -21,6 +20,7 @@ import {
   EmptySettings,
 } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/all.providers.settings';
 import { ValidContent } from '@gitroom/helpers/utils/valid.images';
+import { sanitizePostContent } from '@gitroom/helpers/utils/sanitize.post.content';
 
 export class Integration {
   @IsDefined()
@@ -32,6 +32,7 @@ export class PostContent {
   @IsDefined()
   @IsString()
   @Validate(ValidContent)
+  @Transform(({ value }) => sanitizePostContent(value))
   content: string;
 
   @IsOptional()
@@ -49,6 +50,8 @@ export class PostContent {
 }
 
 export class Post {
+  type?: string;
+
   @IsDefined()
   @Type(() => Integration)
   @ValidateNested()
@@ -65,6 +68,7 @@ export class Post {
   @IsString()
   group: string;
 
+  @ValidateIf((o) => o.type !== 'draft')
   @ValidateNested()
   @Type(() => EmptySettings, {
     keepDiscriminatorProperty: true,
@@ -103,6 +107,12 @@ export class CreatePostDto {
   @IsNumber()
   inter?: number;
 
+  // explicit opt-in to publish an already-PUBLISHED post again; without it a
+  // schedule/now save targeting a published post is rejected
+  @IsOptional()
+  @IsBoolean()
+  republish?: boolean;
+
   @IsDefined()
   @IsDateString()
   date: string;
@@ -112,7 +122,6 @@ export class CreatePostDto {
   @ValidateNested({ each: true })
   tags: Tags[];
 
-  @ValidateIf((o) => o.type !== 'draft')
   @IsDefined()
   @Type(() => Post)
   @IsArray()

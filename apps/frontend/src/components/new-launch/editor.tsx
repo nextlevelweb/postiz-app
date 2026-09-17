@@ -526,7 +526,7 @@ export const EditorWrapper: FC<{
 };
 
 export const Editor: FC<{
-  editorType?: 'normal' | 'markdown' | 'html';
+  editorType?: 'none' | 'normal' | 'markdown' | 'html';
   totalPosts: number;
   value: string;
   num?: number;
@@ -562,7 +562,7 @@ export const Editor: FC<{
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   const t = useT();
   const toaster = useToaster();
-  const editorRef = useRef<undefined | { editor: any }>();
+  const editorRef = useRef<undefined | { editor: any }>(undefined);
   const [loading, setLoading] = useState(false);
 
   const uppy = useUppyUploader({
@@ -772,19 +772,24 @@ export const Editor: FC<{
                       chars={chars}
                       totalChars={valueWithoutHtml.length}
                       totalAllowedChars={props.totalChars}
+                      text={valueWithoutHtml}
                     />
                   }
                   toolBar={
                     <div className="flex gap-[5px]">
                       <SignatureBox editor={editorRef?.current?.editor} />
-                      <UText
-                        editor={editorRef?.current?.editor}
-                        currentValue={props.value!}
-                      />
-                      <BoldText
-                        editor={editorRef?.current?.editor}
-                        currentValue={props.value!}
-                      />
+                      {editorType !== 'none' && (
+                        <>
+                          <UText
+                            editor={editorRef?.current?.editor}
+                            currentValue={props.value!}
+                          />
+                          <BoldText
+                            editor={editorRef?.current?.editor}
+                            currentValue={props.value!}
+                          />
+                        </>
+                      )}
                       {(editorType === 'markdown' || editorType === 'html') &&
                         identifier !== 'telegram' && (
                           <>
@@ -854,7 +859,7 @@ export const Editor: FC<{
 export const OnlyEditor = forwardRef<
   any,
   {
-    editorType: 'normal' | 'markdown' | 'html';
+    editorType: 'none' | 'normal' | 'markdown' | 'html';
     value: string;
     onChange: (value: string) => void;
     paste?: (event: ClipboardEvent | File[]) => void;

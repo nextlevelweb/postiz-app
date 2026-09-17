@@ -12,7 +12,6 @@ import {
   CopilotRuntime,
   OpenAIAdapter,
   copilotRuntimeNodeHttpEndpoint,
-  copilotRuntimeNextJSAppRouterEndpoint,
 } from '@copilotkit/runtime';
 import { GetOrgFromRequest } from '@gitroom/nestjs-libraries/user/org.from.request';
 import { Organization } from '@prisma/client';
@@ -20,7 +19,7 @@ import { SubscriptionService } from '@gitroom/nestjs-libraries/database/prisma/s
 import { MastraAgent } from '@ag-ui/mastra';
 import { MastraService } from '@gitroom/nestjs-libraries/chat/mastra.service';
 import { Request, Response } from 'express';
-import { RuntimeContext } from '@mastra/core/di';
+import { RequestContext } from '@mastra/core/di';
 import { CheckPolicies } from '@gitroom/backend/services/auth/permissions/permissions.ability';
 import { AuthorizationActions, Sections } from '@gitroom/backend/services/auth/permissions/permission.exception.class';
 
@@ -29,6 +28,16 @@ export type ChannelsContext = {
   organization: string;
   ui: string;
 };
+
+// the copilot runtime writes its own CORS headers on the response, keep them aligned with main.ts
+const copilotCors = () => ({
+  origin: [
+    process.env.FRONTEND_URL,
+    'http://localhost:6274',
+    ...(process.env.MAIN_URL ? [process.env.MAIN_URL] : []),
+  ],
+  credentials: !process.env.NOT_SECURED,
+});
 
 @Controller('/copilot')
 export class CopilotController {
@@ -48,6 +57,7 @@ export class CopilotController {
 
     const copilotRuntimeHandler = copilotRuntimeNodeHttpEndpoint({
       endpoint: '/copilot/chat',
+      cors: copilotCors(),
       runtime: new CopilotRuntime(),
       serviceAdapter: new OpenAIAdapter({
         model: 'gpt-4.1',
@@ -72,36 +82,35 @@ export class CopilotController {
       return;
     }
     const mastra = await this._mastraService.mastra();
-    const runtimeContext = new RuntimeContext<ChannelsContext>();
-    runtimeContext.set(
+    const requestContext = new RequestContext<ChannelsContext>();
+    requestContext.set(
       'integrations',
-      req?.body?.variables?.properties?.integrations || []
+      req?.body?.body?.forwardedProps?.integrations || []
     );
 
-    runtimeContext.set('organization', JSON.stringify(organization));
-    runtimeContext.set('ui', 'true');
+    requestContext.set('organization', JSON.stringify(organization));
+    requestContext.set('ui', 'true');
 
     const agents = MastraAgent.getLocalAgents({
       resourceId: organization.id,
       mastra,
-      // @ts-ignore
-      runtimeContext,
+      requestContext: requestContext as any,
     });
 
     const runtime = new CopilotRuntime({
       agents,
     });
 
-    const copilotRuntimeHandler = copilotRuntimeNextJSAppRouterEndpoint({
+    const copilotRuntimeHandler = copilotRuntimeNodeHttpEndpoint({
       endpoint: '/copilot/agent',
+      cors: copilotCors(),
       runtime,
-      // properties: req.body.variables.properties,
       serviceAdapter: new OpenAIAdapter({
         model: 'gpt-4.1',
       }),
     });
 
-    return copilotRuntimeHandler.handleRequest(req, res);
+    return copilotRuntimeHandler(req, res);
   }
 
   @Get('/credits')
@@ -124,11 +133,12 @@ export class CopilotController {
     const mastra = await this._mastraService.mastra();
     const memory = await mastra.getAgent('postiz').getMemory();
     try {
-      return await memory.query({
+      return await memory.recall({
         resourceId: organization.id,
         threadId,
       });
     } catch (err) {
+      Logger.warn(`Could not recall messages for thread ${threadId}: ${err}`);
       return { messages: [] };
     }
   }
@@ -137,14 +147,12 @@ export class CopilotController {
   @CheckPolicies([AuthorizationActions.Create, Sections.AI])
   async getList(@GetOrgFromRequest() organization: Organization) {
     const mastra = await this._mastraService.mastra();
-    // @ts-ignore
     const memory = await mastra.getAgent('postiz').getMemory();
-    const list = await memory.getThreadsByResourceIdPaginated({
-      resourceId: organization.id,
+    const list = await memory.listThreads({
+      filter: { resourceId: organization.id },
       perPage: 100000,
       page: 0,
-      orderBy: 'createdAt',
-      sortDirection: 'DESC',
+      orderBy: { field: 'createdAt', direction: 'DESC' },
     });
 
     return {

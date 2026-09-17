@@ -2,23 +2,30 @@ import { AgentToolInterface } from '@gitroom/nestjs-libraries/chat/agent.tool.in
 import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 import { Injectable } from '@nestjs/common';
-import { socialIntegrationList } from '@gitroom/nestjs-libraries/integrations/integration.manager';
 import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
 import { PostsService } from '@gitroom/nestjs-libraries/database/prisma/posts/posts.service';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import { AllProvidersSettings } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/all.providers.settings';
-import { validate } from 'class-validator';
 import { Integration } from '@prisma/client';
 import { checkAuth } from '@gitroom/nestjs-libraries/chat/auth.context';
-import { stripHtmlValidation } from '@gitroom/helpers/utils/strip.html.validation';
-import { weightedLength } from '@gitroom/helpers/utils/count.length';
+import {
+  ValidUrlExtension,
+  ValidUrlPath,
+} from '@gitroom/helpers/utils/valid.url.path';
 
-function countCharacters(text: string, type: string): number {
-  if (type !== 'x') {
-    return text.length;
-  }
-  return weightedLength(text);
-}
+const validUrlExtension = new ValidUrlExtension();
+const validUrlPath = new ValidUrlPath();
+
+// Same URL validation as MediaDto (valid.url.path) - each attachment must
+// point to an allowed upload domain and a supported file extension.
+const attachmentUrl = z
+  .string()
+  .refine((url) => validUrlPath.validate(url, {} as any), {
+    message: validUrlPath.defaultMessage({} as any),
+  })
+  .refine((url) => validUrlExtension.validate(url, {} as any), {
+    message: validUrlExtension.defaultMessage({} as any),
+  });
 
 @Injectable()
 export class IntegrationSchedulePostTool implements AgentToolInterface {
@@ -31,19 +38,29 @@ export class IntegrationSchedulePostTool implements AgentToolInterface {
   run() {
     return createTool({
       id: 'schedulePostTool',
+      mcp: {
+        annotations: {
+          title: 'Schedule Social Media Post',
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
+      },
       description: `
-This tool allows you to schedule a post to a social media platform, based on integrationSchema tool.
-So for example:
+Use this when the user wants to create a draft, scheduled, or immediate social media post on their connected channels, based on the integrationSchema tool.
+Examples of the input shape:
 
-If the user want to post a post to LinkedIn with one comment
+A single LinkedIn post with one comment
 - socialPost array length will be one
 - postsAndComments array length will be two (one for the post, one for the comment)
 
-If the user want to post 20 posts for facebook each in individual days without comments
+20 Facebook posts each on individual days without comments
 - socialPost array length will be 20
 - postsAndComments array length will be one
 
-If the tools return errors, you would need to rerun it with the right parameters, don't ask again, just run it
+Do not use this to update or delete existing posts.
+If validation fails, the result contains output.errors describing what to fix; the call can be retried with corrected parameters.
 `,
       inputSchema: z.object({
         socialPost: z
@@ -77,7 +94,7 @@ If the tools return errors, you would need to rerun it with the right parameters
                         "The content of the post, HTML, Each line must be wrapped in <p> here is the possible tags: h1, h2, h3, u, strong, li, ul, p (you can't have u and strong together)"
                       ),
                     attachments: z
-                      .array(z.string())
+                      .array(attachmentUrl)
                       .describe('The image of the post (URLS)'),
                   })
                 )
@@ -114,73 +131,85 @@ If the tools return errors, you would need to rerun it with the right parameters
           )
           .or(z.object({ errors: z.string() })),
       }),
-      execute: async (args, options) => {
-        const { context, runtimeContext } = args;
-        checkAuth(args, options);
+      execute: async (inputData, context) => {
+        checkAuth(inputData, context);
         const organizationId = JSON.parse(
-          // @ts-ignore
-          runtimeContext.get('organization') as string
+          (context?.requestContext as any)?.get('organization') as string
         ).id;
         const finalOutput = [];
 
         const integrations = {} as Record<string, Integration>;
-        for (const platform of context.socialPost) {
+        for (const platform of inputData.socialPost) {
           integrations[platform.integrationId] =
             await this._integrationService.getIntegrationById(
               organizationId,
               platform.integrationId
             );
 
-          const { dto, maxLength, identifier } = socialIntegrationList.find(
-            (p) =>
-              p.identifier ===
-              integrations[platform.integrationId].providerIdentifier
-          )!;
+          // Same server-side validation as the dashboard / public API
+          // (settings DTO + media checkValidity + empty / too-long content).
+          const settings = platform.settings.reduce(
+            (acc: AllProvidersSettings, s: { key: string; value: any }) => ({
+              ...acc,
+              [s.key]: s.value,
+            }),
+            {} as AllProvidersSettings
+          );
 
-          if (dto) {
-            const newDTO = new dto();
-            const obj = Object.assign(
-              newDTO,
-              platform.settings.reduce(
-                (acc, s) => ({
-                  ...acc,
-                  [s.key]: s.value,
-                }),
-                {} as AllProvidersSettings
-              )
-            );
-            const errors = await validate(obj);
-            if (errors.length) {
+          const [validation] = await this._postsService.validatePosts(
+            organizationId,
+            [
+              {
+                integration: { id: platform.integrationId },
+                settings,
+                value: platform.postsAndComments.map((p: any) => ({
+                  content: p.content,
+                  image: (p.attachments || []).map((path: string) => ({
+                    path,
+                  })),
+                })),
+              },
+            ]
+          );
+
+          if (validation.emptyContent) {
+            return {
+              output: {
+                errors: `${validation.name}: Your post should have at least one character or one image.`,
+              },
+            };
+          }
+
+          if (platform.type !== 'draft') {
+            if (!validation.valid) {
               return {
-                errors: JSON.stringify(errors),
+                output: {
+                  errors: `${validation.name}: ${
+                    validation.settingsError || 'Please fix your settings'
+                  }, please fix it, and try integrationSchedulePostTool again.`,
+                },
               };
             }
 
-            const errorsLength = [];
-            for (const post of platform.postsAndComments) {
-              const maximumCharacters = maxLength(platform.isPremium);
-              const strip = stripHtmlValidation('normal', post.content, true);
-              const weightedLength = countCharacters(strip, identifier || '');
-              const totalCharacters =
-                weightedLength > strip.length ? weightedLength : strip.length;
-
-              if (totalCharacters > (maximumCharacters || 1000000)) {
-                errorsLength.push({
-                  value: post.content,
-                  error: `The maximum characters is ${maximumCharacters}, we got ${totalCharacters}, please fix it, and try integrationSchedulePostTool again.`,
-                });
-              }
+            if (validation.errors !== true) {
+              return {
+                output: {
+                  errors: `${validation.name}: ${validation.errors}, please fix it, and try integrationSchedulePostTool again.`,
+                },
+              };
             }
 
-            if (errorsLength.length) {
+            if (validation.tooLong) {
               return {
-                errors: JSON.stringify(errorsLength),
+                output: {
+                  errors: `${validation.name}: The maximum characters is ${validation.maximumCharacters}, please fix it, and try integrationSchedulePostTool again.`,
+                },
               };
             }
           }
         }
 
-        for (const post of context.socialPost) {
+        for (const post of inputData.socialPost) {
           const integration = integrations[post.integrationId];
 
           if (!integration) {
@@ -197,7 +226,7 @@ If the tools return errors, you would need to rerun it with the right parameters
                 integration,
                 group: makeId(10),
                 settings: post.settings.reduce(
-                  (acc, s) => ({
+                  (acc: AllProvidersSettings, s: { key: string; value: any }) => ({
                     ...acc,
                     [s.key]: s.value,
                   }),
@@ -205,18 +234,18 @@ If the tools return errors, you would need to rerun it with the right parameters
                     __type: integration.providerIdentifier,
                   } as AllProvidersSettings
                 ),
-                value: post.postsAndComments.map((p) => ({
+                value: post.postsAndComments.map((p: any) => ({
                   content: p.content,
                   id: makeId(10),
                   delay: 0,
-                  image: p.attachments.map((p) => ({
+                  image: p.attachments.map((p: any) => ({
                     id: makeId(10),
                     path: p,
                   })),
                 })),
               },
             ],
-          });
+          }, 'MCP');
           finalOutput.push(...output);
         }
 

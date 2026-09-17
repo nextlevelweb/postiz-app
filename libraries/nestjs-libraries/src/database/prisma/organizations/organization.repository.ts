@@ -13,10 +13,50 @@ export class OrganizationRepository {
     private _user: PrismaRepository<'user'>
   ) {}
 
+  createMaxUser(id: string, name: string, saasName: string, email: string) {
+    return this._organization.model.organization.create({
+      select: {
+        id: true,
+        apiKey: true,
+      },
+      data: {
+        name: name ? `${name}###${id}` : `Unnamed User###${id}`,
+        apiKey: AuthService.fixedEncryption(makeId(20)),
+        isTrailing: false,
+        subscription: {
+          create: {
+            totalChannels: 1000000,
+            subscriptionTier: 'ULTIMATE',
+            isLifetime: true,
+            period: 'YEARLY',
+          },
+        },
+        users: {
+          create: {
+            role: Role.SUPERADMIN,
+            user: {
+              create: {
+                activated: true,
+                email: email
+                  ? email.split('@').join(`+${saasName}@`)
+                  : `${saasName}+` + makeId(10) + '@postiz.com',
+                name: name ? `${name}###${id}` : `Unnamed User###${id}`,
+                providerName: 'LOCAL',
+                password: AuthService.hashPassword(makeId(500)),
+                timezone: 0,
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
   getOrgByApiKey(api: string) {
     return this._organization.model.organization.findFirst({
       where: {
         apiKey: api,
+        deletedAt: null,
       },
       include: {
         subscription: {
@@ -32,6 +72,19 @@ export class OrganizationRepository {
 
   getCount() {
     return this._organization.model.organization.count();
+  }
+
+  getSuperAdminUser(orgId: string) {
+    return this._userOrg.model.userOrganization.findFirst({
+      where: {
+        organizationId: orgId,
+        disabled: false,
+        user: {
+          isSuperAdmin: true,
+          deletedAt: null,
+        },
+      },
+    });
   }
 
   getUserOrg(id: string) {
@@ -67,31 +120,88 @@ export class OrganizationRepository {
   getImpersonateUser(name: string) {
     return this._userOrg.model.userOrganization.findMany({
       where: {
-        user: {
-          OR: [
-            {
-              name: {
-                contains: name,
-              },
+        OR: [
+          {
+            organizationId: {
+              contains: name,
             },
-            {
-              email: {
-                contains: name,
-              },
+          },
+          {
+            organization: {
+              OR: [
+                {
+                  paymentId: {
+                    equals: name,
+                  },
+                },
+                {
+                  subscription: {
+                    identifier: {
+                      equals: name,
+                    },
+                  },
+                },
+                {
+                  Integration: {
+                    some: {
+                      id: name,
+                    },
+                  },
+                },
+                {
+                  post: {
+                    some: {
+                      id: name,
+                    },
+                  },
+                },
+              ],
             },
-            {
-              id: {
-                contains: name,
-              },
+          },
+          {
+            user: {
+              OR: [
+                {
+                  name: {
+                    contains: name,
+                    mode: 'insensitive',
+                  },
+                },
+                {
+                  email: {
+                    contains: name,
+                    mode: 'insensitive',
+                  },
+                },
+                {
+                  id: {
+                    contains: name,
+                  },
+                },
+              ],
             },
-          ],
-        },
+          },
+        ],
       },
       select: {
         id: true,
+        role: true,
+        disabled: true,
         organization: {
           select: {
             id: true,
+            name: true,
+            paymentId: true,
+            deletedAt: true,
+            subscription: {
+              select: {
+                subscriptionTier: true,
+                identifier: true,
+                isLifetime: true,
+                period: true,
+                cancelAt: true,
+              },
+            },
           },
         },
         user: {
@@ -99,6 +209,9 @@ export class OrganizationRepository {
             id: true,
             name: true,
             email: true,
+            activated: true,
+            providerName: true,
+            deletedAt: true,
           },
         },
       },
@@ -119,6 +232,7 @@ export class OrganizationRepository {
   async getOrgsByUserId(userId: string) {
     return this._organization.model.organization.findMany({
       where: {
+        deletedAt: null,
         users: {
           some: {
             userId,
@@ -151,6 +265,32 @@ export class OrganizationRepository {
     return this._organization.model.organization.findUnique({
       where: {
         id,
+      },
+    });
+  }
+
+  getOrgByIdWithSubscription(id: string) {
+    return this._organization.model.organization.findUnique({
+      where: {
+        id,
+      },
+      include: {
+        subscription: {
+          select: {
+            subscriptionTier: true,
+            totalChannels: true,
+            isLifetime: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+  }
+
+  getUsersByEmail(email: string) {
+    return this._user.model.user.findMany({
+      where: {
+        email,
       },
     });
   }
@@ -321,6 +461,17 @@ export class OrganizationRepository {
             },
           },
         },
+      },
+    });
+  }
+
+  deleteOrganization(orgId: string) {
+    return this._organization.model.organization.update({
+      where: {
+        id: orgId,
+      },
+      data: {
+        deletedAt: new Date(),
       },
     });
   }

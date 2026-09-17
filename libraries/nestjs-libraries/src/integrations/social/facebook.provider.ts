@@ -1,17 +1,33 @@
 import {
   AnalyticsData,
   AuthTokenDetails,
+  PendingCheckResponse,
   PostDetails,
   PostResponse,
   SocialProvider,
 } from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import dayjs from 'dayjs';
-import { SocialAbstract } from '@gitroom/nestjs-libraries/integrations/social.abstract';
-import { FacebookDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/facebook.dto';
+import {
+  BadBody,
+  SocialAbstract,
+  ValidityMedia,
+} from '@gitroom/nestjs-libraries/integrations/social.abstract';
+import {
+  FacebookDto,
+  FACEBOOK_PRESET_MAX_CHARS,
+} from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/facebook.dto';
 import { DribbbleDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/dribbble.dto';
 import { Integration } from '@prisma/client';
+import { hasExtension } from '@gitroom/helpers/utils/has.extension';
+import { timer } from '@gitroom/helpers/utils/timer';
+import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
 
+export const META_GRAPH_API_VERSION = 'v25.0';
+
+@Rules(
+  "Facebook posts can be text only, or include photos or a video. If it's a story, it must have at least one attachment (photo or video), and each media is published as a separate story."
+)
 export class FacebookProvider extends SocialAbstract implements SocialProvider {
   identifier = 'facebook';
   name = 'Facebook Page';
@@ -24,14 +40,29 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
     'pages_read_engagement',
     'read_insights',
   ];
-  override maxConcurrentJob = 100; // Facebook has reasonable rate limits
+  override maxConcurrentJob = 500; // Facebook has reasonable rate limits
   editor = 'normal' as const;
   maxLength() {
     return 63206;
   }
   dto = FacebookDto;
 
-  override handleErrors(body: string):
+  override async checkValidity(
+    [firstPost]: Array<ValidityMedia[]>,
+    settings: any
+  ): Promise<string | true> {
+    if (settings?.post_type === 'story') {
+      if (!firstPost?.length) {
+        return 'Story should have at least one media';
+      }
+    }
+    return true;
+  }
+
+  override handleErrors(
+    body: string,
+    status: number
+  ):
     | {
         type: 'refresh-token' | 'bad-body';
         value: string;
@@ -45,17 +76,32 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
       };
     }
 
-    if (body.indexOf('490') > -1) {
-      return {
-        type: 'refresh-token' as const,
-        value: 'Access token expired, please re-authenticate',
-      };
-    }
-
     if (body.indexOf('REVOKED_ACCESS_TOKEN') > -1) {
       return {
         type: 'refresh-token' as const,
         value: 'Access token has been revoked, please re-authenticate',
+      };
+    }
+
+    // The token is valid but belongs to the user, not to the page - the page
+    // was never granted to the app, so only reconnecting can fix it
+    if (
+      body.indexOf(
+        'Unpublished posts must be posted to a page as the page itself'
+      ) > -1
+    ) {
+      return {
+        type: 'refresh-token' as const,
+        value:
+          'Postiz is not authorized to publish as this page, please reconnect the channel',
+      };
+    }
+
+    if (body.indexOf('(#200)') > -1) {
+      return {
+        type: 'bad-body' as const,
+        value:
+          'Facebook rejected the post due to missing permissions. Make sure your Facebook account has full content access to the Page, then reconnect the channel.',
       };
     }
 
@@ -89,6 +135,13 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
       };
     }
 
+    if (body.indexOf('2069019') > -1) {
+      return {
+        type: 'bad-body' as const,
+        value: 'Invalid file',
+      }
+    }
+
     if (body.indexOf('1404102') > -1) {
       return {
         type: 'bad-body' as const,
@@ -101,6 +154,13 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
       return {
         type: 'refresh-token' as const,
         value: 'Page publishing authorization required, please re-authenticate',
+      };
+    }
+
+    if (body.indexOf('1366051') > -1) {
+      return {
+        type: 'bad-body' as const,
+        value: 'These photos were already posted.',
       };
     }
 
@@ -126,6 +186,14 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
       };
     }
 
+    if (body.indexOf('1404112') > -1) {
+      return {
+        type: 'bad-body' as const,
+        value:
+          'For security reasons, your account has limited access to the site for a few days',
+      };
+    }
+
     if (body.indexOf('Name parameter too long') > -1) {
       return {
         type: 'bad-body' as const,
@@ -148,6 +216,34 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
       };
     }
 
+    if (body.indexOf('4854002') > -1) {
+      return {
+        type: 'bad-body' as const,
+        value:
+          'Confirm your identity before you can publish as this Page. Open the Facebook app on your phone and follow the instructions',
+      };
+    }
+    if (body.indexOf('(#100) No permission to publish the video') > -1) {
+      return {
+        type: 'bad-body' as const,
+        value: 'Facebook return: No permission to publish the video',
+      };
+    }
+    if (body.indexOf('490') > -1) {
+      return {
+        type: 'refresh-token' as const,
+        value: 'Access token expired, please re-authenticate',
+      };
+    }
+
+    if (status === 401) {
+      return {
+        type: 'bad-body' as const,
+        value:
+          'An unknown error occurred, please try again later or contact support',
+      };
+    }
+
     return undefined;
   }
 
@@ -167,7 +263,7 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
     const state = makeId(6);
     return {
       url:
-        'https://www.facebook.com/v20.0/dialog/oauth' +
+        `https://www.facebook.com/${META_GRAPH_API_VERSION}/dialog/oauth` +
         `?client_id=${process.env.FACEBOOK_APP_ID}` +
         `&redirect_uri=${encodeURIComponent(
           `${process.env.FRONTEND_URL}/integrations/social/facebook`
@@ -204,7 +300,7 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
   }) {
     const getAccessToken = await (
       await fetch(
-        'https://graph.facebook.com/v20.0/oauth/access_token' +
+        `https://graph.facebook.com/${META_GRAPH_API_VERSION}/oauth/access_token` +
           `?client_id=${process.env.FACEBOOK_APP_ID}` +
           `&redirect_uri=${encodeURIComponent(
             `${process.env.FRONTEND_URL}/integrations/social/facebook${
@@ -218,7 +314,7 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
 
     const { access_token } = await (
       await fetch(
-        'https://graph.facebook.com/v20.0/oauth/access_token' +
+        `https://graph.facebook.com/${META_GRAPH_API_VERSION}/oauth/access_token` +
           '?grant_type=fb_exchange_token' +
           `&client_id=${process.env.FACEBOOK_APP_ID}` +
           `&client_secret=${process.env.FACEBOOK_APP_SECRET}` +
@@ -228,7 +324,7 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
 
     const { data } = await (
       await fetch(
-        `https://graph.facebook.com/v20.0/me/permissions?access_token=${access_token}`
+        `https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/permissions?access_token=${access_token}`
       )
     ).json();
 
@@ -239,7 +335,7 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
 
     const { id, name, picture } = await (
       await fetch(
-        `https://graph.facebook.com/v20.0/me?fields=id,name,picture&access_token=${access_token}`
+        `https://graph.facebook.com/${META_GRAPH_API_VERSION}/me?fields=id,name,picture&access_token=${access_token}`
       )
     ).json();
 
@@ -255,41 +351,428 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
   }
 
   async pages(accessToken: string) {
-    const { data } = await (
-      await fetch(
-        `https://graph.facebook.com/v20.0/me/accounts?fields=id,username,name,picture.type(large)&access_token=${accessToken}`
-      )
-    ).json();
+    const seenIds = new Set<string>();
+    const allPages: any[] = [];
 
-    return data;
+    const fetchPaginated = async (startUrl: string) => {
+      let nextUrl: string | undefined = startUrl;
+      while (nextUrl) {
+        const response = await (await fetch(nextUrl)).json();
+        if (response.data) {
+          for (const page of response.data) {
+            if (!seenIds.has(page.id)) {
+              seenIds.add(page.id);
+              allPages.push(page);
+            }
+          }
+        }
+        nextUrl = response.paging?.next;
+      }
+    };
+
+    // Fetch pages the user explicitly shared during the OAuth dialog
+    await fetchPaginated(
+      `https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/accounts?fields=id,username,name,access_token,picture.type(large)&limit=100&access_token=${accessToken}`
+    );
+
+    // Also fetch pages via Business Manager API to discover pages
+    // not selected during the OAuth page selection step
+    try {
+      let bizUrl:
+        | string
+        | undefined = `https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/businesses?access_token=${accessToken}`;
+
+      while (bizUrl) {
+        const bizResponse = await (await fetch(bizUrl)).json();
+        if (bizResponse.data) {
+          for (const business of bizResponse.data) {
+            try {
+              await fetchPaginated(
+                `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${business.id}/owned_pages?fields=id,username,name,access_token,picture.type(large)&limit=100&access_token=${accessToken}`
+              );
+            } catch {
+              // Continue with other businesses
+            }
+
+            try {
+              await fetchPaginated(
+                `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${business.id}/client_pages?fields=id,username,name,access_token,picture.type(large)&limit=100&access_token=${accessToken}`
+              );
+            } catch {
+              // Continue with other businesses
+            }
+          }
+        }
+        bizUrl = bizResponse.paging?.next;
+      }
+    } catch {
+      // Business Manager API not available for all users
+    }
+
+    return allPages;
   }
 
   async fetchPageInformation(accessToken: string, data: { page: string }) {
     const pageId = data.page;
-    const {
-      id,
-      name,
-      access_token,
-      username,
-      picture: {
-        data: { url },
-      },
-    } = await (
-      await fetch(
-        `https://graph.facebook.com/v20.0/${pageId}?fields=username,access_token,name,picture.type(large)&access_token=${accessToken}`
+    const fields = 'id,username,name,access_token,picture.type(large)';
+
+    const searchPaginated = async (startUrl: string) => {
+      let url: string | undefined = startUrl;
+      while (url) {
+        const response = await (await fetch(url)).json();
+        if (response.data) {
+          const page = response.data.find(
+            (p: any) => String(p.id) === String(pageId)
+          );
+          if (page) {
+            return {
+              id: page.id,
+              name: page.name,
+              access_token: page.access_token,
+              picture: page.picture?.data?.url || '',
+              username: page.username,
+            };
+          }
+        }
+        url = response.paging?.next;
+      }
+      return null;
+    };
+
+    // 1. Check /me/accounts
+    const fromAccounts = await searchPaginated(
+      `https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/accounts?fields=${fields}&limit=100&access_token=${accessToken}`
+    );
+    if (fromAccounts) return fromAccounts;
+
+    // 2. Check Business Manager owned_pages and client_pages
+    try {
+      let bizUrl:
+        | string
+        | undefined = `https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/businesses?access_token=${accessToken}`;
+
+      while (bizUrl) {
+        const bizResponse = await (await fetch(bizUrl)).json();
+        if (bizResponse.data) {
+          for (const business of bizResponse.data) {
+            try {
+              const fromOwned = await searchPaginated(
+                `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${business.id}/owned_pages?fields=${fields}&limit=100&access_token=${accessToken}`
+              );
+              if (fromOwned) return fromOwned;
+            } catch {
+              // Continue with other businesses
+            }
+
+            try {
+              const fromClient = await searchPaginated(
+                `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${business.id}/client_pages?fields=${fields}&limit=100&access_token=${accessToken}`
+              );
+              if (fromClient) return fromClient;
+            } catch {
+              // Continue with other businesses
+            }
+          }
+        }
+        bizUrl = bizResponse.paging?.next;
+      }
+    } catch {
+      // Business Manager API not available for all users
+    }
+
+    throw new Error('Page not found in your accounts');
+  }
+
+  // Single, read-only status check of a story video - the polling loop that
+  // used to live inside post() is now driven by the post workflow.
+  private async fbVideoStatus(videoId: string, accessToken: string) {
+    const { status } = await (
+      await this.fetch(
+        `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${videoId}?fields=status&access_token=${accessToken}`,
+        undefined,
+        '',
+        0,
+        true
       )
     ).json();
 
+    const videoStatus = status?.video_status || 'in_progress';
+
+    if (videoStatus === 'error') {
+      throw new BadBody(
+        this.identifier,
+        JSON.stringify({ status }),
+        '{}',
+        'Video processing failed'
+      );
+    }
+
+    return videoStatus === 'upload_complete' || videoStatus === 'ready';
+  }
+
+  async postPending(
+    id: string,
+    accessToken: string,
+    postDetails: PostDetails<FacebookDto>[],
+    integration: Integration
+  ): Promise<PostResponse[]> {
+    const [firstPost] = postDetails;
+    const isStory = firstPost?.settings?.post_type === 'story';
+
+    if (isStory) {
+      // Only upload the media here - uploads are invisible until the
+      // publish calls, which run one at a time in finalizePost so a failure
+      // can never re-publish the stories that already went out.
+      const items = [];
+      for (const media of firstPost?.media || []) {
+        if (hasExtension(media.path, 'mp4')) {
+          const { video_id, upload_url } = await (
+            await this.fetch(
+              `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${id}/video_stories?upload_phase=start&access_token=${accessToken}`,
+              {
+                method: 'POST',
+              },
+              'start video story upload'
+            )
+          ).json();
+
+          await this.fetch(
+            upload_url,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `OAuth ${accessToken}`,
+                file_url: media.path,
+              },
+            },
+            'upload video story'
+          );
+
+          items.push({ kind: 'video', mediaId: video_id });
+        } else {
+          const { id: photoId } = await (
+            await this.fetch(
+              `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${id}/photos?access_token=${accessToken}`,
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  url: media.path,
+                  published: false,
+                }),
+              },
+              'upload photo story'
+            )
+          ).json();
+
+          items.push({ kind: 'photo', mediaId: photoId });
+        }
+      }
+
+      return [
+        {
+          id: firstPost.id,
+          postId: '',
+          releaseURL: '',
+          status: 'pending',
+          pendingData: {
+            postType: 'story',
+            items,
+            publishedCount: 0,
+            lastPostId: '',
+          },
+        },
+      ];
+    }
+
+    return this.postNonStory(id, accessToken, postDetails);
+  }
+
+  override async checkPostStatus(
+    accessToken: string,
+    pendingData: {
+      postType: 'story';
+      items: { kind: 'video' | 'photo'; mediaId: string }[];
+      publishedCount: number;
+      lastPostId: string;
+      attempting?: number | null;
+      confirmed?: boolean;
+    },
+    integration: Integration
+  ): Promise<PendingCheckResponse> {
+    // A confirmed publish attempt died without reporting its result: Facebook
+    // has no API to ask whether a story was published, so never publish that
+    // item again - stop with an explicit warning instead.
+    if (pendingData.attempting != null && pendingData.confirmed) {
+      throw new BadBody(
+        this.identifier,
+        '{}',
+        '{}',
+        'Facebook may have already published part of the story, please check your page before posting again to avoid duplicates'
+      );
+    }
+
+    // wait for every not-yet-published video to finish processing, photos are
+    // ready as soon as they are uploaded
+    for (const item of pendingData.items.slice(pendingData.publishedCount)) {
+      if (item.kind !== 'video') {
+        continue;
+      }
+
+      if (!(await this.fbVideoStatus(item.mediaId, accessToken))) {
+        return { status: 'pending', pendingData };
+      }
+    }
+
+    // witness the armed publish so finalizePost knows the attempt is uniquely
+    // accounted for before it mutates anything
+    if (pendingData.attempting != null && !pendingData.confirmed) {
+      return {
+        status: 'ready',
+        pendingData: { ...pendingData, confirmed: true },
+      };
+    }
+
+    return { status: 'ready', pendingData };
+  }
+
+  override async finalizePost(
+    accessToken: string,
+    pendingData: {
+      postType: 'story';
+      items: { kind: 'video' | 'photo'; mediaId: string }[];
+      publishedCount: number;
+      lastPostId: string;
+      attempting?: number | null;
+      confirmed?: boolean;
+    },
+    integration: Integration
+  ): Promise<PendingCheckResponse> {
+    // Publish exactly one story per call, with an arm -> confirm -> publish
+    // handshake: the publish only runs after checkPostStatus witnessed the
+    // intent, so a run that dies mid-publish is detectable and the item is
+    // never published twice.
+    if (pendingData.attempting == null || !pendingData.confirmed) {
+      return {
+        status: 'pending',
+        pendingData: {
+          ...pendingData,
+          attempting: pendingData.publishedCount,
+          confirmed: false,
+        },
+      };
+    }
+
+    const item = pendingData.items[pendingData.publishedCount];
+
+    const { post_id: storyPostId } = await (
+      await this.fetch(
+        item.kind === 'video'
+          ? `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${integration.internalId}/video_stories?upload_phase=finish&video_id=${item.mediaId}&access_token=${accessToken}`
+          : `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${integration.internalId}/photo_stories?photo_id=${item.mediaId}&access_token=${accessToken}`,
+        {
+          method: 'POST',
+        },
+        item.kind === 'video'
+          ? 'finish video story upload'
+          : 'publish photo story'
+      )
+    ).json();
+
+    const publishedCount = pendingData.publishedCount + 1;
+
+    if (publishedCount < pendingData.items.length) {
+      return {
+        status: 'pending',
+        pendingData: {
+          ...pendingData,
+          publishedCount,
+          lastPostId: storyPostId,
+          attempting: null,
+          confirmed: false,
+        },
+      };
+    }
+
     return {
-      id,
-      name,
-      access_token,
-      picture: url,
-      username,
+      status: 'completed',
+      postId: storyPostId,
+      releaseURL: `https://www.facebook.com/stories/${storyPostId}`,
     };
   }
 
+  // Old blocking behavior, kept for workflow versions before v1.0.6 that don't
+  // know how to resolve a `pending` response.
   async post(
+    id: string,
+    accessToken: string,
+    postDetails: PostDetails<FacebookDto>[],
+    integration: Integration
+  ): Promise<PostResponse[]> {
+    const [firstPost] = postDetails;
+    const [response] = await this.postPending(
+      id,
+      accessToken,
+      postDetails,
+      integration
+    );
+
+    if (response.status !== 'pending') {
+      return [response];
+    }
+
+    let pendingData = response.pendingData;
+    const started = Date.now();
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      // Cap below the 10-minute activity timeout of the old workflows using
+      // this method: failing here (non-retryable) is safe, timing the
+      // activity out is not - a retried activity would publish again.
+      if (Date.now() - started > 8 * 60 * 1000) {
+        throw new BadBody(
+          this.identifier,
+          '{}',
+          '{}',
+          'Video processing timed out'
+        );
+      }
+
+      const check = await this.checkPostStatus(
+        accessToken,
+        pendingData,
+        integration
+      );
+
+      if (check.status === 'pending') {
+        pendingData = check.pendingData;
+        await timer(10000);
+        continue;
+      }
+
+      const result =
+        check.status === 'ready'
+          ? await this.finalizePost(accessToken, check.pendingData, integration)
+          : check;
+
+      if (result.status === 'completed') {
+        return [
+          {
+            id: firstPost.id,
+            postId: result.postId,
+            releaseURL: result.releaseURL,
+            status: 'success',
+          },
+        ];
+      }
+
+      pendingData = result.pendingData;
+    }
+  }
+
+  private async postNonStory(
     id: string,
     accessToken: string,
     postDetails: PostDetails<FacebookDto>[]
@@ -298,14 +781,14 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
 
     let finalId = '';
     let finalUrl = '';
-    if ((firstPost?.media?.[0]?.path?.indexOf('mp4') || -2) > -1) {
+    if (hasExtension(firstPost?.media?.[0]?.path, 'mp4')) {
       const {
         id: videoId,
         permalink_url,
         ...all
       } = await (
         await this.fetch(
-          `https://graph.facebook.com/v20.0/${id}/videos?access_token=${accessToken}&fields=id,permalink_url`,
+          `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${id}/videos?access_token=${accessToken}&fields=id,permalink_url`,
           {
             method: 'POST',
             headers: {
@@ -330,7 +813,7 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
             firstPost.media.map(async (media) => {
               const { id: photoId } = await (
                 await this.fetch(
-                  `https://graph.facebook.com/v20.0/${id}/photos?access_token=${accessToken}`,
+                  `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${id}/photos?access_token=${accessToken}`,
                   {
                     method: 'POST',
                     headers: {
@@ -349,30 +832,90 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
             })
           );
 
-      const {
-        id: postId,
-        permalink_url,
-        ...all
-      } = await (
-        await this.fetch(
-          `https://graph.facebook.com/v20.0/${id}/feed?access_token=${accessToken}&fields=id,permalink_url`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
+      // Background presets are only valid on text-only posts (no media) and
+      // Facebook caps them at ~130 chars, so we only attach the preset when it
+      // can apply.
+      const presetId =
+        !uploadPhotos?.length &&
+        firstPost?.settings?.text_format_preset_id &&
+        (firstPost.message?.length || 0) <= FACEBOOK_PRESET_MAX_CHARS
+          ? firstPost.settings.text_format_preset_id
+          : undefined;
+
+      const publishFeed = async (withPreset: boolean) =>
+        (
+          await this.fetch(
+            `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${id}/feed?access_token=${accessToken}&fields=id,permalink_url`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                ...(uploadPhotos?.length
+                  ? { attached_media: uploadPhotos }
+                  : {}),
+                ...(firstPost?.settings?.url
+                  ? { link: firstPost.settings.url }
+                  : {}),
+                ...(withPreset && presetId
+                  ? { text_format_preset_id: presetId }
+                  : {}),
+                message: firstPost.message,
+                published: true,
+              }),
             },
-            body: JSON.stringify({
-              ...(uploadPhotos?.length ? { attached_media: uploadPhotos } : {}),
-              ...(firstPost?.settings?.url
-                ? { link: firstPost.settings.url }
-                : {}),
-              message: firstPost.message,
-              published: true,
-            }),
-          },
-          'finalize upload'
-        )
-      ).json();
+            'finalize upload'
+          )
+        ).json();
+
+      // Facebook exposes no official preset list and adds/retires backgrounds
+      // over time, so a stale text_format_preset_id can make FB reject the whole
+      // post. Observed Graph API responses for a bad preset:
+      //   - malformed id  -> HTTP 400, code 100, message names
+      //                      "text_format_preset_id" explicitly
+      //   - retired numeric id -> HTTP 500, code 1, generic "unknown error"
+      //     (our fetch() retries 500s and then reports it with the body stripped)
+      // So retry once without the preset on an explicit preset error or a
+      // generic/unknown failure, but never on a recognized auth/token error
+      // (dropping the background can't fix that). A retry that only succeeds once
+      // the preset is removed confirms the preset was the cause.
+      const isPresetRejection = (err: any): boolean => {
+        const detail = `${err?.details?.[0]?.json ?? ''} ${err?.message ?? ''}`;
+        if (
+          /access token|re-authenticate|revoked|"code":\s*190\b/i.test(detail)
+        ) {
+          return false;
+        }
+        return (
+          /text_format_preset_id/i.test(detail) ||
+          /"code":\s*1\b/.test(detail) ||
+          String(err?.message) === 'Unknown Error'
+        );
+      };
+
+      let feedResult: any;
+      try {
+        feedResult = await publishFeed(!!presetId);
+      } catch (err) {
+        if (!presetId || !isPresetRejection(err)) {
+          throw err;
+        }
+        // Surface the (recovered) rejection in the logs, since the fallback
+        // below makes the activity succeed and Facebook's error would otherwise
+        // be swallowed silently.
+        console.warn(
+          'Facebook rejected text_format_preset_id — dropping the background and publishing as plain text',
+          {
+            preset: presetId,
+            facebook: (err as any)?.details?.[0]?.json,
+            message: (err as any)?.message,
+          }
+        );
+        feedResult = await publishFeed(false);
+      }
+
+      const { id: postId, permalink_url, ...all } = feedResult;
 
       finalUrl = permalink_url;
       finalId = postId;
@@ -401,7 +944,7 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
 
     const data = await (
       await this.fetch(
-        `https://graph.facebook.com/v20.0/${replyToId}/comments?access_token=${accessToken}&fields=id,permalink_url`,
+        `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${replyToId}/comments?access_token=${accessToken}&fields=id,permalink_url`,
         {
           method: 'POST',
           headers: {
@@ -436,27 +979,43 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
     const until = dayjs().endOf('day').unix();
     const since = dayjs().subtract(date, 'day').unix();
 
+    // Reach/impression metrics (page_impressions_unique, page_posts_impressions_unique,
+    // page_video_views) were deprecated by Meta on 2026-06-15 and now return an
+    // "invalid metric" error. They are replaced by the Media Views metrics, which
+    // require Graph API v23.0+:
+    //   - page_total_media_view_unique: total unique views on the page's media (reach)
+    //   - page_media_view: total media views, broken down between paid and organic
     const { data } = await (
       await fetch(
-        `https://graph.facebook.com/v20.0/${id}/insights?metric=page_impressions_unique,page_posts_impressions_unique,page_post_engagements,page_daily_follows,page_video_views&access_token=${accessToken}&period=day&since=${since}&until=${until}`
+        `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${id}/insights?metric=page_total_media_view_unique,page_media_view,page_post_engagements,page_daily_follows&access_token=${accessToken}&period=day&since=${since}&until=${until}`
       )
     ).json();
+
+    // page_media_view returns paid/organic breakdowns as an object; sum them to
+    // keep the single-total UI working.
+    const sumValue = (value: any): number => {
+      if (value && typeof value === 'object') {
+        return Object.values(value as Record<string, number>).reduce(
+          (sum: number, v: number) => sum + (Number(v) || 0),
+          0
+        );
+      }
+      return Number(value) || 0;
+    };
 
     return (
       data?.map((d: any) => ({
         label:
-          d.name === 'page_impressions_unique'
+          d.name === 'page_total_media_view_unique'
             ? 'Page Impressions'
             : d.name === 'page_post_engagements'
             ? 'Posts Engagement'
             : d.name === 'page_daily_follows'
             ? 'Page followers'
-            : d.name === 'page_video_views'
-            ? 'Videos views'
-            : 'Posts Impressions',
+            : 'Media views',
         percentageChange: 5,
         data: d?.values?.map((v: any) => ({
-          total: v.value,
+          total: sumValue(v.value),
           date: dayjs(v.end_time).format('YYYY-MM-DD'),
         })),
       })) || []
@@ -471,11 +1030,27 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
   ): Promise<AnalyticsData[]> {
     const today = dayjs().format('YYYY-MM-DD');
 
+    // The stored id (releaseId) shape depends on the post type set in post():
+    //   - feed post  -> `{pageid}_{postid}` (contains `_`), has an `insights` edge
+    //   - reel/video -> bare numeric video id, NO `insights` edge (only `video_insights`)
+    //   - story      -> bare story id, no usable insights via this path
+    // There is no separate stored type, so id shape is the discriminator. Calling
+    // `/{videoId}/insights` on a video/story node returns
+    // `(#100) Tried accessing nonexisting field (insights)`, which is what surfaced
+    // in prod as "Error fetching Facebook post analytics: ApplicationFailure". Route
+    // bare ids to the video-only edge instead.
+    if (!postId.includes('_')) {
+      return this.videoPostAnalytics(accessToken, postId, today);
+    }
+
     try {
-      // Fetch post insights from Facebook Graph API
+      // Fetch post insights from Facebook Graph API.
+      // post_impressions_unique was deprecated by Meta on 2026-06-15; it is replaced
+      // by post_total_media_view_unique (unique media views = reach), available on
+      // Graph API v23.0+. Engagement metrics below are unaffected.
       const { data } = await (
-        await this.fetch(
-          `https://graph.facebook.com/v20.0/${postId}/insights?metric=post_impressions_unique,post_reactions_by_type_total,post_clicks,post_clicks_by_type&access_token=${accessToken}`
+        await fetch(
+          `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${postId}/insights?metric=post_total_media_view_unique,post_reactions_by_type_total,post_clicks,post_clicks_by_type&access_token=${accessToken}`
         )
       ).json();
 
@@ -493,7 +1068,7 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
         let total = '';
 
         switch (metric.name) {
-          case 'post_impressions_unique':
+          case 'post_total_media_view_unique':
             label = 'Impressions';
             total = String(value);
             break;
@@ -504,10 +1079,9 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
           case 'post_clicks_by_type':
             // This returns an object with click types
             if (typeof value === 'object') {
-              const totalClicks = Object.values(value as Record<string, number>).reduce(
-                (sum: number, v: number) => sum + v,
-                0
-              );
+              const totalClicks = Object.values(
+                value as Record<string, number>
+              ).reduce((sum: number, v: number) => sum + v, 0);
               label = 'Clicks by Type';
               total = String(totalClicks);
             }
@@ -515,10 +1089,9 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
           case 'post_reactions_by_type_total':
             // This returns an object with reaction types
             if (typeof value === 'object') {
-              const totalReactions = Object.values(value as Record<string, number>).reduce(
-                (sum: number, v: number) => sum + v,
-                0
-              );
+              const totalReactions = Object.values(
+                value as Record<string, number>
+              ).reduce((sum: number, v: number) => sum + v, 0);
               label = 'Reactions';
               total = String(totalReactions);
             }
@@ -537,6 +1110,91 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
       return result;
     } catch (err) {
       console.error('Error fetching Facebook post analytics:', err);
+      return [];
+    }
+  }
+
+  // Video/reel posts store a bare video id whose node has no `insights` edge; their
+  // analytics live on the `/{videoId}/video_insights` edge instead. Story posts also
+  // store a bare id but have no usable insights here — the video_insights call comes
+  // back with an `error` (or empty data), which we swallow to an empty result so a
+  // single story/video can't break the statistics page.
+  private async videoPostAnalytics(
+    accessToken: string,
+    videoId: string,
+    today: string
+  ): Promise<AnalyticsData[]> {
+    try {
+      // Metric names verified against the Graph API v23.0 video_insights docs:
+      //   - total_video_impressions: times the video was shown
+      //   - total_video_views: 3s+ (or full, if shorter) plays
+      //   - total_video_reactions_by_type_total: reactions object, keyed by type
+      // Use plain fetch (not this.fetch) so a `(#100) nonexisting field` / story
+      // response doesn't throw an ApplicationFailure — we want a quiet `[]` instead.
+      const { data, error } = await (
+        await fetch(
+          `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${videoId}/video_insights?metric=total_video_impressions,total_video_views,total_video_reactions_by_type_total&access_token=${accessToken}`
+        )
+      ).json();
+
+      // Stories (and videos without this edge) come back with an error / no data —
+      // return an empty result quietly rather than logging a scary error. But a
+      // `nonexisting field (video_insights)` is the only "expected" error here; any
+      // other error (bad metric name, token, permissions) means the fix is silently
+      // returning empty when it shouldn't be, so surface it as a warning (not a throw,
+      // not a scary error) so it's diagnosable without breaking the statistics page.
+      if (error || !data || data.length === 0) {
+        if (error && !/nonexisting field/i.test(error.message || '')) {
+          console.warn('Facebook video_insights returned an error:', {
+            videoId,
+            error,
+          });
+        }
+        return [];
+      }
+
+      const result: AnalyticsData[] = [];
+
+      for (const metric of data) {
+        const value = metric.values?.[0]?.value;
+        if (value === undefined) continue;
+
+        let label = '';
+        let total = '';
+
+        switch (metric.name) {
+          case 'total_video_impressions':
+            label = 'Impressions';
+            total = String(value);
+            break;
+          case 'total_video_views':
+            label = 'Views';
+            total = String(value);
+            break;
+          case 'total_video_reactions_by_type_total':
+            // This returns an object with reaction types
+            if (typeof value === 'object') {
+              const totalReactions = Object.values(
+                value as Record<string, number>
+              ).reduce((sum: number, v: number) => sum + v, 0);
+              label = 'Reactions';
+              total = String(totalReactions);
+            }
+            break;
+        }
+
+        if (label) {
+          result.push({
+            label,
+            percentageChange: 0,
+            data: [{ total, date: today }],
+          });
+        }
+      }
+
+      return result;
+    } catch (err) {
+      console.error('Error fetching Facebook video post analytics:', err);
       return [];
     }
   }

@@ -8,6 +8,7 @@ import { Toaster } from '@gitroom/react/toaster/toaster';
 import { MantineWrapper } from '@gitroom/react/helpers/mantine.wrapper';
 import { useVariables } from '@gitroom/react/helpers/variable.context';
 import { CopilotKit } from '@copilotkit/react-core';
+import { ToolTip } from '@gitroom/frontend/components/layout/top.tip';
 export const PreviewWrapper = ({ children }: { children: ReactNode }) => {
   const fetch = useFetch();
   const { backendUrl } = useVariables();
@@ -26,10 +27,12 @@ export const PreviewWrapper = ({ children }: { children: ReactNode }) => {
       <CopilotKit
         credentials="include"
         runtimeUrl={backendUrl + '/copilot/chat'}
+        useSingleEndpoint={true}
         showDevConsole={false}
       >
         <MantineWrapper>
           <Toaster />
+          <ToolTip />
           {children}
         </MantineWrapper>
       </CopilotKit>

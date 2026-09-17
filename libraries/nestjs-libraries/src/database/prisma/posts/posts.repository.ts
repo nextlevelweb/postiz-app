@@ -1,8 +1,14 @@
 import { PrismaRepository } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { Injectable } from '@nestjs/common';
 import { Post as PostBody } from '@gitroom/nestjs-libraries/dtos/posts/create.post.dto';
-import { APPROVED_SUBMIT_FOR_ORDER, Post, State } from '@prisma/client';
+import {
+  APPROVED_SUBMIT_FOR_ORDER,
+  CreationMethod,
+  Post,
+  State,
+} from '@prisma/client';
 import { GetPostsDto } from '@gitroom/nestjs-libraries/dtos/posts/get.posts.dto';
+import { GetPostsListDto } from '@gitroom/nestjs-libraries/dtos/posts/get.posts.list.dto';
 import dayjs from 'dayjs';
 import isoWeek from 'dayjs/plugin/isoWeek';
 import weekOfYear from 'dayjs/plugin/weekOfYear';
@@ -34,10 +40,11 @@ export class PostsRepository {
           refreshNeeded: false,
           inBetweenSteps: false,
           disabled: false,
+          deletedAt: null,
         },
         publishDate: {
-          gte: dayjs.utc().subtract(2, 'hour').toDate(),
-          lt: dayjs.utc().add(2, 'hour').toDate(),
+          gte: dayjs.utc().subtract(2, 'day').toDate(),
+          lt: dayjs.utc().toDate(),
         },
         state: 'QUEUE',
         deletedAt: null,
@@ -132,9 +139,6 @@ export class PostsRepository {
               {
                 organizationId: orgId,
               },
-              {
-                submittedForOrganizationId: orgId,
-              },
             ],
           },
           {
@@ -153,15 +157,13 @@ export class PostsRepository {
             ],
           },
         ],
+        integration: {
+          deletedAt: null,
+          organizationId: orgId,
+          ...(query.customer ? { customerId: query.customer } : {}),
+        },
         deletedAt: null,
         parentPostId: null,
-        ...(query.customer
-          ? {
-              integration: {
-                customerId: query.customer,
-              },
-            }
-          : {}),
       },
       select: {
         id: true,
@@ -172,6 +174,8 @@ export class PostsRepository {
         state: true,
         intervalInDays: true,
         group: true,
+        creationMethod: true,
+        settings: true,
         tags: {
           select: {
             tag: true,
@@ -209,6 +213,106 @@ export class PostsRepository {
 
       return [...all, ...addMorePosts];
     }, [] as any[]);
+  }
+
+  async getPostsList(orgId: string, query: GetPostsListDto) {
+    const page = query.page || 0;
+    const limit = query.limit || 20;
+    const skip = page * limit;
+
+    const stateFilter = query.state || 'all';
+    const stateAndDate =
+      stateFilter === 'scheduled'
+        ? {
+            state: State.QUEUE,
+          }
+        : stateFilter === 'draft'
+        ? { state: State.DRAFT }
+        : stateFilter === 'published'
+        ? { state: State.PUBLISHED }
+        : {
+            state: {
+              in: [State.QUEUE, State.DRAFT, State.PUBLISHED, State.ERROR],
+            },
+          };
+
+    const orderDirection: 'asc' | 'desc' =
+      stateFilter === 'published' ? 'desc' : 'asc';
+
+    const where = {
+      AND: [
+        {
+          OR: [
+            {
+              organizationId: orgId,
+            },
+          ],
+        },
+      ],
+      ...stateAndDate,
+      // Published posts were already posted (publishDate in the past), so fetch
+      // all of them; everything else stays upcoming. Ordering handles the rest.
+      ...(stateFilter === 'published'
+        ? {}
+        : { publishDate: { gte: dayjs.utc().toDate() } }),
+      deletedAt: null as Date | null,
+      parentPostId: null as string | null,
+      intervalInDays: null as number | null,
+
+      integration: {
+        deletedAt: null as any,
+        organizationId: orgId,
+        ...(query.customer
+          ? {
+              customerId: query.customer,
+            }
+          : {}),
+      },
+    };
+
+    const [posts, total] = await Promise.all([
+      this._post.model.post.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: {
+          publishDate: orderDirection,
+        },
+        select: {
+          id: true,
+          content: true,
+          publishDate: true,
+          releaseURL: true,
+          releaseId: true,
+          state: true,
+          intervalInDays: true,
+          group: true,
+          creationMethod: true,
+          tags: {
+            select: {
+              tag: true,
+            },
+          },
+          integration: {
+            select: {
+              id: true,
+              providerIdentifier: true,
+              name: true,
+              picture: true,
+            },
+          },
+        },
+      }),
+      this._post.model.post.count({ where }),
+    ]);
+
+    return {
+      posts,
+      total,
+      page,
+      limit,
+      hasMore: skip + posts.length < total,
+    };
   }
 
   async deletePost(orgId: string, group: string) {
@@ -293,6 +397,19 @@ export class PostsRepository {
     });
   }
 
+  updateReleaseId(id: string, orgId: string, releaseId: string) {
+    return this._post.model.post.update({
+      where: {
+        id,
+        organizationId: orgId,
+        releaseId: 'missing',
+      },
+      data: {
+        releaseId: String(releaseId),
+      },
+    });
+  }
+
   async changeState(id: string, state: State, err?: any, body?: any) {
     const update = await this._post.model.post.update({
       where: {
@@ -328,6 +445,15 @@ export class PostsRepository {
     }
 
     return update;
+  }
+
+  getErrorsByPostIds(postIds: string[]) {
+    return this._errors.model.errors.findMany({
+      where: {
+        postId: { in: postIds },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
   }
 
   async changeDate(
@@ -385,10 +511,16 @@ export class PostsRepository {
     date: string,
     body: PostBody,
     tags: { value: string; label: string }[],
-    inter?: number
+    creationMethod: CreationMethod,
+    inter?: number,
+    // Keep the existing group instead of rotating it, so open clients
+    // (calendar) holding the group stay valid. Used by out-of-band updates
+    // (agent / MCP / public API); the dashboard keeps the rotate-and-sweep.
+    keepGroup = false
   ) {
     const posts: Post[] = [];
     const uuid = uuidv4();
+    const group = keepGroup && body.group ? body.group : uuid;
 
     for (const value of body.value) {
       const updateData = (type: 'create' | 'update') => ({
@@ -416,9 +548,10 @@ export class PostsRepository {
           : {}),
         content: value.content,
         delay: value.delay || 0,
-        group: uuid,
+        group,
         intervalInDays: inter ? +inter : null,
         approvedSubmitForOrder: APPROVED_SUBMIT_FOR_ORDER.NO,
+        ...(type === 'create' ? { creationMethod } : {}),
         ...(state === 'update'
           ? {}
           : {
@@ -506,11 +639,29 @@ export class PostsRepository {
         )?.id!
       : undefined;
 
-    if (body.group) {
+    if (body.group && !keepGroup) {
       await this._post.model.post.updateMany({
         where: {
           group: body.group,
           deletedAt: null,
+        },
+        data: {
+          parentPostId: null,
+          deletedAt: new Date(),
+        },
+      });
+    }
+
+    // keepGroup: the updated rows still carry the old group, so sweep only the
+    // rows dropped from it (removed comments) by id instead of by group.
+    if (body.group && keepGroup) {
+      await this._post.model.post.updateMany({
+        where: {
+          group: body.group,
+          deletedAt: null,
+          id: {
+            notIn: posts.map((p) => p.id),
+          },
         },
         data: {
           parentPostId: null,
@@ -733,29 +884,51 @@ export class PostsRepository {
     });
   }
 
-  async getPostByForWebhookId(postId: string) {
-    return this._post.model.post.findMany({
+  async getPostByForWebhookId(postId: string, integrationId: string) {
+    const select = {
+      id: true,
+      content: true,
+      publishDate: true,
+      releaseURL: true,
+      state: true,
+      integration: {
+        select: {
+          id: true,
+          name: true,
+          providerIdentifier: true,
+          picture: true,
+          type: true,
+        },
+      },
+    };
+
+    const posts = await this._post.model.post.findMany({
       where: {
         id: postId,
         deletedAt: null,
         parentPostId: null,
       },
-      select: {
-        id: true,
-        content: true,
-        publishDate: true,
-        releaseURL: true,
-        state: true,
-        integration: {
-          select: {
-            id: true,
-            name: true,
-            providerIdentifier: true,
-            picture: true,
-            type: true,
-          },
-        },
+      select,
+    });
+
+    if (posts.length) {
+      return posts;
+    }
+
+    // The running workflows pass the platform's post id, which updatePost
+    // already stored on the row as releaseId before the webhook is sent.
+    return this._post.model.post.findMany({
+      where: {
+        releaseId: postId,
+        integrationId,
+        deletedAt: null,
+        parentPostId: null,
       },
+      orderBy: {
+        updatedAt: 'desc' as const,
+      },
+      take: 1,
+      select,
     });
   }
 

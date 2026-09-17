@@ -1,9 +1,12 @@
 'use client';
 
-import { AddProviderButton } from '@gitroom/frontend/components/launches/add.provider.component';
+import {
+  AddProviderButton,
+  CustomVariables,
+} from '@gitroom/frontend/components/launches/add.provider.component';
 import { FC, useCallback, useEffect, useMemo, useState } from 'react';
-import Image from 'next/image';
-import { groupBy, orderBy } from 'lodash';
+import SafeImage from '@gitroom/react/helpers/safe.image';
+import { capitalize, groupBy, orderBy } from 'lodash';
 import { CalendarWeekProvider } from '@gitroom/frontend/components/launches/calendar.context';
 import { Filters } from '@gitroom/frontend/components/launches/filters';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
@@ -26,6 +29,7 @@ import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useIntegrationList } from '@gitroom/frontend/components/launches/helpers/use.integration.list';
 import useCookie from 'react-use-cookie';
 import { Onboarding } from '@gitroom/frontend/components/onboarding/onboarding';
+import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 
 export const SVGLine = () => {
   return (
@@ -248,7 +252,10 @@ export const MenuComponent: FC<
       {...(integration.refreshNeeded && {
         onClick: refreshChannel(integration),
         'data-tooltip-id': 'tooltip',
-        'data-tooltip-content': t('channel_disconnected_click_to_reconnect', 'Channel disconnected, click to reconnect.'),
+        'data-tooltip-content': t(
+          'channel_disconnected_click_to_reconnect',
+          'Channel disconnected, click to reconnect.'
+        ),
       })}
       {...(collapsed
         ? {
@@ -256,7 +263,6 @@ export const MenuComponent: FC<
             'data-tooltip-content': integration.name,
           }
         : {})}
-      key={integration.id}
       className={clsx(
         'flex gap-[12px] items-center bg-newBgColorInner hover:bg-boxHover group/profile transition-all rounded-e-[8px]',
         integration.refreshNeeded && 'cursor-pointer'
@@ -301,7 +307,7 @@ export const MenuComponent: FC<
             width={20}
           />
         ) : (
-          <Image
+          <SafeImage
             src={`/icons/platforms/${integration.identifier}.png`}
             className="rounded-[8px] absolute z-10 bottom-[5px] -end-[5px] border border-fifth"
             alt={integration.identifier}
@@ -317,8 +323,10 @@ export const MenuComponent: FC<
         totalNonDisabledChannels === user?.totalChannels
           ? {
               'data-tooltip-id': 'tooltip',
-              'data-tooltip-content':
-                t('channel_disabled_upgrade_plan', 'This channel is disabled, please upgrade your plan to enable it.'),
+              'data-tooltip-content': t(
+                'channel_disabled_upgrade_plan',
+                'This channel is disabled, please upgrade your plan to enable it.'
+              ),
             }
           : {})}
         role="Handle"
@@ -354,6 +362,7 @@ export const LaunchesComponent = () => {
   const toast = useToaster();
   const fireEvents = useFireEvents();
   const t = useT();
+  const modal = useModals();
   const [reload, setReload] = useState(false);
   const [collapseMenu, setCollapseMenu] = useCookie('collapseMenu', '0');
   const [mode] = useCookie('mode', 'dark');
@@ -437,9 +446,31 @@ export const LaunchesComponent = () => {
     (
         integration: Integration & {
           identifier: string;
+          isCustomFields?: boolean;
+          customFields?: any[];
         }
       ) =>
       async () => {
+        // Custom-fields providers (Bluesky, etc.) have no OAuth URL to redirect
+        // to: reconnect by re-entering the credentials, like the menu does.
+        if (integration.isCustomFields) {
+          modal.openModal({
+            title: t('custom_url', 'Custom URL'),
+            withCloseButton: false,
+            classNames: {
+              modal: 'md',
+            },
+            children: (
+              <CustomVariables
+                identifier={integration.identifier}
+                gotoUrl={(url: string) => router.push(url)}
+                variables={integration.customFields || []}
+              />
+            ),
+          });
+          return;
+        }
+
         const { url } = await (
           await fetch(
             `/integrations/social/${integration.identifier}?refresh=${integration.internalId}`,
@@ -576,10 +607,15 @@ export const LaunchesComponent = () => {
                 />
               ))}
             </div>
-            <div className="mt-[5px] text-center">
-              {process.env.NEXT_PUBLIC_VERSION
-                ? process.env.NEXT_PUBLIC_VERSION
-                : ''}
+            <div className="mt-[5px] text-center flex flex-col">
+              {billingEnabled && user?.isLifetime && (
+                <div>{capitalize(user?.tier?.current || '')} tier</div>
+              )}
+              <div>
+                {process.env.NEXT_PUBLIC_VERSION
+                  ? process.env.NEXT_PUBLIC_VERSION
+                  : ''}
+              </div>
             </div>
           </div>
         </div>

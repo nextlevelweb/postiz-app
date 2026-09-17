@@ -52,6 +52,13 @@ export const AddEditModal: FC<AddEditModalProps> = (props) => {
     setIsCreateSet(!!props.addEditSets);
   }, []);
 
+  useEffect(() => {
+    document.querySelector('body')?.classList.add('hideChatbase');
+    return () => {
+      document.querySelector('body')?.classList.remove('hideChatbase');
+    };
+  }, []);
+
   if (!integrations.length) {
     return null;
   }
@@ -187,10 +194,13 @@ export const AddEditModalInnerInner: FC<AddEditModalProps> = (props) => {
         : props.set?.posts?.length
         ? props.set.posts[0].value.map((p: any) => ({
             id: makeId(10),
-            content: p.content
-              .split('\n')
-              .map((line: string) => `<p>${line}</p>`)
-              .join(''),
+            content:
+              p.content.indexOf('<p>') > -1
+                ? p.content
+                : p.content
+                    .split('\n')
+                    .map((line: string) => `<p>${line}</p>`)
+                    .join(''),
             // @ts-ignore
             media: p.media,
           }))

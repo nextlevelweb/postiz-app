@@ -23,8 +23,11 @@ import {
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useUser } from '@gitroom/frontend/components/layout/user.context';
 import { useDubClickId } from '@gitroom/frontend/components/layout/dubAnalytics';
-import Image from 'next/image';
+import SafeImage from '@gitroom/react/helpers/safe.image';
 import { useModals } from '@gitroom/frontend/components/layout/new-modal';
+import useCookie from 'react-use-cookie';
+import { LogoutComponent } from '@gitroom/frontend/components/layout/logout.component';
+import { DeveloperIconComponent } from '@gitroom/frontend/components/developer/developer.icon.component';
 
 const ModeComponent = dynamic(
   () => import('@gitroom/frontend/components/layout/mode.component'),
@@ -53,6 +56,8 @@ export const FirstBillingComponent = () => {
   const fetch = useFetch();
   const modals = useModals();
   const t = useT();
+  const [datafast_visitor_id] = useCookie('datafast_visitor_id', '');
+  const [datafast_session_id] = useCookie('datafast_session_id', '');
 
   useEffect(() => {
     setStripe(loadStripe(stripeClient));
@@ -65,6 +70,9 @@ export const FirstBillingComponent = () => {
         body: JSON.stringify({
           billing: tier,
           period: period,
+          ...(datafast_visitor_id && datafast_session_id
+            ? { datafast_visitor_id, datafast_session_id }
+            : {}),
           ...(dub ? { dub } : {}),
         }),
       })
@@ -121,7 +129,7 @@ export const FirstBillingComponent = () => {
         <div className="flex" onClick={showYouTube}>
           <div className="tablet:mb-[32px] cursor-pointer mt-[32px] flex gap-[10px] items-center underline hover:font-[700]">
             <div>
-              <Image
+              <SafeImage
                 className="text-[12px]"
                 src="/icons/platforms/youtube.svg"
                 width={22.5}
@@ -182,7 +190,13 @@ export const FirstBillingComponent = () => {
             <LanguageComponent />
             <div className="w-[1px] h-[20px] bg-blockSeparator" />
             <AttachToFeedbackIcon />
-            <NotificationComponent />
+            <DeveloperIconComponent />
+            {/*<NotificationComponent />*/}
+            <div className="hover:text-newTextColor">
+              {user?.tier.current === 'FREE' && (
+                <LogoutComponent isIcon={true} />
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -191,7 +205,14 @@ export const FirstBillingComponent = () => {
           <div className="block tablet:hidden">
             <JoinOver />
           </div>
-          {!isLoading && data && stripe ? (
+          {data?.blocked ? (
+            <div className="mt-[24px] p-[24px] rounded-[20px] border-[1.5px] border-newColColor text-[16px] font-[500]">
+              {t(
+                'billing_other_account_subscribed',
+                'Another account with this email already has an active subscription. Please log off and sign in to that account to manage your subscription.'
+              )}
+            </div>
+          ) : !isLoading && data && stripe ? (
             <EmbeddedBilling
               stripe={stripe}
               secret={data.client_secret}

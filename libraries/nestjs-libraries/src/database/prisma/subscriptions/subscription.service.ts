@@ -21,7 +21,11 @@ export class SubscriptionService {
     );
   }
 
-  useCredit<T>(organization: Organization, type = 'ai_images', func: () => Promise<T>) : Promise<T> {
+  useCredit<T>(
+    organization: Organization,
+    type = 'ai_images',
+    func: () => Promise<T>
+  ): Promise<T> {
     return this._subscriptionRepository.useCredit(organization, type, func);
   }
 
@@ -29,14 +33,47 @@ export class SubscriptionService {
     return this._subscriptionRepository.getCode(code);
   }
 
-  async deleteSubscription(customerId: string) {
+  // Customer-keyed flows must never touch a subscription owned by another provider
+  private async isManagedBy(customerId: string, provider: string) {
+    const current =
+      await this._subscriptionRepository.getSubscriptionByCustomerId(
+        customerId
+      );
+    return !current || current.provider === provider;
+  }
+
+  async deleteSubscription(customerId: string, provider: string) {
+    if (!(await this.isManagedBy(customerId, provider))) {
+      return { count: 0 };
+    }
     await this.modifySubscription(
       customerId,
       pricing.FREE.channel || 0,
       'FREE'
     );
     return this._subscriptionRepository.deleteSubscriptionByCustomerId(
-      customerId
+      customerId,
+      provider
+    );
+  }
+
+  // Store-managed subscriptions (RevenueCat etc.) have no Stripe customer, they are keyed by org
+  async deleteSubscriptionByOrgId(organizationId: string, provider: string) {
+    const current = await this._subscriptionRepository.getSubscriptionByOrgId(
+      organizationId
+    );
+    if (!current || current.provider !== provider || current.isLifetime) {
+      return false;
+    }
+
+    await this.modifySubscriptionByOrg(
+      organizationId,
+      pricing.FREE.channel || 0,
+      'FREE'
+    );
+    return this._subscriptionRepository.deleteSubscriptionByOrgId(
+      organizationId,
+      provider
     );
   }
 
@@ -53,10 +90,60 @@ export class SubscriptionService {
       subscriptionId
     );
   }
+
+  async modifySubscriptionByOrg(
+    organizationId: string,
+    totalChannels: number,
+    billing: 'FREE' | 'STANDARD' | 'TEAM' | 'PRO' | 'ULTIMATE'
+  ) {
+    if (!organizationId) {
+      return false;
+    }
+
+    const getCurrentSubscription =
+      (await this._subscriptionRepository.getSubscriptionByOrgId(
+        organizationId
+      ))!;
+
+    const from = pricing[getCurrentSubscription?.subscriptionTier || 'FREE'];
+    const to = pricing[billing];
+
+    const currentTotalChannels = (
+      await this._integrationService.getIntegrationsList(organizationId)
+    ).filter((f) => !f.disabled);
+
+    if (currentTotalChannels.length > totalChannels) {
+      await this._integrationService.disableIntegrations(
+        organizationId,
+        currentTotalChannels.length - totalChannels
+      );
+    }
+
+    if (from.team_members && !to.team_members) {
+      await this._organizationService.disableOrEnableNonSuperAdminUsers(
+        organizationId,
+        true
+      );
+    }
+
+    if (!from.team_members && to.team_members) {
+      await this._organizationService.disableOrEnableNonSuperAdminUsers(
+        organizationId,
+        false
+      );
+    }
+
+    if (billing === 'FREE') {
+      await this._integrationService.changeActiveCron(organizationId);
+    }
+
+    return true;
+  }
+
   async modifySubscription(
     customerId: string,
     totalChannels: number,
-    billing: 'FREE' | 'STANDARD' | 'PRO'
+    billing: 'FREE' | 'STANDARD' | 'TEAM' | 'PRO' | 'ULTIMATE'
   ) {
     if (!customerId) {
       return false;
@@ -117,17 +204,21 @@ export class SubscriptionService {
   }
 
   async createOrUpdateSubscription(
+    provider: string,
     isTrailing: boolean,
     identifier: string,
     customerId: string,
     totalChannels: number,
-    billing: 'STANDARD' | 'PRO',
+    billing: 'STANDARD' | 'TEAM' | 'PRO' | 'ULTIMATE',
     period: 'MONTHLY' | 'YEARLY',
     cancelAt: number | null,
     code?: string,
     org?: string
   ) {
     if (!code) {
+      if (!(await this.isManagedBy(customerId, provider))) {
+        return {};
+      }
       try {
         const load = await this.modifySubscription(
           customerId,
@@ -142,6 +233,7 @@ export class SubscriptionService {
       }
     }
     return this._subscriptionRepository.createOrUpdateSubscription(
+      provider,
       isTrailing,
       identifier,
       customerId,
@@ -152,6 +244,54 @@ export class SubscriptionService {
       code,
       org ? { id: org } : undefined
     );
+  }
+
+  async createOrUpdateSubscriptionByOrg(
+    isTrailing: boolean,
+    organizationId: string,
+    provider: string,
+    identifier: string,
+    totalChannels: number,
+    billing: 'STANDARD' | 'TEAM' | 'PRO' | 'ULTIMATE',
+    period: 'MONTHLY' | 'YEARLY',
+    cancelAt: number | null
+  ) {
+    const current = await this._subscriptionRepository.getSubscriptionByOrgId(
+      organizationId
+    );
+    if (current && (current.isLifetime || current.provider !== provider)) {
+      return {};
+    }
+
+    try {
+      const load = await this.modifySubscriptionByOrg(
+        organizationId,
+        totalChannels,
+        billing
+      );
+      if (!load) {
+        return {};
+      }
+    } catch (e) {
+      return {};
+    }
+
+    return this._subscriptionRepository.createOrUpdateSubscription(
+      provider,
+      isTrailing,
+      identifier,
+      '',
+      totalChannels,
+      billing,
+      period,
+      cancelAt,
+      undefined,
+      { id: organizationId }
+    );
+  }
+
+  getSubscriptionByIdentifier(identifier: string) {
+    return this._subscriptionRepository.getSubscriptionByIdentifier(identifier);
   }
 
   async getSubscription(organizationId: string) {
@@ -173,7 +313,10 @@ export class SubscriptionService {
     }
 
     const checkFromMonth = date.subtract(1, 'month');
-    const imageGenerationCount = checkType === 'ai_images' ? pricing[type].image_generation_count : pricing[type].generate_videos
+    const imageGenerationCount =
+      checkType === 'ai_images'
+        ? pricing[type].image_generation_count
+        : pricing[type].generate_videos;
 
     const totalUse = await this._subscriptionRepository.getCreditsFrom(
       organization.id,
@@ -186,23 +329,15 @@ export class SubscriptionService {
     };
   }
 
-  async lifeTime(orgId: string, identifier: string, subscription: any) {
-    return this.createOrUpdateSubscription(
-      false,
-      identifier,
-      identifier,
-      pricing[subscription].channel!,
-      subscription,
-      'YEARLY',
-      null,
-      identifier,
-      orgId
-    );
-  }
-
-  async addSubscription(orgId: string, userId: string, subscription: any) {
+  async addSubscription(
+    orgId: string,
+    userId: string,
+    subscription: any,
+    provider: string
+  ) {
     await this._subscriptionRepository.setCustomerId(orgId, userId);
     return this.createOrUpdateSubscription(
+      provider,
       false,
       makeId(5),
       userId,

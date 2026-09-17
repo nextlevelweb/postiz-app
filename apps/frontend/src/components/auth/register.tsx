@@ -13,6 +13,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
 import clsx from 'clsx';
 import { GoogleProvider } from '@gitroom/frontend/components/auth/providers/google.provider';
+import { AppleProvider } from '@gitroom/frontend/components/auth/providers/apple.provider';
 import { OauthProvider } from '@gitroom/frontend/components/auth/providers/oauth.provider';
 import { useFireEvents } from '@gitroom/helpers/utils/use.fire.events';
 import { useVariables } from '@gitroom/react/helpers/variable.context';
@@ -22,6 +23,7 @@ import { FarcasterProvider } from '@gitroom/frontend/components/auth/providers/f
 import dynamic from 'next/dynamic';
 import { WalletUiProvider } from '@gitroom/frontend/components/auth/providers/placeholder/wallet.ui.provider';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
+import useCookie from 'react-use-cookie';
 const WalletProvider = dynamic(
   () => import('@gitroom/frontend/components/auth/providers/wallet.provider'),
   {
@@ -41,6 +43,7 @@ export function Register() {
   const fetch = useFetch();
   const [provider] = useState(getQuery?.get('provider')?.toUpperCase());
   const [code, setCode] = useState(getQuery?.get('code') || '');
+  const [state] = useState(getQuery?.get('state') || '');
   const [show, setShow] = useState(false);
   useEffect(() => {
     if (provider && code) {
@@ -53,6 +56,7 @@ export function Register() {
         method: 'POST',
         body: JSON.stringify({
           code,
+          state,
         }),
       })
     ).json();
@@ -88,12 +92,18 @@ export function RegisterAfter({
   provider: string;
 }) {
   const t = useT();
-  const { isGeneral, genericOauth, neynarClientId, billingEnabled } =
-    useVariables();
+  const {
+    isGeneral,
+    genericOauth,
+    neynarClientId,
+    appleClientId,
+    billingEnabled,
+  } = useVariables();
   const [loading, setLoading] = useState(false);
   const router = useRouter();
   const fireEvents = useFireEvents();
   const track = useTrack();
+  const [datafast_visitor_id] = useCookie('datafast_visitor_id');
   const isAfterProvider = useMemo(() => {
     return !!token && !!provider;
   }, [token, provider]);
@@ -114,6 +124,7 @@ export function RegisterAfter({
       method: 'POST',
       body: JSON.stringify({
         ...data,
+        datafast_visitor_id,
       }),
     })
       .then(async (response) => {
@@ -151,8 +162,10 @@ export function RegisterAfter({
               {t('sign_up', 'Sign Up')}
             </h1>
           </div>
-          <div className="text-[14px] mt-[32px] mb-[12px]">{t('continue_with', 'Continue With')}</div>
-          <div className="flex flex-col">
+          <div className="text-[14px] mt-[32px] mb-[12px]">
+            {t('continue_with', 'Continue With')}
+          </div>
+          <div className="flex flex-col text-[14px]">
             {!isAfterProvider &&
               (!isGeneral ? (
                 <GithubProvider />
@@ -163,6 +176,7 @@ export function RegisterAfter({
                   ) : (
                     <GoogleProvider />
                   )}
+                  {!!appleClientId && <AppleProvider />}
                   {!!neynarClientId && <FarcasterProvider />}
                   {billingEnabled && <WalletProvider />}
                 </div>
@@ -173,9 +187,7 @@ export function RegisterAfter({
                 <div
                   className={`absolute z-[1] justify-center items-center w-full start-0 -top-[4px] flex`}
                 >
-                  <div className="px-[16px]">
-                    {t('or', 'or')}
-                  </div>
+                  <div className="px-[16px]">{t('or', 'or')}</div>
                 </div>
               </div>
             )}

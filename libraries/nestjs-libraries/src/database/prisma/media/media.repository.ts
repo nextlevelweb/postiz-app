@@ -6,7 +6,7 @@ import { SaveMediaInformationDto } from '@gitroom/nestjs-libraries/dtos/media/sa
 export class MediaRepository {
   constructor(private _media: PrismaRepository<'media'>) {}
 
-  saveFile(org: string, fileName: string, filePath: string) {
+  saveFile(org: string, fileName: string, filePath: string, originalName?: string) {
     return this._media.model.media.create({
       data: {
         organization: {
@@ -16,13 +16,62 @@ export class MediaRepository {
         },
         name: fileName,
         path: filePath,
+        originalName: originalName || null,
       },
       select: {
         id: true,
         name: true,
+        originalName: true,
         path: true,
         thumbnail: true,
         alt: true,
+        status: true,
+      },
+    });
+  }
+
+  startProcessing(org: string, id: string) {
+    return this._media.model.media.update({
+      where: { id, organizationId: org },
+      data: { status: 'processing', processingError: null },
+      select: { id: true, status: true },
+    });
+  }
+
+  finishProcessing(
+    org: string,
+    id: string,
+    data: { name?: string; path?: string; fileSize?: number; error?: string }
+  ) {
+    return this._media.model.media.update({
+      where: { id, organizationId: org },
+      data: {
+        ...(data.name ? { name: data.name } : {}),
+        ...(data.path ? { path: data.path } : {}),
+        ...(data.fileSize ? { fileSize: data.fileSize } : {}),
+        status: data.error ? 'failed' : 'ready',
+        processingError: data.error || null,
+      },
+      select: { id: true, status: true },
+    });
+  }
+
+  getMediaStatus(org: string, id: string) {
+    return this._media.model.media.findFirst({
+      where: {
+        id,
+        organizationId: org,
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+        name: true,
+        originalName: true,
+        path: true,
+        thumbnail: true,
+        alt: true,
+        status: true,
+        processingError: true,
       },
     });
   }
@@ -61,6 +110,7 @@ export class MediaRepository {
       select: {
         id: true,
         name: true,
+        originalName: true,
         alt: true,
         thumbnail: true,
         path: true,
@@ -69,13 +119,25 @@ export class MediaRepository {
     });
   }
 
-  async getMedia(org: string, page: number) {
+  async getMedia(org: string, page: number, search?: string) {
     const pageNum = (page || 1) - 1;
+    const trimmedSearch = search?.trim();
+    const searchFilter = trimmedSearch
+      ? {
+          originalName: {
+            contains: trimmedSearch,
+            mode: 'insensitive' as const,
+          },
+        }
+      : {};
     const query = {
       where: {
         organization: {
           id: org,
         },
+        deletedAt: null,
+        status: { not: 'processing' },
+        ...searchFilter,
       },
     };
     const pages = Math.ceil((await this._media.model.media.count(query)) / 18);
@@ -83,6 +145,9 @@ export class MediaRepository {
       where: {
         organizationId: org,
         deletedAt: null,
+        // still being normalized: it shows up once the workflow releases it
+        status: { not: 'processing' },
+        ...searchFilter,
       },
       orderBy: {
         createdAt: 'desc',
@@ -90,6 +155,7 @@ export class MediaRepository {
       select: {
         id: true,
         name: true,
+        originalName: true,
         path: true,
         thumbnail: true,
         alt: true,

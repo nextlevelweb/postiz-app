@@ -1,11 +1,39 @@
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand,
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { Upload } from '@aws-sdk/lib-storage';
+import { Readable } from 'stream';
 import 'multer';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import mime from 'mime-types';
 // @ts-ignore
 import { getExtension } from 'mime';
-import { IUploadProvider } from './upload.interface';
+import { IUploadProvider, UploadedStream } from './upload.interface';
 import axios from 'axios';
+import { isSafePublicHttpsUrl } from '@gitroom/nestjs-libraries/dtos/webhooks/webhook.url.validator';
+import { ssrfSafeDispatcher } from '@gitroom/nestjs-libraries/dtos/webhooks/ssrf.safe.dispatcher';
+import { parseDataUrl } from '@gitroom/nestjs-libraries/upload/data.url';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { fileTypeFromBuffer } = require('file-type');
+
+const ALLOWED_MIME_TYPES = new Set<string>([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+  'image/bmp',
+  'image/tiff',
+  'video/mp4',
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/wav',
+  'audio/ogg',
+]);
 
 class CloudflareStorage implements IUploadProvider {
   private _client: S3Client;
@@ -58,18 +86,34 @@ class CloudflareStorage implements IUploadProvider {
   }
 
   async uploadSimple(path: string) {
-    const loadImage = await fetch(path);
-    const contentType =
-      loadImage?.headers?.get('content-type') ||
-      loadImage?.headers?.get('Content-Type');
-    const extension = getExtension(contentType)!;
+    const dataUrl = path.startsWith('data:') ? parseDataUrl(path) : null;
+
+    let body: Buffer;
+    if (dataUrl) {
+      body = dataUrl.buffer;
+    } else {
+      if (!(await isSafePublicHttpsUrl(path))) {
+        throw new Error('Unsafe URL');
+      }
+      const loadImage = await fetch(path, {
+        // @ts-ignore — undici option, not in lib.dom fetch types
+        dispatcher: ssrfSafeDispatcher,
+      });
+      body = Buffer.from(await loadImage.arrayBuffer());
+    }
+    const detected = await fileTypeFromBuffer(body);
+    if (!detected || !ALLOWED_MIME_TYPES.has(detected.mime)) {
+      throw new Error('Unsupported file type.');
+    }
+    const extension = detected.ext;
+    const safeContentType = detected.mime;
     const id = makeId(10);
 
     const params = {
       Bucket: this._bucketName,
       Key: `${id}.${extension}`,
-      Body: Buffer.from(await loadImage.arrayBuffer()),
-      ContentType: contentType,
+      Body: body,
+      ContentType: safeContentType,
       ChecksumMode: 'DISABLED',
     };
 
@@ -81,8 +125,13 @@ class CloudflareStorage implements IUploadProvider {
 
   async uploadFile(file: Express.Multer.File): Promise<any> {
     try {
+      const detected = await fileTypeFromBuffer(file.buffer);
+      if (!detected || !ALLOWED_MIME_TYPES.has(detected.mime)) {
+        throw new Error('Unsupported file type.');
+      }
       const id = makeId(10);
-      const extension = mime.extension(file.mimetype) || '';
+      const extension = detected.ext;
+      const safeContentType = detected.mime;
 
       // Create the PutObjectCommand to upload the file to Cloudflare R2
       const command = new PutObjectCommand({
@@ -90,6 +139,7 @@ class CloudflareStorage implements IUploadProvider {
         ACL: 'public-read',
         Key: `${id}.${extension}`,
         Body: file.buffer,
+        ContentType: safeContentType,
       });
 
       await this._client.send(command);
@@ -112,14 +162,77 @@ class CloudflareStorage implements IUploadProvider {
     }
   }
 
-  // Implement the removeFile method from IUploadProvider
+  async uploadStream(
+    stream: Readable,
+    mimetype: string,
+    ext: string
+  ): Promise<UploadedStream> {
+    try {
+      if (!ALLOWED_MIME_TYPES.has(mimetype)) {
+        throw new Error('Unsupported file type.');
+      }
+      const id = makeId(10);
+      const key = `${id}.${ext}`;
+
+      // Multipart upload holds only a few parts in memory at a time instead
+      // of the whole body, and does not need to know the length up front
+      const upload = new Upload({
+        client: this._client,
+        params: {
+          Bucket: this._bucketName,
+          ACL: 'public-read',
+          Key: key,
+          Body: stream,
+          ContentType: mimetype,
+        },
+      });
+      await upload.done();
+
+      return {
+        filename: key,
+        mimetype,
+        originalname: key,
+        path: `${this._uploadUrl}/${key}`,
+      };
+    } catch (err) {
+      console.error('Error streaming file to Cloudflare R2:', err);
+      throw err;
+    }
+  }
+
+  async signDownloadUrl(fileName: string) {
+    return getSignedUrl(
+      this._client,
+      new GetObjectCommand({ Bucket: this._bucketName, Key: fileName }),
+      { expiresIn: 3 * 3600 }
+    );
+  }
+
+  async signUploadUrl(fileName: string, contentType: string) {
+    return getSignedUrl(
+      this._client,
+      new PutObjectCommand({
+        Bucket: this._bucketName,
+        Key: fileName,
+        ContentType: contentType,
+      }),
+      { expiresIn: 3 * 3600 }
+    );
+  }
+
+  // Accepts either the public URL or the bare key
   async removeFile(filePath: string): Promise<void> {
-    // const fileName = filePath.split('/').pop(); // Extract the filename from the path
-    // const command = new DeleteObjectCommand({
-    //   Bucket: this._bucketName,
-    //   Key: fileName,
-    // });
-    // await this._client.send(command);
+    const fileName = filePath.split('/').pop();
+    if (!fileName) {
+      return;
+    }
+
+    await this._client.send(
+      new DeleteObjectCommand({
+        Bucket: this._bucketName,
+        Key: fileName,
+      })
+    );
   }
 }
 

@@ -1,14 +1,23 @@
 import {
   BadRequestException,
   Injectable,
+  NotFoundException,
   ValidationPipe,
 } from '@nestjs/common';
 import { PostsRepository } from '@gitroom/nestjs-libraries/database/prisma/posts/posts.repository';
 import { CreatePostDto } from '@gitroom/nestjs-libraries/dtos/posts/create.post.dto';
 import dayjs from 'dayjs';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
-import { Integration, Post, Media, From, State } from '@prisma/client';
+import {
+  Integration,
+  Post,
+  Media,
+  From,
+  CreationMethod,
+  State,
+} from '@prisma/client';
 import { GetPostsDto } from '@gitroom/nestjs-libraries/dtos/posts/get.posts.dto';
+import { GetPostsListDto } from '@gitroom/nestjs-libraries/dtos/posts/get.posts.list.dto';
 import { shuffle } from 'lodash';
 import { CreateGeneratedPostsDto } from '@gitroom/nestjs-libraries/dtos/generator/create.generated.posts.dto';
 import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
@@ -17,6 +26,10 @@ import utc from 'dayjs/plugin/utc';
 import { MediaService } from '@gitroom/nestjs-libraries/database/prisma/media/media.service';
 import { ShortLinkService } from '@gitroom/nestjs-libraries/short-linking/short.link.service';
 import { CreateTagDto } from '@gitroom/nestjs-libraries/dtos/posts/create.tag.dto';
+import {
+  minifyPostsList,
+  minifyPosts,
+} from '@gitroom/helpers/utils/posts.list.minify';
 import axios from 'axios';
 import sharp from 'sharp';
 import { UploadFactory } from '@gitroom/nestjs-libraries/upload/upload.factory';
@@ -35,6 +48,12 @@ import { timer } from '@gitroom/helpers/utils/timer';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import { RefreshToken } from '@gitroom/nestjs-libraries/integrations/social.abstract';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
+import { hasExtension } from '@gitroom/helpers/utils/has.extension';
+import { stripLinks } from '@gitroom/helpers/utils/strip.links';
+import { validate } from 'class-validator';
+import { plainToInstance } from 'class-transformer';
+import { stripHtmlValidation } from '@gitroom/helpers/utils/strip.html.validation';
+import { countLength } from '@gitroom/helpers/utils/count.length';
 
 type PostWithConditionals = Post & {
   integration?: Integration;
@@ -63,15 +82,87 @@ export class PostsService {
     return this._postRepository.updatePost(id, postId, releaseURL);
   }
 
+  async getMissingContent(
+    orgId: string,
+    postId: string,
+    forceRefresh = false
+  ): Promise<{ id: string; url: string }[]> {
+    const post = await this._postRepository.getPostById(postId, orgId);
+    if (!post || post.releaseId !== 'missing') {
+      return [];
+    }
+
+    const integrationProvider = this._integrationManager.getSocialIntegration(
+      post.integration.providerIdentifier
+    );
+
+    if (!integrationProvider.missing) {
+      return [];
+    }
+
+    const getIntegration = post.integration!;
+
+    if (
+      dayjs(getIntegration?.tokenExpiration).isBefore(dayjs()) ||
+      forceRefresh
+    ) {
+      const data = await this._refreshIntegrationService.refresh(
+        getIntegration
+      );
+      if (!data) {
+        return [];
+      }
+
+      const { accessToken } = data;
+
+      if (accessToken) {
+        getIntegration.token = accessToken;
+
+        if (integrationProvider.refreshWait) {
+          await timer(10000);
+        }
+      } else {
+        await this._integrationService.disconnectChannel(orgId, getIntegration);
+        return [];
+      }
+    }
+
+    try {
+      return await integrationProvider.missing(
+        getIntegration.internalId,
+        getIntegration.token
+      );
+    } catch (e) {
+      console.log(e);
+      if (e instanceof RefreshToken) {
+        return this.getMissingContent(orgId, postId, true);
+      }
+    }
+
+    return [];
+  }
+
+  async getPostById(postId: string, orgId: string) {
+    return this._postRepository.getPostById(postId, orgId);
+  }
+
+  async updateReleaseId(orgId: string, postId: string, releaseId: string) {
+    return this._postRepository.updateReleaseId(postId, orgId, releaseId);
+  }
+
   async checkPostAnalytics(
     orgId: string,
     postId: string,
     date: number,
     forceRefresh = false
-  ): Promise<AnalyticsData[]> {
+  ): Promise<AnalyticsData[] | { missing: true }> {
     const post = await this._postRepository.getPostById(postId, orgId);
     if (!post || !post.releaseId) {
       return [];
+    }
+
+    if (post.releaseId === 'missing') {
+      return { missing: true };
     }
 
     const integrationProvider = this._integrationManager.getSocialIntegration(
@@ -165,9 +256,9 @@ export class PostsService {
 
     const mappedValues = {
       ...body,
-      type: replaceDraft ? 'schedule' : body.type,
+      type: replaceDraft ? 'schedule' : body?.type,
       posts: await Promise.all(
-        body.posts.map(async (post) => {
+        body?.posts?.map(async (post) => {
           const integration = await this._integrationService.getIntegrationById(
             organization,
             post.integration.id
@@ -180,13 +271,14 @@ export class PostsService {
           }
 
           return {
+            type: replaceDraft ? 'schedule' : body?.type,
             ...post,
             settings: {
               ...(post.settings || ({} as any)),
               __type: integration.providerIdentifier,
             },
           };
-        })
+        }) || []
       ),
     };
 
@@ -238,6 +330,18 @@ export class PostsService {
     return this._postRepository.getPosts(orgId, query);
   }
 
+  async getPostsMinified(orgId: string, query: GetPostsDto) {
+    return minifyPosts({
+      posts: await this._postRepository.getPosts(orgId, query),
+    });
+  }
+
+  async getPostsList(orgId: string, query: GetPostsListDto) {
+    return minifyPostsList(
+      await this._postRepository.getPostsList(orgId, query)
+    );
+  }
+
   async updateMedia(id: string, imagesList: any[], convertToJPEG = false) {
     try {
       let imageUpdateNeeded = false;
@@ -245,9 +349,21 @@ export class PostsService {
         (
           await Promise.all(
             (imagesList || []).map(async (p: any) => {
-              if (!p.path && p.id) {
+              if (!p.id) {
+                return p;
+              }
+
+              if (!p.path) {
                 imageUpdateNeeded = true;
                 return this._mediaService.getMediaById(p.id);
+              }
+
+              // the normalizer may have replaced the file after the post was
+              // composed; a record still processing publishes the original
+              const fresh = await this._mediaService.getMediaById(p.id);
+              if (fresh?.status === 'ready' && fresh.path !== p.path) {
+                imageUpdateNeeded = true;
+                return { ...p, name: fresh.name, path: fresh.path };
               }
 
               return p;
@@ -276,7 +392,7 @@ export class PostsService {
               return m;
             }
 
-            if (m.path.indexOf('.png') > -1) {
+            if (hasExtension(m.path, 'png')) {
               imageUpdateNeeded = true;
               const response = await axios.get(m.url, {
                 responseType: 'arraybuffer',
@@ -335,6 +451,53 @@ export class PostsService {
     } catch (err: any) {
       return imagesList;
     }
+  }
+
+  async getPostGroupDebugExport(orgId: string, group: string) {
+    const loadAll = await this._postRepository.getPostsByGroup(orgId, group);
+    const errors = await this._postRepository.getErrorsByPostIds(
+      loadAll.map((p) => p.id)
+    );
+    const posts = this.arrangePostsByGroup(loadAll, undefined);
+    const rootPost = posts[0] as any;
+
+    return {
+      type: 'draft' as const,
+      shortLink: false,
+      date: rootPost.publishDate.toISOString(),
+      tags:
+        rootPost.tags?.map((t: any) => ({
+          value: t.tag.id,
+          label: t.tag.name,
+        })) || [],
+      posts: [
+        {
+          integration: { id: 'REPLACE_WITH_LOCAL_INTEGRATION_ID' },
+          group: rootPost.group,
+          settings: JSON.parse(rootPost.settings || '{}'),
+          value: posts.map((post) => ({
+            content: post.content,
+            image: JSON.parse(post.image || '[]'),
+            delay: post.delay || 0,
+          })),
+        },
+      ],
+      _debug: {
+        providerIdentifier: rootPost.integration?.providerIdentifier,
+        providerName: rootPost.integration?.name,
+        state: rootPost.state,
+        error: rootPost.error,
+        errors: errors.map((e) => ({
+          message: e.message,
+          platform: e.platform,
+          body: e.body,
+          createdAt: e.createdAt,
+        })),
+        originalGroup: group,
+        originalPublishDate: rootPost.publishDate,
+        exportedAt: new Date().toISOString(),
+      },
+    };
   }
 
   async getPostsByGroup(orgId: string, group: string) {
@@ -537,8 +700,8 @@ export class PostsService {
     return this._postRepository.countPostsFromDay(orgId, date);
   }
 
-  getPostByForWebhookId(id: string) {
-    return this._postRepository.getPostByForWebhookId(id);
+  getPostByForWebhookId(id: string, integrationId: string) {
+    return this._postRepository.getPostByForWebhookId(id, integrationId);
   }
 
   async startWorkflow(
@@ -576,7 +739,7 @@ export class PostsService {
     try {
       await this._temporalService.client
         .getRawClient()
-        ?.workflow.start('postWorkflowV101', {
+        ?.workflow.start('postWorkflowV112', {
           workflowId: `post_${postId}`,
           taskQueue: 'main',
           workflowIdConflictPolicy: 'TERMINATE_EXISTING',
@@ -601,17 +764,184 @@ export class PostsService {
     } catch (err) {}
   }
 
-  async createPost(orgId: string, body: CreatePostDto): Promise<any[]> {
+  /**
+   * Server-side validation that used to live on the client (`checkValidity` +
+   * the manage modal loop). Runs the provider's settings DTO validation, the
+   * provider `checkValidity` (media rules) and the empty-content / too-long
+   * character checks. Returns one result per post so the frontend can show the
+   * same toasts it did before — and so `/posts` can refuse to create invalid
+   * posts.
+   */
+  async validatePosts(
+    orgId: string,
+    posts: Array<{
+      integration: { id: string };
+      value: Array<{
+        content?: string;
+        image?: Array<{ path: string; thumbnail?: string }>;
+      }>;
+      settings?: any;
+    }>
+  ) {
+    return Promise.all(
+      (posts || []).map(async (post) => {
+        const integration = await this._integrationService.getIntegrationById(
+          orgId,
+          post?.integration?.id
+        );
+
+        if (!integration) {
+          throw new BadRequestException(
+            `Integration with id ${post?.integration?.id} not found`
+          );
+        }
+
+        const provider = this._integrationManager.getSocialIntegration(
+          integration.providerIdentifier
+        );
+
+        let additionalSettings: any[] = [];
+        try {
+          additionalSettings = JSON.parse(
+            integration.additionalSettings || '[]'
+          );
+        } catch {
+          additionalSettings = [];
+        }
+
+        const settings = post.settings || {};
+        const media = (post.value || []).map((p) => p.image || []);
+
+        // Settings DTO validation — mirrors the client `form.trigger()`.
+        let valid = true;
+        let settingsError = '';
+        if (provider?.dto) {
+          const instance = plainToInstance(provider.dto, settings, {
+            enableImplicitConversion: false,
+          });
+          const validationErrors = await validate(instance as object, {
+            skipMissingProperties: false,
+          });
+          settingsError = this.firstValidationError(validationErrors);
+          valid = validationErrors.length === 0;
+        }
+
+        // Provider-specific media validation (the old client `checkValidity`).
+        let errors: string | true = true;
+        try {
+          errors = await provider.checkValidity(
+            media,
+            settings,
+            additionalSettings
+          );
+        } catch (err: any) {
+          errors = err?.message || 'Invalid media';
+        }
+
+        const maximumCharacters = provider.maxLength(additionalSettings, settings);
+
+        const emptyContent = (post.value || []).some((a) => {
+          const strip = stripHtmlValidation('normal', a.content || '', true);
+          const length = countLength(integration.providerIdentifier, strip);
+          return length === 0 && (a.image || []).length === 0;
+        });
+
+        const tooLong = (post.value || []).some((a) => {
+          const strip = stripHtmlValidation('normal', a.content || '', true);
+          const counted = countLength(integration.providerIdentifier, strip);
+          return counted > (maximumCharacters || 1000000);
+        });
+
+        return {
+          id: integration.id,
+          identifier: integration.providerIdentifier,
+          name: integration.name,
+          valid,
+          settingsError,
+          errors,
+          emptyContent,
+          tooLong,
+          maximumCharacters,
+        };
+      })
+    );
+  }
+
+  /** Returns the first class-validator message (incl. nested children), or ''. */
+  private firstValidationError(errors: any[]): string {
+    for (const e of errors || []) {
+      if (e?.constraints) {
+        return Object.values(e.constraints as Record<string, string>)[0] || '';
+      }
+      const child = e?.children?.length
+        ? this.firstValidationError(e.children)
+        : '';
+      if (child) {
+        return child;
+      }
+    }
+    return '';
+  }
+
+  // A schedule-type save targeting an already-PUBLISHED post republishes it to
+  // the platform: require the explicit `republish` opt-in instead. The message
+  // doubles as the confirmation dialog for API/MCP automation.
+  private guardAgainstRepublish(
+    post: { state: State; publishDate: Date; integration?: { providerIdentifier: string } } | null,
+    source: 'createPost' | 'changeDate'
+  ) {
+    if (post?.state !== 'PUBLISHED') {
+      return;
+    }
+
+    const howToUpdate =
+      source === 'createPost' ? `use type 'update'` : `use action 'update'`;
+
+    throw new BadRequestException(
+      `This post was already published on ${dayjs
+        .utc(post.publishDate)
+        .format('YYYY-MM-DD HH:mm')} UTC. Saving it this way would publish it again to ${
+        post.integration?.providerIdentifier || 'the channel'
+      }. To edit without republishing, ${howToUpdate}. To intentionally publish again, pass republish: true.`
+    );
+  }
+
+  async createPost(
+    orgId: string,
+    body: CreatePostDto,
+    creationMethod: CreationMethod,
+    keepGroup = false
+  ): Promise<any[]> {
     const postList = [];
     for (const post of body.posts) {
+      if (
+        (body.type === 'schedule' || body.type === 'now') &&
+        !body.republish &&
+        post.value?.[0]?.id
+      ) {
+        this.guardAgainstRepublish(
+          await this._postRepository.getPostById(post.value[0].id, orgId),
+          'createPost'
+        );
+      }
+      const provider = this._integrationManager.getSocialIntegration(
+        (post.settings as any)?.__type
+      );
+      const removeLinks = !!provider?.stripLinks?.();
+
       const messages = (post.value || []).map((p) => p.content);
-      const updateContent = !body.shortLink
-        ? messages
-        : await this._shortLinkService.convertTextToShortLinks(orgId, messages);
+      // No point shortlinking links on platforms that strip them out anyway
+      const updateContent =
+        !body.shortLink || removeLinks
+          ? messages
+          : await this._shortLinkService.convertTextToShortLinks(
+              orgId,
+              messages
+            );
 
       post.value = (post.value || []).map((p, i) => ({
         ...p,
-        content: updateContent[i],
+        content: removeLinks ? stripLinks(updateContent[i]) : updateContent[i],
       }));
 
       const { posts } = await this._postRepository.createOrUpdatePost(
@@ -620,7 +950,9 @@ export class PostsService {
         body.type === 'now' ? dayjs().format('YYYY-MM-DDTHH:mm:00') : body.date,
         post,
         body.tags,
-        body.inter
+        creationMethod,
+        body.inter,
+        keepGroup
       );
 
       if (!posts?.length) {
@@ -646,6 +978,153 @@ export class PostsService {
     return postList;
   }
 
+  // Update ONLY the provider settings of a not-yet-published post (scheduled or
+  // draft). The passed keys are merged into the existing settings; content and
+  // publish date stay as they are, so the running publish workflow is left
+  // untouched (type "update"). Shared by the agent/MCP tool and the public API
+  // PUT /posts/:id/settings so both go through one path.
+  async updatePostSettings(
+    orgId: string,
+    postId: string,
+    settings: Record<string, any>,
+    creationMethod: CreationMethod
+  ): Promise<{ postId: string; publishDate: string }> {
+    // Ordered as post -> comments, root includes integration and tags.
+    const ordered = await this.getPostsRecursively(postId, true, orgId, true);
+
+    const [root] = ordered;
+    if (!root) {
+      throw new NotFoundException('Post not found');
+    }
+
+    if (root.parentPostId) {
+      throw new BadRequestException(
+        'This id belongs to a comment, pass the id of the main post'
+      );
+    }
+
+    if (root.state !== 'QUEUE' && root.state !== 'DRAFT') {
+      throw new BadRequestException(
+        'Only scheduled posts that were not published yet (or drafts) can be updated'
+      );
+    }
+
+    if (
+      root.state === 'QUEUE' &&
+      dayjs.utc(root.publishDate).isBefore(dayjs.utc())
+    ) {
+      throw new BadRequestException(
+        'The publish time of this post already passed, it cannot be updated'
+      );
+    }
+
+    const integration = (root as any).integration;
+
+    let existingSettings: Record<string, any>;
+    try {
+      existingSettings = JSON.parse(root.settings || '{}');
+    } catch (err) {
+      existingSettings = {};
+    }
+
+    // Merge: only the passed keys change, everything else stays.
+    const mergedSettings = {
+      ...existingSettings,
+      ...(settings || {}),
+      __type: integration.providerIdentifier,
+    };
+
+    // Keep the existing content/ids so the posts are updated in place (the
+    // workflow identity is preserved) - only the settings differ.
+    const value = ordered.map((p) => {
+      let image = [];
+      try {
+        image = JSON.parse(p.image || '[]');
+      } catch (err) {}
+      return {
+        id: p.id,
+        content: p.content,
+        delay: p.delay || 0,
+        image,
+      };
+    });
+
+    // Same server-side validation as the dashboard / public create route.
+    const [validation] = await this.validatePosts(orgId, [
+      {
+        integration: { id: integration.id },
+        settings: mergedSettings,
+        value: value.map((p) => ({ content: p.content, image: p.image })),
+      },
+    ]);
+
+    if (validation.emptyContent) {
+      throw new BadRequestException(
+        `${validation.name}: Your post should have at least one character or one image.`
+      );
+    }
+
+    if (root.state !== 'DRAFT') {
+      if (!validation.valid) {
+        throw new BadRequestException(
+          `${validation.name}: ${
+            validation.settingsError || 'Please fix your settings'
+          }`
+        );
+      }
+
+      if (validation.errors !== true) {
+        throw new BadRequestException(
+          `${validation.name}: ${validation.errors}`
+        );
+      }
+
+      if (validation.tooLong) {
+        throw new BadRequestException(
+          `${validation.name}: The maximum characters is ${validation.maximumCharacters}`
+        );
+      }
+    }
+
+    const date = dayjs.utc(root.publishDate).format('YYYY-MM-DDTHH:mm:ss');
+
+    const [output] = await this.createPost(
+      orgId,
+      {
+        date,
+        // Settings-only update: keep the current state and leave the running
+        // publish workflow alone.
+        type: 'update',
+        shortLink: false,
+        tags: ((root as any).tags || []).map((t: any) => ({
+          value: t.tag.name,
+          label: t.tag.name,
+        })),
+        posts: [
+          {
+            integration,
+            group: root.group,
+            settings: mergedSettings,
+            value,
+          },
+        ],
+      } as any,
+      creationMethod,
+      // Keep the group stable: a client may have the calendar open while the
+      // settings are updated out of band, and the calendar links posts by group.
+      true
+    );
+
+    if (!output) {
+      throw new BadRequestException('Failed to update the post');
+    }
+
+    return {
+      postId: output.postId,
+      publishDate: date,
+    };
+  }
+
   async separatePosts(content: string, len: number) {
     return this._openaiService.separatePosts(content, len);
   }
@@ -654,13 +1133,43 @@ export class PostsService {
     return this._postRepository.changeState(id, state, err, body);
   }
 
+  async changePostStatus(
+    orgId: string,
+    id: string,
+    status: 'draft' | 'schedule'
+  ) {
+    const getPostById = await this._postRepository.getPostById(id, orgId);
+    if (!getPostById) {
+      throw new BadRequestException('Post not found');
+    }
+
+    const state: State = status === 'draft' ? 'DRAFT' : 'QUEUE';
+    await this._postRepository.changeState(id, state);
+
+    try {
+      await this.startWorkflow(
+        getPostById.integration.providerIdentifier.split('-')[0].toLowerCase(),
+        getPostById.id,
+        orgId,
+        state
+      );
+    } catch (err) {}
+
+    return { id, state };
+  }
+
   async changeDate(
     orgId: string,
     id: string,
     date: string,
-    action: 'schedule' | 'update' = 'schedule'
+    action: 'schedule' | 'update' = 'schedule',
+    republish = false
   ) {
     const getPostById = await this._postRepository.getPostById(id, orgId);
+
+    if (action === 'schedule' && !republish) {
+      this.guardAgainstRepublish(getPostById, 'changeDate');
+    }
 
     // schedule: Set status to QUEUE and change date (reschedule the post)
     // update: Just change the date without changing the status
@@ -675,7 +1184,9 @@ export class PostsService {
     if (action === 'schedule') {
       try {
         await this.startWorkflow(
-          getPostById.integration.providerIdentifier.split('-')[0].toLowerCase(),
+          getPostById.integration.providerIdentifier
+            .split('-')[0]
+            .toLowerCase(),
           getPostById.id,
           orgId,
           getPostById.state === 'DRAFT' ? 'DRAFT' : 'QUEUE'
@@ -726,43 +1237,47 @@ export class PostsService {
         const group = makeId(10);
         const randomDate = findTime();
 
-        await this.createPost(orgId, {
-          type: 'draft',
-          date: randomDate,
-          order: '',
-          shortLink: false,
-          tags: [],
-          posts: [
-            {
-              group,
-              integration: {
-                id: integration.id,
-              },
-              settings: {
-                __type: integration.providerIdentifier as any,
-                title: '',
-                tags: [],
-                subreddit: [],
-              },
-              value: [
-                ...toPost.list.map((l) => ({
-                  id: '',
-                  content: l.post,
-                  delay: 0,
-                  image: [],
-                })),
-                {
-                  id: '',
-                  delay: 0,
-                  content: `Check out the full story here:\n${
-                    body.postId || body.url
-                  }`,
-                  image: [],
+        await this.createPost(
+          orgId,
+          {
+            type: 'draft',
+            date: randomDate,
+            order: '',
+            shortLink: false,
+            tags: [],
+            posts: [
+              {
+                group,
+                integration: {
+                  id: integration.id,
                 },
-              ],
-            },
-          ],
-        });
+                settings: {
+                  __type: integration.providerIdentifier as any,
+                  title: '',
+                  tags: [],
+                  subreddit: [],
+                },
+                value: [
+                  ...toPost.list.map((l) => ({
+                    id: '',
+                    content: l.post,
+                    delay: 0,
+                    image: [],
+                  })),
+                  {
+                    id: '',
+                    delay: 0,
+                    content: `Check out the full story here:\n${
+                      body.postId || body.url
+                    }`,
+                    image: [],
+                  },
+                ],
+              },
+            ],
+          },
+          'WEB'
+        );
       }
     }
   }
