@@ -56,7 +56,7 @@ const OrganizationNameComponent = () => {
     toaster.show(t('settings_updated', 'Settings updated'), 'success');
   }, [name, mutate, toaster, t]);
 
-  if (isLoading || user?.role === 'USER') {
+  if (isLoading || user?.role !== 'SUPERADMIN') {
     return null;
   }
 
