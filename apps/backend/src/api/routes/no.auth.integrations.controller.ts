@@ -6,6 +6,7 @@ import {
   Param,
   Post,
   UseFilters,
+  UseGuards,
 } from '@nestjs/common';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import { ConnectIntegrationDto } from '@gitroom/nestjs-libraries/dtos/integrations/connect.integration.dto';
@@ -13,6 +14,7 @@ import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integ
 import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
 import { CheckPolicies } from '@gitroom/backend/services/auth/permissions/permissions.ability';
 import { ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { NotEnoughScopesFilter } from '@gitroom/nestjs-libraries/integrations/integration.missing.scopes';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import { AuthTokenDetails } from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
@@ -24,6 +26,7 @@ import {
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
 import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service';
 import { getSsrfSafeDispatcher } from '@gitroom/nestjs-libraries/dtos/webhooks/ssrf.safe.dispatcher';
+import { ThrottlerRealIpGuard } from '@gitroom/nestjs-libraries/throttler/throttler.provider';
 
 @ApiTags('Integrations')
 @Controller('/integrations')
@@ -41,6 +44,8 @@ export class NoAuthIntegrationsController {
   }
 
   @Post('/social-connect/:integration')
+  @UseGuards(ThrottlerRealIpGuard)
+  @Throttle({ default: { limit: 120, ttl: 3600000 } })
   @CheckPolicies([AuthorizationActions.Create, Sections.CHANNEL])
   @UseFilters(new NotEnoughScopesFilter())
   async connectSocialMedia(
@@ -357,6 +362,8 @@ export class NoAuthIntegrationsController {
   }
 
   @Post('/public/provider/:id/connect')
+  @UseGuards(ThrottlerRealIpGuard)
+  @Throttle({ default: { limit: 120, ttl: 3600000 } })
   async saveProviderPage(@Param('id') id: string, @Body() body: any) {
     if (!body.state) {
       throw new Error('Invalid state');

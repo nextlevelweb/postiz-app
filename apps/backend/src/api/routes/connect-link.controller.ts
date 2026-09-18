@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { randomBytes } from 'crypto';
 import dayjs from 'dayjs';
 
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
@@ -158,8 +159,41 @@ export class ConnectLinkController {
     const integrationProvider =
       this.assertConnectableProvider(integration);
 
-    const { codeVerifier, state, url } =
+    const generated =
       await integrationProvider.generateAuthUrl(undefined);
+
+    const { codeVerifier } = generated;
+    let { state, url } = generated;
+
+    /*
+     * Most upstream providers generate short OAuth state values with
+     * Math.random(). For public connect links we replace that state with
+     * 256 bits of cryptographically secure randomness before sending the
+     * customer to the provider.
+     *
+     * The provider-specific codeVerifier is deliberately preserved. This is
+     * important for PKCE providers and providers such as TikTok that reuse
+     * their generated value during the token exchange.
+     *
+     * X uses OAuth 1.0 and its callback correlation value is the provider-
+     * issued oauth_token itself, so it must not be replaced here.
+     */
+    if (integration !== 'x') {
+      const secureState = randomBytes(32).toString('base64url');
+
+      try {
+        const authorizationUrl = new URL(url);
+        authorizationUrl.searchParams.set('state', secureState);
+
+        url = authorizationUrl.toString();
+        state = secureState;
+      } catch {
+        throw new HttpException(
+          { msg: 'This integration does not expose a supported OAuth authorization URL' },
+          400
+        );
+      }
+    }
 
     /*
      * This is the bridge into Postiz' existing OAuth callback machinery.

@@ -55,9 +55,13 @@ Security properties include:
 - connect tokens have an explicit `connect-link` purpose;
 - links expire;
 - OAuth state is bound server-side to the intended organization through Redis;
+- supported OAuth connect-link flows use a fresh cryptographically secure state value before redirecting to the provider, independent of the provider's upstream state generator;
+- X remains on its OAuth 1.0 provider-issued request token for callback correlation rather than replacing that token with an OAuth2-style state value;
 - integrations created through the flow are stored directly in that organization;
 - public connect-link users do not receive an authenticated Postiz dashboard session;
-- organization OAuth state is retained only as long as required for multi-step provider selection.
+- public connect-link entry points and callback endpoints are rate-limited per client IP;
+- organization OAuth state is retained only as long as required for multi-step provider selection;
+- multi-step OAuth state is additionally bound to the exact temporary integration being configured.
 
 The generic connect-link flow supports browser-based OAuth providers.
 
