@@ -1,11 +1,19 @@
-import { Controller, Get, HttpException, Param } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  HttpException,
+  Param,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import dayjs from 'dayjs';
 
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
+import { ThrottlerRealIpGuard } from '@gitroom/nestjs-libraries/throttler/throttler.provider';
 
 type ConnectLinkPayload = {
   purpose: 'connect-link';
@@ -100,6 +108,8 @@ export class ConnectLinkController {
   }
 
   @Get('/:token/integrations')
+  @UseGuards(ThrottlerRealIpGuard)
+  @Throttle({ default: { limit: 120, ttl: 3600000 } })
   async getAvailableIntegrations(@Param('token') token: string) {
     const { orgId } = this.validateToken(token);
 
@@ -131,6 +141,8 @@ export class ConnectLinkController {
   }
 
   @Get('/:token/social/:integration')
+  @UseGuards(ThrottlerRealIpGuard)
+  @Throttle({ default: { limit: 30, ttl: 3600000 } })
   async getOAuthUrl(
     @Param('token') token: string,
     @Param('integration') integration: string
