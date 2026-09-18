@@ -1,3 +1,131 @@
+# Next Level Web Postiz Fork
+
+> **This repository is a maintained fork of [Postiz](https://github.com/gitroomhq/postiz-app) for Next Level Web's agency-managed social media infrastructure.**
+>
+> The upstream Postiz project remains the foundation of this repository. The original Postiz README and documentation are intentionally preserved below.
+>
+> This fork contains intentional product, authorization, organization-management, and customer-onboarding differences from upstream Postiz. These changes must be reviewed carefully when merging future upstream releases.
+
+## Purpose of this fork
+
+Next Level Web uses Postiz as a multi-customer agency platform.
+
+The core tenancy model is:
+
+- Each customer is represented by a separate Postiz `Organization`.
+- The Next Level Web agency account remains `SUPERADMIN` of organizations it manages.
+- Customer accounts are added as `ADMIN`.
+- Customer `ADMIN` users may manage normal team members and other `ADMIN` users.
+- Customer users cannot promote themselves or other users to `SUPERADMIN`.
+- Customer `ADMIN` users cannot rename the organization, because organization names are managed by the agency as customer records.
+- Organization provisioning is controlled by the agency `SUPERADMIN`.
+
+## Agency organization provisioning
+
+This fork adds an agency provisioning flow for creating customer organizations.
+
+Provisioning supports:
+
+- creating an organization without a customer account;
+- attaching an existing Postiz user as `ADMIN`;
+- generating a normal Postiz organization invitation when the customer does not yet have an account;
+- ensuring the agency user remains `SUPERADMIN`;
+- preventing a customer from being provisioned as `SUPERADMIN`;
+- rejecting ambiguous email addresses that match multiple Postiz identities/providers;
+- transactionally creating the organization and membership when attaching an existing customer, preventing partially provisioned organizations.
+
+Relevant implementation areas include:
+
+- `apps/backend/src/api/routes/users.controller.ts`
+- `libraries/nestjs-libraries/src/database/prisma/organizations/organization.service.ts`
+- `libraries/nestjs-libraries/src/database/prisma/organizations/organization.repository.ts`
+- `libraries/nestjs-libraries/src/dtos/organizations/provision.organization.dto.ts`
+
+## Customer social-account authorization links
+
+This fork adds temporary customer-facing connect links.
+
+An agency `SUPERADMIN` can generate a signed, expiring link for an organization. The customer can use this link to authorize supported social-media accounts without receiving a Postiz login or dashboard session.
+
+Security properties include:
+
+- the target organization must explicitly belong to the requesting user;
+- the requesting user must be `SUPERADMIN` of that target organization;
+- connect tokens are signed using the existing Postiz JWT infrastructure;
+- connect tokens have an explicit `connect-link` purpose;
+- links expire;
+- OAuth state is bound server-side to the intended organization through Redis;
+- integrations created through the flow are stored directly in that organization;
+- public connect-link users do not receive an authenticated Postiz dashboard session;
+- organization OAuth state is retained only as long as required for multi-step provider selection.
+
+The generic connect-link flow supports browser-based OAuth providers.
+
+Provider types requiring a different authorization UX are intentionally excluded, including:
+
+- Web3 providers;
+- Chrome-extension based providers;
+- providers using custom credential fields;
+- providers requiring an external or instance URL.
+
+Multi-step OAuth providers continue through Postiz's existing page/account selection flow while preserving organization isolation.
+
+Relevant implementation areas include:
+
+- `apps/backend/src/api/routes/connect-link.controller.ts`
+- `apps/backend/src/api/routes/no.auth.integrations.controller.ts`
+- `apps/frontend/src/app/(app)/connect/`
+- `apps/frontend/src/components/connect/`
+- `libraries/nestjs-libraries/src/dtos/integrations/create-connect-link.dto.ts`
+
+## Organization ownership restrictions
+
+In this fork, renaming an organization is deliberately restricted to the organization's `SUPERADMIN`.
+
+Customer `ADMIN` users may manage team membership, including adding `ADMIN` and `USER` members, but they cannot rename the agency-managed customer organization.
+
+This restriction is enforced server-side. The corresponding organization-name controls are also hidden in the frontend for non-`SUPERADMIN` users.
+
+The backend authorization check is authoritative; the frontend restriction is only a user-interface restriction.
+
+## Important: merging upstream Postiz
+
+**Do not blindly resolve upstream merge conflicts by accepting the upstream version of agency-related files.**
+
+The agency ownership model, provisioning logic, customer role restrictions, connect-link authorization flow and organization-name restriction are intentional fork behavior.
+
+Extra care is required when upstream changes:
+
+- authentication middleware;
+- organization membership and roles;
+- organization creation;
+- team-member invitations;
+- organization settings;
+- social integration OAuth;
+- OAuth callback state handling;
+- Redis OAuth state keys;
+- integration creation/update logic;
+- public integration routes;
+- frontend organization switching;
+- frontend integration continuation and page selection.
+
+After merging upstream changes, verify at minimum that:
+
+1. customers cannot obtain `SUPERADMIN` through agency provisioning;
+2. customer `ADMIN` users cannot rename agency-managed organizations;
+3. connect links cannot target organizations not owned by the requesting agency user;
+4. OAuth state remains bound to the intended organization;
+5. multi-step provider selection cannot access an integration belonging to another organization;
+6. connect-link users do not receive an authenticated Postiz session;
+7. organization OAuth state is cleaned up after successful authorization;
+8. backend and frontend production builds succeed.
+
+---
+
+# Upstream Postiz documentation
+
+The content below is the original Postiz project documentation and is intentionally retained for reference.
+
 <p align="center">
   <a href="https://postiz.com/" target="_blank">
   <picture>

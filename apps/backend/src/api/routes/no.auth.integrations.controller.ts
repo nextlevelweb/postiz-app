@@ -309,6 +309,14 @@ export class NoAuthIntegrationsController {
       await ioRedis.del(`redirect:${body.state}`);
     }
 
+    /*
+     * Keep organization:<state> alive only while a two-step provider still
+     * needs page/account selection. One-step OAuth flows are complete here.
+     */
+    if (!createUpdate.inBetweenSteps) {
+      await ioRedis.del(`organization:${body.state}`);
+    }
+
     const extensionToken = integrationProvider.isChromeExtension
       ? AuthService.signJWT({
           integrationId: createUpdate.id,
@@ -350,7 +358,24 @@ export class NoAuthIntegrationsController {
 
     const org = await this._organizationService.getOrgById(organization);
 
-    return this._integrationService.saveProviderPage(org.id, id, body);
+    if (!org || org.deletedAt) {
+      throw new HttpException('Organization not found', 404);
+    }
+
+    /*
+     * Keep the organization binding until the selected page/account has been
+     * stored successfully. If saving fails, the customer can retry while the
+     * OAuth state is still valid.
+     */
+    const saved = await this._integrationService.saveProviderPage(
+      org.id,
+      id,
+      body
+    );
+
+    await ioRedis.del(`organization:${body.state}`);
+
+    return saved;
   }
 
   @Post('/extension-refresh')
