@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   HttpException,
+  Param,
   Post,
   Query,
   Req,
@@ -10,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { GetUserFromRequest } from '@gitroom/nestjs-libraries/user/user.from.request';
 import { sign } from 'jsonwebtoken';
+import dayjs from 'dayjs';
 import { Organization, User } from '@prisma/client';
 import { SubscriptionService } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/subscription.service';
 import { GetOrgFromRequest } from '@gitroom/nestjs-libraries/user/org.from.request';
@@ -24,6 +26,8 @@ import { pricing } from '@gitroom/nestjs-libraries/database/prisma/subscriptions
 import { ApiTags } from '@nestjs/swagger';
 import { UsersService } from '@gitroom/nestjs-libraries/database/prisma/users/users.service';
 import { CreateOrganizationDto } from '@gitroom/nestjs-libraries/dtos/organizations/create.organization.dto';
+import { ProvisionOrganizationDto } from '@gitroom/nestjs-libraries/dtos/organizations/provision.organization.dto';
+import { CreateConnectLinkDto } from '@gitroom/nestjs-libraries/dtos/integrations/create-connect-link.dto';
 import { UserDetailDto } from '@gitroom/nestjs-libraries/dtos/users/user.details.dto';
 import { EmailNotificationsDto } from '@gitroom/nestjs-libraries/dtos/users/email-notifications.dto';
 import { HttpForbiddenException } from '@gitroom/nestjs-libraries/services/exception.filter';
@@ -316,6 +320,64 @@ export class UsersController {
     }
 
     return this._orgService.createOrgForUser(user.id, body);
+  }
+
+  @Post('/organizations/provision')
+  provisionOrganization(
+    @GetUserFromRequest() user: User,
+    @GetOrgFromRequest() organization: Organization,
+    @Body() body: ProvisionOrganizationDto
+  ) {
+    // @ts-ignore - users relation is populated by AuthMiddleware
+    if (organization?.users?.[0]?.role !== 'SUPERADMIN') {
+      throw new HttpForbiddenException();
+    }
+
+    return this._orgService.provisionOrganization(user, body);
+  }
+
+  /**
+   * Create a temporary customer-facing authorization link for an organization
+   * owned by the current user.
+   *
+   * The target organization is checked explicitly. Being SUPERADMIN in one
+   * organization must never grant the ability to create links for another.
+   */
+  @Post('/organizations/:id/connect-link')
+  async createOrganizationConnectLink(
+    @GetUserFromRequest() user: User,
+    @Param('id') organizationId: string,
+    @Body() body: CreateConnectLinkDto
+  ) {
+    const organizations = await this._orgService.getOrgsByUserId(user.id);
+    const targetOrganization = organizations.find(
+      (candidate) =>
+        candidate.id === organizationId &&
+        !candidate.users?.[0]?.disabled
+    );
+
+    if (
+      !targetOrganization ||
+      targetOrganization.users?.[0]?.role !== 'SUPERADMIN'
+    ) {
+      throw new HttpForbiddenException();
+    }
+
+    const expiresInHours = body.expiresInHours ?? 24;
+    const expiresAt = dayjs().add(expiresInHours, 'hours').toISOString();
+
+    const token = AuthChecker.signJWT({
+      purpose: 'connect-link',
+      orgId: organizationId,
+      linkId: makeId(16),
+      expiresAt,
+    });
+
+    return {
+      token,
+      url: `${process.env.FRONTEND_URL}/connect/${token}`,
+      expiresAt,
+    };
   }
 
   @Post('/change-org')
