@@ -1,4 +1,7 @@
-import { PrismaRepository } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
+import {
+  PrismaRepository,
+  PrismaTransaction,
+} from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { Role, ShortLinkPreference, SubscriptionTier } from '@prisma/client';
 import { Injectable } from '@nestjs/common';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
@@ -10,7 +13,8 @@ export class OrganizationRepository {
   constructor(
     private _organization: PrismaRepository<'organization'>,
     private _userOrg: PrismaRepository<'userOrganization'>,
-    private _user: PrismaRepository<'user'>
+    private _user: PrismaRepository<'user'>,
+    private _transaction: PrismaTransaction
   ) {}
 
   createMaxUser(id: string, name: string, saasName: string, email: string) {
@@ -540,6 +544,61 @@ export class OrganizationRepository {
       select: {
         id: true,
       },
+    });
+  }
+
+  /**
+   * Create a managed organization for an agency owner and attach an existing
+   * customer as ADMIN atomically.
+   *
+   * The owner is always SUPERADMIN. The customer role is deliberately fixed
+   * to ADMIN and cannot be elevated through this provisioning path.
+   */
+  createProvisionedOrgForExistingCustomer(
+    ownerUserId: string,
+    customerUserId: string,
+    name: string,
+    inviteId: string
+  ) {
+    const apiKey = AuthService.fixedEncryption(makeId(20));
+
+    return this._transaction.model.$transaction(async (tx) => {
+      const organization = await tx.organization.create({
+        data: {
+          name,
+          apiKey,
+          allowTrial: false,
+          isTrailing: false,
+          users: {
+            create: {
+              role: Role.SUPERADMIN,
+              userId: ownerUserId,
+            },
+          },
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      await tx.userOrganization.create({
+        data: {
+          role: Role.ADMIN,
+          userId: customerUserId,
+          organizationId: organization.id,
+        },
+      });
+
+      await tx.user.update({
+        where: {
+          id: customerUserId,
+        },
+        data: {
+          inviteId,
+        },
+      });
+
+      return organization;
     });
   }
 

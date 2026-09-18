@@ -8,6 +8,7 @@ import { pricing } from '@gitroom/nestjs-libraries/database/prisma/subscriptions
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import dayjs from 'dayjs';
 import { CreateOrganizationDto } from '@gitroom/nestjs-libraries/dtos/organizations/create.organization.dto';
+import { ProvisionOrganizationDto } from '@gitroom/nestjs-libraries/dtos/organizations/provision.organization.dto';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import { Organization, ShortLinkPreference, User } from '@prisma/client';
 import { AutopostService } from '@gitroom/nestjs-libraries/database/prisma/autopost/autopost.service';
@@ -206,6 +207,129 @@ export class OrganizationService {
       userId,
       body.name?.trim() || 'My Organization'
     );
+  }
+
+  async provisionOrganization(
+    owner: User,
+    body: ProvisionOrganizationDto
+  ) {
+    const name = body.name.trim();
+    const customerEmail = body.customerEmail?.trim().toLowerCase();
+
+    if (!name) {
+      throw new HttpException('Organization name is required', 400);
+    }
+
+    if (
+      customerEmail &&
+      customerEmail === owner.email.trim().toLowerCase()
+    ) {
+      throw new HttpException(
+        'The customer email cannot be the provisioning user',
+        400
+      );
+    }
+
+    /*
+     * Resolve the customer before creating the organization.
+     *
+     * This prevents creating a half-provisioned organization when an email
+     * belongs to multiple Postiz identities/providers.
+     */
+    const customerUsers = customerEmail
+      ? await this._organizationRepository.getUsersByEmail(customerEmail)
+      : [];
+
+    if (customerUsers.length > 1) {
+      throw new HttpException(
+        'Multiple Postiz accounts exist for this email',
+        400
+      );
+    }
+
+    /*
+     * No customer requested: create a normal managed organization owned by
+     * the agency SUPERADMIN.
+     */
+    if (!customerEmail) {
+      const organization =
+        await this._organizationRepository.createOrgForUser(owner.id, name);
+
+      return {
+        organizationId: organization.id,
+        ownerUserId: owner.id,
+        ownerRole: 'SUPERADMIN' as const,
+        customer: null,
+      };
+    }
+
+    /*
+     * Existing Postiz customer:
+     *
+     * Create the organization, agency SUPERADMIN membership and customer
+     * ADMIN membership in one database transaction. This prevents orphaned
+     * half-provisioned organizations if membership creation fails.
+     */
+    if (customerUsers.length === 1) {
+      const [customer] = customerUsers;
+      const inviteId = makeId(5);
+
+      const organization =
+        await this._organizationRepository.createProvisionedOrgForExistingCustomer(
+          owner.id,
+          customer.id,
+          name,
+          inviteId
+        );
+
+      return {
+        organizationId: organization.id,
+        ownerUserId: owner.id,
+        ownerRole: 'SUPERADMIN' as const,
+        customer: {
+          email: customerEmail,
+          userId: customer.id,
+          role: 'ADMIN' as const,
+          status: 'added' as const,
+        },
+      };
+    }
+
+    /*
+     * No Postiz account exists yet.
+     *
+     * First create the managed organization with the agency as SUPERADMIN.
+     * Then reuse Postiz' native signed organization-invite format. The invite
+     * itself does not create database membership until the customer accepts
+     * it, so there is no partial membership state to roll back here.
+     */
+    const organization =
+      await this._organizationRepository.createOrgForUser(owner.id, name);
+
+    const invitation = await this.inviteTeamMember(
+      {
+        id: organization.id,
+        name,
+      } as Organization,
+      owner,
+      {
+        email: customerEmail,
+        role: 'ADMIN',
+        sendEmail: false,
+      }
+    );
+
+    return {
+      organizationId: organization.id,
+      ownerUserId: owner.id,
+      ownerRole: 'SUPERADMIN' as const,
+      customer: {
+        email: customerEmail,
+        role: 'ADMIN' as const,
+        status: 'invite_required' as const,
+        inviteUrl: invitation.url,
+      },
+    };
   }
 
   getOrganizationName(orgId: string) {

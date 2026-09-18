@@ -101,6 +101,13 @@ export class SettingsController {
     @GetOrgFromRequest() org: Organization,
     @Body() body: OrganizationNameDto
   ) {
+    // Organization names are managed by the owning SUPERADMIN.
+    // Customer ADMIN users may manage the team, but cannot rename the client.
+    // @ts-ignore - users relation is populated by AuthMiddleware
+    if (org?.users?.[0]?.role !== 'SUPERADMIN') {
+      throw new HttpException('Only the organization owner can rename it', 403);
+    }
+
     return this._organizationService.updateOrganizationName(org.id, body.name);
   }
 }
