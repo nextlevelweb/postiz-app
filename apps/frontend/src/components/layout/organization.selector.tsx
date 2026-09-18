@@ -170,7 +170,7 @@ export const OrganizationSelector: FC<{ asOpenSelect?: boolean }> = ({
                   </div>
                 )
               )}
-              {!asOpenSelect && (
+              {!asOpenSelect && user?.role === 'SUPERADMIN' && (
                 <div onClick={createOrg} className="whitespace-nowrap">
                   {t('create_new_organization', 'Create New Organization')} +
                 </div>
