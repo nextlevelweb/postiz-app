@@ -307,8 +307,14 @@ export class UsersController {
   @Post('/organizations')
   createOrg(
     @GetUserFromRequest() user: User,
+    @GetOrgFromRequest() organization: Organization,
     @Body() body: CreateOrganizationDto
   ) {
+    // @ts-ignore - users relation is populated by AuthMiddleware
+    if (organization?.users?.[0]?.role !== 'SUPERADMIN') {
+      throw new HttpForbiddenException();
+    }
+
     return this._orgService.createOrgForUser(user.id, body);
   }
 
