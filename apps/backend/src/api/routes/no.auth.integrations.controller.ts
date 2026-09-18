@@ -311,9 +311,20 @@ export class NoAuthIntegrationsController {
 
     /*
      * Keep organization:<state> alive only while a two-step provider still
-     * needs page/account selection. One-step OAuth flows are complete here.
+     * needs page/account selection. For two-step flows, also bind the OAuth
+     * state to the exact temporary integration created by this callback.
+     *
+     * This prevents a public page-selection request from reusing a valid state
+     * with a different in-between-steps integration from the same organization.
      */
-    if (!createUpdate.inBetweenSteps) {
+    if (createUpdate.inBetweenSteps) {
+      await ioRedis.set(
+        `integration:${body.state}`,
+        createUpdate.id,
+        'EX',
+        3600
+      );
+    } else {
       await ioRedis.del(`organization:${body.state}`);
     }
 
@@ -356,6 +367,14 @@ export class NoAuthIntegrationsController {
       throw new Error('Organization not found');
     }
 
+    const pendingIntegration = await ioRedis.get(
+      `integration:${body.state}`
+    );
+
+    if (!pendingIntegration || pendingIntegration !== id) {
+      throw new HttpException('Invalid integration state', 400);
+    }
+
     const org = await this._organizationService.getOrgById(organization);
 
     if (!org || org.deletedAt) {
@@ -363,9 +382,9 @@ export class NoAuthIntegrationsController {
     }
 
     /*
-     * Keep the organization binding until the selected page/account has been
-     * stored successfully. If saving fails, the customer can retry while the
-     * OAuth state is still valid.
+     * Keep both bindings until the selected page/account has been stored
+     * successfully. If saving fails, the customer can retry while the OAuth
+     * state is still valid.
      */
     const saved = await this._integrationService.saveProviderPage(
       org.id,
@@ -374,6 +393,7 @@ export class NoAuthIntegrationsController {
     );
 
     await ioRedis.del(`organization:${body.state}`);
+    await ioRedis.del(`integration:${body.state}`);
 
     return saved;
   }
