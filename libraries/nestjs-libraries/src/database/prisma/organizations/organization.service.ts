@@ -19,6 +19,27 @@ export class OrganizationService {
     private _organizationRepository: OrganizationRepository,
     private _notificationsService: NotificationService
   ) {}
+  async createInvitedUser(
+    body: Omit<CreateOrgUserDto, 'providerToken'> & { providerId?: string },
+    ip: string,
+    userAgent: string,
+    orgId: string,
+    role: 'USER' | 'ADMIN',
+    inviteId: string,
+    expectedEmail: string
+  ) {
+    return this._organizationRepository.createInvitedUser(
+      body,
+      this._notificationsService.hasEmailProvider(),
+      ip,
+      userAgent,
+      orgId,
+      role,
+      inviteId,
+      expectedEmail
+    );
+  }
+
   async createOrgAndUser(
     body: Omit<CreateOrgUserDto, 'providerToken'> & { providerId?: string },
     ip: string,
@@ -44,9 +65,16 @@ export class OrganizationService {
     userId: string,
     id: string,
     orgId: string,
-    role: 'USER' | 'ADMIN'
+    role: 'USER' | 'ADMIN',
+    expectedEmail?: string
   ) {
-    return this._organizationRepository.addUserToOrg(userId, id, orgId, role);
+    return this._organizationRepository.addUserToOrg(
+      userId,
+      id,
+      orgId,
+      role,
+      expectedEmail
+    );
   }
 
   getOrgById(id: string) {
@@ -272,14 +300,12 @@ export class OrganizationService {
      */
     if (customerUsers.length === 1) {
       const [customer] = customerUsers;
-      const inviteId = makeId(5);
 
       const organization =
         await this._organizationRepository.createProvisionedOrgForExistingCustomer(
           owner.id,
           customer.id,
-          name,
-          inviteId
+          name
         );
 
       return {

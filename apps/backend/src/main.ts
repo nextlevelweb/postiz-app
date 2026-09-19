@@ -29,6 +29,7 @@ async function start() {
         'Content-Type',
         'Authorization',
         'auth',
+        'org',
         'showorg',
         'impersonate',
         'x-copilotkit-runtime-client-gql-version',

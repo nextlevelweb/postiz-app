@@ -37,6 +37,14 @@ export class AuthController {
     private _emailService: EmailService
   ) {}
 
+  @Get('/invite-info')
+  async inviteInfo(@Req() req: Request) {
+    const token =
+      req?.cookies?.org ||
+      (typeof req.headers.org === 'string' ? req.headers.org : undefined);
+    return (await this._authService.getInviteInfo(token)) || {};
+  }
+
   @Get('/can-register')
   async canRegister() {
     return {
@@ -54,7 +62,8 @@ export class AuthController {
   ) {
     try {
       const getOrgFromCookie = this._authService.getOrgFromCookie(
-        req?.cookies?.org
+        req?.cookies?.org ||
+          (typeof req.headers.org === 'string' ? req.headers.org : undefined)
       );
 
       const { jwt, addedOrg } = await this._authService.routeAuth(
@@ -128,7 +137,8 @@ export class AuthController {
   ) {
     try {
       const getOrgFromCookie = this._authService.getOrgFromCookie(
-        req?.cookies?.org
+        req?.cookies?.org ||
+          (typeof req.headers.org === 'string' ? req.headers.org : undefined)
       );
 
       const { jwt, addedOrg } = await this._authService.routeAuth(

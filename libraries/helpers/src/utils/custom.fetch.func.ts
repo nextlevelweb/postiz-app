@@ -35,6 +35,16 @@ export const customFetch = (
             .find((p) => p.includes('showorg='))
             ?.split('=')[1];
 
+    const authNonSecuredInviteOrg =
+      typeof document === 'undefined'
+        ? null
+        : document.cookie
+            .split(';')
+            .find((p) => p.trim().startsWith('org='))
+            ?.split('=')
+            .slice(1)
+            .join('=');
+
     const authNonSecuredImpersonate =
       typeof document === 'undefined'
         ? null
@@ -62,6 +72,9 @@ export const customFetch = (
           ? { auth }
           : authNonSecuredCookie
           ? { auth: authNonSecuredCookie }
+          : {}),
+        ...(authNonSecuredInviteOrg
+          ? { org: authNonSecuredInviteOrg }
           : {}),
         ...(authNonSecuredImpersonate
           ? { impersonate: authNonSecuredImpersonate }
