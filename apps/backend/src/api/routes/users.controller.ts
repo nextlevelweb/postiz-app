@@ -293,7 +293,8 @@ export class UsersController {
       user.id,
       getOrgFromCookie.id,
       getOrgFromCookie.orgId,
-      getOrgFromCookie.role
+      getOrgFromCookie.role,
+      getOrgFromCookie.email
     );
 
     response.status(200).json({

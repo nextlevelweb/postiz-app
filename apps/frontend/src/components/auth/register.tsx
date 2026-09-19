@@ -118,6 +118,21 @@ export function RegisterAfter({
     },
   });
   const fetchData = useFetch();
+  const [inviteInfo, setInviteInfo] = useState<{ email: string; company: string } | null>(null);
+
+  useEffect(() => {
+    void fetchData('/auth/invite-info')
+      .then(async (response) => (response.ok ? response.json() : {}))
+      .then((info) => {
+        if (info?.email && info?.company) {
+          setInviteInfo(info);
+          form.setValue('email', info.email);
+          form.setValue('company', info.company);
+        }
+      })
+      .catch(() => {});
+  }, [fetchData, form]);
+
   const onSubmit: SubmitHandler<Inputs> = async (data) => {
     setLoading(true);
     await fetchData('/auth/register', {
@@ -200,6 +215,7 @@ export function RegisterAfter({
                       translationKey="label_email"
                       {...form.register('email')}
                       type="email"
+                      readOnly={!!inviteInfo}
                       placeholder={t('email_address', 'Email Address')}
                     />
                     <Input
@@ -218,6 +234,7 @@ export function RegisterAfter({
                   {...form.register('company')}
                   autoComplete="off"
                   type="text"
+                  readOnly={!!inviteInfo}
                   placeholder={t('label_company', 'Company')}
                 />
               </div>
