@@ -1,66 +1,14 @@
 'use client';
 
-import React, { FC, useCallback, useMemo, useState } from 'react';
+import React, { FC, useCallback, useMemo } from 'react';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import useSWR from 'swr';
 import { useUser } from '@gitroom/frontend/components/layout/user.context';
 import clsx from 'clsx';
 import { useModals } from '@gitroom/frontend/components/layout/new-modal';
-import { Input } from '@gitroom/react/form/input';
-import { Button } from '@gitroom/react/form/button';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
-import { useToaster } from '@gitroom/react/toaster/toaster';
+import { ProvisionOrganizationForm } from '@gitroom/frontend/components/settings/agency.component';
 
-export const CreateOrganization = () => {
-  const t = useT();
-  const fetch = useFetch();
-  const modals = useModals();
-  const toaster = useToaster();
-  const [name, setName] = useState('');
-  const [loading, setLoading] = useState(false);
-  const create = useCallback(async () => {
-    setLoading(true);
-    try {
-      const { id } = await (
-        await fetch('/user/organizations', {
-          method: 'POST',
-          body: JSON.stringify({ name }),
-        })
-      ).json();
-      if (!id) {
-        toaster.show(
-          t('could_not_create_organization', 'Could not create organization'),
-          'warning'
-        );
-        return;
-      }
-      await fetch('/user/change-org', {
-        method: 'POST',
-        body: JSON.stringify({ id }),
-      });
-      modals.closeAll();
-      window.location.reload();
-    } finally {
-      setLoading(false);
-    }
-  }, [name]);
-  return (
-    <div className="relative flex gap-[10px] flex-col flex-1 p-[16px] pt-0">
-      <Input
-        value={name}
-        disableForm={true}
-        removeError={true}
-        onChange={(e) => setName(e.target.value)}
-        name="name"
-        label={t('organization_name', 'Organization name')}
-        placeholder={t('organization_name', 'Organization name')}
-      />
-      <Button type="button" className="mt-[18px]" onClick={create} disabled={loading}>
-        {t('create', 'Create')}
-      </Button>
-    </div>
-  );
-};
 export const OrganizationSelector: FC<{ asOpenSelect?: boolean }> = ({
   asOpenSelect,
 }) => {
@@ -103,7 +51,7 @@ export const OrganizationSelector: FC<{ asOpenSelect?: boolean }> = ({
       },
       title: t('create_new_organization', 'Create New Organization'),
       withCloseButton: true,
-      children: <CreateOrganization />,
+      children: <ProvisionOrganizationForm />,
     });
   }, [t]);
   if (isLoading) {

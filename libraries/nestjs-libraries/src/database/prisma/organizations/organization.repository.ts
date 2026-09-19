@@ -303,16 +303,73 @@ export class OrganizationRepository {
     userId: string,
     id: string,
     orgId: string,
-    role: 'USER' | 'ADMIN'
+    role: 'USER' | 'ADMIN',
+    expectedEmail?: string
   ) {
+    const user = await this._user.model.user.findUnique({
+      where: {
+        id: userId,
+      },
+      select: {
+        email: true,
+      },
+    });
+
+    if (!user) {
+      return false;
+    }
+
+    /*
+     * Organization invitations are issued to a specific email address.
+     * Never allow an authenticated account with a different email address to
+     * consume the invitation merely because it possesses the signed URL.
+     */
+    if (
+      expectedEmail &&
+      user.email.trim().toLowerCase() !== expectedEmail.trim().toLowerCase()
+    ) {
+      return false;
+    }
+
     const checkIfInviteExists = await this._user.model.user.findFirst({
       where: {
         inviteId: id,
       },
     });
 
-    if (checkIfInviteExists) {
+    if (checkIfInviteExists && checkIfInviteExists.id !== userId) {
       return false;
+    }
+
+    /*
+     * The same invite can reach this method more than once because it is
+     * handled both during authentication and by the authenticated proxy flow.
+     * Treat an existing membership as idempotent instead of allowing Prisma's
+     * userId/organizationId unique constraint to surface as a 500 error.
+     */
+    const existingMembership =
+      await this._userOrg.model.userOrganization.findUnique({
+        where: {
+          userId_organizationId: {
+            userId,
+            organizationId: orgId,
+          },
+        },
+      });
+
+    if (existingMembership) {
+      if (!checkIfInviteExists) {
+        await this._user.model.user.update({
+          where: {
+            id: userId,
+          },
+          data: {
+            inviteId: id,
+          },
+        });
+      }
+
+      return existingMembership;
     }
 
     const checkForSubscription =
@@ -351,6 +408,69 @@ export class OrganizationRepository {
     });
 
     return create;
+  }
+
+  async createInvitedUser(
+    body: Omit<CreateOrgUserDto, 'providerToken'> & { providerId?: string },
+    hasEmail: boolean,
+    ip: string,
+    userAgent: string,
+    orgId: string,
+    role: 'USER' | 'ADMIN',
+    inviteId: string,
+    expectedEmail: string
+  ) {
+    const email = body.email.trim().toLowerCase();
+
+    if (email !== expectedEmail.trim().toLowerCase()) {
+      return false;
+    }
+
+    return this._transaction.model.$transaction(async (tx) => {
+      const organization = await tx.organization.findFirst({
+        where: { id: orgId, deletedAt: null },
+        select: { id: true },
+      });
+
+      if (!organization) {
+        return false;
+      }
+
+      const usedInvite = await tx.user.findFirst({
+        where: { inviteId },
+        select: { id: true },
+      });
+
+      if (usedInvite) {
+        return false;
+      }
+
+      const user = await tx.user.create({
+        data: {
+          activated: body.provider !== 'LOCAL' || !hasEmail,
+          email,
+          password: body.password
+            ? AuthService.hashPassword(body.password)
+            : '',
+          providerName: body.provider,
+          providerId: body.providerId || '',
+          timezone: 0,
+          ip,
+          agent: userAgent,
+          inviteId,
+        },
+      });
+
+      const membership = await tx.userOrganization.create({
+        data: {
+          role,
+          userId: user.id,
+          organizationId: orgId,
+        },
+      });
+
+      return { user, membership };
+    });
   }
 
   async createOrgAndUser(
@@ -557,8 +677,7 @@ export class OrganizationRepository {
   createProvisionedOrgForExistingCustomer(
     ownerUserId: string,
     customerUserId: string,
-    name: string,
-    inviteId: string
+    name: string
   ) {
     const apiKey = AuthService.fixedEncryption(makeId(20));
 
@@ -589,14 +708,6 @@ export class OrganizationRepository {
         },
       });
 
-      await tx.user.update({
-        where: {
-          id: customerUserId,
-        },
-        data: {
-          inviteId,
-        },
-      });
 
       return organization;
     });
