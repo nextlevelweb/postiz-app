@@ -2,6 +2,8 @@ import {
   Controller,
   Get,
   HttpException,
+  Param,
+  Post,
   Query,
 } from '@nestjs/common';
 import { GetUserFromRequest } from '@gitroom/nestjs-libraries/user/user.from.request';
@@ -10,19 +12,37 @@ import { ApiTags } from '@nestjs/swagger';
 import { ErrorsService } from '@gitroom/nestjs-libraries/database/prisma/errors/errors.service';
 import { AdminStatsService } from '@gitroom/nestjs-libraries/database/prisma/admin-stats/admin-stats.service';
 import dayjs from 'dayjs';
+import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service';
 
 @ApiTags('Admin')
 @Controller('/admin')
 export class AdminController {
   constructor(
     private _errorsService: ErrorsService,
-    private _adminStatsService: AdminStatsService
+    private _adminStatsService: AdminStatsService,
+    private _organizationService: OrganizationService
   ) {}
 
   private assertSuperAdmin(user: User) {
     if (!user?.isSuperAdmin) {
       throw new HttpException('Unauthorized', 400);
     }
+  }
+
+  @Get('/organizations')
+  async listOrganizations(@GetUserFromRequest() user: User) {
+    this.assertSuperAdmin(user);
+    return this._organizationService.getAllOrganizationsForAdmin();
+  }
+
+  @Post('/organizations/:id/delete')
+  async deleteOrganization(
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string
+  ) {
+    this.assertSuperAdmin(user);
+    await this._organizationService.deleteOrganizationForAdmin(id);
+    return { success: true };
   }
 
   @Get('/errors')
