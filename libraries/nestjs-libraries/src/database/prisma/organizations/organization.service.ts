@@ -12,12 +12,14 @@ import { ProvisionOrganizationDto } from '@gitroom/nestjs-libraries/dtos/organiz
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import { Organization, ShortLinkPreference, User } from '@prisma/client';
 import { AutopostService } from '@gitroom/nestjs-libraries/database/prisma/autopost/autopost.service';
+import { IntegrationRepository } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.repository';
 
 @Injectable()
 export class OrganizationService {
   constructor(
     private _organizationRepository: OrganizationRepository,
-    private _notificationsService: NotificationService
+    private _notificationsService: NotificationService,
+    private _integrationRepository: IntegrationRepository
   ) {}
   async createInvitedUser(
     body: Omit<CreateOrgUserDto, 'providerToken'> & { providerId?: string },
@@ -95,6 +97,15 @@ export class OrganizationService {
 
   getUserOrg(id: string) {
     return this._organizationRepository.getUserOrg(id);
+  }
+
+  getAllOrganizationsForAdmin() {
+    return this._organizationRepository.getAllOrganizationsForAdmin();
+  }
+
+  async deleteOrganizationForAdmin(orgId: string) {
+    await this._integrationRepository.deleteIntegrationsForAccount(orgId);
+    return this._organizationRepository.deleteOrganization(orgId);
   }
 
   getOrgsByUserId(userId: string) {

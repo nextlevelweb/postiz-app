@@ -233,6 +233,32 @@ export class OrganizationRepository {
     });
   }
 
+  async getAllOrganizationsForAdmin() {
+    return this._organization.model.organization.findMany({
+      where: { deletedAt: null },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        name: true,
+        createdAt: true,
+        users: {
+          select: {
+            id: true,
+            role: true,
+            disabled: true,
+            user: {
+              select: {
+                id: true,
+                email: true,
+                name: true,
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
   async getOrgsByUserId(userId: string) {
     return this._organization.model.organization.findMany({
       where: {
