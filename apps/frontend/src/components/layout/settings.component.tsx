@@ -82,7 +82,7 @@ export const SettingsPopup: FC<{
     close();
   }, []);
 
-  const [tab, setTab] = useState('global_settings');
+  const [tab, setTab] = useState(() => url.get('tab') || 'global_settings');
 
   const t = useT();
   const list = useMemo(() => {

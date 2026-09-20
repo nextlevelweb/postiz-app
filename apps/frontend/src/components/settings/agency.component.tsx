@@ -11,6 +11,7 @@ import { useToaster } from '@gitroom/react/toaster/toaster';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useUser } from '@gitroom/frontend/components/layout/user.context';
 import { useModals } from '@gitroom/frontend/components/layout/new-modal';
+import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
 
 type OrganizationListItem = {
   id: string;
@@ -18,6 +19,22 @@ type OrganizationListItem = {
   users?: Array<{
     role: 'USER' | 'ADMIN' | 'SUPERADMIN';
     disabled?: boolean;
+  }>;
+};
+
+type AdminOrganizationListItem = {
+  id: string;
+  name: string;
+  createdAt: string;
+  users: Array<{
+    id: string;
+    role: 'USER' | 'ADMIN' | 'SUPERADMIN';
+    disabled: boolean;
+    user: {
+      id: string;
+      email: string;
+      name: string | null;
+    };
   }>;
 };
 
@@ -288,6 +305,29 @@ export const AgencyComponent = () => {
     revalidateIfStale: false,
   });
 
+  const loadAllOrganizations = useCallback(async () => {
+    const response = await fetch('/admin/organizations');
+
+    if (!response.ok) {
+      throw new Error('Could not load all organizations');
+    }
+
+    return (await response.json()) as AdminOrganizationListItem[];
+  }, [fetch]);
+
+  const {
+    data: allOrganizations,
+    isLoading: isLoadingAllOrganizations,
+    mutate: mutateAllOrganizations,
+  } = useSWR(
+    user?.isSuperAdmin ? 'admin-organizations' : null,
+    loadAllOrganizations,
+    {
+      revalidateOnFocus: false,
+      revalidateOnReconnect: false,
+    }
+  );
+
   const managedOrganizations = useMemo(
     () =>
       (organizations || []).filter(
@@ -317,6 +357,23 @@ export const AgencyComponent = () => {
       ),
     });
   }, [modals, mutate, t]);
+
+  const manageTeam = useCallback(
+    async (organization: OrganizationListItem) => {
+      const response = await fetch('/user/change-org', {
+        method: 'POST',
+        body: JSON.stringify({ id: organization.id }),
+      });
+
+      if (!response.ok) {
+        toaster.show(await readError(response), 'warning');
+        return;
+      }
+
+      window.location.href = '/settings?tab=teams';
+    },
+    [fetch, toaster]
+  );
 
   const createConnectLink = useCallback(
     async (organization: OrganizationListItem) => {
@@ -377,6 +434,33 @@ export const AgencyComponent = () => {
       );
     },
     [connectLinks, toaster, t]
+  );
+
+  const deleteOrganization = useCallback(
+    async (organization: AdminOrganizationListItem) => {
+      const confirmed = await deleteDialog(
+        `Delete "${organization.name}"? Dit verwijdert de organisatie uit Postiz, markeert bestaande posts als verwijderd en anonimiseert/verwijdert gekoppelde social-integraties en tokens. Deze actie kan niet via de interface ongedaan worden gemaakt.`,
+        'Delete organization',
+        'Delete organization'
+      );
+
+      if (!confirmed) {
+        return;
+      }
+
+      const response = await fetch(`/admin/organizations/${organization.id}/delete`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        toaster.show(await readError(response), 'warning');
+        return;
+      }
+
+      await mutateAllOrganizations();
+      toaster.show('Organization deleted', 'success');
+    },
+    [fetch, mutateAllOrganizations, toaster]
   );
 
   if (user?.role !== 'SUPERADMIN') {
@@ -474,12 +558,21 @@ export const AgencyComponent = () => {
                     Super Admin
                   </div>
 
-                  <Button
-                    onClick={() => createConnectLink(organization)}
-                    loading={creatingLinkFor === organization.id}
-                  >
-                    {t('create_connect_link', 'Create 24-hour connect link')}
-                  </Button>
+                  <div className="flex items-center gap-[8px]">
+                    <Button
+                      secondary={true}
+                      onClick={() => manageTeam(organization)}
+                    >
+                      {t('manage_team', 'Manage team')}
+                    </Button>
+
+                    <Button
+                      onClick={() => createConnectLink(organization)}
+                      loading={creatingLinkFor === organization.id}
+                    >
+                      {t('create_connect_link', 'Create 24-hour connect link')}
+                    </Button>
+                  </div>
                 </div>
 
                 {link && (
@@ -512,6 +605,82 @@ export const AgencyComponent = () => {
             );
           })}
       </div>
+
+      {user?.isSuperAdmin && (
+        <div className="mt-[28px]">
+          <div className="mb-[14px]">
+            <div className="text-[17px] font-semibold">
+              {t('all_organizations', 'All organizations')}
+            </div>
+            <div className="text-[12px] text-customColor18 mt-[3px]">
+              Platformbrede weergave voor Super Admins. Hier zie je alle actieve organisaties en hun leden.
+            </div>
+          </div>
+
+          <div className="bg-sixth border-fifth border rounded-[8px] overflow-hidden">
+            {isLoadingAllOrganizations && (
+              <div className="p-[24px] text-customColor18">
+                {t('loading', 'Loading...')}
+              </div>
+            )}
+
+            {!isLoadingAllOrganizations && (allOrganizations || []).length === 0 && (
+              <div className="p-[24px] text-customColor18">
+                {t('no_organizations_found', 'No organizations found')}
+              </div>
+            )}
+
+            {!isLoadingAllOrganizations &&
+              (allOrganizations || []).map((organization, index) => (
+                <div
+                  key={organization.id}
+                  className={`p-[20px] flex flex-col gap-[12px] ${index > 0 ? 'border-t border-fifth' : ''}`}
+                >
+                  <div className="flex items-start justify-between gap-[16px]">
+                    <div className="min-w-0">
+                      <div className="font-semibold">{organization.name}</div>
+                      <div className="text-[11px] text-customColor18 break-all mt-[2px]">
+                        {organization.id}
+                      </div>
+                      <div className="text-[11px] text-customColor18 mt-[2px]">
+                        Aangemaakt: {new Date(organization.createdAt).toLocaleString()}
+                      </div>
+                    </div>
+
+                    <Button
+                      secondary={true}
+                      onClick={() => deleteOrganization(organization)}
+                    >
+                      Archive
+                    </Button>
+                  </div>
+
+                  <div className="flex flex-col gap-[6px]">
+                    {organization.users.map((membership) => (
+                      <div
+                        key={membership.id}
+                        className="flex items-center justify-between gap-[12px] rounded-[6px] border border-newTableBorder bg-newBgColorInner px-[12px] py-[9px]"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-[12px] font-medium truncate">
+                            {membership.user.name || membership.user.email}
+                          </div>
+                          <div className="text-[11px] text-customColor18 truncate">
+                            {membership.user.email}
+                          </div>
+                        </div>
+
+                        <div className="text-[11px] whitespace-nowrap">
+                          {membership.role}{membership.disabled ? ' · disabled' : ''}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
