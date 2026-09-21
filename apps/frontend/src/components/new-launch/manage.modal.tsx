@@ -227,7 +227,7 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
                   )}
                 </div>
                 <div className="flex w-full gap-[10px]">
-                  <div className="flex-1 flex">
+                  <div className="flex flex-col xl:flex-row flex-none xl:flex-1 min-w-0">
                     <Button
                       type="button"
                       className="flex-1"
@@ -467,16 +467,19 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
   );
 
   return (
-    <div className="w-full h-full flex-1 p-[40px] flex relative">
-      <div className="flex flex-1 bg-newBgColorInner rounded-[20px] flex-col">
-        <div className="flex-1 flex">
-          <div className="flex flex-col flex-1 border-e border-newBorder">
-            <div className="bg-newBgColor h-[65px] rounded-s-[20px] !rounded-b-[0] flex items-center gap-[12px] px-[20px] text-[20px] font-[600]">
+    <div className="w-full min-h-full xl:h-full flex-1 px-[8px] pt-[8px] pb-[100px] sm:px-[16px] sm:pt-[16px] sm:pb-[100px] xl:p-[40px] flex relative overflow-y-auto xl:overflow-hidden">
+      <div className="flex flex-1 bg-newBgColorInner rounded-[20px] flex-col min-w-0">
+        <div className="flex flex-col xl:flex-row flex-none xl:flex-1 min-w-0">
+          <div className="flex flex-col flex-1 min-w-0 min-h-[560px] xl:min-h-0 border-b xl:border-b-0 xl:border-e border-newBorder">
+            <div className="bg-newBgColor h-[65px] rounded-t-[20px] xl:rounded-t-none xl:rounded-s-[20px] xl:!rounded-b-[0] flex items-center gap-[12px] px-[20px] text-[20px] font-[600]">
               {t('create_post_title', 'Create Post')}
               <CreationMethodBadge
                 creationMethod={existingData?.posts?.[0]?.creationMethod}
                 size="sm"
               />
+              <div className="ms-auto cursor-pointer xl:hidden">
+                <CloseIcon onClick={askClose} className="text-[#A3A3A3]" />
+              </div>
             </div>
             <div className="flex-1 flex flex-col gap-[16px]">
               <div
@@ -484,7 +487,7 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
               >
                 <div
                   id="social-content"
-                  className="gap-[32px] flex flex-col pe-[8px] pt-[20px] ps-[20px] absolute top-0 left-0 w-full h-full overflow-x-hidden overflow-y-scroll scrollbar scrollbar-thumb-newColColor scrollbar-track-newBgColorInner"
+                  className="gap-[32px] flex flex-col px-[8px] sm:px-[20px] pt-[20px] absolute top-0 left-0 w-full h-full overflow-x-hidden overflow-y-scroll scrollbar scrollbar-thumb-newColColor scrollbar-track-newBgColorInner"
                 >
                   <div className="flex w-full">
                     <div className="flex flex-1">
@@ -560,10 +563,10 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
               </div>
             </div>
           </div>
-          <div className="w-[580px] flex flex-col">
-            <div className="bg-newBgColor h-[65px] rounded-e-[20px] !rounded-b-[0] flex items-center px-[20px] text-[20px] font-[600]">
+          <div className="w-full xl:w-[580px] min-w-0 min-h-[360px] sm:min-h-[420px] xl:min-h-0 flex flex-col">
+            <div className="bg-newBgColor h-[65px] rounded-none xl:rounded-e-[20px] xl:!rounded-b-[0] flex items-center px-[20px] text-[20px] font-[600]">
               <div className="flex-1">{t('post_preview', 'Post Preview')}</div>
-              <div className="cursor-pointer">
+              <div className="hidden xl:block cursor-pointer">
                 <CloseIcon onClick={askClose} className="text-[#A3A3A3]" />
               </div>
             </div>
@@ -577,8 +580,8 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
             </div>
           </div>
         </div>
-        <div className="select-none h-[84px] py-[20px] border-t border-newBorder flex items-center">
-          <div className="flex-1 flex ps-[20px] gap-[8px]">
+        <div className="select-none border-t border-newBorder flex flex-col xl:flex-row gap-[12px] p-[12px] sm:p-[20px] xl:py-[20px] xl:px-0">
+          <div className="w-full xl:flex-1 flex flex-col sm:flex-row px-0 xl:ps-[20px] gap-[8px]">
             {!dummy && (
               <TagsComponent
                 name="tags"
@@ -594,7 +597,7 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
               <RepeatComponent repeat={repeater} onChange={setRepeater} />
             )}
           </div>
-          <div className="pe-[20px] flex items-center justify-end gap-[8px]">
+          <div className="w-full xl:w-auto px-0 xl:pe-[20px] grid grid-cols-1 sm:grid-cols-2 xl:flex items-stretch xl:items-center xl:justify-end gap-[8px]">
             {existingData?.integration && (
               <button
                 onClick={deletePost}
@@ -613,7 +616,7 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
                   selectedIntegrations.length === 0 || loading || locked
                 }
                 onClick={schedule('draft')}
-                className="relative cursor-pointer disabled:cursor-not-allowed px-[20px] h-[44px] bg-btnSimple justify-center items-center flex rounded-[8px] text-[15px] font-[600]"
+                className="relative cursor-pointer disabled:cursor-not-allowed px-[20px] h-[44px] w-full xl:w-auto bg-btnSimple justify-center items-center flex rounded-[8px] text-[15px] font-[600]"
               >
                 {loading && (
                   <div className="absolute left-[50%] top-[50%] -translate-y-[50%] -translate-x-[50%]">
@@ -627,7 +630,7 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
             )}
             {addEditSets && (
               <button
-                className="text-white text-[15px] font-[600] min-w-[180px] btnSub disabled:cursor-not-allowed disabled:opacity-80 outline-none gap-[8px] flex justify-center items-center h-[44px] rounded-[8px] bg-[#612BD3] ps-[20px] pe-[16px]"
+                className="text-white text-[15px] font-[600] w-full xl:w-auto xl:min-w-[180px] btnSub disabled:cursor-not-allowed disabled:opacity-80 outline-none gap-[8px] flex justify-center items-center h-[44px] rounded-[8px] bg-[#612BD3] ps-[20px] pe-[16px]"
                 disabled={
                   selectedIntegrations.length === 0 || loading || locked
                 }
@@ -637,13 +640,13 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
               </button>
             )}
             {!addEditSets && (
-              <div className="group cursor-pointer relative">
+              <div className="group cursor-pointer relative w-full xl:w-auto">
                 <button
                   disabled={
                     selectedIntegrations.length === 0 || loading || locked
                   }
                   onClick={schedule('schedule')}
-                  className="text-white relative min-w-[180px] btnSub disabled:cursor-not-allowed disabled:opacity-80 outline-none gap-[8px] flex justify-center items-center h-[44px] rounded-[8px] bg-[#612BD3] ps-[20px] pe-[16px]"
+                  className="text-white relative w-full xl:w-auto xl:min-w-[180px] btnSub disabled:cursor-not-allowed disabled:opacity-80 outline-none gap-[8px] flex justify-center items-center h-[44px] rounded-[8px] bg-[#612BD3] ps-[20px] pe-[16px]"
                 >
                   {loading && (
                     <div className="absolute left-[50%] top-[50%] -translate-y-[50%] -translate-x-[50%]">
