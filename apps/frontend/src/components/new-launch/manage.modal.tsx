@@ -233,7 +233,7 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
                   )}
                 </div>
                 <div className="flex w-full gap-[10px]">
-                  <div className="flex-1 flex">
+                  <div className="flex flex-col xl:flex-row flex-none xl:flex-1 min-w-0">
                     <Button
                       type="button"
                       className="flex-1"
@@ -669,7 +669,7 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
                   selectedIntegrations.length === 0 || loading || locked
                 }
                 onClick={schedule('draft')}
-                className="relative cursor-pointer disabled:cursor-not-allowed px-[20px] h-[44px] bg-btnSimple justify-center items-center flex rounded-[8px] text-[15px] font-[600]"
+                className="relative cursor-pointer disabled:cursor-not-allowed px-[20px] h-[44px] w-full xl:w-auto bg-btnSimple justify-center items-center flex rounded-[8px] text-[15px] font-[600]"
               >
                 {loading && (
                   <div className="absolute left-[50%] top-[50%] -translate-y-[50%] -translate-x-[50%]">
