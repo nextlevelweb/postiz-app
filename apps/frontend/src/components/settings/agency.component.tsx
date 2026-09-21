@@ -499,7 +499,7 @@ export const AgencyComponent = () => {
         </div>
       </div>
 
-      <div className="flex items-center justify-between gap-[20px] mb-[16px]">
+      <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-[12px] sm:gap-[20px] mb-[16px]">
         <div>
           <div className="text-[17px] font-semibold">
             {t('managed_organizations', 'Managed organizations')}
@@ -510,7 +510,7 @@ export const AgencyComponent = () => {
           </div>
         </div>
 
-        <Button onClick={openCreate}>
+        <Button className="w-full xl:w-auto min-h-[44px] px-[16px] py-[10px] whitespace-normal text-center leading-[1.25]" onClick={openCreate}>
           {t('create_customer_organization', 'Create customer organization')}
         </Button>
       </div>
@@ -544,12 +544,12 @@ export const AgencyComponent = () => {
                   index > 0 ? 'border-t border-fifth' : ''
                 }`}
               >
-                <div className="flex items-center gap-[16px]">
+                <div className="flex flex-col xl:flex-row xl:items-center gap-[12px] sm:gap-[16px]">
                   <div className="flex-1 min-w-0">
                     <div className="font-semibold truncate">
                       {organization.name}
                     </div>
-                    <div className="text-[11px] text-customColor18 break-all mt-[2px]">
+                    <div className="text-[11px] text-customColor18 break-words mt-[2px]">
                       {organization.id}
                     </div>
                   </div>
@@ -558,26 +558,28 @@ export const AgencyComponent = () => {
                     Super Admin
                   </div>
 
-                  <div className="flex items-center gap-[8px]">
+                  <div className="flex flex-col xl:flex-row gap-[8px] w-full xl:w-auto">
                     <Button
                       secondary={true}
+                      className="w-full xl:w-auto min-h-[44px] px-[16px] py-[10px] whitespace-normal text-center leading-[1.25]"
                       onClick={() => manageTeam(organization)}
                     >
                       {t('manage_team', 'Manage team')}
                     </Button>
 
                     <Button
+                      className="w-full xl:w-auto"
                       onClick={() => createConnectLink(organization)}
                       loading={creatingLinkFor === organization.id}
                     >
-                      {t('create_connect_link', 'Create 24-hour connect link')}
+                      {t('connect_link_24h', '24h connect link')}
                     </Button>
                   </div>
                 </div>
 
                 {link && (
                   <div className="rounded-[7px] border border-newTableBorder bg-newBgColorInner p-[14px] flex flex-col gap-[10px]">
-                    <div className="flex items-center gap-[12px]">
+                    <div className="flex flex-col xl:flex-row xl:items-center gap-[10px] sm:gap-[12px]">
                       <div className="flex-1 min-w-0">
                         <div className="text-[12px] font-semibold">
                           {t('active_connect_link', 'Generated connect link')}
@@ -636,10 +638,10 @@ export const AgencyComponent = () => {
                   key={organization.id}
                   className={`p-[20px] flex flex-col gap-[12px] ${index > 0 ? 'border-t border-fifth' : ''}`}
                 >
-                  <div className="flex items-start justify-between gap-[16px]">
+                  <div className="flex flex-col xl:flex-row sm:items-start xl:justify-between gap-[12px] sm:gap-[16px]">
                     <div className="min-w-0">
                       <div className="font-semibold">{organization.name}</div>
-                      <div className="text-[11px] text-customColor18 break-all mt-[2px]">
+                      <div className="text-[11px] text-customColor18 break-words mt-[2px]">
                         {organization.id}
                       </div>
                       <div className="text-[11px] text-customColor18 mt-[2px]">
@@ -649,9 +651,10 @@ export const AgencyComponent = () => {
 
                     <Button
                       secondary={true}
+                      className="w-full xl:w-auto"
                       onClick={() => deleteOrganization(organization)}
                     >
-                      Archive
+                      Delete
                     </Button>
                   </div>
 
@@ -659,7 +662,7 @@ export const AgencyComponent = () => {
                     {organization.users.map((membership) => (
                       <div
                         key={membership.id}
-                        className="flex items-center justify-between gap-[12px] rounded-[6px] border border-newTableBorder bg-newBgColorInner px-[12px] py-[9px]"
+                        className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-[6px] sm:gap-[12px] rounded-[6px] border border-newTableBorder bg-newBgColorInner px-[12px] py-[9px]"
                       >
                         <div className="min-w-0">
                           <div className="text-[12px] font-medium truncate">

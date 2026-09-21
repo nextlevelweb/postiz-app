@@ -65,7 +65,7 @@ const OrganizationNameComponent = () => {
       <div className="mt-[4px]">
         {t('organization_settings', 'Organization Settings')}
       </div>
-      <div className="flex items-center gap-[24px]">
+      <div className="flex flex-col lg:flex-row lg:items-center gap-[16px] lg:gap-[24px]">
         <div className="flex flex-col flex-1">
           <div className="text-[14px]">
             {t('organization_name', 'Organization name')}
@@ -77,6 +77,7 @@ const OrganizationNameComponent = () => {
             )}
           </div>
         </div>
+        <div className="w-full lg:w-auto lg:min-w-[280px]">
         <Input
           value={name}
           disableForm={true}
@@ -85,7 +86,8 @@ const OrganizationNameComponent = () => {
           name="name"
           label=""
         />
-        <Button className="h-[44px] mt-[7px]" disabled={!name.trim()} onClick={save}>
+        </div>
+        <Button className="h-[44px] w-full lg:w-auto lg:mt-[7px]" disabled={!name.trim()} onClick={save}>
           {t('save', 'Save')}
         </Button>
       </div>

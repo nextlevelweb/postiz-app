@@ -175,11 +175,11 @@ export const TeamsComponent = () => {
       <div className="my-[16px] mt-[16px] bg-sixth border-fifth border rounded-[4px] p-[24px] flex flex-col gap-[24px]">
         <div className="flex flex-col gap-[16px]">
           {(data || []).map((p) => (
-            <div key={p.user.id} className="flex items-center">
-              <div className="flex-1">
+            <div key={p.user.id} className="flex flex-col lg:flex-row lg:items-center gap-[10px] lg:gap-[16px] rounded-[7px] border border-newTableBorder bg-newBgColorInner px-[14px] py-[12px]">
+              <div className="w-full lg:flex-1 font-medium">
                 {capitalize(p.user.email.split('@')[0]).split('.')[0]}
               </div>
-              <div className="flex-1">
+              <div className="w-full lg:flex-1 text-customColor18 lg:text-newTextColor">
                 {p.role === 'USER'
                   ? t('user', 'User')
                   : p.role === 'ADMIN'
@@ -187,9 +187,9 @@ export const TeamsComponent = () => {
                   : t('super_admin', 'Super Admin')}
               </div>
               {+myLevel > +getLevel(p.role) ? (
-                <div className="flex-1 flex justify-end">
+                <div className="w-full lg:flex-1 flex lg:justify-end">
                   <Button
-                    className={`!bg-customColor3 !h-[24px] border border-customColor21 rounded-[4px] text-[12px]`}
+                    className={`w-full lg:w-auto !bg-customColor3 min-h-[40px] lg:!h-[24px] px-[12px] border border-customColor21 rounded-[4px] text-[12px]`}
                     onClick={remove(p)}
                     secondary={true}
                   >
@@ -213,13 +213,13 @@ export const TeamsComponent = () => {
                   </Button>
                 </div>
               ) : (
-                <div className="flex-1" />
+                <div className="hidden lg:block flex-1" />
               )}
             </div>
           ))}
         </div>
         <div>
-          <Button onClick={addMember}>
+          <Button className="w-full lg:w-auto" onClick={addMember}>
             {t('add_another_member', 'Add another member')}
           </Button>
         </div>
