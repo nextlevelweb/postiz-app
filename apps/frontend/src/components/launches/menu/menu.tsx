@@ -76,7 +76,15 @@ export const Menu: FC<{
     if (show && menuRef.current) {
       const menuRect = menuRef.current.getBoundingClientRect();
       const viewportHeight = window.innerHeight;
+      const viewportWidth = window.innerWidth;
       const padding = 10;
+
+      if (menuRect.right > viewportWidth - padding || menuRect.left < padding) {
+        const newX = Math.min(Math.max(padding, show.x), Math.max(padding, viewportWidth - menuRect.width - padding));
+        if (Math.abs(show.x - newX) > 1) {
+          setShow((prev) => (prev ? { ...prev, x: newX } : false));
+        }
+      }
 
       // Check if menu overflows bottom of viewport
       if (menuRect.bottom > viewportHeight - padding) {
@@ -253,7 +261,8 @@ export const Menu: FC<{
       classNames: {
         modal: 'w-[100%] max-w-[600px] bg-transparent text-textColor',
       },
-      size: '100%',
+      size: 'calc(100vw - 24px)',
+      maxSize: '600px',
       withCloseButton: false,
       closeOnEscape: true,
       closeOnClickOutside: true,
