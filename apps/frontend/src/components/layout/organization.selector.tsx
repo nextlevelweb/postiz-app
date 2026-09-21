@@ -4,7 +4,6 @@ import React, { FC, useCallback, useMemo } from 'react';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import useSWR from 'swr';
 import { useUser } from '@gitroom/frontend/components/layout/user.context';
-import clsx from 'clsx';
 import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { ProvisionOrganizationForm } from '@gitroom/frontend/components/settings/agency.component';
@@ -54,6 +53,29 @@ export const OrganizationSelector: FC<{ asOpenSelect?: boolean }> = ({
       children: <ProvisionOrganizationForm />,
     });
   }, [t]);
+  const openOrganizationModal = useCallback(() => {
+    modals.openModal({
+      title: t('select_organization', 'Select Organization'),
+      withCloseButton: true,
+      children: (
+        <div className="flex flex-col gap-[10px] max-h-[70dvh] overflow-y-auto overscroll-contain pe-[2px]">
+          {!!current?.name && (
+            <div className="border-b border-tableBorder pb-[10px] mb-[2px]">
+              <div className="font-semibold truncate">{current.name}</div>
+              <div className="text-[11px] text-customColor18">Current organization</div>
+            </div>
+          )}
+          {withoutCurrent?.map((org: { name: string; id: string; users: { role: 'SUPERADMIN' | 'ADMIN' | 'USER' }[] }) => (
+            <button key={org.id} type="button" onClick={changeOrg(org)} className="w-full text-start rounded-[8px] border border-tableBorder px-[14px] py-[12px] hover:bg-boxHover">
+              <div className="font-medium truncate">{org.name}</div>
+              {!!org?.users?.[0]?.role && <div className="text-[11px] text-customColor18 mt-[2px]">{org.users[0].role === 'SUPERADMIN' ? 'Super-Admin' : org.users[0].role === 'ADMIN' ? 'Admin' : 'User'}</div>}
+            </button>
+          ))}
+          {user?.role === 'SUPERADMIN' && <button type="button" onClick={createOrg} className="w-full text-start rounded-[8px] bg-btnSimple px-[14px] py-[12px]">{t('create_new_organization', 'Create New Organization')} +</button>}
+        </div>
+      ),
+    });
+  }, [modals, t, current, withoutCurrent, user?.role, changeOrg, createOrg]);
   if (isLoading) {
     return null;
   }
@@ -65,7 +87,7 @@ export const OrganizationSelector: FC<{ asOpenSelect?: boolean }> = ({
             <div className="bg-btnPrimary !flex !relative max-w-[500px] mx-auto py-[12px] px-[12px]">Select Organization</div>
           )}
           {!asOpenSelect && (
-            <div className="flex items-center gap-[6px]">
+            <div onClick={openOrganizationModal} className="flex items-center gap-[6px] cursor-pointer">
               <svg
                 className={user?.tier.current === 'FREE' ? 'animate-bounce drop-shadow-glow': ''}
                 width="24"
@@ -80,17 +102,21 @@ export const OrganizationSelector: FC<{ asOpenSelect?: boolean }> = ({
                 />
               </svg>
               {!!current?.name && (
-                <div className="max-w-[240px] truncate">{current?.name}</div>
+                <div className="hidden lg:block max-w-[240px] truncate">{current?.name}</div>
               )}
             </div>
           )}
-          {(data?.length > 1 || !asOpenSelect) && (
+          {asOpenSelect && data?.length > 1 && (
             <div
-              className={clsx(
-                'hidden py-[12px] px-[12px] group-hover:flex absolute top-[100%] end-0 w-max max-w-[400px] bg-third border-tableBorder border gap-[12px] cursor-pointer flex-col',
-                asOpenSelect ? '!flex !relative max-w-[500px] mx-auto mb-[10px]' : '',
-              )}
+              className="py-[14px] px-[14px] relative max-w-[500px] mx-auto mb-[10px] bg-third border-tableBorder border gap-[12px] cursor-pointer flex flex-col"
+
             >
+              {!!current?.name && (
+                <div className="border-b border-tableBorder pb-[10px] mb-[2px]">
+                  <div className="font-semibold truncate">{current.name}</div>
+                  <div className="text-[11px] text-customColor18">Current organization</div>
+                </div>
+              )}
               {withoutCurrent?.map(
                 (org: {
                   name: string;
@@ -117,11 +143,6 @@ export const OrganizationSelector: FC<{ asOpenSelect?: boolean }> = ({
                     )}
                   </div>
                 )
-              )}
-              {!asOpenSelect && user?.role === 'SUPERADMIN' && (
-                <div onClick={createOrg} className="whitespace-nowrap">
-                  {t('create_new_organization', 'Create New Organization')} +
-                </div>
               )}
             </div>
           )}
