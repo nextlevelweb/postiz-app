@@ -110,11 +110,11 @@ export const LayoutComponent = ({ children }: { children: ReactNode }) => {
                   <AnnouncementBanner />
                   <div className="flex-1 flex gap-[8px]">
                     <Support />
-                    <div className="flex flex-col bg-newBgColorInner w-[80px] rounded-[12px]">
+                    <div className="flex flex-col bg-newBgColorInner w-[56px] xl:w-[80px] rounded-[12px]">
                       <div
                         id="left-menu"
                         className={clsx(
-                          'fixed h-full w-[64px] start-[17px] flex flex-1 top-0',
+                          'fixed h-full w-[48px] xl:w-[64px] start-[16px] xl:start-[17px] flex flex-1 top-0',
                           user?.admin && 'pt-[60px] max-h-[1000px]:w-[500px]'
                         )}
                       >
@@ -125,22 +125,22 @@ export const LayoutComponent = ({ children }: { children: ReactNode }) => {
                       </div>
                     </div>
                     <div className="flex-1 bg-newBgLineColor rounded-[12px] overflow-hidden flex flex-col gap-[1px] blurMe">
-                      <div className="flex bg-newBgColorInner h-[80px] px-[20px] items-center">
-                        <div className="text-[24px] font-[600] flex flex-1">
+                      <div className="flex bg-newBgColorInner min-h-[80px] px-[12px] sm:px-[20px] py-[12px] xl:py-0 flex-row items-center gap-[10px]">
+                        <div className="text-[20px] xl:text-[24px] font-[600] flex flex-1 min-w-0">
                           <Title />
                         </div>
-                        <div className="flex gap-[20px] text-textItemBlur">
-                          <StreakComponent />
-                          <div className="w-[1px] h-[20px] bg-blockSeparator" />
+                        <div className="flex shrink-0 items-center gap-[10px] lg:gap-[16px] xl:gap-[20px] text-textItemBlur">
+                          <div className="hidden lg:block"><StreakComponent /></div>
+                          <div className="hidden lg:block w-[1px] h-[20px] bg-blockSeparator" />
                           <OrganizationSelector />
                           <div className="hover:text-newTextColor">
                             <ModeComponent />
                           </div>
-                          <div className="w-[1px] h-[20px] bg-blockSeparator" />
+                          <div className="hidden lg:block w-[1px] h-[20px] bg-blockSeparator" />
                           <LanguageComponent />
-                          <ChromeExtensionComponent />
-                          <div className="w-[1px] h-[20px] bg-blockSeparator" />
-                          <AttachToFeedbackIcon />
+                          <div className="hidden lg:block"><ChromeExtensionComponent /></div>
+                          <div className="hidden lg:block w-[1px] h-[20px] bg-blockSeparator" />
+                          <div className="hidden lg:block"><AttachToFeedbackIcon /></div>
                           <NotificationComponent />
                         </div>
                       </div>

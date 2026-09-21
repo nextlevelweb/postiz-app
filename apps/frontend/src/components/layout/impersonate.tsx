@@ -1011,6 +1011,7 @@ const SwitchUser = () => {
 };
 
 export const Impersonate = () => {
+  const [toolbarHidden, setToolbarHidden] = useState(false);
   const fetch = useFetch();
   const [name, setName] = useState('');
   const { isSecured, billingEnabled } = useVariables();
@@ -1071,12 +1072,25 @@ export const Impersonate = () => {
       []
     );
   }, [data]);
+  if (toolbarHidden) {
+    return null;
+  }
+
   return (
-    <div>
-      <div className="bg-forth h-[52px] flex justify-center items-center border-input border rounded-[8px] text-white">
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setToolbarHidden(true)}
+        className="absolute end-[5px] top-[5px] z-[20] w-[30px] h-[30px] rounded-[6px] bg-black/40 hover:bg-black/60 flex items-center justify-center text-white text-[20px] leading-none"
+        aria-label="Close admin toolbar"
+        title="Close admin toolbar"
+      >
+        ×
+      </button>
+      <div className="bg-forth h-[52px] w-full max-w-full overflow-x-auto overflow-y-hidden flex justify-start xl:justify-center items-center border-input border rounded-[8px] text-white">
         <div
           className={`relative flex flex-col ${
-            user?.impersonate ? 'w-full px-[20px]' : 'w-[600px]'
+            user?.impersonate ? 'w-full px-[20px]' : 'w-[600px] shrink-0'
           }`}
         >
           <div className="relative z-[1]">

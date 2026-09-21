@@ -121,7 +121,7 @@ export const SettingsPopup: FC<{
 
   return (
     <>
-      <div className="bg-newBgColorInner p-[20px] flex flex-col transition-all w-[260px]">
+      <div className="bg-newBgColorInner p-[20px] hidden xl:flex flex-col transition-all w-[260px] shrink-0">
         <div className="flex flex-1 flex-col gap-[15px]">
           {list.map(({ tab: tabKey, label }) => (
             <div
@@ -152,7 +152,22 @@ export const SettingsPopup: FC<{
           )}
         </div>
       </div>
-      <div className="bg-newBgColorInner flex-1 flex-col flex p-[20px] gap-[12px]">
+      <div className="bg-newBgColorInner flex-1 min-w-0 flex-col flex p-[12px] sm:p-[20px] gap-[12px]">
+        <div className="xl:hidden flex gap-[8px] overflow-x-auto pb-[4px] shrink-0">
+          {list.map(({ tab: tabKey, label }) => (
+            <button
+              key={tabKey}
+              type="button"
+              onClick={() => setTab(tabKey)}
+              className={clsx(
+                "shrink-0 whitespace-nowrap rounded-[7px] px-[14px] py-[10px] bg-newBgColorInner border border-newTableBorder",
+                tabKey === tab && "bg-boxHover border-customColor6"
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <FormProvider {...form}>
           <form onSubmit={form.handleSubmit(submit)}>
             {!!getRef && (
