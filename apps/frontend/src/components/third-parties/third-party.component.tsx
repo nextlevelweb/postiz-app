@@ -113,11 +113,11 @@ export const ThirdPartyComponent = () => {
   const [collapseMenu, setCollapseMenu] = useCookie('collapseMenu', '0');
 
   return (
-    <>
+    <div className="flex flex-1 min-w-0 flex-col xl:flex-row gap-[1px]">
       <div
         className={clsx(
-          'bg-newBgColorInner p-[20px] flex flex-col gap-[15px] transition-all',
-          collapseMenu === '1' ? 'group sidebar w-[100px]' : 'w-[260px]'
+          'bg-newBgColorInner p-[16px] xl:p-[20px] flex flex-col gap-[15px] transition-all w-full xl:w-auto',
+          collapseMenu === '1' ? 'group sidebar xl:w-[100px]' : 'xl:w-[260px]'
         )}
       >
         <div className="flex gap-[12px] flex-col">
@@ -127,7 +127,7 @@ export const ThirdPartyComponent = () => {
             </h2>
             <div
               onClick={() => setCollapseMenu(collapseMenu === '1' ? '0' : '1')}
-              className="group-[.sidebar]:rotate-[180deg] group-[.sidebar]:mx-auto text-btnText bg-btnSimple rounded-[6px] w-[24px] h-[24px] flex items-center justify-center cursor-pointer select-none"
+              className="hidden xl:flex group-[.sidebar]:rotate-[180deg] group-[.sidebar]:mx-auto text-btnText bg-btnSimple rounded-[6px] w-[24px] h-[24px] items-center justify-center cursor-pointer select-none"
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -200,9 +200,9 @@ export const ThirdPartyComponent = () => {
           </div>
         </div>
       </div>
-      <div className="bg-newBgColorInner flex-1 flex-col flex p-[20px] gap-[12px]">
+      <div className="bg-newBgColorInner flex-1 min-w-0 flex-col flex p-[12px] sm:p-[20px] gap-[12px]">
         <ThirdPartyListComponent reload={mutate} />
       </div>
-    </>
+    </div>
   );
 };
