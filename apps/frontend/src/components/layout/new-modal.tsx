@@ -194,7 +194,7 @@ export const Component: FC<{
               !modal.fullScreen
                 ? modal.top
                   ? ''
-                  : 'min-h-full pt-[100px] pb-[100px] mobile:pt-[24px] mobile:pb-[24px] mobile:px-[8px]'
+                  : 'min-h-full pt-[12px] pb-[12px] [@media(max-height:600px)]:pt-[8px] [@media(max-height:600px)]:pb-[8px] sm:pt-[40px] sm:pb-[40px] sm:[@media(max-height:600px)]:pt-[8px] sm:[@media(max-height:600px)]:pb-[8px] xl:pt-[100px] xl:pb-[100px]'
                 : 'h-screen',
               modal.size && modal.height
                 ? 'flex justify-center items-center'
@@ -203,10 +203,9 @@ export const Component: FC<{
           >
             <div
               className={clsx(
-                !modal.removeLayout &&
-                  'gap-[40px] p-[32px] mobile:gap-[24px] mobile:p-[16px]',
-                'bg-newBgColorInner mx-auto flex flex-col w-fit rounded-[24px] mobile:rounded-[16px] relative mobile:!max-w-full',
-                modal.size ? '' : 'min-w-[600px] mobile:min-w-0 mobile:w-full',
+                !modal.removeLayout && 'gap-[40px] p-[32px] [@media(max-height:600px)]:gap-[20px] [@media(max-height:600px)]:py-[18px]',
+                'bg-newBgColorInner mx-auto flex flex-col w-[calc(100vw-24px)] sm:w-fit max-w-[calc(100vw-24px)] sm:max-w-none max-h-[calc(100dvh-24px)] [@media(max-height:600px)]:max-h-[calc(100dvh-16px)] sm:max-h-[calc(100dvh-80px)] sm:[@media(max-height:600px)]:max-h-[calc(100dvh-16px)] xl:max-h-none overflow-y-auto overscroll-contain rounded-[24px] relative',
+                modal.size ? '' : 'min-w-0 sm:min-w-[600px]',
                 modal.fullScreen && 'h-full'
               )}
               {...((!!modal.size || !!modal.height || !!modal.maxSize) && {
