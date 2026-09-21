@@ -301,7 +301,7 @@ export const DayView = () => {
 
   return (
     <div className="flex flex-col gap-[10px] flex-1 relative">
-      <div className="absolute start-0 top-0 w-full h-full flex flex-col overflow-auto scrollbar scrollbar-thumb-fifth scrollbar-track-newBgColor">
+      <div className="relative xl:absolute xl:start-0 xl:top-0 w-full h-auto xl:h-full flex flex-col overflow-visible xl:overflow-auto scrollbar scrollbar-thumb-fifth scrollbar-track-newBgColor">
         {options.map((option) => (
           <Fragment key={option[0].time}>
             <div className="text-center text-[14px] min-h-[21px]">
@@ -361,14 +361,14 @@ export const WeekView = () => {
   return (
     <div className="flex flex-col text-textColor flex-1">
       <div className="flex-1 relative">
-        <div className="grid [grid-template-columns:136px_repeat(7,_minmax(0,_1fr))] gap-[4px] rounded-[10px] absolute h-full start-0 top-0 w-full overflow-auto scrollbar scrollbar-thumb-fifth scrollbar-track-newBgColor">
+        <div className="grid [grid-template-columns:44px_repeat(7,_minmax(0,_1fr))] xl:[grid-template-columns:136px_repeat(7,_minmax(0,_1fr))] gap-[4px] rounded-[10px] relative xl:absolute w-full min-h-[1200px] xl:min-h-0 xl:h-full xl:start-0 xl:top-0 overflow-visible xl:overflow-auto scrollbar scrollbar-thumb-fifth scrollbar-track-newBgColor">
           <div className="z-10 bg-newTableHeader flex justify-center items-center flex-col h-[62px] rounded-[8px] sticky top-0"></div>
           {localizedDays.map((day, index) => (
             <div
               key={day.name}
-              className="p-2 text-center bg-newTableHeader flex justify-center items-center flex-col h-[62px] rounded-[8px] sticky top-0 z-[20]"
+              className="p-1 lg:p-2 text-center bg-newTableHeader flex justify-between lg:justify-center items-center flex-col h-[108px] lg:h-[62px] rounded-[8px] sticky top-0 z-[20]"
             >
-              <div className="text-[14px] font-[500] text-newTableText">
+              <div className="[writing-mode:vertical-rl] rotate-180 lg:[writing-mode:horizontal-tb] lg:rotate-0 whitespace-nowrap text-[10px] sm:text-[11px] lg:text-[14px] font-[500] text-newTableText">
                 {day.name}
               </div>
               <div
@@ -381,13 +381,14 @@ export const WeekView = () => {
                 {day.day === newDayjs().format('L') && (
                   <div className="w-[6px] h-[6px] bg-newTableTextFocused rounded-full" />
                 )}
-                {day.day}
+                <span className="lg:hidden">{day.date.format('D')}</span>
+                <span className="hidden lg:inline">{day.day}</span>
               </div>
             </div>
           ))}
           {hours.map((hour) => (
             <Fragment key={hour}>
-              <div className="p-2 pe-4 text-center items-center justify-center flex text-[14px] text-newTableText">
+              <div className="px-[2px] xl:p-2 xl:pe-4 text-center items-center justify-center flex text-[10px] sm:text-[11px] xl:text-[14px] text-newTableText">
                 {convertTimeFormatBasedOnLocality(hour)}
               </div>
               {localizedDays.map((day, indexDay) => (
@@ -460,13 +461,16 @@ export const MonthView = () => {
   return (
     <div className="flex flex-col text-textColor flex-1">
       <div className="flex-1 flex relative">
-        <div className="grid grid-cols-7 grid-rows-[62px_auto] gap-[4px] rounded-[10px] absolute start-0 top-0 overflow-auto w-full h-full scrollbar scrollbar-thumb-tableBorder scrollbar-track-secondary">
+        <div className="grid grid-cols-7 grid-rows-[110px_repeat(6,_minmax(92px,_auto))] sm:grid-rows-[96px_repeat(6,_minmax(92px,_auto))] lg:grid-rows-[62px_repeat(6,_minmax(92px,_auto))] xl:grid-rows-[62px_auto] gap-[4px] rounded-[10px] relative xl:absolute xl:start-0 xl:top-0 w-full min-h-[728px] sm:min-h-[700px] lg:min-h-[680px] xl:min-h-0 xl:h-full overflow-visible xl:overflow-auto scrollbar scrollbar-thumb-tableBorder scrollbar-track-secondary">
           {localizedDays.map((day) => (
             <div
               key={day}
-              className="z-[20] p-2 bg-newTableHeader flex justify-center items-center flex-col h-[62px] rounded-[8px] sticky top-0"
+              className="z-[20] p-1 sm:p-2 bg-newTableHeader flex justify-center items-center flex-col h-[110px] sm:h-[96px] lg:h-[62px] rounded-[8px] sticky top-0"
             >
-              <div>{day}</div>
+              <div className="block lg:hidden -rotate-90 whitespace-nowrap text-[11px] leading-none">
+                {day}
+              </div>
+              <div className="hidden lg:block">{day}</div>
             </div>
           ))}
           {calendarDays.map((date, index) => (

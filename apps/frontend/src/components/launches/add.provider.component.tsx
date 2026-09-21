@@ -670,14 +670,14 @@ export const AddProviderComponent: FC<{
   const t = useT();
 
   return (
-    <div className="w-full flex flex-col gap-[20px] rounded-[4px] relative]">
+    <div className="w-full flex flex-col gap-[20px] rounded-[4px] relative">
       <div className="flex flex-col">
         <div
           className={clsx(
             isMobile && 'gap-[20px] flex flex-col',
             !isMobile &&
-              'grid grid-cols-5 gap-[10px] justify-items-center justify-center',
-            isMobile ? {} : onboarding ? 'grid-cols-9' : 'grid-cols-5'
+              'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-[10px] justify-items-stretch justify-center w-full',
+            isMobile ? {} : onboarding ? 'xl:grid-cols-9' : {}
           )}
         >
           {social

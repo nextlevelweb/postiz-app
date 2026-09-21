@@ -287,10 +287,10 @@ export const Filters = () => {
   }, [calendar]);
 
   return (
-    <div className="text-textColor flex flex-col md:flex-row gap-[8px] items-center select-none">
+    <div className="text-textColor flex flex-col md:flex-row gap-[8px] items-stretch md:items-center select-none w-full min-w-0">
       {!isListView && (
-        <div className="flex flex-grow flex-row items-center gap-[10px]">
-          <div className="border h-[42px] border-newTableBorder bg-newTableBorder gap-[1px] flex items-center rounded-[8px] overflow-hidden">
+        <div className="flex flex-grow flex-row items-center gap-[6px] sm:gap-[10px] w-full min-w-0">
+          <div className="border h-[42px] border-newTableBorder bg-newTableBorder gap-[1px] flex flex-1 min-w-0 items-center rounded-[8px] overflow-hidden">
             <div
               onClick={previous}
               className="cursor-pointer text-textColor rtl:rotate-180 px-[9px] bg-newBgColorInner h-full flex items-center justify-center hover:text-textItemFocused hover:bg-boxFocused"
@@ -311,8 +311,8 @@ export const Filters = () => {
                 />
               </svg>
             </div>
-            <div className="min-w-[200px] text-center bg-newBgColorInner h-full flex items-center justify-center">
-              <div className="py-[3px] px-[9px] rounded-[5px] transition-all text-[14px]">
+            <div className="flex-1 min-w-0 text-center bg-newBgColorInner h-full flex items-center justify-center">
+              <div className="py-[3px] px-[6px] sm:px-[9px] rounded-[5px] transition-all text-[12px] sm:text-[14px] truncate">
                 {getDisplayText()}
               </div>
             </div>
@@ -337,7 +337,7 @@ export const Filters = () => {
               </svg>
             </div>
           </div>
-          <div className="flex-1 text-[14px] font-[500]">
+          <div className="shrink-0 text-[14px] font-[500]">
             <div className="text-center flex h-[42px]">
               <div
                 onClick={setToday}

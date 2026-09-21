@@ -365,6 +365,7 @@ export const LaunchesComponent = () => {
   const modal = useModals();
   const [reload, setReload] = useState(false);
   const [collapseMenu, setCollapseMenu] = useCookie('collapseMenu', '0');
+  const [mobileChannelsOpen, setMobileChannelsOpen] = useState(false);
   const [mode] = useCookie('mode', 'dark');
   const { isLoading, data: integrations, mutate } = useIntegrationList();
 
@@ -524,26 +525,37 @@ export const LaunchesComponent = () => {
     <DNDProvider>
       <Onboarding />
       <CalendarWeekProvider integrations={sortedIntegrations}>
+        <div className="flex flex-1 min-w-0 flex-col xl:flex-row gap-[1px]">
         <div
           className={clsx(
-            'flex relative flex-col',
-            collapseMenu === '1' ? 'group sidebar w-[100px]' : 'w-[260px]'
+            'flex relative flex-col w-full xl:w-auto',
+            collapseMenu === '1' ? 'group sidebar xl:w-[100px]' : 'xl:w-[260px]'
           )}
         >
           <div
             className={clsx(
-              'bg-newBgColorInner p-[20px] flex flex-col gap-[15px] transition-all absolute start-0 top-0 w-full h-full overflow-x-hidden overflow-y-auto scrollbar scrollbar-thumb-fifth scrollbar-track-newBgColor'
+              'bg-newBgColorInner p-[16px] xl:p-[20px] flex flex-col gap-[15px] transition-all relative xl:absolute xl:start-0 xl:top-0 w-full max-h-none xl:h-full overflow-x-hidden overflow-y-visible xl:overflow-y-auto scrollbar scrollbar-thumb-fifth scrollbar-track-newBgColor'
             )}
           >
             <div className="flex items-center">
               <h2 className="group-[.sidebar]:hidden flex-1 text-[20px] font-[500]">
                 {t('channels')}
               </h2>
+              <button
+                type="button"
+                onClick={() => setMobileChannelsOpen((value) => !value)}
+                className="xl:hidden w-[36px] h-[36px] rounded-[7px] bg-btnSimple flex items-center justify-center"
+                aria-label={mobileChannelsOpen ? 'Collapse channels' : 'Expand channels'}
+              >
+                <svg className={mobileChannelsOpen ? 'rotate-180 transition-transform' : 'transition-transform'} xmlns="http://www.w3.org/2000/svg" width="14" height="8" viewBox="0 0 14 8" fill="none">
+                  <path d="M1 1L7 7L13 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
               <div
                 onClick={() =>
                   setCollapseMenu(collapseMenu === '1' ? '0' : '1')
                 }
-                className="group-[.sidebar]:rotate-[180deg] group-[.sidebar]:mx-auto text-btnText bg-btnSimple rounded-[6px] w-[24px] h-[24px] flex items-center justify-center cursor-pointer select-none"
+                className="hidden xl:flex group-[.sidebar]:rotate-[180deg] group-[.sidebar]:mx-auto text-btnText bg-btnSimple rounded-[6px] w-[24px] h-[24px] items-center justify-center cursor-pointer select-none"
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
@@ -562,6 +574,7 @@ export const LaunchesComponent = () => {
                 </svg>
               </div>
             </div>
+            <div className={clsx('flex-col gap-[15px]', mobileChannelsOpen ? 'flex' : 'hidden', 'xl:flex')}>
             <div className="flex flex-col gap-[8px] group-[.sidebar]:mx-auto group-[.sidebar]:w-[44px]">
               <AddProviderButton update={() => update(true)} />
               <div className="flex gap-[8px] group-[.sidebar]:flex-col">
@@ -573,7 +586,7 @@ export const LaunchesComponent = () => {
             </div>
             <div className="gap-[32px] flex flex-col select-none flex-1">
               {sortedIntegrations.length === 0 && collapseMenu === '0' && (
-                <div className="flex-1 max-h-[500px] justify-center items-center flex">
+                <div className="flex-1 max-h-[150px] sm:max-h-[190px] xl:max-h-[500px] justify-center items-center flex">
                   <div className="flex flex-col gap-[12px] text-center">
                     <img
                       src={
@@ -617,13 +630,15 @@ export const LaunchesComponent = () => {
                   : ''}
               </div>
             </div>
+            </div>
           </div>
         </div>
-        <div className="bg-newBgColorInner flex-1 flex-col flex p-[20px] gap-[12px]">
+        <div className="bg-newBgColorInner flex-1 min-w-0 flex-col flex px-[6px] sm:px-[12px] xl:px-[20px] py-[12px] xl:py-[20px] gap-[12px]">
           <Filters />
           <div className="flex-1 flex">
             <Calendar />
           </div>
+        </div>
         </div>
       </CalendarWeekProvider>
     </DNDProvider>

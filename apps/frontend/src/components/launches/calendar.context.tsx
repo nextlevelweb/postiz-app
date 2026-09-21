@@ -54,7 +54,7 @@ export const CalendarContext = createContext({
   reloadCalendarView: () => {
     /** empty **/
   },
-  display: 'week',
+  display: 'month',
   setFilters: (filters: {
     startDate: string;
     endDate: string;
@@ -145,7 +145,7 @@ export const CalendarWeekProvider: FC<{
   const [internalData, setInternalData] = useState([] as any[]);
   const [trendings] = useState<string[]>([]);
   const searchParams = useSearchParams();
-  const [displaySaved, setDisplaySaved] = useCookie('calendar-display', 'week');
+  const [displaySaved, setDisplaySaved] = useCookie('calendar-display-v2', 'month');
   const display = searchParams.get('display') || displaySaved;
 
   // List view state
