@@ -46,7 +46,7 @@ export const AddProviderButton: FC<{
   return (
     <div className="flex group-[.sidebar]:block gap-[8px]">
       <button
-        className="flex-1 group-[.sidebar]:w-[100%] group-[.sidebar]:flex-none text-btnText bg-btnSimple h-[44px] pt-[12px] pb-[14px] ps-[16px] pe-[20px] justify-center items-center flex rounded-[8px] gap-[8px]"
+        className="flex-1 group-[.sidebar]:w-[100%] group-[.sidebar]:flex-none text-textColor bg-transparent border border-textColor/60 h-[44px] pt-[12px] pb-[14px] ps-[18px] pe-[20px] justify-center items-center flex rounded-full gap-[8px] font-[600] hover:border-[var(--brand-primary)] hover:text-[var(--brand-primary)] transition-colors"
         onClick={add}
       >
         <div>
@@ -77,7 +77,7 @@ export const AddProviderButton: FC<{
           'invite_link',
           'Send Invite Link to a customer to add channel'
         )}
-        className="group-[.sidebar]:hidden min-h-[44px] min-w-[44px] bg-btnSimple justify-center items-center flex rounded-[8px] cursor-pointer"
+        className="group-[.sidebar]:hidden h-[44px] w-[44px] border border-textColor/60 text-textColor bg-transparent justify-center items-center flex rounded-full cursor-pointer hover:border-[var(--brand-primary)] hover:text-[var(--brand-primary)] transition-colors"
       >
         <svg
           xmlns="http://www.w3.org/2000/svg"

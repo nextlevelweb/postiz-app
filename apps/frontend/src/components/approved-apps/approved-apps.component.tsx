@@ -7,6 +7,7 @@ import { Button } from '@gitroom/react/form/button';
 import { useToaster } from '@gitroom/react/toaster/toaster';
 import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
+import { branding } from '@gitroom/frontend/config/branding';
 
 const useApprovedApps = () => {
   const fetch = useFetch();
@@ -67,7 +68,7 @@ export const ApprovedAppsComponent: FC = () => {
         <div className="text-customColor18 mt-[4px]">
           {t(
             'apps_you_have_authorized',
-            'Applications you have authorized to access your Postiz account.'
+            `Applications you have authorized to access your ${branding.name || 'Postiz'} account.`
           )}
         </div>
       </div>

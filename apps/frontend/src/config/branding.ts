@@ -1,0 +1,15 @@
+export {
+  branding,
+  getBrandName,
+  getBrandShortName,
+  getGeneralBrandName,
+  getBrandWebsiteUrl,
+  getBrandSupportUrl,
+  getBrandPrimaryColor,
+  getBrandGradientEnd,
+  getBrandGradientStart,
+  getBrandAccentColor,
+  getBrandSecondaryColor,
+  isWhiteLabelBranding,
+  getBrandAppTitle,
+} from '@gitroom/helpers/config/branding';

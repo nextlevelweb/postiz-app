@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useVariables } from '@gitroom/react/helpers/variable.context';
+import { branding } from '@gitroom/frontend/config/branding';
 
 type PlatformInfo = {
   name: string;
@@ -135,7 +136,7 @@ export const ConnectPlatforms = ({
 
           <p className="mt-[8px] text-[14px] text-newTextItemBlur">
             Authorize an account for {data.organization.name}.
-            You do not need a Postiz account to continue.
+            You do not need a {branding.name || 'Postiz'} account to continue.
           </p>
         </div>
 

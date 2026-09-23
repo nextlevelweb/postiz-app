@@ -58,8 +58,8 @@ export const SVGLine = () => {
           y2="-28.6843"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#662FDA" />
-          <stop offset="1" stopColor="#5720CB" />
+          <stop stopColor="#039E94" />
+          <stop offset="1" stopColor="#0BDEAB" />
         </linearGradient>
         <radialGradient
           id="paint1_radial_1930_1119"
@@ -69,8 +69,8 @@ export const SVGLine = () => {
           gradientUnits="userSpaceOnUse"
           gradientTransform="translate(1.19333 7.45342) rotate(21.2064) scale(16.1503 188.627)"
         >
-          <stop stopColor="#8C66FF" />
-          <stop offset="1" stopColor="#8C66FF" stopOpacity="0" />
+          <stop stopColor="#0BDEAB" />
+          <stop offset="1" stopColor="#0BDEAB" stopOpacity="0" />
         </radialGradient>
       </defs>
     </svg>
@@ -364,7 +364,6 @@ export const LaunchesComponent = () => {
   const t = useT();
   const modal = useModals();
   const [reload, setReload] = useState(false);
-  const [collapseMenu, setCollapseMenu] = useCookie('collapseMenu', '0');
   const [mobileChannelsOpen, setMobileChannelsOpen] = useState(false);
   const [mode] = useCookie('mode', 'dark');
   const { isLoading, data: integrations, mutate } = useIntegrationList();
@@ -526,19 +525,14 @@ export const LaunchesComponent = () => {
       <Onboarding />
       <CalendarWeekProvider integrations={sortedIntegrations}>
         <div className="flex flex-1 min-w-0 flex-col xl:flex-row gap-[1px]">
-        <div
-          className={clsx(
-            'flex relative flex-col w-full xl:w-auto',
-            collapseMenu === '1' ? 'group sidebar xl:w-[100px]' : 'xl:w-[260px]'
-          )}
-        >
+        <div className="flex relative flex-col w-full xl:w-[260px] xl:min-w-[260px] xl:shrink-0">
           <div
             className={clsx(
-              'bg-newBgColorInner p-[16px] xl:p-[20px] flex flex-col gap-[15px] transition-all relative xl:absolute xl:start-0 xl:top-0 w-full max-h-none xl:h-full overflow-x-hidden overflow-y-visible xl:overflow-y-auto scrollbar scrollbar-thumb-fifth scrollbar-track-newBgColor'
+              'bg-newBgColorInner p-[16px] xl:p-[20px] flex flex-col gap-[15px] transition-all relative w-full max-h-none xl:h-full overflow-x-hidden overflow-y-visible xl:overflow-y-auto scrollbar scrollbar-thumb-fifth scrollbar-track-newBgColor'
             )}
           >
             <div className="flex items-center">
-              <h2 className="group-[.sidebar]:hidden flex-1 text-[20px] font-[500]">
+              <h2 className="flex-1 text-[20px] font-[500]">
                 {t('channels')}
               </h2>
               <button
@@ -551,33 +545,11 @@ export const LaunchesComponent = () => {
                   <path d="M1 1L7 7L13 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               </button>
-              <div
-                onClick={() =>
-                  setCollapseMenu(collapseMenu === '1' ? '0' : '1')
-                }
-                className="hidden xl:flex group-[.sidebar]:rotate-[180deg] group-[.sidebar]:mx-auto text-btnText bg-btnSimple rounded-[6px] w-[24px] h-[24px] items-center justify-center cursor-pointer select-none"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="7"
-                  height="13"
-                  viewBox="0 0 7 13"
-                  fill="none"
-                >
-                  <path
-                    d="M6 11.5L1 6.5L6 1.5"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </div>
             </div>
             <div className={clsx('flex-col gap-[15px]', mobileChannelsOpen ? 'flex' : 'hidden', 'xl:flex')}>
-            <div className="flex flex-col gap-[8px] group-[.sidebar]:mx-auto group-[.sidebar]:w-[44px]">
+            <div className="flex flex-col gap-[8px]">
               <AddProviderButton update={() => update(true)} />
-              <div className="flex gap-[8px] group-[.sidebar]:flex-col">
+              <div className="flex gap-[8px]">
                 {sortedIntegrations?.length > 0 && <NewPost />}
                 {sortedIntegrations?.length > 0 &&
                   user?.tier?.ai &&
@@ -585,7 +557,7 @@ export const LaunchesComponent = () => {
               </div>
             </div>
             <div className="gap-[32px] flex flex-col select-none flex-1">
-              {sortedIntegrations.length === 0 && collapseMenu === '0' && (
+              {sortedIntegrations.length === 0 && (
                 <div className="flex-1 max-h-[150px] sm:max-h-[190px] xl:max-h-[500px] justify-center items-center flex">
                   <div className="flex flex-col gap-[12px] text-center">
                     <img
@@ -608,7 +580,7 @@ export const LaunchesComponent = () => {
               )}
               {menuIntegrations.map((menu) => (
                 <MenuGroupComponent
-                  collapsed={collapseMenu === '1'}
+                  collapsed={false}
                   changeItemGroup={changeItemGroup}
                   key={menu.name}
                   group={menu}
