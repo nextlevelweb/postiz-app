@@ -1,8 +1,9 @@
 import { Metadata } from 'next';
+import { getBrandAppTitle } from '@gitroom/frontend/config/branding';
 import { ReactNode } from 'react';
 
 export const metadata: Metadata = {
-  title: 'Authorize Application',
+  title: getBrandAppTitle('Authorize Application'),
 };
 
 export default async function OAuthLayout({

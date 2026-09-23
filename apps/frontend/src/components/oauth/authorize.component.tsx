@@ -4,6 +4,7 @@ import { FC, useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { Logo } from '@gitroom/frontend/components/new-layout/logo';
+import { branding } from '@gitroom/frontend/config/branding';
 import { OAuthSelfHosted } from '@gitroom/frontend/components/oauth/self.hosted.component';
 
 export const OAuthAuthorize: FC<{ logged: boolean }> = ({ logged }) => {
@@ -114,7 +115,7 @@ export const OAuthAuthorize: FC<{ logged: boolean }> = ({ logged }) => {
       <div className="flex flex-1 items-center justify-center text-white relative overflow-hidden">
         <div className="absolute inset-0 opacity-30">
           <div className="absolute top-[20%] left-[10%] w-[300px] h-[300px] bg-[#612BD3] rounded-full blur-[120px]" />
-          <div className="absolute bottom-[20%] right-[10%] w-[250px] h-[250px] bg-[#FC69FF] rounded-full blur-[120px]" />
+          <div className="absolute bottom-[20%] right-[10%] w-[250px] h-[250px] bg-[var(--brand-primary)] rounded-full blur-[120px]" />
         </div>
         <div className="relative z-10 text-center">
           <div className="flex justify-center mb-[24px]">
@@ -136,7 +137,7 @@ export const OAuthAuthorize: FC<{ logged: boolean }> = ({ logged }) => {
       <div className="flex flex-1 items-center justify-center text-white relative overflow-hidden">
         <div className="absolute inset-0 opacity-30">
           <div className="absolute top-[20%] left-[10%] w-[300px] h-[300px] bg-[#612BD3] rounded-full blur-[120px]" />
-          <div className="absolute bottom-[20%] right-[10%] w-[250px] h-[250px] bg-[#FC69FF] rounded-full blur-[120px]" />
+          <div className="absolute bottom-[20%] right-[10%] w-[250px] h-[250px] bg-[var(--brand-primary)] rounded-full blur-[120px]" />
         </div>
         <div className="relative z-10 text-center">
           <div className="flex justify-center mb-[24px]">
@@ -174,7 +175,7 @@ export const OAuthAuthorize: FC<{ logged: boolean }> = ({ logged }) => {
     <div className="flex flex-1 items-center justify-center text-white relative overflow-hidden">
       <div className="absolute inset-0 opacity-30">
         <div className="absolute top-[20%] left-[10%] w-[300px] h-[300px] bg-[#612BD3] rounded-full blur-[120px]" />
-        <div className="absolute bottom-[20%] right-[10%] w-[250px] h-[250px] bg-[#FC69FF] rounded-full blur-[120px]" />
+        <div className="absolute bottom-[20%] right-[10%] w-[250px] h-[250px] bg-[var(--brand-primary)] rounded-full blur-[120px]" />
       </div>
 
       <div className="relative z-10 w-full max-w-[500px] mx-auto px-[20px]">
@@ -223,7 +224,7 @@ export const OAuthAuthorize: FC<{ logged: boolean }> = ({ logged }) => {
             <>
               <div className="border-t border-[#2A2929] pt-[16px]">
                 <div className="text-[14px] text-gray-400 mb-[12px]">
-                  This application is requesting access to your Postiz
+                  This application is requesting access to your {branding.name || 'Postiz'}
                   account. It will be able to:
                 </div>
                 <ul className="text-[14px] list-disc list-inside space-y-[4px]">
@@ -255,7 +256,7 @@ export const OAuthAuthorize: FC<{ logged: boolean }> = ({ logged }) => {
                   onClick={signIn}
                   className="bg-[#612BD3] hover:bg-[#7B3FF2] text-white rounded-[8px] py-[10px] px-[16px] text-[14px] font-semibold transition-colors"
                 >
-                  Sign in to Postiz
+                  Sign in to {branding.name || 'Postiz'}
                 </button>
               )}
 

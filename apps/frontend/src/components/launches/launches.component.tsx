@@ -60,8 +60,8 @@ export const SVGLine = () => {
           y2="-28.6843"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#662FDA" />
-          <stop offset="1" stopColor="#5720CB" />
+          <stop stopColor="#039E94" />
+          <stop offset="1" stopColor="#0BDEAB" />
         </linearGradient>
         <radialGradient
           id="paint1_radial_1930_1119"
@@ -71,8 +71,8 @@ export const SVGLine = () => {
           gradientUnits="userSpaceOnUse"
           gradientTransform="translate(1.19333 7.45342) rotate(21.2064) scale(16.1503 188.627)"
         >
-          <stop stopColor="#8C66FF" />
-          <stop offset="1" stopColor="#8C66FF" stopOpacity="0" />
+          <stop stopColor="#0BDEAB" />
+          <stop offset="1" stopColor="#0BDEAB" stopOpacity="0" />
         </radialGradient>
       </defs>
     </svg>
@@ -650,7 +650,7 @@ export const LaunchesComponent = () => {
             )}
           >
             <div className="flex items-center">
-              <h2 className="group-[.sidebar]:hidden flex-1 text-[20px] font-[500]">
+              <h2 className="flex-1 text-[20px] font-[500]">
                 {t('channels')}
               </h2>
               <div
