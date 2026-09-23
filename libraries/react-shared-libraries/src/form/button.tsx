@@ -48,8 +48,8 @@ export const Button: FC<
       className={clsx(
         (props.disabled || loading) && 'opacity-50 pointer-events-none',
         `${
-          secondary ? 'bg-third' : 'bg-forth text-white'
-        } px-[24px] h-[40px] cursor-pointer items-center justify-center flex relative`,
+          secondary ? 'bg-third border border-textColor/60 text-textColor' : 'bg-[var(--brand-primary,#612ad5)] text-[var(--brand-action-text,#fff)]'
+        } px-[24px] h-[40px] cursor-pointer items-center justify-center flex relative rounded-full`,
         props?.className
       )}
     >

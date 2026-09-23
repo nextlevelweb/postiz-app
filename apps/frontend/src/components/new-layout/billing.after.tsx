@@ -6,6 +6,7 @@ import { Logo } from '@gitroom/frontend/components/new-layout/logo';
 import { LogoutComponent } from '@gitroom/frontend/components/layout/logout.component';
 import React from 'react';
 import { OrganizationSelector } from '@gitroom/frontend/components/layout/organization.selector';
+import { branding } from '@gitroom/frontend/config/branding';
 
 export const BillingAfter = () => {
   const user = useUser();
@@ -21,10 +22,12 @@ export const BillingAfter = () => {
       </div>
       <div className="text-center mb-[20px] text-xl [@media(max-width:1024px)]:text-xl">
         <h1 className="text-3xl [@media(max-width:1024px)]:text-xl">
-          {t(
-            'join_10000_entrepreneurs_who_use_postiz',
-            'Join 10,000+ Entrepreneurs Who Use Postiz'
-          )}
+          {branding.name
+            ? branding.name
+            : t(
+                'join_10000_entrepreneurs_who_use_postiz',
+                'Join 10,000+ Entrepreneurs Who Use Postiz'
+              )}
           <br />
           {t(
             'to_manage_all_your_social_media_channels',

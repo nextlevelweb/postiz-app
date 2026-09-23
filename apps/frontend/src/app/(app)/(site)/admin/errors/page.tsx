@@ -2,9 +2,10 @@ export const dynamic = 'force-dynamic';
 import { AdminErrorsComponent } from '@gitroom/frontend/components/admin/admin-errors.component';
 import { Metadata } from 'next';
 import { isGeneralServerSide } from '@gitroom/helpers/utils/is.general.server.side';
+import { getGeneralBrandName, getBrandAppTitle } from '@gitroom/frontend/config/branding';
 
 export const metadata: Metadata = {
-  title: `${isGeneralServerSide() ? 'Postiz' : 'Gitroom'} Admin Errors`,
+  title: getBrandAppTitle(`${getGeneralBrandName(isGeneralServerSide())} Admin Errors`),
   description: '',
 };
 

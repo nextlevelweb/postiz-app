@@ -814,8 +814,9 @@ html[dir='rtl'] [dir='ltr'] {
 }
 
 .forceChange .changeColor {
-  background: var(--new-btn-primary) !important;
-  color: #fff !important;
+  background: var(--brand-primary, #612ad5) !important;
+  color: var(--brand-action-text, #fff) !important;
+  border-radius: 9999px !important;
 }
 
 .text-shadow-tags {

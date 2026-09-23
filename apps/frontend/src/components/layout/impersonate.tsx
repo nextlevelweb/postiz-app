@@ -304,7 +304,7 @@ const ApplyCouponModal: FC<{ close: () => void }> = ({ close }) => {
           )}
           {!!error && <div className="text-red-400 text-[12px]">{error}</div>}
           <div className="flex gap-[12px] justify-end">
-            <Button onClick={close} className="rounded-[4px]">
+            <Button onClick={close} className="rounded-full">
               {t('close', 'Close')}
             </Button>
             {info.supported && (
@@ -522,7 +522,7 @@ const ChargesModal: FC<{ close: () => void }> = ({ close }) => {
           onClick={handleRefund}
           loading={refunding}
           disabled={!selected.size}
-          className="rounded-[4px]"
+          className="rounded-full"
         >
           {t('refund_selected', 'Refund Selected')}
           {selected.size > 0 && ` (${selected.size})`}
@@ -683,7 +683,7 @@ const AddAnnouncementModal: FC<{ close: () => void }> = ({ close }) => {
           onClick={handleSubmit}
           loading={saving}
           disabled={!title.trim() || !description.trim()}
-          className="rounded-[4px]"
+          className="rounded-full"
         >
           {t('create_announcement', 'Create Announcement')}
         </Button>
@@ -769,7 +769,7 @@ const AddTeamMemberModal: FC<{ close: () => void }> = ({ close }) => {
             <option value="USER">{t('user', 'User')}</option>
             <option value="ADMIN">{t('admin', 'Admin')}</option>
           </Select>
-          <Button type="submit" loading={saving} className="rounded-[4px]">
+          <Button type="submit" loading={saving} className="rounded-full">
             {t('add_team_member', 'Add Team Member')}
           </Button>
         </div>
@@ -979,7 +979,7 @@ const SwitchUser = () => {
         onClick={doSwitch}
         loading={switching}
         disabled={!selected}
-        className="rounded-[4px] whitespace-nowrap"
+        className="rounded-full whitespace-nowrap"
       >
         {t('switch_user', 'Switch User')}
       </Button>

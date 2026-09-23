@@ -271,7 +271,7 @@ export const ThirdPartyMediaLibrary: FC<{
           ),
         });
       }}
-      className="cursor-pointer bg-btnSimple changeColor flex gap-[8px] h-[44px] px-[18px] justify-center items-center rounded-[8px]"
+      className="cursor-pointer bg-btnSimple changeColor flex gap-[8px] h-[44px] px-[20px] justify-center items-center rounded-full font-[600]"
     >
       <svg
         width="14"

@@ -1,6 +1,20 @@
 'use client';
 
+import { branding } from '@gitroom/frontend/config/branding';
+
 export const Logo = () => {
+  if (branding.logoUrl) {
+    return (
+      <img
+        src={branding.logoUrl}
+        alt={branding.name || 'Postiz'}
+        width={60}
+        height={60}
+        className="mt-[8px] min-w-[60px] min-h-[60px] object-contain"
+      />
+    );
+  }
+
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
