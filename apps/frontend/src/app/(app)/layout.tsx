@@ -24,6 +24,7 @@ import {
 import { HtmlComponent } from '@gitroom/frontend/components/layout/html.component';
 import Script from 'next/script';
 import { ChangeDirClient } from '@gitroom/frontend/components/new-layout/change.dir.client';
+import { branding, getBrandPrimaryColor, getBrandSecondaryColor } from '@gitroom/frontend/config/branding';
 
 const jakartaSans = Plus_Jakarta_Sans({
   weight: ['600', '500'],
@@ -38,13 +39,22 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
     ? PlausibleProvider
     : Fragment;
   return (
-    <html>
+    <html
+      style={
+        {
+          '--brand-primary': getBrandPrimaryColor(),
+          '--brand-secondary': getBrandSecondaryColor(),
+          '--brand-text-light': branding.textLight || '#FFFFFF',
+          '--brand-action-text': branding.name ? (branding.textDark || '#1B355F') : '#FFFFFF',
+        } as React.CSSProperties
+      }
+    >
       <head>
-        <link rel="icon" href="/favicon.ico" sizes="any" />
+        <link rel="icon" href={branding.faviconUrl || "/favicon.ico"} sizes="any" />
         {!!process.env.DATAFAST_WEBSITE_ID && (
           <Script
             data-website-id={process.env.DATAFAST_WEBSITE_ID}
-            data-domain="postiz.com"
+            data-domain={branding.websiteUrl || (branding.name ? undefined : 'postiz.com')}
             src="https://datafa.st/js/script.js"
             strategy="afterInteractive"
           />
@@ -108,7 +118,15 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
             <FacebookComponent />
             <GoogleTagManagerComponent gtmId={process.env.NEXT_PUBLIC_GTM_ID} />
             <Plausible
-              domain={!!process.env.IS_GENERAL ? 'postiz.com' : 'gitroom.com'}
+              domain={
+                branding.websiteUrl
+                  ? branding.websiteUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')
+                  : branding.name
+                    ? ''
+                    : !!process.env.IS_GENERAL
+                      ? 'postiz.com'
+                      : 'gitroom.com'
+              }
             >
               <PHProvider
                 phkey={process.env.NEXT_PUBLIC_POSTHOG_KEY}

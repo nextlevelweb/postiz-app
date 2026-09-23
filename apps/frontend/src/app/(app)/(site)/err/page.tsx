@@ -1,7 +1,8 @@
 import { Metadata } from 'next';
+import { getBrandAppTitle } from '@gitroom/frontend/config/branding';
 import { getT } from '@gitroom/react/translation/get.translation.service.backend';
 export const metadata: Metadata = {
-  title: 'Error',
+  title: getBrandAppTitle('Error'),
   description: '',
 };
 export default async function Page() {

@@ -3,6 +3,7 @@ import { sanitizePostContent } from '@gitroom/helpers/utils/sanitize.post.conten
 export const dynamic = 'force-dynamic';
 import { Metadata } from 'next';
 import { isGeneralServerSide } from '@gitroom/helpers/utils/is.general.server.side';
+import { branding, getGeneralBrandName, getBrandAppTitle } from '@gitroom/frontend/config/branding';
 import SafeImage from '@gitroom/react/helpers/safe.image';
 import Link from 'next/link';
 import { CommentsComponents } from '@gitroom/frontend/components/preview/comments.components';
@@ -16,7 +17,7 @@ import { CreationMethodBadge } from '@gitroom/frontend/components/launches/creat
 
 dayjs.extend(utc);
 export const metadata: Metadata = {
-  title: `${isGeneralServerSide() ? 'Postiz' : 'Gitroom'} Preview`,
+  title: getBrandAppTitle(`${getGeneralBrandName(isGeneralServerSide())} Preview`),
   description: '',
 };
 export default async function Auth(
@@ -58,7 +59,7 @@ export default async function Auth(
                 >
                   <div className="max-w-[55px]">
                     <SafeImage
-                      src={'/postiz.svg'}
+                      src={branding.logoUrl || '/postiz.svg'}
                       width={55}
                       height={55}
                       alt="Logo"

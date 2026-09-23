@@ -1078,7 +1078,7 @@ const CalendarItem: FC<{
       )}
       <div
         className={clsx(
-          'text-white text-[11px] max-h-[24px] h-[24px] min-h-[24px] w-full rounded-tr-[10px] rounded-tl-[10px] flex items-center justify-center gap-[10px] px-[5px] bg-btnPrimary'
+          'text-[var(--brand-text-light,#fff)] text-[11px] max-h-[24px] h-[24px] min-h-[24px] w-full rounded-tr-[10px] rounded-tl-[10px] flex items-center justify-center gap-[10px] px-[5px] bg-[var(--brand-secondary,#1B355F)]'
         )}
         style={{
           backgroundColor: post?.tags?.[0]?.tag?.color,
@@ -1175,9 +1175,13 @@ const CalendarItem: FC<{
           />
         </div>
         <div className="w-full flex-1 flex flex-col min-h-[40px]">
-          <div className="text-start">
-            {state === 'DRAFT' ? t('draft', 'Draft') + ': ' : ''}
-          </div>
+          {state === 'DRAFT' && (
+            <div className="text-start mb-[3px]">
+              <span className="inline-flex items-center rounded-full border border-[var(--brand-primary)]/50 bg-[var(--brand-primary)]/10 px-[7px] py-[2px] text-[10px] font-[600] text-[var(--brand-primary)]">
+                {t('draft', 'Draft')}
+              </span>
+            </div>
+          )}
             <div className="w-full relative">
               <div className="absolute top-0 start-0 w-full text-ellipsis break-words line-clamp-1 text-start">
                 {stripHtmlValidation('none', post.content, false, true, false) ||

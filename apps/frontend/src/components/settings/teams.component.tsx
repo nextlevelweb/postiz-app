@@ -189,9 +189,8 @@ export const TeamsComponent = () => {
               {+myLevel > +getLevel(p.role) ? (
                 <div className="w-full lg:flex-1 flex lg:justify-end">
                   <Button
-                    className={`w-full lg:w-auto !bg-customColor3 min-h-[40px] lg:!h-[24px] px-[12px] border border-customColor21 rounded-[4px] text-[12px]`}
+                    className="w-full lg:w-auto !bg-red-700 !text-white min-h-[40px] px-[16px] rounded-full text-[12px]"
                     onClick={remove(p)}
-                    secondary={true}
                   >
                     <div className="flex justify-center items-center gap-[4px]">
                       <div>

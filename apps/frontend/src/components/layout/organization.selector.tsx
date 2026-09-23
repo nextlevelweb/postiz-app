@@ -60,18 +60,18 @@ export const OrganizationSelector: FC<{ asOpenSelect?: boolean }> = ({
       children: (
         <div className="flex flex-col gap-[10px] max-h-[70dvh] overflow-y-auto overscroll-contain pe-[2px]">
           {!!current?.name && (
-            <div className="border-b border-tableBorder pb-[10px] mb-[2px]">
+            <div className="rounded-[16px] border border-[var(--brand-primary)] bg-[var(--brand-primary)]/10 px-[14px] py-[12px] mb-[4px]">
               <div className="font-semibold truncate">{current.name}</div>
               <div className="text-[11px] text-customColor18">Current organization</div>
             </div>
           )}
           {withoutCurrent?.map((org: { name: string; id: string; users: { role: 'SUPERADMIN' | 'ADMIN' | 'USER' }[] }) => (
-            <button key={org.id} type="button" onClick={changeOrg(org)} className="w-full text-start rounded-[8px] border border-tableBorder px-[14px] py-[12px] hover:bg-boxHover">
+            <button key={org.id} type="button" onClick={changeOrg(org)} className="w-full text-start rounded-[16px] border border-tableBorder px-[14px] py-[12px] hover:border-[var(--brand-primary)] hover:bg-[var(--brand-primary)]/5 transition-colors">
               <div className="font-medium truncate">{org.name}</div>
               {!!org?.users?.[0]?.role && <div className="text-[11px] text-customColor18 mt-[2px]">{org.users[0].role === 'SUPERADMIN' ? 'Super-Admin' : org.users[0].role === 'ADMIN' ? 'Admin' : 'User'}</div>}
             </button>
           ))}
-          {user?.role === 'SUPERADMIN' && <button type="button" onClick={createOrg} className="w-full text-start rounded-[8px] bg-btnSimple px-[14px] py-[12px]">{t('create_new_organization', 'Create New Organization')} +</button>}
+          {user?.role === 'SUPERADMIN' && <button type="button" onClick={createOrg} className="w-full text-center rounded-full bg-[var(--brand-primary)] text-[var(--brand-action-text)] font-[600] px-[18px] py-[12px]">{t('create_new_organization', 'Create New Organization')} +</button>}
         </div>
       ),
     });
@@ -84,7 +84,7 @@ export const OrganizationSelector: FC<{ asOpenSelect?: boolean }> = ({
       <div className="hover:text-newTextColor">
         <div className="group text-[12px] relative">
           {asOpenSelect && (
-            <div className="bg-btnPrimary !flex !relative max-w-[500px] mx-auto py-[12px] px-[12px]">Select Organization</div>
+            <div className="bg-[var(--brand-primary)] text-[var(--brand-action-text)] rounded-full !flex !relative max-w-[500px] mx-auto py-[12px] px-[18px] font-[600]">Select Organization</div>
           )}
           {!asOpenSelect && (
             <div onClick={openOrganizationModal} className="flex items-center gap-[6px] cursor-pointer">
@@ -112,7 +112,7 @@ export const OrganizationSelector: FC<{ asOpenSelect?: boolean }> = ({
 
             >
               {!!current?.name && (
-                <div className="border-b border-tableBorder pb-[10px] mb-[2px]">
+                <div className="rounded-[16px] border border-[var(--brand-primary)] bg-[var(--brand-primary)]/10 px-[14px] py-[12px] mb-[4px]">
                   <div className="font-semibold truncate">{current.name}</div>
                   <div className="text-[11px] text-customColor18">Current organization</div>
                 </div>

@@ -1,6 +1,19 @@
 import React from 'react';
+import { branding } from '@gitroom/frontend/config/branding';
 
 export const LogoTextComponent = () => {
+  if (branding.logoTextUrl) {
+    return (
+      <img
+        src={branding.logoTextUrl}
+        alt={branding.name || 'Postiz'}
+        width={240}
+        height={56}
+        className="max-w-[240px] max-h-[56px] w-auto h-auto object-contain"
+      />
+    );
+  }
+
   return (
     <svg
       width="101"

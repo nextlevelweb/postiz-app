@@ -104,7 +104,7 @@ const DeleteAccountComponent: FC<{ isLink?: boolean }> = ({ isLink }) => {
           </div>
         </div>
         <Button
-          className="!bg-red-800"
+          className="!bg-red-700 !text-white rounded-full px-[20px]"
           loading={loading}
           onClick={deleteAccount}
         >

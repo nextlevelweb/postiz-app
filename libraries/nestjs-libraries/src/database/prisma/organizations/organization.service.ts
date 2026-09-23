@@ -13,6 +13,7 @@ import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import { Organization, ShortLinkPreference, User } from '@prisma/client';
 import { AutopostService } from '@gitroom/nestjs-libraries/database/prisma/autopost/autopost.service';
 import { IntegrationRepository } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.repository';
+import { getBrandName } from '@gitroom/helpers/config/branding';
 
 @Injectable()
 export class OrganizationService {
@@ -164,7 +165,7 @@ export class OrganizationService {
       body.email
     );
     if (!users.length) {
-      throw new HttpException('No Postiz account found for this email', 400);
+      throw new HttpException(`No ${getBrandName()} account found for this email`, 400);
     }
 
     if (users.length > 1) {
@@ -281,7 +282,7 @@ export class OrganizationService {
 
     if (customerUsers.length > 1) {
       throw new HttpException(
-        'Multiple Postiz accounts exist for this email',
+        `${getBrandName()} has multiple accounts for this email`,
         400
       );
     }

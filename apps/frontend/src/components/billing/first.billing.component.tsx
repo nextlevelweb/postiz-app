@@ -28,6 +28,7 @@ import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import useCookie from 'react-use-cookie';
 import { LogoutComponent } from '@gitroom/frontend/components/layout/logout.component';
 import { DeveloperIconComponent } from '@gitroom/frontend/components/developer/developer.icon.component';
+import { branding } from '@gitroom/frontend/config/branding';
 
 const ModeComponent = dynamic(
   () => import('@gitroom/frontend/components/layout/mode.component'),
@@ -115,31 +116,39 @@ export const FirstBillingComponent = () => {
     return (
       <>
         <div className="text-[46px] font-[600] leading-[110%] tablet:text-[36px] mobile:!text-[30px] whitespace-pre-line text-balance">
-          {t('billing_join_over', 'Join Over')}{' '}
-          <span className="text-[#FC69FF]">
-            {t('billing_entrepreneurs_count', '20,000+ Entrepreneurs')}
-          </span>{' '}
-          {t('billing_who_use', 'who use')}{' '}
-          {t(
-            'billing_postiz_grow_social',
-            'Postiz To Grow Their Social Presence'
+          {branding.name ? (
+            <>Manage all your social media with {branding.name}</>
+          ) : (
+            <>
+              {t('billing_join_over', 'Join Over')}{' '}
+              <span className="text-[#FC69FF]">
+                {t('billing_entrepreneurs_count', '20,000+ Entrepreneurs')}
+              </span>{' '}
+              {t('billing_who_use', 'who use')}{' '}
+              {t(
+                'billing_postiz_grow_social',
+                'Postiz To Grow Their Social Presence'
+              )}
+            </>
           )}
         </div>
 
-        <div className="flex" onClick={showYouTube}>
-          <div className="tablet:mb-[32px] cursor-pointer mt-[32px] flex gap-[10px] items-center underline hover:font-[700]">
-            <div>
-              <SafeImage
-                className="text-[12px]"
-                src="/icons/platforms/youtube.svg"
-                width={22.5}
-                height={16}
-                alt="YouTube"
-              />
+        {!branding.name && (
+          <div className="flex" onClick={showYouTube}>
+            <div className="tablet:mb-[32px] cursor-pointer mt-[32px] flex gap-[10px] items-center underline hover:font-[700]">
+              <div>
+                <SafeImage
+                  className="text-[12px]"
+                  src="/icons/platforms/youtube.svg"
+                  width={22.5}
+                  height={16}
+                  alt="YouTube"
+                />
+              </div>
+              <div>See the power of Postiz (click here)</div>
             </div>
-            <div>See the power of Postiz (click here)</div>
           </div>
-        </div>
+        )}
 
         {!!user?.allowTrial && (
           <div className="flex mt-[32px] mb-[10px] gap-[15px] tablet:mt-[32px] tablet:mb-[32px] text-[16px] font-[500] mobile:flex-col">

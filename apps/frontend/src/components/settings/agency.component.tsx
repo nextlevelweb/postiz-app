@@ -12,6 +12,10 @@ import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useUser } from '@gitroom/frontend/components/layout/user.context';
 import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
+import {
+  branding,
+  getBrandName,
+} from '@gitroom/frontend/config/branding';
 
 type OrganizationListItem = {
   id: string;
@@ -208,7 +212,7 @@ export const ProvisionOrganizationForm = ({
                   {t('agency_invitation_required', 'Invitation required')}
                 </div>
                 <div className="text-[13px] text-customColor18 mt-[4px]">
-                  Er bestaat nog geen Postiz-account voor{' '}
+                  Er bestaat nog geen {branding.name || 'Postiz'}-account voor{' '}
                   {result.customer.email}. Deel deze uitnodigingslink met de
                   klant.
                 </div>
@@ -439,7 +443,7 @@ export const AgencyComponent = () => {
   const deleteOrganization = useCallback(
     async (organization: AdminOrganizationListItem) => {
       const confirmed = await deleteDialog(
-        `Delete "${organization.name}"? Dit verwijdert de organisatie uit Postiz, markeert bestaande posts als verwijderd en anonimiseert/verwijdert gekoppelde social-integraties en tokens. Deze actie kan niet via de interface ongedaan worden gemaakt.`,
+        `Delete "${organization.name}"? Dit verwijdert de organisatie uit ${branding.name || 'Postiz'}, markeert bestaande posts als verwijderd en anonimiseert/verwijdert gekoppelde social-integraties en tokens. Deze actie kan niet via de interface ongedaan worden gemaakt.`,
         'Delete organization',
         'Delete organization'
       );
@@ -485,7 +489,7 @@ export const AgencyComponent = () => {
           className="text-[12px] font-semibold uppercase tracking-[0.14em]"
           style={{ color: '#0BDEAB' }}
         >
-          Next Level Web
+          {getBrandName()}
         </div>
 
         <h3 className="text-[22px] font-semibold mt-[3px]">
@@ -495,7 +499,7 @@ export const AgencyComponent = () => {
         <div className="text-[13px] opacity-80 mt-[5px] max-w-[720px]">
           Beheer klantorganisaties en genereer veilige tijdelijke links waarmee
           klanten zelf hun social-media-accounts kunnen autoriseren zonder
-          toegang tot het Postiz-dashboard.
+          toegang tot het {branding.name || 'Postiz'}-dashboard.
         </div>
       </div>
 
