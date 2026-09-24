@@ -53,32 +53,32 @@ jobs:
           CONTAINERVER: ${{ needs.build-containers-common.outputs.containerver }}
           NEXT_PUBLIC_VERSION: ${{ github.ref_name }}
         run: |
-          docker buildx build --platform linux/${{ matrix.arch }} \\
-            -f Dockerfile.dev \\
-            -t ghcr.io/nextlevelweb/postiz-app:${{ env.CONTAINERVER }}-${{ matrix.arch }} \\
-            --build-arg NEXT_PUBLIC_VERSION=${{ env.NEXT_PUBLIC_VERSION }} \\
-            --build-arg NEXT_PUBLIC_BRAND_NAME="${{ vars.NEXT_PUBLIC_BRAND_NAME }}" \\
-            --build-arg NEXT_PUBLIC_BRAND_SHORT_NAME="${{ vars.NEXT_PUBLIC_BRAND_SHORT_NAME }}" \\
-            --build-arg NEXT_PUBLIC_BRAND_LOGO_URL="${{ vars.NEXT_PUBLIC_BRAND_LOGO_URL }}" \\
-            --build-arg NEXT_PUBLIC_BRAND_LOGO_TEXT_URL="${{ vars.NEXT_PUBLIC_BRAND_LOGO_TEXT_URL }}" \\
-            --build-arg NEXT_PUBLIC_BRAND_FAVICON_URL="${{ vars.NEXT_PUBLIC_BRAND_FAVICON_URL }}" \\
-            --build-arg NEXT_PUBLIC_BRAND_PRIMARY_COLOR="${{ vars.NEXT_PUBLIC_BRAND_PRIMARY_COLOR }}" \\
-            --build-arg NEXT_PUBLIC_BRAND_SECONDARY_COLOR="${{ vars.NEXT_PUBLIC_BRAND_SECONDARY_COLOR }}" \\
-            --build-arg NEXT_PUBLIC_BRAND_ACCENT_COLOR="${{ vars.NEXT_PUBLIC_BRAND_ACCENT_COLOR }}" \\
-            --build-arg NEXT_PUBLIC_BRAND_TEXT_DARK="${{ vars.NEXT_PUBLIC_BRAND_TEXT_DARK }}" \\
-            --build-arg NEXT_PUBLIC_BRAND_TEXT_LIGHT="${{ vars.NEXT_PUBLIC_BRAND_TEXT_LIGHT }}" \\
-            --build-arg NEXT_PUBLIC_BRAND_GRADIENT_START="${{ vars.NEXT_PUBLIC_BRAND_GRADIENT_START }}" \\
-            --build-arg NEXT_PUBLIC_BRAND_GRADIENT_END="${{ vars.NEXT_PUBLIC_BRAND_GRADIENT_END }}" \\
-            --build-arg NEXT_PUBLIC_BRAND_WEBSITE_URL="${{ vars.NEXT_PUBLIC_BRAND_WEBSITE_URL }}" \\
-            --build-arg NEXT_PUBLIC_BRAND_SUPPORT_URL="${{ vars.NEXT_PUBLIC_BRAND_SUPPORT_URL }}" \\
-            --build-arg NEXT_PUBLIC_BRAND_TERMS_URL="${{ vars.NEXT_PUBLIC_BRAND_TERMS_URL }}" \\
-            --build-arg NEXT_PUBLIC_BRAND_PRIVACY_URL="${{ vars.NEXT_PUBLIC_BRAND_PRIVACY_URL }}" \\
-            --build-arg NEXT_PUBLIC_BRAND_AUTH_HEADLINE="${{ vars.NEXT_PUBLIC_BRAND_AUTH_HEADLINE }}" \\
-            --build-arg NEXT_PUBLIC_BRAND_AUTH_STAT="${{ vars.NEXT_PUBLIC_BRAND_AUTH_STAT }}" \\
-            --build-arg NEXT_PUBLIC_BRAND_APP_TITLE="${{ vars.NEXT_PUBLIC_BRAND_APP_TITLE }}" \\
-            --pull \\
-            --no-cache \\
-            --provenance=false --sbom=false \\
+          docker buildx build --platform linux/${{ matrix.arch }} \
+            -f Dockerfile.dev \
+            -t ghcr.io/nextlevelweb/postiz-app:${{ env.CONTAINERVER }}-${{ matrix.arch }} \
+            --build-arg NEXT_PUBLIC_VERSION=${{ env.NEXT_PUBLIC_VERSION }} \
+            --build-arg NEXT_PUBLIC_BRAND_NAME="${{ vars.NEXT_PUBLIC_BRAND_NAME }}" \
+            --build-arg NEXT_PUBLIC_BRAND_SHORT_NAME="${{ vars.NEXT_PUBLIC_BRAND_SHORT_NAME }}" \
+            --build-arg NEXT_PUBLIC_BRAND_LOGO_URL="${{ vars.NEXT_PUBLIC_BRAND_LOGO_URL }}" \
+            --build-arg NEXT_PUBLIC_BRAND_LOGO_TEXT_URL="${{ vars.NEXT_PUBLIC_BRAND_LOGO_TEXT_URL }}" \
+            --build-arg NEXT_PUBLIC_BRAND_FAVICON_URL="${{ vars.NEXT_PUBLIC_BRAND_FAVICON_URL }}" \
+            --build-arg NEXT_PUBLIC_BRAND_PRIMARY_COLOR="${{ vars.NEXT_PUBLIC_BRAND_PRIMARY_COLOR }}" \
+            --build-arg NEXT_PUBLIC_BRAND_SECONDARY_COLOR="${{ vars.NEXT_PUBLIC_BRAND_SECONDARY_COLOR }}" \
+            --build-arg NEXT_PUBLIC_BRAND_ACCENT_COLOR="${{ vars.NEXT_PUBLIC_BRAND_ACCENT_COLOR }}" \
+            --build-arg NEXT_PUBLIC_BRAND_TEXT_DARK="${{ vars.NEXT_PUBLIC_BRAND_TEXT_DARK }}" \
+            --build-arg NEXT_PUBLIC_BRAND_TEXT_LIGHT="${{ vars.NEXT_PUBLIC_BRAND_TEXT_LIGHT }}" \
+            --build-arg NEXT_PUBLIC_BRAND_GRADIENT_START="${{ vars.NEXT_PUBLIC_BRAND_GRADIENT_START }}" \
+            --build-arg NEXT_PUBLIC_BRAND_GRADIENT_END="${{ vars.NEXT_PUBLIC_BRAND_GRADIENT_END }}" \
+            --build-arg NEXT_PUBLIC_BRAND_WEBSITE_URL="${{ vars.NEXT_PUBLIC_BRAND_WEBSITE_URL }}" \
+            --build-arg NEXT_PUBLIC_BRAND_SUPPORT_URL="${{ vars.NEXT_PUBLIC_BRAND_SUPPORT_URL }}" \
+            --build-arg NEXT_PUBLIC_BRAND_TERMS_URL="${{ vars.NEXT_PUBLIC_BRAND_TERMS_URL }}" \
+            --build-arg NEXT_PUBLIC_BRAND_PRIVACY_URL="${{ vars.NEXT_PUBLIC_BRAND_PRIVACY_URL }}" \
+            --build-arg NEXT_PUBLIC_BRAND_AUTH_HEADLINE="${{ vars.NEXT_PUBLIC_BRAND_AUTH_HEADLINE }}" \
+            --build-arg NEXT_PUBLIC_BRAND_AUTH_STAT="${{ vars.NEXT_PUBLIC_BRAND_AUTH_STAT }}" \
+            --build-arg NEXT_PUBLIC_BRAND_APP_TITLE="${{ vars.NEXT_PUBLIC_BRAND_APP_TITLE }}" \
+            --pull \
+            --no-cache \
+            --provenance=false --sbom=false \
             --output "type=registry,name=ghcr.io/nextlevelweb/postiz-app:${{ env.CONTAINERVER }}-${{ matrix.arch }}" .
 
   build-container-manifest:
