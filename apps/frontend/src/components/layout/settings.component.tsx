@@ -160,8 +160,9 @@ export const SettingsPopup: FC<{
               type="button"
               onClick={() => setTab(tabKey)}
               className={clsx(
-                "shrink-0 whitespace-nowrap rounded-full px-[14px] py-[10px] bg-newBgColorInner border border-newTableBorder",
-                tabKey === tab && "bg-[var(--brand-primary)] text-[var(--brand-action-text)] border-[var(--brand-primary)]"
+                'shrink-0 whitespace-nowrap rounded-full px-[14px] py-[10px] bg-newBgColorInner border border-newTableBorder',
+                tabKey === tab &&
+                  'bg-[var(--brand-primary)] text-btnText border-[var(--brand-primary)]'
               )}
             >
               {label}
