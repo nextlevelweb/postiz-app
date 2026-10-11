@@ -70,14 +70,43 @@ export const ssrfSafeDispatcher = new Agent({
   connect: ssrfSafeConnect,
 });
 
+// Node's http(s) agents skip `lookup` for an IP host too, so the literal host
+// is checked before the agent creates a socket (keep-alive sockets are only
+// ever created through here). A forward-proxy request (absolute request path)
+// connects to the operator's proxy, not the target, and keeps its previous
+// behaviour
+function guardLiteralHosts<T extends http.Agent>(agent: T): T {
+  const createSocket = (agent as any).createSocket;
+  (agent as any).createSocket = function (
+    req: http.ClientRequest,
+    options: { host?: string; hostname?: string },
+    callback: (err: Error | null, socket?: net.Socket) => void
+  ) {
+    const viaForwardProxy = /^https?:\/\//i.test(req.path || '');
+    const blocked = [options.hostname, options.host].some(
+      (host) => !!host && isBlockedLiteralHost(host)
+    );
+    if (blocked && !viaForwardProxy) {
+      process.nextTick(callback, new Error('Blocked IP'));
+      return;
+    }
+    return createSocket.call(this, req, options, callback);
+  };
+  return agent;
+}
+
 // axios can't use an undici dispatcher, but Node's http(s) agents accept the
 // same `lookup` hook, so axios requests (providers that need form-data /
 // stream uploads) get the identical pinned-DNS guard as `this.fetch`.
 const ssrfSafeAxios = axios.create({
-  httpAgent: new http.Agent({ lookup: ssrfSafeLookup } as http.AgentOptions),
-  httpsAgent: new https.Agent({
-    lookup: ssrfSafeLookup,
-  } as https.AgentOptions),
+  httpAgent: guardLiteralHosts(
+    new http.Agent({ lookup: ssrfSafeLookup } as http.AgentOptions)
+  ),
+  httpsAgent: guardLiteralHosts(
+    new https.Agent({
+      lookup: ssrfSafeLookup,
+    } as https.AgentOptions)
+  ),
 });
 
 // Self-hosters legitimately connect Postiz to WordPress/Mastodon/Lemmy/Listmonk
