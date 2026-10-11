@@ -9,35 +9,110 @@ import { URL } from 'node:url';
 import dns from 'node:dns/promises';
 import net from 'node:net';
 
-export function isBlockedIPv4(ip: string): boolean {
-  const [a, b] = ip.split('.').map(Number);
+const BLOCKED_IPV4: Array<[string, number]> = [
+  ['0.0.0.0', 8], // "this" network
+  ['10.0.0.0', 8], // private
+  ['100.64.0.0', 10], // carrier-grade NAT
+  ['127.0.0.0', 8], // loopback
+  ['169.254.0.0', 16], // link-local (cloud metadata)
+  ['172.16.0.0', 12], // private
+  ['192.0.0.0', 24], // IETF protocol assignments
+  ['192.0.2.0', 24], // TEST-NET-1
+  ['192.88.99.0', 24], // 6to4 relay anycast
+  ['192.168.0.0', 16], // private
+  ['198.18.0.0', 15], // benchmarking
+  ['198.51.100.0', 24], // TEST-NET-2
+  ['203.0.113.0', 24], // TEST-NET-3
+  ['224.0.0.0', 4], // multicast
+  ['240.0.0.0', 4], // reserved, includes 255.255.255.255
+];
 
-  if ([a, b].some((n) => Number.isNaN(n))) return true;
+// IPv4-mapped (::ffff:0:0/96), IPv4-compatible (::/96), NAT64 (64:ff9b::/96)
+// and 6to4 (2002::/16) are decoded in isBlockedIPv6 instead of listed here
+const BLOCKED_IPV6: Array<[string, number]> = [
+  ['fc00::', 7], // unique local
+  ['fe80::', 10], // link-local
+  ['fec0::', 10], // site-local (deprecated)
+  ['ff00::', 8], // multicast
+  ['100::', 64], // discard-only
+  ['2001::', 32], // Teredo, not decoded
+  ['2001:10::', 28], // ORCHID
+  ['2001:db8::', 32], // documentation
+  ['64:ff9b:1::', 48], // NAT64 local-use
+  ['::ffff:0:0:0', 96], // IPv4-translated
+];
 
-  return (
-    a === 0 ||                       // 0.0.0.0/8
-    a === 10 ||                      // 10.0.0.0/8
-    a === 127 ||                     // 127.0.0.0/8
-    (a === 169 && b === 254) ||      // 169.254.0.0/16
-    (a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12
-    (a === 192 && b === 168) ||      // 192.168.0.0/16
-    (a === 100 && b >= 64 && b <= 127) || // 100.64.0.0/10
-    (a === 198 && (b === 18 || b === 19)) || // 198.18.0.0/15
-    a >= 224                         // multicast/reserved
+const blockedIPv4 = new net.BlockList();
+BLOCKED_IPV4.forEach(([network, prefix]) =>
+  blockedIPv4.addSubnet(network, prefix, 'ipv4')
+);
+
+const blockedIPv6 = new net.BlockList();
+BLOCKED_IPV6.forEach(([network, prefix]) =>
+  blockedIPv6.addSubnet(network, prefix, 'ipv6')
+);
+
+// Expands a valid IPv6 address into its eight 16-bit groups, including the
+// dotted IPv4 tail form (::ffff:127.0.0.1)
+function ipv6Groups(ip: string): number[] {
+  const address = ip.replace(
+    /(\d+)\.(\d+)\.(\d+)\.(\d+)$/,
+    (_, a, b, c, d) =>
+      `${((+a << 8) | +b).toString(16)}:${((+c << 8) | +d).toString(16)}`
   );
+  const [head, tail] = address.split('::');
+  const left = head ? head.split(':') : [];
+  const right = tail ? tail.split(':') : [];
+  const fill =
+    tail === undefined ? [] : Array(8 - left.length - right.length).fill('0');
+
+  return [...left, ...fill, ...right].map((group) => parseInt(group, 16));
+}
+
+function embeddedIPv4(high: number, low: number) {
+  return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
+}
+
+// Malformed input is treated as blocked
+export function isBlockedIPv4(ip: string): boolean {
+  return !net.isIPv4(ip) || blockedIPv4.check(ip, 'ipv4');
 }
 
 export function isBlockedIPv6(ip: string): boolean {
-  const normalized = ip.toLowerCase();
+  const address = ip.split('%')[0];
+  if (!net.isIPv6(address)) {
+    return true;
+  }
 
-  return (
-    normalized === '::1' ||          // loopback
-    normalized === '::' ||           // unspecified
-    normalized.startsWith('fe80:') || // link-local
-    normalized.startsWith('fc') ||   // unique local fc00::/7
-    normalized.startsWith('fd') ||   // unique local fd00::/7
-    normalized.startsWith('ff')      // multicast
-  );
+  const groups = ipv6Groups(address);
+  const zeroUntil = (end: number) =>
+    groups.slice(0, end).every((group) => group === 0);
+
+  // ::ffff:0:0/96 IPv4-mapped, judged by the IPv4 it points at
+  if (zeroUntil(5) && groups[5] === 0xffff) {
+    return isBlockedIPv4(embeddedIPv4(groups[6], groups[7]));
+  }
+
+  // ::/96 IPv4-compatible (deprecated), also covers :: and ::1
+  if (zeroUntil(6)) {
+    return true;
+  }
+
+  // 64:ff9b::/96 NAT64, judged by the IPv4 it translates to
+  if (
+    groups[0] === 0x64 &&
+    groups[1] === 0xff9b &&
+    groups.slice(2, 6).every((group) => group === 0)
+  ) {
+    return isBlockedIPv4(embeddedIPv4(groups[6], groups[7]));
+  }
+
+  // 2002::/16 6to4, judged by the IPv4 it tunnels to
+  if (groups[0] === 0x2002) {
+    return isBlockedIPv4(embeddedIPv4(groups[1], groups[2]));
+  }
+
+  return blockedIPv6.check(address, 'ipv6');
 }
 
 export function isBlockedIp(ip: string): boolean {
@@ -46,11 +121,6 @@ export function isBlockedIp(ip: string): boolean {
     return isBlockedIPv4(ip);
   }
   if (version === 6) {
-    // IPv4-mapped IPv6 (::ffff:a.b.c.d) — extract and check as IPv4
-    const mapped = ip.toLowerCase().match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (mapped) {
-      return isBlockedIPv4(mapped[1]);
-    }
     return isBlockedIPv6(ip);
   }
   return true;

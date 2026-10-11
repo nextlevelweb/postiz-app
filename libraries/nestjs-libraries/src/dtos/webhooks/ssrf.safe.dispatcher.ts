@@ -1,4 +1,4 @@
-import { Agent } from 'undici';
+import { Agent, buildConnector } from 'undici';
 import axios, { AxiosInstance } from 'axios';
 import dns from 'node:dns';
 import net from 'node:net';
@@ -45,10 +45,29 @@ function ssrfSafeLookup(
   });
 }
 
+// True only for a literal IP host (bracketed IPv6 included) that is blocked.
+// Hostnames return false: their addresses are checked by `ssrfSafeLookup`
+export function isBlockedLiteralHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[(.*)\]$/, '$1');
+  return net.isIP(host) !== 0 && isBlockedIp(host);
+}
+
+const connectWithSafeLookup = buildConnector({ lookup: ssrfSafeLookup });
+
+// Sockets skip `lookup` when the host is already an IP, so a literal host
+// is checked here, before undici's own connector opens the socket
+export const ssrfSafeConnect: buildConnector.connector = (
+  options,
+  callback
+) => {
+  if (isBlockedLiteralHost(options.hostname)) {
+    return callback(new Error('Blocked IP'), null);
+  }
+  return connectWithSafeLookup(options, callback);
+};
+
 export const ssrfSafeDispatcher = new Agent({
-  connect: {
-    lookup: ssrfSafeLookup,
-  },
+  connect: ssrfSafeConnect,
 });
 
 // axios can't use an undici dispatcher, but Node's http(s) agents accept the
