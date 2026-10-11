@@ -5,6 +5,7 @@
     "target": "es2020",
     "jsx": "react-jsx",
     "types": ["jest", "node"],
+    "noImplicitAny": false,
     "incremental": false,
     "resolveJsonModule": true
   },

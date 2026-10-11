@@ -84,6 +84,26 @@ export class MediaRepository {
     });
   }
 
+  // A foreign, deleted or missing id all come back as null, so callers can't
+  // tell them apart. Whether the media is ready (status) is the caller's call
+  getMediaByIdForOrganization(org: string, id: string) {
+    return this._media.model.media.findFirst({
+      where: {
+        id,
+        organizationId: org,
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+        name: true,
+        path: true,
+        thumbnail: true,
+        alt: true,
+        status: true,
+      },
+    });
+  }
+
   deleteMedia(org: string, id: string) {
     return this._media.model.media.update({
       where: {
