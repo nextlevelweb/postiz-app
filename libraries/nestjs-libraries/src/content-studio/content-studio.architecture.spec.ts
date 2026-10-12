@@ -1,23 +1,30 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import ts from 'typescript';
 
 // Content Studio may only use explicitly resolved organization AI
-// connections. This guard parses Content Studio production code (and nothing
-// else: legacy Postiz AI is deliberately out of scope) and fails on the ways a
-// global, environment-backed credential could sneak in.
+// connections and must not render raw HTML. This guard parses Content Studio
+// production code (and nothing else: legacy Postiz AI is deliberately out of
+// scope) and fails on the ways a global, environment-backed credential or an
+// HTML injection sink could sneak in.
 
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
 
-const ROOTS = [
-  'libraries/nestjs-libraries/src/content-studio',
-  'apps/backend/src/api/routes/content-studio',
-  'apps/frontend/src/components/content-studio',
-  'libraries/helpers/src/content-studio',
+// Content Studio code follows the Postiz layout, so it is spread over these
+// trees (database/prisma/content-studio, dtos/content-studio, a flat
+// routes/content-studio.controller.ts, app/(app)/(site)/content-studio, ...).
+// Only paths that name Content Studio are scanned, see isContentStudioPath
+const SOURCE_BASES = [
+  'libraries/nestjs-libraries/src',
+  'libraries/helpers/src',
+  'apps/backend/src',
+  'apps/frontend/src',
+  'apps/orchestrator/src',
 ];
-// The orchestrator has no fixed folder yet: any file or folder under its src
-// whose name contains `content-studio` is in scope
-const ORCHESTRATOR_SRC = 'apps/orchestrator/src';
+const CONTENT_STUDIO = 'content-studio';
+const FIXTURE_RELATIVE =
+  'libraries/nestjs-libraries/src/content-studio/fixture.ts';
 
 const SKIPPED_DIRECTORIES = new Set([
   'node_modules',
@@ -34,7 +41,8 @@ type Rule =
   | 'CS_NO_GLOBAL_AI_CLIENT'
   | 'CS_NO_DEFAULT_PROVIDER_CLIENT'
   | 'CS_NO_LEGACY_AI_SERVICE'
-  | 'CS_NO_SAFEFETCH_FACTORY';
+  | 'CS_NO_SAFEFETCH_FACTORY'
+  | 'CS_NO_RAW_HTML_SINK';
 
 // Fixed messages: a violation never echoes source text, so a committed key
 // does not end up in CI logs a second time
@@ -51,6 +59,8 @@ const MESSAGES: Record<Rule, string> = {
     'Content Studio must not use the environment-keyed Postiz AI services; use the organization AI connection',
   CS_NO_SAFEFETCH_FACTORY:
     'createSafeFetch is a test seam; production Content Studio code must use safeFetch',
+  CS_NO_RAW_HTML_SINK:
+    'Content Studio code must not render or assign raw HTML directly',
 };
 
 // OpenAI (sk-, sk-proj-, sk-svcacct-, ...) and Anthropic (sk-ant-) keys need at
@@ -112,6 +122,11 @@ const LEGACY_AI_MODULES = [
 
 const SAFE_FETCH_MODULE = /(^|\/)safe\.fetch$/;
 
+// Studio stores plain text and the server builds the composer HTML, so the
+// React and DOM ways of injecting markup are never needed in Studio code
+const RAW_HTML_PROP = 'dangerouslySetInnerHTML';
+const RAW_HTML_PROPERTIES = ['innerHTML', 'outerHTML'];
+
 interface Violation {
   file: string;
   line: number;
@@ -170,6 +185,14 @@ function memberName(node: ts.Node) {
     return node.argumentExpression.text;
   }
   return undefined;
+}
+
+function withoutParentheses(node: ts.Expression) {
+  let current = node;
+  while (ts.isParenthesizedExpression(current)) {
+    current = current.expression;
+  }
+  return current;
 }
 
 function calleeName(node: ts.Expression) {
@@ -349,6 +372,26 @@ function checkSource(file: string, text: string): Violation[] {
       }
     }
 
+    // <div dangerouslySetInnerHTML={...} />, on any element or component
+    if (
+      ts.isJsxAttribute(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === RAW_HTML_PROP
+    ) {
+      report(node, 'CS_NO_RAW_HTML_SINK');
+    }
+    // el.innerHTML = html, el['outerHTML'] += html; reading them is fine
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+      RAW_HTML_PROPERTIES.includes(
+        memberName(withoutParentheses(node.left)) || ''
+      )
+    ) {
+      report(node, 'CS_NO_RAW_HTML_SINK');
+    }
+
     ts.forEachChild(node, visit);
   };
   visit(source);
@@ -383,18 +426,42 @@ const isSource = (file: string) =>
   /\.tsx?$/.test(file) && !file.endsWith('.d.ts');
 const isProduction = (file: string) => isSource(file) && !TEST_FILE.test(file);
 
-function contentStudioFiles(keep = isProduction) {
-  return [
-    ...ROOTS.flatMap((root) => listFiles(path.join(REPO_ROOT, root), keep)),
-    ...listFiles(path.join(REPO_ROOT, ORCHESTRATOR_SRC), keep).filter((file) =>
-      path.relative(REPO_ROOT, file).includes('content-studio')
-    ),
-  ];
+// A repo relative path is Content Studio code when it sits under a source base
+// and, below that base, a folder is named `content-studio` or the file name's
+// first dot separated part is `content-studio` (content-studio.controller.ts).
+// Only the part below the base is looked at, so a checkout folder that happens
+// to be called content-studio (this worktree is) never pulls in legacy code
+function isContentStudioPath(relative: string) {
+  const base = SOURCE_BASES.find((entry) => relative.startsWith(`${entry}/`));
+  if (!base) {
+    return false;
+  }
+  const segments = relative.slice(base.length + 1).split('/');
+  const fileName = segments.pop() || '';
+  return (
+    segments.includes(CONTENT_STUDIO) ||
+    fileName.split('.')[0] === CONTENT_STUDIO
+  );
+}
+
+const relativePath = (root: string, file: string) =>
+  path.relative(root, file).split(path.sep).join('/');
+
+// Every base is walked (directory names only), but a file is read and parsed
+// only when its path names Content Studio
+function contentStudioFiles(root = REPO_ROOT, keep = isProduction) {
+  return SOURCE_BASES.flatMap((base) =>
+    listFiles(
+      path.join(root, base),
+      (file) => keep(file) && isContentStudioPath(relativePath(root, file))
+    )
+  ).sort();
 }
 
 // Fixtures are checked in memory under a Content Studio path; nothing is
 // written to the tree
-const FIXTURE = path.join(REPO_ROOT, ROOTS[0], 'fixture.ts');
+const FIXTURE = path.join(REPO_ROOT, FIXTURE_RELATIVE);
+const FIXTURE_TSX = FIXTURE.replace(/\.ts$/, '.tsx');
 const rules = (text: string, file = FIXTURE) =>
   checkSource(file, text).map((violation) => violation.rule);
 
@@ -448,7 +515,7 @@ describe('Content Studio architecture guard', () => {
       );
 
       expect(report).toEqual([
-        `${ROOTS[0]}/fixture.ts:2:15 [CS_NO_HARDCODED_AI_KEY] ${MESSAGES.CS_NO_HARDCODED_AI_KEY}`,
+        `${FIXTURE_RELATIVE}:2:15 [CS_NO_HARDCODED_AI_KEY] ${MESSAGES.CS_NO_HARDCODED_AI_KEY}`,
       ]);
       expect(report.join('\n')).not.toContain('fake-test-key');
     });
@@ -598,6 +665,77 @@ describe('Content Studio architecture guard', () => {
     });
   });
 
+  describe('CS_NO_RAW_HTML_SINK', () => {
+    it.each([
+      ['const view = <div dangerouslySetInnerHTML={{ __html: html }} />;'],
+      ['const view = <Preview dangerouslySetInnerHTML={value} />;'],
+      [
+        'const view = <section dangerouslySetInnerHTML={props.value}></section>;',
+      ],
+      ['element.innerHTML = html;'],
+      ["element['innerHTML'] = html;"],
+      ['element.outerHTML = html;'],
+      ['element["outerHTML"] = html;'],
+      ['element.innerHTML += moreHtml;'],
+      ['(element.innerHTML) = html;'],
+      ['document.body.innerHTML = `<p>${text}</p>`;'],
+    ])('rejects %s', (text) => {
+      expect(rules(text, FIXTURE_TSX)).toEqual(['CS_NO_RAW_HTML_SINK']);
+    });
+
+    it.each([
+      ['const value = element.innerHTML;'],
+      ['const value = element.outerHTML;'],
+      ['console.log(element.outerHTML);'],
+      ['if (element.innerHTML === "") { reset(); }'],
+      ['element.textContent = text;'],
+      ["element.setAttribute('data-html', value);"],
+      ['element.htmlFor = id; const innerHtml = value;'],
+      ['const view = <div>{text}</div>;'],
+      ['const view = <textarea value={text} />;'],
+      ['const prop = { dangerouslySetInnerHTML: value };'],
+      [
+        "// element.innerHTML = html\nconst note = 'el.innerHTML = x and dangerouslySetInnerHTML';",
+      ],
+      ['const content = composerHtml(text); const item = { content };'],
+    ])('allows %s', (text) => {
+      expect(rules(text, FIXTURE_TSX)).toEqual([]);
+    });
+
+    it('reports each sink with its location and never the markup', () => {
+      const text = [
+        'export const View = ({ html }: { html: string }) => (',
+        '  <div dangerouslySetInnerHTML={{ __html: html }} />',
+        ');',
+        'export function paint(el: HTMLElement, html: string) {',
+        "  el.innerHTML = '<img src=x onerror=alert(1)>';",
+        "  el['outerHTML'] += html;",
+        '  const current = el.innerHTML;',
+        '  el.textContent = current;',
+        '}',
+        'const key = process.env.KEY;',
+      ].join('\n');
+      const violations = checkSource(FIXTURE_TSX, text);
+
+      expect(
+        violations.map(({ line, column, rule }) => ({ line, column, rule }))
+      ).toEqual([
+        { line: 2, column: 8, rule: 'CS_NO_RAW_HTML_SINK' },
+        { line: 5, column: 3, rule: 'CS_NO_RAW_HTML_SINK' },
+        { line: 6, column: 3, rule: 'CS_NO_RAW_HTML_SINK' },
+        { line: 10, column: 13, rule: 'CS_NO_PROCESS_ENV' },
+      ]);
+      const report = violations.map(format);
+      expect(report[1]).toBe(
+        `${FIXTURE_RELATIVE.replace(
+          /\.ts$/,
+          '.tsx'
+        )}:5:3 [CS_NO_RAW_HTML_SINK] ${MESSAGES.CS_NO_RAW_HTML_SINK}`
+      );
+      expect(report.join('\n')).not.toMatch(/onerror|__html|<img/);
+    });
+  });
+
   it('reports every violation in a file with its location', () => {
     const text = [
       "import { openai } from '@ai-sdk/openai';",
@@ -649,15 +787,115 @@ describe('Content Studio architecture guard', () => {
     expect(rules(text)).toEqual(expect.arrayContaining(expected));
   });
 
+  describe('Content Studio file discovery', () => {
+    // Where Phase 1 puts its code, following the Postiz layout
+    const included = [
+      'libraries/nestjs-libraries/src/content-studio/content.package.draft.ts',
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.repository.ts',
+      'libraries/nestjs-libraries/src/dtos/content-studio/content-studio.package.dto.ts',
+      'libraries/helpers/src/content-studio/limits.ts',
+      'apps/backend/src/api/routes/content-studio.controller.ts',
+      'apps/backend/src/api/routes/content-studio/handoff.controller.ts',
+      'apps/frontend/src/app/(app)/(site)/content-studio/page.tsx',
+      'apps/frontend/src/app/(app)/(site)/content-studio/[id]/page.tsx',
+      'apps/frontend/src/components/content-studio/package.workspace.tsx',
+      'apps/frontend/src/components/launches/content-studio.handoff.opener.tsx',
+      'apps/orchestrator/src/workflows/content-studio/render.ts',
+      'apps/orchestrator/src/content-studio.worker.ts',
+    ];
+    const excluded = [
+      'apps/backend/src/api/routes/media.controller.ts',
+      'apps/backend/src/api/routes/copilot.controller.ts',
+      'apps/frontend/src/components/media/media.component.tsx',
+      'apps/frontend/src/components/launches/new.post.tsx',
+      'apps/frontend/src/app/(app)/(site)/launches/page.tsx',
+      'libraries/nestjs-libraries/src/openai/openai.service.ts',
+      'libraries/nestjs-libraries/src/agent/agent.graph.service.ts',
+      'libraries/nestjs-libraries/src/chat/load.tools.service.ts',
+      // specs, tests and declarations, even inside Content Studio
+      'apps/backend/src/api/routes/content-studio.controller.spec.ts',
+      'libraries/nestjs-libraries/src/content-studio/content-studio.architecture.spec.ts',
+      'apps/frontend/src/components/content-studio/package.workspace.test.tsx',
+      'libraries/nestjs-libraries/src/content-studio/types.d.ts',
+      // near misses: the name has to be content-studio, not contain it
+      'apps/frontend/src/components/my-content-studio/list.tsx',
+      'apps/frontend/src/components/launches/precontent-studio.tsx',
+      'apps/frontend/src/components/launches/use.content-studio.tsx',
+      // not TypeScript, or outside the source bases
+      'apps/frontend/src/components/content-studio/readme.md',
+      'apps/frontend/public/content-studio/script.ts',
+      'content-studio/index.ts',
+      'apps/frontend/content-studio.config.ts',
+    ];
+    const isContentStudioFile = (relative: string) =>
+      isProduction(relative) && isContentStudioPath(relative);
+
+    it.each(included.map((file) => [file]))('includes %s', (file) => {
+      expect(isContentStudioFile(file)).toBe(true);
+    });
+
+    it.each(excluded.map((file) => [file]))('excludes %s', (file) => {
+      expect(isContentStudioFile(file)).toBe(false);
+    });
+
+    // The same paths as real files in a scratch tree, walked by the real
+    // walker; skipped folders are never entered
+    it('walks the source bases and returns only Content Studio production files', () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cs-guard-'));
+      try {
+        const skipped = [
+          'libraries/nestjs-libraries/src/content-studio/node_modules/x/index.ts',
+          'apps/frontend/src/content-studio/.next/server/page.ts',
+          'libraries/nestjs-libraries/src/content-studio/generated/client.ts',
+          'apps/backend/src/content-studio/dist/main.ts',
+        ];
+        for (const file of [...included, ...excluded, ...skipped]) {
+          fs.mkdirSync(path.dirname(path.join(root, file)), {
+            recursive: true,
+          });
+          fs.writeFileSync(path.join(root, file), '');
+        }
+
+        expect(
+          contentStudioFiles(root).map((file) => relativePath(root, file))
+        ).toEqual([...included].sort());
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('real Content Studio tree', () => {
     const files = contentStudioFiles();
 
-    it('resolves the roots from the repository', () => {
+    it('resolves the source bases from the repository', () => {
       expect(fs.existsSync(path.join(REPO_ROOT, 'pnpm-lock.yaml'))).toBe(true);
-      expect(fs.existsSync(path.join(REPO_ROOT, ORCHESTRATOR_SRC))).toBe(true);
+      for (const base of SOURCE_BASES) {
+        expect(fs.statSync(path.join(REPO_ROOT, base)).isDirectory()).toBe(
+          true
+        );
+      }
       // the walker does see this folder; only spec files are left out
-      expect(contentStudioFiles(isSource)).toContain(__filename);
+      expect(contentStudioFiles(REPO_ROOT, isSource)).toContain(__filename);
       expect(files).not.toContain(__filename);
+    });
+
+    it('leaves legacy Postiz code out of the scan', () => {
+      const seen = contentStudioFiles(REPO_ROOT, isSource).map((file) =>
+        relativePath(REPO_ROOT, file)
+      );
+      for (const legacy of [
+        'libraries/nestjs-libraries/src/openai/openai.service.ts',
+        'libraries/nestjs-libraries/src/agent/agent.graph.service.ts',
+        'libraries/nestjs-libraries/src/chat/load.tools.service.ts',
+        'apps/backend/src/api/routes/copilot.controller.ts',
+        'apps/frontend/src/components/launches/new.post.tsx',
+        'apps/frontend/src/components/media/media.component.tsx',
+      ]) {
+        expect(fs.existsSync(path.join(REPO_ROOT, legacy))).toBe(true);
+        expect(seen).not.toContain(legacy);
+      }
+      expect(seen.every(isContentStudioPath)).toBe(true);
     });
 
     it('walks nested folders and leaves out spec and declaration files', () => {
@@ -671,9 +909,7 @@ describe('Content Studio architecture guard', () => {
       expect(found.every((file) => !file.endsWith('.d.ts'))).toBe(true);
     });
 
-    it(`has no violations in ${files.length} production file(s) under ${
-      ROOTS.length + 1
-    } roots`, () => {
+    it(`has no violations in ${files.length} production file(s) under ${SOURCE_BASES.length} source bases`, () => {
       const violations = files.flatMap((file) =>
         checkSource(file, fs.readFileSync(file, 'utf8'))
       );
