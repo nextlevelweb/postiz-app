@@ -6,6 +6,7 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import {
+  HTTP_CODE_METADATA,
   METHOD_METADATA,
   PATH_METADATA,
   PIPES_METADATA,
@@ -13,6 +14,7 @@ import {
 import { Organization, User } from '@prisma/client';
 import { ContentStudioController } from '@gitroom/backend/api/routes/content-studio.controller';
 import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.service';
+import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -35,6 +37,10 @@ jest.mock(
     MediaService: class MediaService {},
   })
 );
+// The composer serializer needs a DOM for its sanitizer; it has its own specs
+jest.mock('@gitroom/nestjs-libraries/content-studio/handoff.html', () => ({
+  contentStudioTextToComposerHtml: (text: string) => text,
+}));
 
 const ORG = { id: 'org-a' } as Organization;
 const USER = { id: 'user-1' } as User;
@@ -63,10 +69,16 @@ const setup = () => {
     listRevisions: jest.fn().mockResolvedValue(result),
     getRevision: jest.fn().mockResolvedValue(result),
   };
+  const handoffs = {
+    createHandoff: jest.fn().mockResolvedValue(result),
+    resolveHandoff: jest.fn().mockResolvedValue(result),
+    revokeHandoff: jest.fn().mockResolvedValue(result),
+  };
   const controller = new ContentStudioController(
-    service as unknown as ContentStudioService
+    service as unknown as ContentStudioService,
+    handoffs as unknown as ContentStudioHandoffService
   );
-  return { service, controller, result };
+  return { service, handoffs, controller, result };
 };
 
 // A DTO that also carries fields it does not declare, as it would without the
@@ -249,7 +261,7 @@ describe('ContentStudioController wiring', () => {
     expect(types('listRevisions')[2]).toBe(ListContentPackageRevisionsDto);
   });
 
-  it('exposes exactly the Phase 1 project, package, draft and revision routes', () => {
+  it('exposes exactly the Phase 1 project, package, draft, revision and handoff routes', () => {
     expect(Reflect.getMetadata(PATH_METADATA, ContentStudioController)).toBe(
       '/content-studio'
     );
@@ -266,6 +278,7 @@ describe('ContentStudioController wiring', () => {
       .sort();
 
     expect(routes).toEqual([
+      'GET /handoffs/:handoffId',
       'GET /packages',
       'GET /packages/:id',
       'GET /packages/:id/revisions',
@@ -273,15 +286,115 @@ describe('ContentStudioController wiring', () => {
       'GET /projects',
       'PATCH /packages/:id',
       'PATCH /projects/:id',
+      'POST /handoffs/:handoffId/revoke',
       'POST /packages',
       'POST /packages/:id/archive',
       'POST /packages/:id/restore',
       'POST /packages/:id/revisions',
+      'POST /packages/:id/revisions/:revisionId/handoffs',
       'POST /projects',
       'POST /projects/:id/archive',
       'POST /projects/:id/restore',
       'PUT /packages/:id/draft',
     ]);
+  });
+});
+
+describe('ContentStudioController handoffs', () => {
+  const handler = (name: string) =>
+    (ContentStudioController.prototype as unknown as Record<string, object>)[
+      name
+    ];
+
+  it('C21 C24 creates a handoff for the request org and user, package and revision', async () => {
+    const { handoffs, controller, result } = setup();
+
+    await expect(
+      controller.createHandoff(ORG, USER, 'package-1', 'revision-1')
+    ).resolves.toBe(result);
+    expect(handoffs.createHandoff).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      userId: 'user-1',
+      packageId: 'package-1',
+      revisionId: 'revision-1',
+    });
+  });
+
+  it('C22 C25 opens a handoff for the request org and user', async () => {
+    const { handoffs, controller, result } = setup();
+    const opened = {
+      id: 'h',
+      onlyValues: [{ content: '<p>Hi</p>', image: [{ id: 'm1', path: '/p' }] }],
+    };
+    handoffs.resolveHandoff.mockResolvedValue(opened);
+
+    await expect(controller.resolveHandoff(ORG, USER, 'h')).resolves.toBe(
+      opened
+    );
+    expect(handoffs.resolveHandoff).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      userId: 'user-1',
+      handoffId: 'h',
+    });
+    expect(result).not.toBe(opened);
+  });
+
+  it('C23 C26 revokes a handoff for the request org and user', async () => {
+    const { handoffs, controller, result } = setup();
+
+    await expect(controller.revokeHandoff(ORG, USER, 'h')).resolves.toBe(
+      result
+    );
+    expect(handoffs.revokeHandoff).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      userId: 'user-1',
+      handoffId: 'h',
+    });
+  });
+
+  it('C27 C28 handoff routes read no body and answer 201, 200 and 200', () => {
+    const routes = {
+      createHandoff: 'POST /packages/:id/revisions/:revisionId/handoffs',
+      resolveHandoff: 'GET /handoffs/:handoffId',
+      revokeHandoff: 'POST /handoffs/:handoffId/revoke',
+    };
+    for (const [name, route] of Object.entries(routes)) {
+      expect(
+        `${
+          RequestMethod[Reflect.getMetadata(METHOD_METADATA, handler(name))]
+        } ${Reflect.getMetadata(PATH_METADATA, handler(name))}`
+      ).toBe(route);
+      // org, user and route params only: no DTO class to fill from a body
+      const types: unknown[] = Reflect.getMetadata(
+        'design:paramtypes',
+        ContentStudioController.prototype,
+        name
+      );
+      expect(types).toEqual([
+        Object,
+        Object,
+        ...types.slice(2).map(() => String),
+      ]);
+    }
+    // create keeps Nest's POST default (201); revoke is set to 200
+    expect(
+      Reflect.getMetadata(HTTP_CODE_METADATA, handler('createHandoff'))
+    ).toBeUndefined();
+    expect(
+      Reflect.getMetadata(HTTP_CODE_METADATA, handler('revokeHandoff'))
+    ).toBe(200);
+    expect(
+      Reflect.getMetadata(HTTP_CODE_METADATA, handler('resolveHandoff'))
+    ).toBeUndefined();
+  });
+
+  it('C29 C30 keeps the strict pipe on the controller that also serves handoffs', () => {
+    expect(
+      Reflect.getMetadata(PIPES_METADATA, ContentStudioController)
+    ).toHaveLength(1);
+    expect(
+      Reflect.getMetadata('design:paramtypes', ContentStudioController)
+    ).toEqual([ContentStudioService, ContentStudioHandoffService]);
   });
 });
 
@@ -402,11 +515,16 @@ describe('ContentStudioController revisions', () => {
       )
       .filter((route) => route.includes('/revisions'))
       .sort();
+    // the only route below a revision creates a handoff from it
+    expect(
+      revisionRoutes.filter((route) => /^(PATCH|PUT|DELETE) /.test(route))
+    ).toEqual([]);
 
     expect(revisionRoutes).toEqual([
       'GET /packages/:id/revisions',
       'GET /packages/:id/revisions/:revisionId',
       'POST /packages/:id/revisions',
+      'POST /packages/:id/revisions/:revisionId/handoffs',
     ]);
   });
 });

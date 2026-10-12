@@ -18,6 +18,7 @@ import { Organization, User } from '@prisma/client';
 import { GetOrgFromRequest } from '@gitroom/nestjs-libraries/user/org.from.request';
 import { GetUserFromRequest } from '@gitroom/nestjs-libraries/user/user.from.request';
 import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.service';
+import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -44,7 +45,10 @@ const contentStudioValidationPipe = new ValidationPipe({
 @Controller('/content-studio')
 @UsePipes(contentStudioValidationPipe)
 export class ContentStudioController {
-  constructor(private _contentStudioService: ContentStudioService) {}
+  constructor(
+    private _contentStudioService: ContentStudioService,
+    private _contentStudioHandoffService: ContentStudioHandoffService
+  ) {}
 
   @Get('/projects')
   listProjects(
@@ -212,6 +216,50 @@ export class ContentStudioController {
       organizationId: org.id,
       packageId: id,
       revisionId,
+    });
+  }
+
+  // Hands a frozen revision to this user's composer for 24 hours. Handoffs
+  // can't be listed, changed or deleted; the body is never read
+  @Post('/packages/:id/revisions/:revisionId/handoffs')
+  createHandoff(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Param('revisionId') revisionId: string
+  ) {
+    return this._contentStudioHandoffService.createHandoff({
+      organizationId: org.id,
+      userId: user.id,
+      packageId: id,
+      revisionId,
+    });
+  }
+
+  @Get('/handoffs/:handoffId')
+  resolveHandoff(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('handoffId') handoffId: string
+  ) {
+    return this._contentStudioHandoffService.resolveHandoff({
+      organizationId: org.id,
+      userId: user.id,
+      handoffId,
+    });
+  }
+
+  @Post('/handoffs/:handoffId/revoke')
+  @HttpCode(200)
+  revokeHandoff(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('handoffId') handoffId: string
+  ) {
+    return this._contentStudioHandoffService.revokeHandoff({
+      organizationId: org.id,
+      userId: user.id,
+      handoffId,
     });
   }
 }

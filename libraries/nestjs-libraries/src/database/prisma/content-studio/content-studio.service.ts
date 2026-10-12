@@ -7,7 +7,6 @@ import {
   assertContentPackagePublishable,
   CONTENT_PACKAGE_SCHEMA_VERSION,
   ContentPackageDraftError,
-  ContentPackageDraftV1,
   emptyContentPackageDraft,
   parseContentPackageDraft,
 } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
@@ -16,6 +15,10 @@ import {
   CanonicalJsonError,
   sha256Hex,
 } from '@gitroom/nestjs-libraries/content-studio/canonical.json';
+import {
+  ContentPackageRevisionIntegrityError,
+  parseVerifiedContentPackageRevision,
+} from '@gitroom/nestjs-libraries/content-studio/content.package.revision';
 import { ContentPackageRevisionOrigin } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.package.dto';
 
 export const CONTENT_STUDIO_PAGE_SIZE = 20;
@@ -609,27 +612,19 @@ export class ContentStudioService {
     }
   }
 
-  // A revision must still be exactly what was stored: a valid draft, in
-  // canonical form, matching its hash and schema version. Anything else is
+  // A revision must still be exactly what was stored; anything else is
   // reported, never normalized or repaired
   private verifiedRevisionContent(row: RevisionRow & { content: string }) {
-    let content: ContentPackageDraftV1 | undefined;
     try {
-      content = parseContentPackageDraft(JSON.parse(row.content));
-    } catch {
-      content = undefined;
+      return parseVerifiedContentPackageRevision(row);
+    } catch (err) {
+      if (err instanceof ContentPackageRevisionIntegrityError) {
+        this._logger.error(
+          `Stored Content Studio revision is invalid: ${row.id}`
+        );
+        throw storedRevisionInvalid();
+      }
+      throw err;
     }
-    if (
-      !content ||
-      content.schemaVersion !== row.schemaVersion ||
-      canonicalJson(content) !== row.content ||
-      sha256Hex(row.content) !== row.contentHash
-    ) {
-      this._logger.error(
-        `Stored Content Studio revision is invalid: ${row.id}`
-      );
-      throw storedRevisionInvalid();
-    }
-    return content;
   }
 }
