@@ -27,6 +27,15 @@ import {
   UpdateContentPackageDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.package.dto';
 
+// The real MediaService pulls in uploads, Redis and Temporal at import time;
+// the controller only needs the service class it forwards to
+jest.mock(
+  '@gitroom/nestjs-libraries/database/prisma/media/media.service',
+  () => ({
+    MediaService: class MediaService {},
+  })
+);
+
 const ORG = { id: 'org-a' } as Organization;
 const USER = { id: 'user-1' } as User;
 const PROJECT_ID = '3b241101-e2bb-4255-8caf-4136c566a962';

@@ -2,8 +2,18 @@ import { HttpException, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.repository';
 import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.service';
+import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
 import { parseContentPackageDraft } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 import * as canonical from '@gitroom/nestjs-libraries/content-studio/canonical.json';
+
+// The real MediaService pulls in uploads, Redis and Temporal at import time;
+// ContentStudioMediaService is mocked in every test below
+jest.mock(
+  '@gitroom/nestjs-libraries/database/prisma/media/media.service',
+  () => ({
+    MediaService: class MediaService {},
+  })
+);
 
 // No database: the repository is mocked, so these tests pin the business
 // rules and the errors the API answers with
@@ -45,6 +55,7 @@ const PACKAGE_DETAIL_KEYS = [
   'draftVersion',
   'id',
   'latestRevisionNumber',
+  'media',
   'name',
   'projectId',
   'updatedAt',
@@ -115,10 +126,15 @@ const setup = () => {
     countRevisionsForPackage: jest.fn().mockResolvedValue(0),
     getRevisionForPackage: jest.fn().mockResolvedValue(null),
   };
+  const media = {
+    getPreviewMap: jest.fn(async () => ({})),
+    resolveForHandoff: jest.fn(),
+  };
   const service = new ContentStudioService(
-    repository as unknown as ContentStudioRepository
+    repository as unknown as ContentStudioRepository,
+    media as unknown as ContentStudioMediaService
   );
-  return { repository, service };
+  return { repository, media, service };
 };
 
 // Content Studio answers with plain HttpExceptions only: never the 403
@@ -543,6 +559,7 @@ describe('ContentStudioService packages', () => {
       archivedAt: null,
       createdAt: T,
       updatedAt: T,
+      media: {},
     });
     expect(typeof detail.draft).toBe('object');
     expect(repository.getPackageForOrganization).toHaveBeenCalledWith(
@@ -1674,6 +1691,7 @@ describe('ContentStudioService revision history', () => {
       createdAt: T,
       createdBy: { id: USER, name: 'Ada' },
       content: DRAFT_A,
+      media: {},
     });
     expect(typeof detail.content).toBe('object');
     expect(JSON.stringify(detail)).not.toContain(JSON.stringify(CANONICAL_A));
@@ -1912,5 +1930,219 @@ describe('ContentStudioService revision immutability and races', () => {
         )
       )
     ).toEqual([]);
+  });
+});
+
+describe('ContentStudioService media previews', () => {
+  const DRAFT_WITH_MEDIA = {
+    schemaVersion: 1,
+    copy: {
+      global: {
+        thread: [
+          { id: 'one', text: 'First', mediaIds: ['m1', 'm2'] },
+          { id: 'two', text: 'Second', mediaIds: ['m2', 'm3'] },
+        ],
+      },
+    },
+  };
+  const PREVIEW = {
+    m1: {
+      id: 'm1',
+      path: 'https://uploads.example.com/m1.png',
+      thumbnail: null as string | null,
+      alt: null as string | null,
+      status: 'ready',
+    },
+    m2: {
+      id: 'm2',
+      path: 'https://uploads.example.com/m2.mp4',
+      thumbnail: null as string | null,
+      alt: null as string | null,
+      status: 'processing',
+    },
+    m3: null as null,
+  };
+  const withMedia = (archivedAt: Date | null = null) => ({
+    ...packageRow(archivedAt),
+    draft: JSON.stringify(DRAFT_WITH_MEDIA),
+  });
+
+  it('M1 shows {} for a package without Media', async () => {
+    const { repository, media, service } = setup();
+    repository.getPackageForOrganization.mockResolvedValue(packageRow());
+
+    const detail = await service.getPackage(ORG, PACKAGE_ID);
+    expect(detail.media).toEqual({});
+    expect(media.getPreviewMap).toHaveBeenCalledTimes(1);
+    expect(media.getPreviewMap).toHaveBeenCalledWith(ORG, DRAFT);
+  });
+
+  it('M2 M3 M4 M5 hands the parsed draft over and returns the preview map', async () => {
+    const { repository, media, service } = setup();
+    repository.getPackageForOrganization.mockResolvedValue(withMedia());
+    media.getPreviewMap.mockResolvedValue(PREVIEW);
+
+    const detail = await service.getPackage(ORG, PACKAGE_ID);
+    // a missing (null) and a processing Media still give a detail
+    expect(detail.media).toBe(PREVIEW);
+    expect(detail.draft).toEqual(DRAFT_WITH_MEDIA);
+    // the whole draft goes over: ids are collected and deduplicated there
+    expect(media.getPreviewMap).toHaveBeenCalledWith(ORG, DRAFT_WITH_MEDIA);
+    expect(media.resolveForHandoff).not.toHaveBeenCalled();
+  });
+
+  it('M6 includes {} for a new package', async () => {
+    const { media, service } = setup();
+
+    const created = await service.createPackage({
+      organizationId: ORG,
+      userId: USER,
+    });
+    expect(created.media).toEqual({});
+    expect(media.getPreviewMap).toHaveBeenCalledWith(ORG, created.draft);
+  });
+
+  it('M7 includes the preview after a metadata update', async () => {
+    const { repository, media, service } = setup();
+    repository.getPackageForOrganization.mockResolvedValue(withMedia());
+    media.getPreviewMap.mockResolvedValue(PREVIEW);
+
+    const detail = await service.updatePackageMetadata({
+      organizationId: ORG,
+      packageId: PACKAGE_ID,
+      name: 'Renamed',
+    });
+    expect(detail.media).toBe(PREVIEW);
+  });
+
+  it('M8 includes the preview after archiving and restoring', async () => {
+    const { repository, media, service } = setup();
+    media.getPreviewMap.mockResolvedValue(PREVIEW);
+
+    repository.getPackageForOrganization.mockResolvedValue(withMedia(ARCHIVED));
+    expect((await service.archivePackage(ORG, PACKAGE_ID)).media).toBe(PREVIEW);
+    repository.getPackageForOrganization.mockResolvedValue(withMedia());
+    expect((await service.restorePackage(ORG, PACKAGE_ID)).media).toBe(PREVIEW);
+    expect(media.getPreviewMap).toHaveBeenCalledTimes(2);
+  });
+
+  it('M9 answers 500 for a broken stored draft before reading any Media', async () => {
+    const { repository, media, service } = setup();
+    jest.spyOn(Logger.prototype, 'error').mockImplementation();
+    repository.getPackageForOrganization.mockResolvedValue({
+      ...packageRow(),
+      draft: '{"schemaVersion":999}',
+    });
+
+    expect((await rejection(service.getPackage(ORG, PACKAGE_ID))).status).toBe(
+      500
+    );
+    expect(media.getPreviewMap).not.toHaveBeenCalled();
+  });
+
+  it('reads no Media for the package list or a draft save', async () => {
+    const { repository, media, service } = setup();
+    repository.listPackagesForOrganization.mockResolvedValue([
+      { id: PACKAGE_ID },
+    ]);
+
+    const list = await service.listPackages({
+      organizationId: ORG,
+      archived: false,
+      page: 1,
+    });
+    expect(list.results).toEqual([{ id: PACKAGE_ID }]);
+    await service.saveDraft({
+      organizationId: ORG,
+      packageId: PACKAGE_ID,
+      baseDraftVersion: 4,
+      draft: DRAFT_WITH_MEDIA,
+    });
+    expect(media.getPreviewMap).not.toHaveBeenCalled();
+    expect(media.resolveForHandoff).not.toHaveBeenCalled();
+  });
+
+  const REVISION_WITH_MEDIA_CONTENT = canonical.canonicalJson(
+    parseContentPackageDraft(DRAFT_WITH_MEDIA)
+  );
+  const revisionWithMedia = () =>
+    storedRevision({
+      content: REVISION_WITH_MEDIA_CONTENT,
+      contentHash: canonical.sha256Hex(REVISION_WITH_MEDIA_CONTENT),
+    });
+  const getRevision = (service: ContentStudioService) =>
+    service.getRevision({
+      organizationId: ORG,
+      packageId: PACKAGE_ID,
+      revisionId: 'revision-1',
+    });
+
+  it('R1 shows {} for a revision without Media', async () => {
+    const { repository, media, service } = setup();
+    repository.getRevisionForPackage.mockResolvedValue(storedRevision());
+
+    expect((await getRevision(service)).media).toEqual({});
+    expect(media.getPreviewMap).toHaveBeenCalledWith(ORG, DRAFT_A);
+  });
+
+  it('R2 R3 R4 shows the current state of the revision Media', async () => {
+    const { repository, media, service } = setup();
+    repository.getRevisionForPackage.mockResolvedValue(revisionWithMedia());
+    media.getPreviewMap.mockResolvedValue(PREVIEW);
+
+    const detail = await getRevision(service);
+    expect(detail.media).toBe(PREVIEW);
+    expect(detail.content).toEqual(DRAFT_WITH_MEDIA);
+    expect(media.getPreviewMap).toHaveBeenCalledWith(ORG, DRAFT_WITH_MEDIA);
+  });
+
+  it('R5 answers 500 for a corrupt revision before reading any Media', async () => {
+    const { repository, media, service } = setup();
+    jest.spyOn(Logger.prototype, 'error').mockImplementation();
+    repository.getRevisionForPackage.mockResolvedValue({
+      ...revisionWithMedia(),
+      contentHash: HASH_B,
+    });
+
+    expect((await rejection(getRevision(service))).status).toBe(500);
+    expect(media.getPreviewMap).not.toHaveBeenCalled();
+  });
+
+  it('R6 reads no Media for the revision list', async () => {
+    const { repository, media, service } = setup();
+    repository.getPackageWriteStateForOrganization.mockResolvedValue({
+      draftVersion: 5,
+      archivedAt: null,
+    });
+
+    await service.listRevisions({
+      organizationId: ORG,
+      packageId: PACKAGE_ID,
+      page: 1,
+    });
+    expect(media.getPreviewMap).not.toHaveBeenCalled();
+  });
+
+  it('R7 creates a revision without reading or requiring any Media', async () => {
+    const { repository, media, service } = setup();
+    // m2 is processing and m3 gone: a revision records the intent anyway
+    repository.getPackageForOrganization.mockResolvedValue({
+      ...withMedia(),
+      draftVersion: 5,
+    });
+
+    await expect(
+      service.createRevision({
+        organizationId: ORG,
+        packageId: PACKAGE_ID,
+        userId: USER,
+        draftVersion: 5,
+      })
+    ).resolves.toMatchObject({ created: true });
+    expect(media.getPreviewMap).not.toHaveBeenCalled();
+    expect(media.resolveForHandoff).not.toHaveBeenCalled();
+    expect(
+      repository.createRevisionWithCompareAndSwap.mock.calls[0][0].content
+    ).toBe(REVISION_WITH_MEDIA_CONTENT);
   });
 });

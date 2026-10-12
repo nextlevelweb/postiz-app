@@ -2,6 +2,7 @@ import { HttpException, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { randomBytes } from 'crypto';
 import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.repository';
+import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
 import {
   assertContentPackagePublishable,
   CONTENT_PACKAGE_SCHEMA_VERSION,
@@ -164,7 +165,10 @@ const revisionSummary = (row: RevisionRow) => ({
 export class ContentStudioService {
   private readonly _logger = new Logger(ContentStudioService.name);
 
-  constructor(private _contentStudioRepository: ContentStudioRepository) {}
+  constructor(
+    private _contentStudioRepository: ContentStudioRepository,
+    private _contentStudioMediaService: ContentStudioMediaService
+  ) {}
 
   listProjects(organizationId: string, archived: boolean) {
     return this._contentStudioRepository.listProjectsForOrganization(
@@ -281,7 +285,14 @@ export class ContentStudioService {
       createdById: input.userId,
     });
 
-    return { ...packageSummary(row), draft };
+    return {
+      ...packageSummary(row),
+      draft,
+      media: await this._contentStudioMediaService.getPreviewMap(
+        input.organizationId,
+        draft
+      ),
+    };
   }
 
   async getPackage(organizationId: string, id: string) {
@@ -292,7 +303,7 @@ export class ContentStudioService {
     if (!row) {
       throw notFound();
     }
-    return this.packageDetail(row);
+    return this.packageDetail(organizationId, row);
   }
 
   // A name left out stays; projectId null detaches the package. An archived
@@ -332,7 +343,7 @@ export class ContentStudioService {
     if (count === 0) {
       throw packageArchived();
     }
-    return this.packageDetail(row);
+    return this.packageDetail(input.organizationId, row);
   }
 
   async archivePackage(organizationId: string, id: string) {
@@ -535,10 +546,16 @@ export class ContentStudioService {
       throw notFound();
     }
 
+    // a corrupt revision fails here, before any Media is read
+    const content = this.verifiedRevisionContent(row);
     return {
       ...revisionSummary(row),
       createdBy: { id: row.createdBy.id, name: row.createdBy.name },
-      content: this.verifiedRevisionContent(row),
+      content,
+      media: await this._contentStudioMediaService.getPreviewMap(
+        input.organizationId,
+        content
+      ),
     };
   }
 
@@ -561,10 +578,21 @@ export class ContentStudioService {
     }
   }
 
-  private packageDetail(row: PackageRow & { draft: string }) {
+  // The detail of a package shows the current state of its Media. A Media
+  // that is missing, foreign, processing or failed never fails the detail:
+  // the editor has to open so the draft can be fixed
+  private async packageDetail(
+    organizationId: string,
+    row: PackageRow & { draft: string }
+  ) {
+    const draft = this.parseStoredDraft(row.id, row.draft);
     return {
       ...packageSummary(row),
-      draft: this.parseStoredDraft(row.id, row.draft),
+      draft,
+      media: await this._contentStudioMediaService.getPreviewMap(
+        organizationId,
+        draft
+      ),
     };
   }
 

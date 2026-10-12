@@ -52,6 +52,7 @@ import { AdminStatsRepository } from '@gitroom/nestjs-libraries/database/prisma/
 import { AdminStatsService } from '@gitroom/nestjs-libraries/database/prisma/admin-stats/admin-stats.service';
 import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.repository';
 import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.service';
+import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
 
 @Global()
 @Module({
@@ -113,6 +114,7 @@ import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/
     AdminStatsService,
     ContentStudioRepository,
     ContentStudioService,
+    ContentStudioMediaService,
   ],
   get exports() {
     return this.providers;
