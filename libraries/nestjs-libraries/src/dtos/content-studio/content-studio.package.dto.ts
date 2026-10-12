@@ -1,5 +1,6 @@
 import {
   IsBoolean,
+  IsIn,
   IsInt,
   IsObject,
   IsOptional,
@@ -21,11 +22,19 @@ const toQueryInteger = ({ value }: TransformFnParams) =>
 // Validates the field only when it was sent, so null is rejected
 const isPresent = (_: object, value: unknown) => value !== undefined;
 
+const PAGE_MAX = 100_000;
+// draftVersion is a Postgres integer
+const DRAFT_VERSION_MAX = 2_147_483_647;
+
+export const CONTENT_PACKAGE_REVISION_ORIGINS = ['manual', 'handoff'] as const;
+export type ContentPackageRevisionOrigin =
+  (typeof CONTENT_PACKAGE_REVISION_ORIGINS)[number];
+
 export class ListContentPackagesDto {
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(100_000)
+  @Max(PAGE_MAX)
   @Transform(toQueryInteger)
   page: number = 1;
 
@@ -66,7 +75,7 @@ export class UpdateContentPackageDto {
 export class SaveContentPackageDraftDto {
   @IsInt()
   @Min(1)
-  @Max(2_147_483_647)
+  @Max(DRAFT_VERSION_MAX)
   baseDraftVersion: number;
 
   // Only the top level is checked here. The draft itself is validated by the
@@ -75,4 +84,26 @@ export class SaveContentPackageDraftDto {
   @IsObject()
   @Transform(({ obj }) => obj.draft)
   draft: Record<string, unknown>;
+}
+
+// The revision is made from the stored draft, and only while it is still at
+// draftVersion. Left out, origin is 'manual'
+export class CreateContentPackageRevisionDto {
+  @IsInt()
+  @Min(1)
+  @Max(DRAFT_VERSION_MAX)
+  draftVersion: number;
+
+  @ValidateIf(isPresent)
+  @IsIn(CONTENT_PACKAGE_REVISION_ORIGINS)
+  origin?: ContentPackageRevisionOrigin;
+}
+
+export class ListContentPackageRevisionsDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(PAGE_MAX)
+  @Transform(toQueryInteger)
+  page: number = 1;
 }

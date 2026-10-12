@@ -1,11 +1,21 @@
 import { HttpException, Injectable, Logger } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { randomBytes } from 'crypto';
 import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.repository';
 import {
+  assertContentPackagePublishable,
+  CONTENT_PACKAGE_SCHEMA_VERSION,
   ContentPackageDraftError,
+  ContentPackageDraftV1,
   emptyContentPackageDraft,
   parseContentPackageDraft,
 } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
+import {
+  canonicalJson,
+  CanonicalJsonError,
+  sha256Hex,
+} from '@gitroom/nestjs-libraries/content-studio/canonical.json';
+import { ContentPackageRevisionOrigin } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.package.dto';
 
 export const CONTENT_STUDIO_PAGE_SIZE = 20;
 const UNTITLED_PACKAGE = 'Untitled package';
@@ -67,6 +77,45 @@ const storedDraftInvalid = () =>
     500
   );
 
+const packageChanged = () =>
+  new HttpException(
+    {
+      msg: 'The Content Studio package changed while creating a revision',
+      code: 'CS_PACKAGE_CHANGED',
+    },
+    409
+  );
+const draftEmptyItem = (itemIndex: number) =>
+  new HttpException(
+    {
+      msg: 'The Content Studio draft contains an empty item',
+      code: 'CS_DRAFT_EMPTY_ITEM',
+      itemIndex,
+    },
+    400
+  );
+const storedRevisionInvalid = () =>
+  new HttpException(
+    {
+      msg: 'Stored Content Studio revision is invalid',
+      code: 'CS_STORED_REVISION_INVALID',
+    },
+    500
+  );
+const revisionStateInvalid = () =>
+  new HttpException(
+    {
+      msg: 'Content Studio revision state is invalid',
+      code: 'CS_REVISION_STATE_INVALID',
+    },
+    500
+  );
+
+// Two revisions took the same number: the compare-and-swap normally stops
+// this first, so it is the same "package changed" conflict
+const isUniqueConstraintError = (err: unknown) =>
+  err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
+
 interface PackageRow {
   id: string;
   name: string;
@@ -87,6 +136,28 @@ const packageSummary = (row: PackageRow) => ({
   archivedAt: row.archivedAt,
   createdAt: row.createdAt,
   updatedAt: row.updatedAt,
+});
+
+interface RevisionRow {
+  id: string;
+  packageId: string;
+  revisionNumber: number;
+  schemaVersion: number;
+  contentHash: string;
+  origin: string;
+  sourceDraftVersion: number;
+  createdAt: Date;
+}
+
+const revisionSummary = (row: RevisionRow) => ({
+  id: row.id,
+  packageId: row.packageId,
+  revisionNumber: row.revisionNumber,
+  schemaVersion: row.schemaVersion,
+  contentHash: row.contentHash,
+  origin: row.origin,
+  sourceDraftVersion: row.sourceDraftVersion,
+  createdAt: row.createdAt,
 });
 
 @Injectable()
@@ -321,6 +392,156 @@ export class ContentStudioService {
     throw draftConflict(state.draftVersion);
   }
 
+  // Turns the current draft into an immutable revision, but only while it is
+  // still at the draftVersion the client saw. Unchanged content returns the
+  // latest revision instead of a copy; content that went back to an older
+  // revision still makes a new one, so the history shows it
+  async createRevision(input: {
+    organizationId: string;
+    packageId: string;
+    userId: string;
+    draftVersion: number;
+    origin?: ContentPackageRevisionOrigin;
+  }) {
+    const row = await this._contentStudioRepository.getPackageForOrganization(
+      input.organizationId,
+      input.packageId
+    );
+    if (!row) {
+      throw notFound();
+    }
+    if (row.archivedAt) {
+      throw packageArchived();
+    }
+    if (row.draftVersion !== input.draftVersion) {
+      throw draftConflict(row.draftVersion);
+    }
+
+    const draft = this.parseStoredDraft(row.id, row.draft);
+    try {
+      assertContentPackagePublishable(draft);
+    } catch (err) {
+      if (
+        err instanceof ContentPackageDraftError &&
+        err.code === 'EMPTY_ITEM'
+      ) {
+        throw draftEmptyItem(err.itemIndex);
+      }
+      throw err;
+    }
+    // The stored content is exactly the hashed text. A parsed draft is plain
+    // JSON data, so canonicalJson failing means the draft itself is broken
+    let content: string;
+    try {
+      content = canonicalJson(draft);
+    } catch (err) {
+      if (err instanceof CanonicalJsonError) {
+        this._logger.error(`Stored Content Studio draft is invalid: ${row.id}`);
+        throw storedDraftInvalid();
+      }
+      throw err;
+    }
+    const contentHash = sha256Hex(content);
+
+    if (row.latestRevisionNumber > 0) {
+      const latest =
+        await this._contentStudioRepository.getLatestRevisionForPackage(
+          input.organizationId,
+          input.packageId
+        );
+      if (!latest) {
+        this._logger.error(
+          `Content Studio package has no latest revision: ${row.id}`
+        );
+        throw revisionStateInvalid();
+      }
+      if (latest.contentHash === contentHash) {
+        return { created: false, revision: revisionSummary(latest) };
+      }
+    }
+
+    let result;
+    try {
+      result =
+        await this._contentStudioRepository.createRevisionWithCompareAndSwap({
+          organizationId: input.organizationId,
+          packageId: input.packageId,
+          expectedDraftVersion: row.draftVersion,
+          expectedLatestRevisionNumber: row.latestRevisionNumber,
+          schemaVersion: CONTENT_PACKAGE_SCHEMA_VERSION,
+          content,
+          contentHash,
+          origin: input.origin ?? 'manual',
+          createdById: input.userId,
+        });
+    } catch (err) {
+      if (isUniqueConstraintError(err)) {
+        throw packageChanged();
+      }
+      throw err;
+    }
+    // the draft or the revisions moved on after the read above
+    if (!result.created) {
+      throw packageChanged();
+    }
+    return { created: true, revision: revisionSummary(result.revision) };
+  }
+
+  // History stays readable when the package is archived
+  async listRevisions(input: {
+    organizationId: string;
+    packageId: string;
+    page: number;
+  }) {
+    const state =
+      await this._contentStudioRepository.getPackageWriteStateForOrganization(
+        input.organizationId,
+        input.packageId
+      );
+    if (!state) {
+      throw notFound();
+    }
+
+    const [results, count] = await Promise.all([
+      this._contentStudioRepository.listRevisionsForPackage({
+        organizationId: input.organizationId,
+        packageId: input.packageId,
+        skip: (input.page - 1) * CONTENT_STUDIO_PAGE_SIZE,
+        take: CONTENT_STUDIO_PAGE_SIZE,
+      }),
+      this._contentStudioRepository.countRevisionsForPackage(
+        input.organizationId,
+        input.packageId
+      ),
+    ]);
+
+    return {
+      pages: Math.ceil(count / CONTENT_STUDIO_PAGE_SIZE),
+      results,
+    };
+  }
+
+  async getRevision(input: {
+    organizationId: string;
+    packageId: string;
+    revisionId: string;
+  }) {
+    const row = await this._contentStudioRepository.getRevisionForPackage(
+      input.organizationId,
+      input.packageId,
+      input.revisionId
+    );
+    if (!row) {
+      throw notFound();
+    }
+
+    return {
+      ...revisionSummary(row),
+      createdBy: { id: row.createdBy.id, name: row.createdBy.name },
+      content: this.verifiedRevisionContent(row),
+    };
+  }
+
   private async getProject(organizationId: string, id: string) {
     const project =
       await this._contentStudioRepository.getProjectForOrganization(
@@ -340,16 +561,47 @@ export class ContentStudioService {
     }
   }
 
+  private packageDetail(row: PackageRow & { draft: string }) {
+    return {
+      ...packageSummary(row),
+      draft: this.parseStoredDraft(row.id, row.draft),
+    };
+  }
+
   // A stored draft that no longer parses is corrupt data, not a bad request:
   // it is reported as such and never repaired or replaced
-  private packageDetail(row: PackageRow & { draft: string }) {
-    let draft;
+  private parseStoredDraft(packageId: string, text: string) {
     try {
-      draft = parseContentPackageDraft(JSON.parse(row.draft));
+      return parseContentPackageDraft(JSON.parse(text));
     } catch {
-      this._logger.error(`Stored Content Studio draft is invalid: ${row.id}`);
+      this._logger.error(
+        `Stored Content Studio draft is invalid: ${packageId}`
+      );
       throw storedDraftInvalid();
     }
-    return { ...packageSummary(row), draft };
+  }
+
+  // A revision must still be exactly what was stored: a valid draft, in
+  // canonical form, matching its hash and schema version. Anything else is
+  // reported, never normalized or repaired
+  private verifiedRevisionContent(row: RevisionRow & { content: string }) {
+    let content: ContentPackageDraftV1 | undefined;
+    try {
+      content = parseContentPackageDraft(JSON.parse(row.content));
+    } catch {
+      content = undefined;
+    }
+    if (
+      !content ||
+      content.schemaVersion !== row.schemaVersion ||
+      canonicalJson(content) !== row.content ||
+      sha256Hex(row.content) !== row.contentHash
+    ) {
+      this._logger.error(
+        `Stored Content Studio revision is invalid: ${row.id}`
+      );
+      throw storedRevisionInvalid();
+    }
+    return content;
   }
 }

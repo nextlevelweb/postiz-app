@@ -8,10 +8,12 @@ import {
   Post,
   Put,
   Query,
+  Res,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+import { Response } from 'express';
 import { Organization, User } from '@prisma/client';
 import { GetOrgFromRequest } from '@gitroom/nestjs-libraries/user/org.from.request';
 import { GetUserFromRequest } from '@gitroom/nestjs-libraries/user/user.from.request';
@@ -23,6 +25,8 @@ import {
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.project.dto';
 import {
   CreateContentPackageDto,
+  CreateContentPackageRevisionDto,
+  ListContentPackageRevisionsDto,
   ListContentPackagesDto,
   SaveContentPackageDraftDto,
   UpdateContentPackageDto,
@@ -161,6 +165,53 @@ export class ContentStudioController {
       packageId: id,
       baseDraftVersion: body.baseDraftVersion,
       draft: body.draft,
+    });
+  }
+
+  // 201 for a new revision, 200 when the draft was unchanged and the latest
+  // revision is returned. Revisions have no update or delete routes
+  @Post('/packages/:id/revisions')
+  async createRevision(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Body() body: CreateContentPackageRevisionDto,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    const result = await this._contentStudioService.createRevision({
+      organizationId: org.id,
+      packageId: id,
+      userId: user.id,
+      draftVersion: body.draftVersion,
+      origin: body.origin,
+    });
+    response.status(result.created ? 201 : 200);
+    return result;
+  }
+
+  @Get('/packages/:id/revisions')
+  listRevisions(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Query() query: ListContentPackageRevisionsDto
+  ) {
+    return this._contentStudioService.listRevisions({
+      organizationId: org.id,
+      packageId: id,
+      page: query.page,
+    });
+  }
+
+  @Get('/packages/:id/revisions/:revisionId')
+  getRevision(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Param('revisionId') revisionId: string
+  ) {
+    return this._contentStudioService.getRevision({
+      organizationId: org.id,
+      packageId: id,
+      revisionId,
     });
   }
 }

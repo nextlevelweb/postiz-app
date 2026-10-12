@@ -20,6 +20,8 @@ import {
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.project.dto';
 import {
   CreateContentPackageDto,
+  CreateContentPackageRevisionDto,
+  ListContentPackageRevisionsDto,
   ListContentPackagesDto,
   SaveContentPackageDraftDto,
   UpdateContentPackageDto,
@@ -48,6 +50,9 @@ const setup = () => {
     archivePackage: jest.fn().mockResolvedValue(result),
     restorePackage: jest.fn().mockResolvedValue(result),
     saveDraft: jest.fn().mockResolvedValue(result),
+    createRevision: jest.fn().mockResolvedValue({ created: true }),
+    listRevisions: jest.fn().mockResolvedValue(result),
+    getRevision: jest.fn().mockResolvedValue(result),
   };
   const controller = new ContentStudioController(
     service as unknown as ContentStudioService
@@ -211,6 +216,8 @@ describe('ContentStudioController wiring', () => {
       CreateContentPackageDto,
       UpdateContentPackageDto,
       SaveContentPackageDraftDto,
+      CreateContentPackageRevisionDto,
+      ListContentPackageRevisionsDto,
     ]) {
       const fields = Object.keys(new dto());
       expect(fields).not.toContain('organizationId');
@@ -229,9 +236,11 @@ describe('ContentStudioController wiring', () => {
     expect(types('createPackage')[2]).toBe(CreateContentPackageDto);
     expect(types('updatePackage')[2]).toBe(UpdateContentPackageDto);
     expect(types('saveDraft')[2]).toBe(SaveContentPackageDraftDto);
+    expect(types('createRevision')[3]).toBe(CreateContentPackageRevisionDto);
+    expect(types('listRevisions')[2]).toBe(ListContentPackageRevisionsDto);
   });
 
-  it('exposes exactly the Phase 1 project, package and draft routes', () => {
+  it('exposes exactly the Phase 1 project, package, draft and revision routes', () => {
     expect(Reflect.getMetadata(PATH_METADATA, ContentStudioController)).toBe(
       '/content-studio'
     );
@@ -250,16 +259,145 @@ describe('ContentStudioController wiring', () => {
     expect(routes).toEqual([
       'GET /packages',
       'GET /packages/:id',
+      'GET /packages/:id/revisions',
+      'GET /packages/:id/revisions/:revisionId',
       'GET /projects',
       'PATCH /packages/:id',
       'PATCH /projects/:id',
       'POST /packages',
       'POST /packages/:id/archive',
       'POST /packages/:id/restore',
+      'POST /packages/:id/revisions',
       'POST /projects',
       'POST /projects/:id/archive',
       'POST /projects/:id/restore',
       'PUT /packages/:id/draft',
+    ]);
+  });
+});
+
+describe('ContentStudioController revisions', () => {
+  const response = () => ({ status: jest.fn() });
+  const revisionBody = (draftVersion: number, origin?: 'manual' | 'handoff') =>
+    Object.assign(withExtras(new CreateContentPackageRevisionDto()), {
+      draftVersion,
+      ...(origin ? { origin } : {}),
+    });
+
+  it('C13 C16 creates a revision with the request org, user and declared fields', async () => {
+    const { service, controller } = setup();
+    const created = { created: true, revision: { id: 'revision-1' } };
+    service.createRevision.mockResolvedValue(created);
+    const res = response();
+
+    await expect(
+      controller.createRevision(
+        ORG,
+        USER,
+        'package-1',
+        revisionBody(5, 'handoff'),
+        res as never
+      )
+    ).resolves.toBe(created);
+    expect(service.createRevision).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      packageId: 'package-1',
+      userId: 'user-1',
+      draftVersion: 5,
+      origin: 'handoff',
+    });
+  });
+
+  it('C13 leaves the origin to the service when none is sent', async () => {
+    const { service, controller } = setup();
+
+    await controller.createRevision(
+      ORG,
+      USER,
+      'package-1',
+      revisionBody(5),
+      response() as never
+    );
+    expect(service.createRevision.mock.calls[0][0].origin).toBeUndefined();
+  });
+
+  it('C20 answers 201 for a new revision and 200 for an unchanged draft', async () => {
+    const { service, controller } = setup();
+    for (const [created, status] of [
+      [true, 201],
+      [false, 200],
+    ] as const) {
+      service.createRevision.mockResolvedValue({ created, revision: {} });
+      const res = response();
+
+      await controller.createRevision(
+        ORG,
+        USER,
+        'package-1',
+        revisionBody(5),
+        res as never
+      );
+      expect(res.status).toHaveBeenCalledTimes(1);
+      expect(res.status).toHaveBeenCalledWith(status);
+    }
+  });
+
+  it('C14 lists revisions of a package with the page', async () => {
+    const { service, controller, result } = setup();
+    const query = withExtras(new ListContentPackageRevisionsDto());
+    query.page = 3;
+
+    await expect(
+      controller.listRevisions(ORG, 'package-1', query)
+    ).resolves.toBe(result);
+    expect(service.listRevisions).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      packageId: 'package-1',
+      page: 3,
+    });
+  });
+
+  it('C15 reads one revision of a package', async () => {
+    const { service, controller, result } = setup();
+
+    await expect(
+      controller.getRevision(ORG, 'package-1', 'revision-1')
+    ).resolves.toBe(result);
+    expect(service.getRevision).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      packageId: 'package-1',
+      revisionId: 'revision-1',
+    });
+  });
+
+  it('C19 has no route that changes or deletes a revision', () => {
+    const handlers = Object.getOwnPropertyNames(
+      ContentStudioController.prototype
+    )
+      .filter((name) => name !== 'constructor')
+      .map(
+        (name) =>
+          (
+            ContentStudioController.prototype as unknown as Record<
+              string,
+              object
+            >
+          )[name]
+      );
+    const revisionRoutes = handlers
+      .map(
+        (handler) =>
+          `${
+            RequestMethod[Reflect.getMetadata(METHOD_METADATA, handler)]
+          } ${Reflect.getMetadata(PATH_METADATA, handler)}`
+      )
+      .filter((route) => route.includes('/revisions'))
+      .sort();
+
+    expect(revisionRoutes).toEqual([
+      'GET /packages/:id/revisions',
+      'GET /packages/:id/revisions/:revisionId',
+      'POST /packages/:id/revisions',
     ]);
   });
 });
@@ -508,5 +646,64 @@ describe('ContentStudioController validation', () => {
     // Nest's ValidationPipe deletes __proto__ keys; nothing else is touched
     expect(Object.keys(body.draft)).toEqual(['schemaVersion', 'copy']);
     expect(body.draft.copy.organizationId).toBe('org-b');
+  });
+});
+
+describe('ContentStudioController revision validation', () => {
+  it('C17 accepts a draft version and an allowed origin', async () => {
+    for (const body of [
+      { draftVersion: 1 },
+      { draftVersion: 2_147_483_647, origin: 'manual' },
+      { draftVersion: 4, origin: 'handoff' },
+    ]) {
+      const dto = await run('body', CreateContentPackageRevisionDto, body);
+      expect(dto).toBeInstanceOf(CreateContentPackageRevisionDto);
+      expect({ ...dto }).toEqual(body);
+    }
+  });
+
+  it.each([
+    [{}],
+    [{ draftVersion: 0 }],
+    [{ draftVersion: 2_147_483_648 }],
+    [{ draftVersion: 1.5 }],
+    [{ draftVersion: '4' }],
+    [{ draftVersion: 1, origin: 'ai' }],
+    [{ draftVersion: 1, origin: 'approval' }],
+    [{ draftVersion: 1, origin: 'MANUAL' }],
+    [{ draftVersion: 1, origin: null }],
+  ])('C17 rejects the revision body %p', async (body) => {
+    await rejected('body', CreateContentPackageRevisionDto, body);
+  });
+
+  it.each([
+    ['organizationId', { draftVersion: 1, organizationId: 'org-b' }],
+    ['createdById', { draftVersion: 1, createdById: 'user-b' }],
+    ['sourceDraftVersion', { draftVersion: 1, sourceDraftVersion: 9 }],
+    ['revisionNumber', { draftVersion: 1, revisionNumber: 9 }],
+    ['content', { draftVersion: 1, content: '{}' }],
+  ])('C17 rejects a revision body with %s', async (field, body) => {
+    expect(
+      await rejected('body', CreateContentPackageRevisionDto, body)
+    ).toContain(`property ${field} should not exist`);
+  });
+
+  it('C18 parses the revision page', async () => {
+    expect({
+      ...(await run('query', ListContentPackageRevisionsDto, {})),
+    }).toEqual({ page: 1 });
+    expect(
+      (await run('query', ListContentPackageRevisionsDto, { page: '3' })).page
+    ).toBe(3);
+  });
+
+  it.each([
+    [{ page: '0' }],
+    [{ page: '100001' }],
+    [{ page: '2abc' }],
+    [{ organizationId: 'org-b' }],
+    [{ archived: 'true' }],
+  ])('C18 rejects the revision query %p', async (query) => {
+    await rejected('query', ListContentPackageRevisionsDto, query);
   });
 });
