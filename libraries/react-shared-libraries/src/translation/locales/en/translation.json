@@ -802,5 +802,12 @@
   "organization_name": "Organization name",
   "organization_name_description": "The name shown in the organization switcher.",
   "could_not_create_organization": "Could not create organization",
-  "could_not_update_organization_name": "Could not update organization name"
+  "could_not_update_organization_name": "Could not update organization name",
+  "content_studio_handoff_invalid": "This Content Studio link is not valid",
+  "content_studio_handoff_missing": "This Content Studio handoff could not be found",
+  "content_studio_handoff_gone": "This Content Studio handoff has expired or was revoked. Open it again from Content Studio.",
+  "content_studio_handoff_media_unavailable": "Some media in this Content Studio post is not ready or is no longer available.",
+  "content_studio_handoff_open_error": "Could not open this Content Studio post",
+  "content_studio_handoff_close_current": "Close the post you are editing before opening this Content Studio post",
+  "content_studio_handoff_connect_channel": "Connect a channel before opening this Content Studio post"
 }

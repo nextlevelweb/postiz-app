@@ -95,6 +95,10 @@ export const useModals = () => {
   } satisfies ModalManagerInterface;
 };
 
+// Read-only: whether a modal with this id is currently shown
+export const useIsModalOpen = (id: string) =>
+  useModalStore((state) => state.modalManager.some((modal) => modal.id === id));
+
 export const Component: FC<{
   closeModal: (id: string) => void;
   zIndex: number;

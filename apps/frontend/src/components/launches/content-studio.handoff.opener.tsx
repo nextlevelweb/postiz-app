@@ -1,0 +1,271 @@
+'use client';
+
+import { FC, useCallback, useEffect, useRef } from 'react';
+import dayjs from 'dayjs';
+import utc from 'dayjs/plugin/utc';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
+import {
+  useIsModalOpen,
+  useModals,
+} from '@gitroom/frontend/components/layout/new-modal';
+import { useCalendar } from '@gitroom/frontend/components/launches/calendar.context';
+import {
+  AddEditModal,
+  AddEditModalProps,
+} from '@gitroom/frontend/components/new-launch/add.edit.modal';
+import { useToaster } from '@gitroom/react/toaster/toaster';
+import { useT } from '@gitroom/react/translation/get.transation.service.client';
+dayjs.extend(utc);
+
+// randomBytes(32) as hex, like the backend makes them
+const HANDOFF_ID = /^[0-9a-f]{64}$/;
+
+// The handoff this page load is opening or showing. Module level, so a
+// StrictMode re-run or a remount of the launches tree can't open it twice,
+// while a page reload starts clean. A failure worth retrying releases it at
+// once; otherwise it is `done` (closed, or it can't open) and is let go when
+// the URL no longer names it
+let handoffGuard: { id: string; done: boolean } | null = null;
+
+// Removes `handoff` from the current URL, keeping every other parameter, and
+// only while the URL still names this handoff
+const useRemoveHandoffParam = () => {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const location = useRef({ pathname, searchParams });
+  useEffect(() => {
+    location.current = { pathname, searchParams };
+  }, [pathname, searchParams]);
+
+  return useCallback(
+    (handoffId: string) => {
+      const current = location.current;
+      if (current.searchParams.get('handoff') !== handoffId) {
+        return;
+      }
+      const params = new URLSearchParams(current.searchParams.toString());
+      params.delete('handoff');
+      const query = params.toString();
+      router.replace(
+        query ? `${current.pathname}?${query}` : current.pathname,
+        { scroll: false }
+      );
+    },
+    [router]
+  );
+};
+
+// The composer of one handoff. However it closes (Escape, its close button,
+// saving the post, closeAll) it unmounts, and that removes `handoff` from the
+// URL. Until then the URL keeps it, so a reload opens the same revision again.
+// Edits made in the composer are not kept over a reload
+const HandoffComposer: FC<AddEditModalProps & { handoffId: string }> = ({
+  handoffId,
+  ...props
+}) => {
+  const removeHandoffParam = useRemoveHandoffParam();
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      // StrictMode unmounts and mounts again straight away: only a real close
+      // counts
+      setTimeout(() => {
+        if (mounted.current) {
+          return;
+        }
+        if (handoffGuard?.id === handoffId) {
+          handoffGuard.done = true;
+        }
+        removeHandoffParam(handoffId);
+      });
+    };
+  }, []);
+
+  return <AddEditModal {...props} />;
+};
+
+// Opens /launches?handoff=<id> in the existing composer, seeded with the
+// handoff's values. Nothing is selected, saved or scheduled: the user carries
+// on in the composer as after "Create Post"
+export const ContentStudioHandoffOpener: FC = () => {
+  const handoffId = useSearchParams().get('handoff');
+  const composerOpen = useIsModalOpen('add-edit-modal');
+  const { integrations, reloadCalendarView } = useCalendar();
+  const fetch = useFetch();
+  const modal = useModals();
+  const toaster = useToaster();
+  const t = useT();
+  const removeHandoffParam = useRemoveHandoffParam();
+  const composerOpenNow = useRef(composerOpen);
+  useEffect(() => {
+    composerOpenNow.current = composerOpen;
+  }, [composerOpen]);
+
+  const closeCurrentPost = useCallback(() => {
+    toaster.show(
+      t(
+        'content_studio_handoff_close_current',
+        'Close the post you are editing before opening this Content Studio post'
+      ),
+      'warning'
+    );
+  }, []);
+
+  const openHandoff = useCallback(
+    async (id: string) => {
+      // kept in the URL, and can be tried again
+      const failed = () => {
+        if (handoffGuard?.id === id) {
+          handoffGuard = null;
+        }
+        toaster.show(
+          t(
+            'content_studio_handoff_open_error',
+            'Could not open this Content Studio post'
+          ),
+          'warning'
+        );
+      };
+
+      try {
+        const response = await fetch(`/content-studio/handoffs/${id}`);
+        if (!response.ok) {
+          const { code } = await response.json().catch(() => ({}));
+          // answers a retry won't change: the handoff leaves the URL
+          const message =
+            response.status === 404 && code === 'CS_NOT_FOUND'
+              ? t(
+                  'content_studio_handoff_missing',
+                  'This Content Studio handoff could not be found'
+                )
+              : response.status === 410 && code === 'CS_HANDOFF_GONE'
+              ? t(
+                  'content_studio_handoff_gone',
+                  'This Content Studio handoff has expired or was revoked. Open it again from Content Studio.'
+                )
+              : response.status === 400 && code === 'CS_MEDIA_UNAVAILABLE'
+              ? t(
+                  'content_studio_handoff_media_unavailable',
+                  'Some media in this Content Studio post is not ready or is no longer available.'
+                )
+              : undefined;
+          if (!message) {
+            failed();
+            return;
+          }
+          if (handoffGuard?.id === id) {
+            handoffGuard.done = true;
+          }
+          toaster.show(message, 'warning');
+          removeHandoffParam(id);
+          return;
+        }
+        const { onlyValues } = (await response.json()) as {
+          onlyValues: AddEditModalProps['onlyValues'];
+        };
+
+        const slot = await fetch('/posts/find-slot');
+        if (!slot.ok) {
+          failed();
+          return;
+        }
+        const { date } = await slot.json();
+
+        // another handoff took over meanwhile
+        if (handoffGuard?.id !== id) {
+          return;
+        }
+        // a post was opened meanwhile: this one opens once it is closed
+        if (composerOpenNow.current) {
+          handoffGuard = null;
+          closeCurrentPost();
+          return;
+        }
+
+        // the same composer as "Create Post", without a set: the handoff's
+        // values are the only content, and no channel is preselected
+        modal.openModal({
+          id: 'add-edit-modal',
+          closeOnClickOutside: false,
+          removeLayout: true,
+          closeOnEscape: false,
+          withCloseButton: false,
+          askClose: true,
+          fullScreen: true,
+          classNames: {
+            modal: 'w-[100%] max-w-[1400px] text-textColor',
+          },
+          children: (
+            <HandoffComposer
+              handoffId={id}
+              allIntegrations={integrations.map((p) => ({
+                ...p,
+              }))}
+              reopenModal={() => {}}
+              mutate={reloadCalendarView}
+              integrations={integrations}
+              date={dayjs.utc(date).local()}
+              onlyValues={onlyValues}
+            />
+          ),
+          size: '80%',
+          title: ``,
+        });
+      } catch {
+        failed();
+      }
+    },
+    [integrations, reloadCalendarView]
+  );
+
+  useEffect(() => {
+    if (handoffGuard?.done && handoffGuard.id !== handoffId) {
+      handoffGuard = null;
+    }
+    if (handoffId === null || handoffGuard?.id === handoffId) {
+      return;
+    }
+
+    // never sent to the backend, and never shown
+    if (!HANDOFF_ID.test(handoffId)) {
+      handoffGuard = { id: handoffId, done: true };
+      toaster.show(
+        t(
+          'content_studio_handoff_invalid',
+          'This Content Studio link is not valid'
+        ),
+        'warning'
+      );
+      removeHandoffParam(handoffId);
+      return;
+    }
+
+    // kept in the URL: it opens once a channel is connected
+    if (!integrations.length) {
+      toaster.show(
+        t(
+          'content_studio_handoff_connect_channel',
+          'Connect a channel before opening this Content Studio post'
+        ),
+        'warning'
+      );
+      return;
+    }
+
+    // a post being written is never replaced, saved or not: kept in the URL,
+    // it opens once that post is closed
+    if (composerOpen) {
+      closeCurrentPost();
+      return;
+    }
+
+    handoffGuard = { id: handoffId, done: false };
+    openHandoff(handoffId);
+  }, [handoffId, integrations, composerOpen]);
+
+  return null;
+};
