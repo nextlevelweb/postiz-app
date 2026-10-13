@@ -9,46 +9,47 @@ datasource db {
 }
 
 model Organization {
-  id                      String                   @id @default(uuid())
-  name                    String
-  description             String?
-  apiKey                  String?
-  paymentId               String?
-  streakSince             DateTime?
-  createdAt               DateTime                 @default(now())
-  updatedAt               DateTime                 @updatedAt
-  deletedAt               DateTime?
-  allowTrial              Boolean                  @default(false)
-  isTrailing              Boolean                  @default(false)
-  shortlink               ShortLinkPreference      @default(ASK)
-  autoPost                AutoPost[]
-  Comments                Comments[]
-  credits                 Credits[]
-  clippings               Clipping[]
-  customers               Customer[]
-  errors                  Errors[]
-  github                  GitHub[]
-  Integration             Integration[]
-  media                   Media[]
-  buyerOrganization       MessagesGroup[]
-  notifications           Notifications[]
-  plugs                   Plugs[]
-  post                    Post[]                   @relation("organization")
-  submittedPost           Post[]                   @relation("submittedForOrg")
-  sets                    Sets[]
-  signatures              Signatures[]
-  subscription            Subscription?
-  tags                    Tags[]
-  thirdParty              ThirdParty[]
-  usedCodes               UsedCodes[]
-  users                   UserOrganization[]
-  webhooks                Webhooks[]
-  oauthApp                OAuthApp[]
-  oauthAuthorizations     OAuthAuthorization[]
-  contentStudioProjects   ContentStudioProject[]
-  contentPackages         ContentPackage[]
-  contentPackageRevisions ContentPackageRevision[]
-  contentStudioHandoffs   ContentStudioHandoff[]
+  id                         String                      @id @default(uuid())
+  name                       String
+  description                String?
+  apiKey                     String?
+  paymentId                  String?
+  streakSince                DateTime?
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
+  deletedAt                  DateTime?
+  allowTrial                 Boolean                     @default(false)
+  isTrailing                 Boolean                     @default(false)
+  shortlink                  ShortLinkPreference         @default(ASK)
+  autoPost                   AutoPost[]
+  Comments                   Comments[]
+  credits                    Credits[]
+  clippings                  Clipping[]
+  customers                  Customer[]
+  errors                     Errors[]
+  github                     GitHub[]
+  Integration                Integration[]
+  media                      Media[]
+  buyerOrganization          MessagesGroup[]
+  notifications              Notifications[]
+  plugs                      Plugs[]
+  post                       Post[]                      @relation("organization")
+  submittedPost              Post[]                      @relation("submittedForOrg")
+  sets                       Sets[]
+  signatures                 Signatures[]
+  subscription               Subscription?
+  tags                       Tags[]
+  thirdParty                 ThirdParty[]
+  usedCodes                  UsedCodes[]
+  users                      UserOrganization[]
+  webhooks                   Webhooks[]
+  oauthApp                   OAuthApp[]
+  oauthAuthorizations        OAuthAuthorization[]
+  contentStudioProjects      ContentStudioProject[]
+  contentPackages            ContentPackage[]
+  contentPackageRevisions    ContentPackageRevision[]
+  contentStudioHandoffs      ContentStudioHandoff[]
+  contentStudioAIConnections ContentStudioAIConnection[]
 
   @@index([apiKey])
   @@index([streakSince])
@@ -84,47 +85,48 @@ model TagsPosts {
 }
 
 model User {
-  id                      String                   @id @default(uuid())
-  email                   String
-  password                String?
-  providerName            Provider
-  name                    String?
-  lastName                String?
-  isSuperAdmin            Boolean                  @default(false)
-  bio                     String?
-  audience                Int                      @default(0)
-  pictureId               String?
-  providerId              String?
-  timezone                Int
-  createdAt               DateTime                 @default(now())
-  updatedAt               DateTime                 @updatedAt
-  lastReadNotifications   DateTime                 @default(now())
-  inviteId                String?
-  activated               Boolean                  @default(true)
-  account                 String?
-  connectedAccount        Boolean                  @default(false)
-  lastOnline              DateTime                 @default(now())
-  ip                      String?
-  agent                   String?
-  deletedAt               DateTime?
-  comments                Comments[]
-  items                   ItemUser[]
-  groupBuyer              MessagesGroup[]          @relation("groupBuyer")
-  groupSeller             MessagesGroup[]          @relation("groupSeller")
-  orderBuyer              Orders[]                 @relation("orderBuyer")
-  orderSeller             Orders[]                 @relation("orderSeller")
-  payoutProblems          PayoutProblems[]
-  agencies                SocialMediaAgency?
-  picture                 Media?                   @relation(fields: [pictureId], references: [id])
-  organizations           UserOrganization[]
-  sendSuccessEmails       Boolean                  @default(true)
-  sendFailureEmails       Boolean                  @default(true)
-  sendStreakEmails        Boolean                  @default(true)
-  oauthAuthorizations     OAuthAuthorization[]
-  contentStudioProjects   ContentStudioProject[]   @relation("ContentStudioProjectCreatedBy")
-  contentPackages         ContentPackage[]         @relation("ContentPackageCreatedBy")
-  contentPackageRevisions ContentPackageRevision[] @relation("ContentPackageRevisionCreatedBy")
-  contentStudioHandoffs   ContentStudioHandoff[]
+  id                         String                      @id @default(uuid())
+  email                      String
+  password                   String?
+  providerName               Provider
+  name                       String?
+  lastName                   String?
+  isSuperAdmin               Boolean                     @default(false)
+  bio                        String?
+  audience                   Int                         @default(0)
+  pictureId                  String?
+  providerId                 String?
+  timezone                   Int
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
+  lastReadNotifications      DateTime                    @default(now())
+  inviteId                   String?
+  activated                  Boolean                     @default(true)
+  account                    String?
+  connectedAccount           Boolean                     @default(false)
+  lastOnline                 DateTime                    @default(now())
+  ip                         String?
+  agent                      String?
+  deletedAt                  DateTime?
+  comments                   Comments[]
+  items                      ItemUser[]
+  groupBuyer                 MessagesGroup[]             @relation("groupBuyer")
+  groupSeller                MessagesGroup[]             @relation("groupSeller")
+  orderBuyer                 Orders[]                    @relation("orderBuyer")
+  orderSeller                Orders[]                    @relation("orderSeller")
+  payoutProblems             PayoutProblems[]
+  agencies                   SocialMediaAgency?
+  picture                    Media?                      @relation(fields: [pictureId], references: [id])
+  organizations              UserOrganization[]
+  sendSuccessEmails          Boolean                     @default(true)
+  sendFailureEmails          Boolean                     @default(true)
+  sendStreakEmails           Boolean                     @default(true)
+  oauthAuthorizations        OAuthAuthorization[]
+  contentStudioProjects      ContentStudioProject[]      @relation("ContentStudioProjectCreatedBy")
+  contentPackages            ContentPackage[]            @relation("ContentPackageCreatedBy")
+  contentPackageRevisions    ContentPackageRevision[]    @relation("ContentPackageRevisionCreatedBy")
+  contentStudioHandoffs      ContentStudioHandoff[]
+  contentStudioAIConnections ContentStudioAIConnection[] @relation("ContentStudioAIConnectionCreatedBy")
 
   @@unique([email, providerName])
   @@index([lastReadNotifications])
@@ -1932,4 +1934,32 @@ model ContentStudioHandoff {
   @@index([packageId])
   @@index([packageRevisionId])
   @@index([expiresAt])
+}
+
+// An AI provider account of one organization. The credential is sealed with
+// SecretBox (context `ai-connection|<organizationId>|<id>`) and is only ever
+// opened to call the provider. The provider is set once; archiving wipes the
+// credential in the same write
+model ContentStudioAIConnection {
+  id                   String       @id @default(uuid())
+  organizationId       String
+  name                 String
+  provider             String
+  sealedCredential     String?
+  defaultModel         String?
+  disabledAt           DateTime?
+  archivedAt           DateTime?
+  credentialUpdatedAt  DateTime
+  lastValidatedAt      DateTime?
+  lastValidationStatus String?
+  lastValidationCode   String?
+  createdById          String
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  organization         Organization @relation(fields: [organizationId], references: [id])
+  createdBy            User         @relation("ContentStudioAIConnectionCreatedBy", fields: [createdById], references: [id])
+
+  @@unique([id, organizationId])
+  @@index([organizationId, archivedAt])
+  @@index([createdById])
 }

@@ -55,6 +55,7 @@ import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/
 import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
 import { ContentStudioHandoffRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.repository';
 import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.service';
+import { ContentStudioAIConnectionRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.repository';
 
 @Global()
 @Module({
@@ -119,6 +120,7 @@ import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/
     ContentStudioMediaService,
     ContentStudioHandoffRepository,
     ContentStudioHandoffService,
+    ContentStudioAIConnectionRepository,
   ],
   get exports() {
     return this.providers;

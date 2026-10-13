@@ -42,7 +42,8 @@ type Rule =
   | 'CS_NO_DEFAULT_PROVIDER_CLIENT'
   | 'CS_NO_LEGACY_AI_SERVICE'
   | 'CS_NO_SAFEFETCH_FACTORY'
-  | 'CS_NO_RAW_HTML_SINK';
+  | 'CS_NO_RAW_HTML_SINK'
+  | 'CS_AI_PROVIDER_IMPORT_BOUNDARY';
 
 // Fixed messages: a violation never echoes source text, so a committed key
 // does not end up in CI logs a second time
@@ -61,6 +62,8 @@ const MESSAGES: Record<Rule, string> = {
     'createSafeFetch is a test seam; production Content Studio code must use safeFetch',
   CS_NO_RAW_HTML_SINK:
     'Content Studio code must not render or assign raw HTML directly',
+  CS_AI_PROVIDER_IMPORT_BOUNDARY:
+    'Provider SDKs may only be imported by Content Studio provider adapters (content-studio/ai/providers/*.provider.ts); AI frameworks (ai, @ai-sdk/*) not at all',
 };
 
 // OpenAI (sk-, sk-proj-, sk-svcacct-, ...) and Anthropic (sk-ant-) keys need at
@@ -121,6 +124,15 @@ const LEGACY_AI_MODULES = [
 ];
 
 const SAFE_FETCH_MODULE = /(^|\/)safe\.fetch$/;
+
+// Direct provider SDKs: only the provider adapters may import them, so every
+// call goes through an organization connection and the operation tracking.
+// AI frameworks (with their own env-backed providers) are not used at all
+const PROVIDER_SDK_MODULES = ['openai', '@anthropic-ai/sdk'];
+const isAIFrameworkModule = (target: string) =>
+  target === 'ai' || target.startsWith('ai/') || target.startsWith('@ai-sdk/');
+const PROVIDER_ADAPTER_FILE =
+  /^libraries\/nestjs-libraries\/src\/content-studio\/ai\/providers\/[a-z0-9-]+\.provider\.ts$/;
 
 // Studio stores plain text and the server builds the composer HTML, so the
 // React and DOM ways of injecting markup are never needed in Studio code
@@ -285,6 +297,9 @@ function checkSource(file: string, text: string): Violation[] {
     file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS
   );
   const violations: Violation[] = [];
+  const providerAdapter = PROVIDER_ADAPTER_FILE.test(
+    path.relative(REPO_ROOT, file).split(path.sep).join('/')
+  );
   const report = (node: ts.Node, rule: Rule) => {
     const { line, character } = source.getLineAndCharacterOfPosition(
       node.getStart(source)
@@ -360,6 +375,15 @@ function checkSource(file: string, text: string): Violation[] {
           reference.names.some((name) => defaults.includes(name)))
       ) {
         report(node, 'CS_NO_DEFAULT_PROVIDER_CLIENT');
+      }
+      if (
+        isAIFrameworkModule(target) ||
+        (!providerAdapter &&
+          PROVIDER_SDK_MODULES.some(
+            (entry) => target === entry || target.startsWith(`${entry}/`)
+          ))
+      ) {
+        report(node, 'CS_AI_PROVIDER_IMPORT_BOUNDARY');
       }
       if (LEGACY_AI_MODULES.some((entry) => matchesModule(target, entry))) {
         report(node, 'CS_NO_LEGACY_AI_SERVICE');
@@ -462,6 +486,11 @@ function contentStudioFiles(root = REPO_ROOT, keep = isProduction) {
 // written to the tree
 const FIXTURE = path.join(REPO_ROOT, FIXTURE_RELATIVE);
 const FIXTURE_TSX = FIXTURE.replace(/\.ts$/, '.tsx');
+// where P2-03 puts the provider adapters; nothing is written there either
+const PROVIDER_FIXTURE = path.join(
+  REPO_ROOT,
+  'libraries/nestjs-libraries/src/content-studio/ai/providers/openai.provider.ts'
+);
 const rules = (text: string, file = FIXTURE) =>
   checkSource(file, text).map((violation) => violation.rule);
 
@@ -561,8 +590,10 @@ describe('Content Studio architecture guard', () => {
       [
         "import OpenAI from 'openai'; type Client = OpenAI; let client: OpenAI;",
       ],
+      // clients are made in the provider adapters, the only files that may
+      // import a provider SDK
     ])('allows %s', (text) => {
-      expect(rules(text)).toEqual([]);
+      expect(rules(text, PROVIDER_FIXTURE)).toEqual([]);
     });
   });
 
@@ -573,16 +604,23 @@ describe('Content Studio architecture guard', () => {
       ["import * as sdk from '@ai-sdk/openai';"],
       ["export { openai } from '@ai-sdk/openai';"],
       ["const sdk = require('@ai-sdk/openai');"],
+      // @ai-sdk/* is outside the provider import boundary as well
     ])('rejects %s', (text) => {
-      expect(rules(text)).toEqual(['CS_NO_DEFAULT_PROVIDER_CLIENT']);
+      expect(rules(text)).toEqual([
+        'CS_NO_DEFAULT_PROVIDER_CLIENT',
+        'CS_AI_PROVIDER_IMPORT_BOUNDARY',
+      ]);
     });
 
     it.each([
       ["import { createOpenAI } from '@ai-sdk/openai';"],
       ["import type { OpenAIProvider } from '@ai-sdk/openai';"],
-    ])('allows %s', (text) => {
-      expect(rules(text)).toEqual([]);
-    });
+    ])(
+      'does not report the factory import %s as the default provider',
+      (text) => {
+        expect(rules(text)).toEqual(['CS_AI_PROVIDER_IMPORT_BOUNDARY']);
+      }
+    );
   });
 
   describe('CS_NO_LEGACY_AI_SERVICE', () => {
@@ -736,6 +774,85 @@ describe('Content Studio architecture guard', () => {
     });
   });
 
+  describe('CS_AI_PROVIDER_IMPORT_BOUNDARY', () => {
+    it.each([
+      ["import OpenAI from 'openai';"],
+      ["import { zodResponseFormat } from 'openai/helpers/zod';"],
+      ["import type { ChatCompletion } from 'openai/resources';"],
+      ["export * from 'openai';"],
+      ["const sdk = require('openai');"],
+      ["const load = () => import('openai');"],
+      ["import Anthropic from '@anthropic-ai/sdk';"],
+      ["import type { Message } from '@anthropic-ai/sdk/resources';"],
+      ["import { generateText } from 'ai';"],
+      ["import { createStreamableUI } from 'ai/rsc';"],
+      ["import { createOpenAI } from '@ai-sdk/openai';"],
+      ["import { createAnthropic } from '@ai-sdk/anthropic';"],
+    ])('rejects %s outside the provider adapters', (text) => {
+      expect(rules(text)).toEqual(['CS_AI_PROVIDER_IMPORT_BOUNDARY']);
+    });
+
+    it.each([
+      ["import OpenAI from 'openai';"],
+      ["import { zodResponseFormat } from 'openai/helpers/zod';"],
+      ["import Anthropic from '@anthropic-ai/sdk';"],
+    ])('allows %s in a provider adapter', (text) => {
+      expect(rules(text, PROVIDER_FIXTURE)).toEqual([]);
+    });
+
+    it.each([
+      ["import { generateText } from 'ai';"],
+      ["import { createOpenAI } from '@ai-sdk/openai';"],
+      ["import { createOpenAICompatible } from '@ai-sdk/openai-compatible';"],
+    ])('rejects %s even in a provider adapter', (text) => {
+      expect(rules(text, PROVIDER_FIXTURE)).toEqual([
+        'CS_AI_PROVIDER_IMPORT_BOUNDARY',
+      ]);
+    });
+
+    it.each([
+      [
+        "import { parseContentStudioAICredential } from './ai.provider.catalog';",
+      ],
+      [
+        "import { secretBox } from '@gitroom/nestjs-libraries/services/secret.box';",
+      ],
+      ["import { z } from 'zod';"],
+      ["import airtable from 'airtable';"],
+      ["import { OpenaiConfig } from './openai.config';"],
+    ])('allows %s', (text) => {
+      expect(rules(text)).toEqual([]);
+    });
+
+    it.each([
+      ['libraries/nestjs-libraries/src/content-studio/ai/providers/openai.ts'],
+      ['libraries/nestjs-libraries/src/content-studio/ai/openai.provider.ts'],
+      [
+        'libraries/nestjs-libraries/src/content-studio/ai/providers/nested/openai.provider.ts',
+      ],
+      ['apps/backend/src/content-studio/ai/providers/openai.provider.ts'],
+      [
+        'libraries/nestjs-libraries/src/content-studio/ai/providers/openai.provider.tsx',
+      ],
+    ])('does not treat %s as a provider adapter', (file) => {
+      expect(
+        rules("import OpenAI from 'openai';", path.join(REPO_ROOT, file))
+      ).toEqual(['CS_AI_PROVIDER_IMPORT_BOUNDARY']);
+    });
+
+    it('rejects a provider SDK added to the credential module', () => {
+      const file = path.join(
+        REPO_ROOT,
+        'libraries/nestjs-libraries/src/content-studio/ai/ai.credential.ts'
+      );
+      const text = fs.readFileSync(file, 'utf8');
+      expect(rules(text, file)).toEqual([]);
+      expect(rules(`import OpenAI from 'openai';\n${text}`, file)).toEqual([
+        'CS_AI_PROVIDER_IMPORT_BOUNDARY',
+      ]);
+    });
+  });
+
   it('reports every violation in a file with its location', () => {
     const text = [
       "import { openai } from '@ai-sdk/openai';",
@@ -755,6 +872,7 @@ describe('Content Studio architecture guard', () => {
       }))
     ).toEqual([
       { line: 1, column: 1, rule: 'CS_NO_DEFAULT_PROVIDER_CLIENT' },
+      { line: 1, column: 1, rule: 'CS_AI_PROVIDER_IMPORT_BOUNDARY' },
       { line: 2, column: 1, rule: 'CS_NO_LEGACY_AI_SERVICE' },
       { line: 3, column: 1, rule: 'CS_NO_SAFEFETCH_FACTORY' },
       { line: 4, column: 13, rule: 'CS_NO_PROCESS_ENV' },
