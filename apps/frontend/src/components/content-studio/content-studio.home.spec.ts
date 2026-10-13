@@ -984,27 +984,17 @@ describe('Content Studio: every request', () => {
 describe('Content Studio: routes and navigation', () => {
   const app = join(__dirname, '../../app/(app)/(site)/content-studio');
 
-  it('has the /content-studio page and the /content-studio/[id] placeholder', () => {
+  it('has the /content-studio page; /content-studio/[id] is the workspace', () => {
     const home = readFileSync(join(app, 'page.tsx'), 'utf8');
     const workspace = readFileSync(join(app, '[id]/page.tsx'), 'utf8');
     expect(home).toContain('return <ContentStudioHome />;');
     expect(workspace).toContain(
-      'return <ContentStudioWorkspacePlaceholder />;'
+      'return <ContentStudioWorkspace key={id} packageId={id} />;'
     );
-    expect(workspace).not.toMatch(/fetch|useSWR/);
-  });
-
-  it('the placeholder links back and loads nothing', () => {
-    const {
-      ContentStudioWorkspacePlaceholder,
-    } = require('./content-studio.workspace.placeholder');
-    render(h(ContentStudioWorkspacePlaceholder));
+    expect(workspace).not.toMatch(/fetch|useSWR|Placeholder/);
     expect(
-      screen
-        .getByRole('link', { name: 'Back to Content Studio' })
-        .getAttribute('href')
-    ).toBe('/content-studio');
-    expect(mockFetch).not.toHaveBeenCalled();
+      existsSync(join(__dirname, 'content-studio.workspace.placeholder.tsx'))
+    ).toBe(false);
   });
 
   it('M12 the menu has Content Studio once, after Launches, with no extra gate', () => {
@@ -1045,12 +1035,21 @@ describe('Content Studio: routes and navigation', () => {
 
 describe('Content Studio home: source surface', () => {
   const dir = __dirname;
+  // the home and its modals; the workspace has its own checks
+  const HOME_FILES = [
+    'content-studio.home.tsx',
+    'content-studio.package.list.tsx',
+    'content-studio.package.modal.tsx',
+    'content-studio.projects.modal.tsx',
+  ];
   const sources = readdirSync(dir)
-    .filter((file) => /\.tsx?$/.test(file) && !/\.spec\./.test(file))
+    .filter((file) => HOME_FILES.includes(file))
     .map((file) => [file, readFileSync(join(dir, file), 'utf8')] as const);
 
   it('stays away from the composer, handoffs, Media, Prisma and AI', () => {
-    expect(sources.length).toBeGreaterThanOrEqual(6);
+    expect(sources.map(([file]) => file).sort()).toEqual(
+      [...HOME_FILES].sort()
+    );
     for (const [, source] of sources) {
       expect(source).not.toMatch(
         /new-launch\/store|add\.edit\.modal|handoff|@prisma\/client|media\.component|media\.service|launches\/ai|openai|copilot/i

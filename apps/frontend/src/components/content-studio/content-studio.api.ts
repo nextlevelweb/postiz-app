@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import useSWR, { useSWRConfig } from 'swr';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
@@ -116,6 +116,205 @@ export const useContentStudioPackages = (filters: ContentStudioFilters) => {
     [fetch]
   );
   return useSWR(packagesPath(filters), load, swrOptions);
+};
+
+// The package draft (schema v1) as the API sends it: plain text and Media ids
+// only. Paths never live in a draft
+export interface ContentStudioThreadItem {
+  id: string;
+  text: string;
+  mediaIds: string[];
+}
+
+export interface ContentStudioDraft {
+  schemaVersion: 1;
+  copy: {
+    global: {
+      thread: ContentStudioThreadItem[];
+    };
+  };
+}
+
+// The current state of a Media the draft refers to; null when it is missing,
+// deleted or not the organization's
+export interface ContentStudioMediaPreview {
+  id: string;
+  path: string;
+  thumbnail: string | null;
+  alt: string | null;
+  status: string;
+}
+
+export type ContentStudioMediaMap = Record<
+  string,
+  ContentStudioMediaPreview | null
+>;
+
+export interface ContentStudioPackageDetail
+  extends ContentStudioPackageSummary {
+  draft: ContentStudioDraft;
+  media: ContentStudioMediaMap;
+}
+
+export interface ContentStudioRevisionSummary {
+  id: string;
+  revisionNumber: number;
+  contentHash: string;
+  origin: string;
+  sourceDraftVersion: number;
+  createdAt: string;
+  createdBy: { id: string; name: string | null };
+}
+
+export interface ContentStudioRevisionList {
+  pages: number;
+  results: ContentStudioRevisionSummary[];
+}
+
+export interface ContentStudioRevisionDetail
+  extends ContentStudioRevisionSummary {
+  packageId: string;
+  schemaVersion: number;
+  content: ContentStudioDraft;
+  media: ContentStudioMediaMap;
+}
+
+export interface ContentStudioCreateRevisionResult {
+  created: boolean;
+  revision: {
+    id: string;
+    revisionNumber: number;
+  };
+}
+
+export interface ContentStudioHandoffCreateResult {
+  id: string;
+  expiresAt: string;
+}
+
+// The draft limits the API enforces
+export const THREAD_ITEMS_MAX = 25;
+export const ITEM_TEXT_MAX = 10_000;
+export const ITEM_MEDIA_MAX = 20;
+export const PACKAGE_UNIQUE_MEDIA_MAX = 50;
+
+export const packageDetailPath = (id: string) =>
+  `${PACKAGES}/${encodeURIComponent(id)}`;
+export const revisionsPath = (id: string, page: number) =>
+  `${packageDetailPath(id)}/revisions?page=${page}`;
+
+// The detail is read once per visit to seed the editor: `fresh` is the last
+// answer this hook instance fetched itself, so data cached by an earlier visit
+// (and maybe outdated by saves since) is never mistaken for it
+export const useContentStudioPackage = (id: string) => {
+  const fetch = useFetch();
+  const fresh = useRef<ContentStudioPackageDetail | null>(null);
+  const load = useCallback(
+    async (path: string) => {
+      const detail = await request<ContentStudioPackageDetail>(fetch, path);
+      fresh.current = detail;
+      return detail;
+    },
+    [fetch]
+  );
+  const swr = useSWR(packageDetailPath(id), load, {
+    ...swrOptions,
+    revalidateIfStale: false,
+    revalidateOnMount: true,
+  });
+  return { ...swr, fresh };
+};
+
+// Only mounted while the history is shown
+export const useContentStudioRevisions = (id: string, page: number) => {
+  const fetch = useFetch();
+  const load = useCallback(
+    (path: string) => request<ContentStudioRevisionList>(fetch, path),
+    [fetch]
+  );
+  return useSWR(revisionsPath(id, page), load, swrOptions);
+};
+
+// Loaded only for the revision the user opens
+export const useContentStudioRevision = (
+  id: string,
+  revisionId: string | null
+) => {
+  const fetch = useFetch();
+  const load = useCallback(
+    (path: string) => request<ContentStudioRevisionDetail>(fetch, path),
+    [fetch]
+  );
+  return useSWR(
+    revisionId
+      ? `${packageDetailPath(id)}/revisions/${encodeURIComponent(revisionId)}`
+      : null,
+    load,
+    swrOptions
+  );
+};
+
+// The writes of the workspace. None of them edits the SWR cache: the editor
+// keeps its own state, seeded once from the detail
+export const useContentStudioWorkspaceApi = () => {
+  const fetch = useFetch();
+  const { mutate } = useSWRConfig();
+
+  return useMemo(
+    () => ({
+      getPackage: (id: string) =>
+        request<ContentStudioPackageDetail>(fetch, packageDetailPath(id)),
+      saveDraft: (id: string, baseDraftVersion: number, draft: unknown) =>
+        request<{ draftVersion: number }>(
+          fetch,
+          `${packageDetailPath(id)}/draft`,
+          {
+            method: 'PUT',
+            body: JSON.stringify({ baseDraftVersion, draft }),
+          }
+        ),
+      createRevision: (
+        id: string,
+        draftVersion: number,
+        origin: 'manual' | 'handoff'
+      ) =>
+        request<ContentStudioCreateRevisionResult>(
+          fetch,
+          `${packageDetailPath(id)}/revisions`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ draftVersion, origin }),
+          }
+        ),
+      listRevisions: (id: string, page: number) =>
+        request<ContentStudioRevisionList>(fetch, revisionsPath(id, page)),
+      getRevision: (id: string, revisionId: string) =>
+        request<ContentStudioRevisionDetail>(
+          fetch,
+          `${packageDetailPath(id)}/revisions/${encodeURIComponent(revisionId)}`
+        ),
+      createHandoff: (id: string, revisionId: string) =>
+        request<ContentStudioHandoffCreateResult>(
+          fetch,
+          `${packageDetailPath(id)}/revisions/${encodeURIComponent(
+            revisionId
+          )}/handoffs`,
+          { method: 'POST' }
+        ),
+      // the history pages of this package, and the home lists
+      refreshRevisions: (id: string) =>
+        mutate(
+          (key) =>
+            typeof key === 'string' &&
+            key.startsWith(`${packageDetailPath(id)}/revisions?`)
+        ),
+      refreshPackageLists: () =>
+        mutate(
+          (key) => typeof key === 'string' && key.startsWith(`${PACKAGES}?`)
+        ),
+    }),
+    [fetch, mutate]
+  );
 };
 
 // Filters live in the URL (?project=&archived=true&page=), so a reload or
