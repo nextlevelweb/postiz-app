@@ -426,9 +426,11 @@ describe('Content Studio home: filters (URL state)', () => {
       `/content-studio/packages?page=2&archived=true&projectId=${P_ALPHA}`
     );
     fireEvent.click(button('Previous'));
-    await flush();
-    expect(packageQueries().pop()).toBe(
-      `/content-studio/packages?page=1&archived=true&projectId=${P_ALPHA}`
+    // page 1 is cached: SWR revalidates it on the next animation frame
+    await waitFor(() =>
+      expect(packageQueries().pop()).toBe(
+        `/content-studio/packages?page=1&archived=true&projectId=${P_ALPHA}`
+      )
     );
     expect(mockUrl.params.get('page')).toBeNull();
   });
