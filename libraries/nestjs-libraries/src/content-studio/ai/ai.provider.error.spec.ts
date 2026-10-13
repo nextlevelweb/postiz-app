@@ -1,5 +1,6 @@
 import { inspect } from 'util';
 import {
+  contentStudioAIErrorCodeForStatus,
   ContentStudioAIProviderError,
   ContentStudioAIResolutionError,
   safeProviderRequestId,
@@ -141,5 +142,29 @@ describe('ContentStudioAIResolutionError', () => {
     });
     expect(err).not.toHaveProperty('cause');
     expect(rendered(err)).not.toContain(MARKER);
+  });
+});
+
+describe('contentStudioAIErrorCodeForStatus', () => {
+  it.each([
+    [401, 'AUTH_FAILED'],
+    [403, 'AUTH_FAILED'],
+    [402, 'QUOTA_EXCEEDED'],
+    [429, 'RATE_LIMITED'],
+    [408, 'TIMEOUT'],
+    [504, 'TIMEOUT'],
+    [404, 'MODEL_UNAVAILABLE'],
+    [400, 'REQUEST_REJECTED'],
+    [409, 'REQUEST_REJECTED'],
+    [413, 'REQUEST_REJECTED'],
+    [422, 'REQUEST_REJECTED'],
+    [500, 'PROVIDER_UNAVAILABLE'],
+    [502, 'PROVIDER_UNAVAILABLE'],
+    [503, 'PROVIDER_UNAVAILABLE'],
+    [529, 'PROVIDER_UNAVAILABLE'],
+    [418, 'PROVIDER_UNAVAILABLE'],
+    [undefined, 'PROVIDER_UNAVAILABLE'],
+  ])('maps HTTP %p to %s for every provider', (status, code) => {
+    expect(contentStudioAIErrorCodeForStatus(status)).toBe(code);
   });
 });

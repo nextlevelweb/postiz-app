@@ -35,14 +35,21 @@ const refusal = (provider: unknown, input: unknown) => {
 };
 
 describe('Content Studio AI provider catalog', () => {
-  it('PC1/PC2 supports openai and openrouter', () => {
-    expect(CONTENT_STUDIO_AI_PROVIDERS).toEqual(['openai', 'openrouter']);
+  it('PC1/PC2/AC1 supports openai, openrouter and anthropic', () => {
+    expect(CONTENT_STUDIO_AI_PROVIDERS).toEqual([
+      'openai',
+      'openrouter',
+      'anthropic',
+    ]);
     expect(isContentStudioAIProvider('openai')).toBe(true);
     expect(isContentStudioAIProvider('openrouter')).toBe(true);
+    expect(isContentStudioAIProvider('anthropic')).toBe(true);
   });
 
   it.each([
-    ['anthropic'],
+    ['mistral'],
+    ['Anthropic'],
+    ['claude'],
     ['google'],
     ['OpenAI'],
     [' openai'],
@@ -129,7 +136,7 @@ describe('Content Studio AI provider catalog', () => {
       expect(text).not.toContain(MARKER);
       expect(text).not.toContain('content-studio-test');
     }
-    expect(rendered(refusal('anthropic', { apiKey: MARKER }))).not.toContain(
+    expect(rendered(refusal('mistral', { apiKey: MARKER }))).not.toContain(
       MARKER
     );
   });
@@ -148,13 +155,13 @@ describe('Content Studio AI provider catalog', () => {
 
   it('PC14 lists provider ids only, no credential values or defaults', () => {
     expect(JSON.stringify(CONTENT_STUDIO_AI_PROVIDERS)).toBe(
-      '["openai","openrouter"]'
+      '["openai","openrouter","anthropic"]'
     );
   });
 });
 
 describe('Content Studio AI provider catalog: public metadata', () => {
-  it('P1-P3 lists openai then openrouter with their display names', () => {
+  it('P1-P3/AC2/AC15 lists openai, openrouter, then anthropic with their display names', () => {
     expect(
       listContentStudioAIProviders().map(({ provider, displayName }) => [
         provider,
@@ -163,6 +170,7 @@ describe('Content Studio AI provider catalog: public metadata', () => {
     ).toEqual([
       ['openai', 'OpenAI'],
       ['openrouter', 'OpenRouter'],
+      ['anthropic', 'Anthropic'],
     ]);
   });
 
@@ -198,12 +206,13 @@ describe('Content Studio AI provider catalog: public metadata', () => {
     }
   });
 
-  it('P10 has no Anthropic entry yet', () => {
-    expect(
-      listContentStudioAIProviders().map((info) => info.provider)
-    ).not.toContain('anthropic');
-    expect(JSON.stringify(listContentStudioAIProviders())).not.toMatch(
-      /anthropic|claude/i
+  it('P10/AC13 describes Anthropic with the API key field only, like the others', () => {
+    const anthropic = getContentStudioAIProvider('anthropic');
+    expect(anthropic?.credentialFields).toEqual([
+      { name: 'apiKey', label: 'API key', secret: true, required: true },
+    ]);
+    expect(JSON.stringify(anthropic)).not.toMatch(
+      /sk-ant|ANTHROPIC_|authToken|x-api-key|anthropic-version|baseURL|https?:/i
     );
   });
 
@@ -297,11 +306,12 @@ describe('Content Studio AI provider catalog: models', () => {
     );
   });
 
-  it('MC9 has no Anthropic provider or model', () => {
-    expect(getContentStudioAIProvider('anthropic')).toBeUndefined();
-    expect(JSON.stringify(listContentStudioAIProviders())).not.toMatch(
-      /anthropic|claude/i
-    );
+  it('MC9 lists Claude models under Anthropic only', () => {
+    for (const provider of ['openai', 'openrouter']) {
+      expect(JSON.stringify(getContentStudioAIProvider(provider))).not.toMatch(
+        /anthropic|claude/i
+      );
+    }
   });
 
   it.each([
@@ -324,7 +334,22 @@ describe('Content Studio AI provider catalog: models', () => {
     ['openai', '__proto__', false],
     ['openai', null, false],
     ['openai', ['gpt-6.1-sol'], false],
+    ['anthropic', 'claude-opus-5-5', true],
+    ['anthropic', 'claude-sonnet-5-5', true],
+    ['anthropic', 'claude-haiku-5-5', true],
+    // AC7: anything that is not exactly an Anthropic catalog id
+    ['anthropic', 'claude-opus-5', false],
+    ['anthropic', 'claude-fable-5-1', false],
+    ['anthropic', 'claude-opus-5-5-latest', false],
+    ['anthropic', 'Claude-Opus-5-5', false],
+    ['anthropic', 'anthropic/claude-opus-5-5', false],
+    ['anthropic', 'anthropic.claude-opus-5-5', false],
+    // AC8/AC9: OpenAI and OpenRouter ids are not Anthropic ids, and back
     ['anthropic', 'gpt-6.1-sol', false],
+    ['anthropic', 'openai/gpt-6.1-sol', false],
+    ['anthropic', 'google/gemini-3.8-flash', false],
+    ['openai', 'claude-opus-5-5', false],
+    ['openrouter', 'claude-opus-5-5', false],
     ['__proto__', 'gpt-6.1-sol', false],
   ])('MC10/MC11 %s supports %p: %s', (provider, model, supported) => {
     expect(isContentStudioAIModelSupported(provider, model)).toBe(supported);
@@ -359,5 +384,77 @@ describe('Content Studio AI provider catalog: models', () => {
     expect(listContentStudioAIProviders()[1].models[0].label).toBe(
       'GPT-6.1 Sol (OpenAI)'
     );
+  });
+});
+
+describe('Content Studio AI provider catalog: Anthropic', () => {
+  it('AC3/AC6 lists the curated Claude models, none with JSON output yet', () => {
+    expect(getContentStudioAIProvider('anthropic')?.models).toEqual([
+      {
+        id: 'claude-opus-5-5',
+        label: 'Claude Opus 5.5',
+        capabilities: { text: true, structuredOutput: false },
+      },
+      {
+        id: 'claude-sonnet-5-5',
+        label: 'Claude Sonnet 5.5',
+        capabilities: { text: true, structuredOutput: false },
+      },
+      {
+        id: 'claude-haiku-5-5',
+        label: 'Claude Haiku 5.5',
+        capabilities: { text: true, structuredOutput: false },
+      },
+    ]);
+  });
+
+  it('AC4/AC5 defaults to Claude Opus 5.5, one of its unique models', () => {
+    const anthropic = getContentStudioAIProvider('anthropic');
+    const ids = anthropic?.models.map((model) => model.id) || [];
+    expect(getContentStudioAIDefaultModel('anthropic')).toBe('claude-opus-5-5');
+    expect(anthropic?.defaultModel).toBe('claude-opus-5-5');
+    expect(ids).toContain(anthropic?.defaultModel);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('AC10-AC12 has no price, URL, environment name or SDK detail', () => {
+    expect(JSON.stringify(getContentStudioAIProvider('anthropic'))).not.toMatch(
+      /price|pricing|cost|credit|token|https?:|api\.anthropic|ANTHROPIC_|env|sdk|messages\.create|output_config/i
+    );
+  });
+
+  it('AC14 answers new copies', () => {
+    const first = getContentStudioAIProvider('anthropic');
+    if (!first) {
+      throw new Error('expected Anthropic');
+    }
+    first.models[0].capabilities.structuredOutput = true;
+    first.defaultModel = 'changed';
+    first.models.length = 0;
+    expect(getContentStudioAIProvider('anthropic')?.defaultModel).toBe(
+      'claude-opus-5-5'
+    );
+    expect(
+      getContentStudioAIModel('anthropic', 'claude-opus-5-5')?.capabilities
+    ).toEqual({ text: true, structuredOutput: false });
+    expect(listContentStudioAIProviders()[2].models).toHaveLength(3);
+  });
+
+  it('parses an Anthropic credential with the same exact API key rules', () => {
+    expect(
+      parseContentStudioAICredential('anthropic', { apiKey: MARKER })
+    ).toEqual({ apiKey: MARKER });
+    for (const input of [
+      { apiKey: `${MARKER} ` },
+      { apiKey: ` ${MARKER}` },
+      { apiKey: MARKER, baseURL: 'https://x.test' },
+      { apiKey: MARKER, authToken: MARKER },
+      { apiKey: 'short' },
+      {},
+    ]) {
+      const err = refusal('anthropic', input);
+      expect((err as ContentStudioAICredentialError).code).toBe('INVALID');
+      expect(rendered(err)).not.toContain(MARKER);
+    }
   });
 });

@@ -423,7 +423,7 @@ describe('ContentStudioAIConnectionService: create', () => {
     expect(repository.createConnection).toHaveBeenCalledTimes(2);
   });
 
-  it.each([['anthropic'], ['google'], ['OpenAI'], ['']])(
+  it.each([['mistral'], ['Anthropic'], ['google'], ['OpenAI'], ['']])(
     'S4 rejects provider %p with a fixed 400 and seals nothing',
     async (provider) => {
       const { repository, service } = setup();
@@ -582,6 +582,7 @@ describe('ContentStudioAIConnectionService: read', () => {
     expect(service.listProviders().map((p) => p.provider)).toEqual([
       'openai',
       'openrouter',
+      'anthropic',
     ]);
     expect(
       Object.values(repository).every((fn) => fn.mock.calls.length === 0)
@@ -1317,5 +1318,168 @@ describe('ContentStudioAIConnectionService: test connection', () => {
       .replace(/^\s*\/\/.*$/gm, '');
     expect(text).not.toMatch(/AIOperation|AIUsage|aIOperation|aIUsage/);
     expect(text).not.toMatch(/CheckPolicies|Sections\.AI|subscription/);
+  });
+});
+
+describe('ContentStudioAIConnectionService: Anthropic connections', () => {
+  const createAnthropic = (
+    service: ContentStudioAIConnectionService,
+    defaultModel?: unknown,
+    who = ADMIN
+  ) =>
+    service.createConnection(who, {
+      name: 'Main Claude',
+      provider: 'anthropic',
+      credential: { apiKey: MARKER },
+      ...(defaultModel === undefined ? {} : { defaultModel }),
+    });
+  const created = (repository: Repository) =>
+    (
+      repository.createConnection.mock.calls[0] as unknown as [
+        Record<string, unknown>
+      ]
+    )[0];
+
+  it('AS1/AS2/AS12 creates an Anthropic connection with its default model and a safe answer', async () => {
+    const { repository, service } = setup();
+    const result = await createAnthropic(service);
+
+    expect(seal).toHaveBeenCalledWith({
+      organizationId: ORG,
+      connectionId: NEW_ID,
+      provider: 'anthropic',
+      credential: { apiKey: MARKER },
+    });
+    expect(created(repository)).toMatchObject({
+      provider: 'anthropic',
+      defaultModel: 'claude-opus-5-5',
+      sealedCredential: expect.stringMatching(/^sb1\.k1\./),
+    });
+    expect(Object.keys(result).sort()).toEqual(PUBLIC_FIELDS);
+    expect(JSON.stringify(result)).not.toMatch(/sk-content-studio|sb1\./);
+  });
+
+  it('AS3 accepts a Claude model of the catalog', async () => {
+    const { repository, service } = setup();
+    await createAnthropic(service, 'claude-haiku-5-5');
+    expect(created(repository).defaultModel).toBe('claude-haiku-5-5');
+  });
+
+  it.each([
+    ['AS4', 'gpt-6.1-sol'],
+    ['AS4', 'openai/gpt-6.1-sol'],
+    ['AS5', 'claude-fable-5-1'],
+    ['AS5', 'claude-opus-5-5-latest'],
+    ['AS5', 'anthropic.claude-opus-5-5'],
+  ])('%s refuses model %s for Anthropic', async (_id, model) => {
+    const { repository, service } = setup();
+    const err = await httpError(createAnthropic(service, model));
+    expect(err.status).toBe(400);
+    expect(err.body).toEqual(MODEL_UNSUPPORTED);
+    expect(err.text).not.toContain(model);
+    expect(writes(repository)).toEqual([]);
+  });
+
+  it('AS6 updates the default model of an Anthropic connection against its own catalog', async () => {
+    const { repository, service } = setup();
+    repository.getConnectionForOrganization.mockResolvedValue(
+      row({ provider: 'anthropic', defaultModel: 'claude-opus-5-5' })
+    );
+    await service.updateConnection(ADMIN, ID, {
+      defaultModel: 'claude-sonnet-5-5',
+    });
+    expect(repository.updateConnectionMetadata).toHaveBeenCalledWith({
+      organizationId: ORG,
+      connectionId: ID,
+      defaultModel: 'claude-sonnet-5-5',
+    });
+    const err = await httpError(
+      service.updateConnection(ADMIN, ID, { defaultModel: 'gpt-6-luna' })
+    );
+    expect(err.body).toEqual(MODEL_UNSUPPORTED);
+  });
+
+  it('AS7 seals a replaced Anthropic key for the stored provider', async () => {
+    const { repository, service } = setup();
+    repository.getConnectionForOrganization.mockResolvedValue(
+      row({ provider: 'anthropic' })
+    );
+    await service.replaceCredential(ADMIN, ID, { apiKey: MARKER });
+    expect(seal).toHaveBeenCalledWith({
+      organizationId: ORG,
+      connectionId: ID,
+      provider: 'anthropic',
+      credential: { apiKey: MARKER },
+    });
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it('AS8/AS9/AS10 tests an Anthropic connection and records the answer', async () => {
+    const { repository, resolver, adapter, service } = setup();
+    repository.getConnectionForOrganization.mockResolvedValue(
+      row({ provider: 'anthropic' })
+    );
+    resolver.resolve.mockResolvedValue({
+      connectionId: ID,
+      provider: 'anthropic' as 'openai',
+      adapter,
+    });
+
+    expect(await service.testConnection(ADMIN, ID)).toEqual({ ok: true });
+    adapter.validateConnection.mockResolvedValueOnce({
+      ok: false,
+      code: 'AUTH_FAILED',
+    });
+    expect(await service.testConnection(SUPERADMIN, ID)).toEqual({
+      ok: false,
+      code: 'AUTH_FAILED',
+    });
+    expect(
+      repository.setValidationResult.mock.calls.map((call) => {
+        const { status, code } = (
+          call as unknown as [{ status: string; code: string | null }]
+        )[0];
+        return [status, code];
+      })
+    ).toEqual([
+      ['valid', null],
+      ['invalid', 'AUTH_FAILED'],
+    ]);
+    expect(resolver.resolve).toHaveBeenCalledWith({
+      organizationId: ORG,
+      connectionId: ID,
+    });
+  });
+
+  it('AS11 refuses a member every change and test of an Anthropic connection', async () => {
+    const { repository, resolver, service } = setup();
+    repository.getConnectionForOrganization.mockResolvedValue(
+      row({ provider: 'anthropic' })
+    );
+    for (const run of [
+      () => createAnthropic(service, undefined, MEMBER),
+      () => service.updateConnection(MEMBER, ID, { name: 'x' }),
+      () => service.replaceCredential(MEMBER, ID, { apiKey: MARKER }),
+      () => service.testConnection(MEMBER, ID),
+    ]) {
+      expect((await httpError(run())).status).toBe(403);
+    }
+    expect(resolver.resolve).not.toHaveBeenCalled();
+    expect(writes(repository)).toEqual([]);
+  });
+
+  it('AS13 lists Anthropic with its models for every member', () => {
+    const { service } = setup();
+    expect(
+      service.listProviders().find((p) => p.provider === 'anthropic')
+    ).toMatchObject({
+      displayName: 'Anthropic',
+      defaultModel: 'claude-opus-5-5',
+      models: [
+        { id: 'claude-opus-5-5' },
+        { id: 'claude-sonnet-5-5' },
+        { id: 'claude-haiku-5-5' },
+      ],
+    });
   });
 });

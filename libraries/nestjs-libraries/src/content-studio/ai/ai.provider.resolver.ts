@@ -11,6 +11,7 @@ import { ContentStudioAIResolutionError } from '@gitroom/nestjs-libraries/conten
 import { ContentStudioAIProviderAdapter } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.types';
 import { createOpenAIProviderAdapter } from '@gitroom/nestjs-libraries/content-studio/ai/providers/openai.provider';
 import { createOpenRouterProviderAdapter } from '@gitroom/nestjs-libraries/content-studio/ai/providers/openrouter.provider';
+import { createAnthropicProviderAdapter } from '@gitroom/nestjs-libraries/content-studio/ai/providers/anthropic.provider';
 
 // Organization and connection ids are Prisma uuid() values; anything else
 // cannot exist
@@ -33,6 +34,8 @@ function createAdapter(
       return createOpenAIProviderAdapter(credential);
     case 'openrouter':
       return createOpenRouterProviderAdapter(credential);
+    case 'anthropic':
+      return createAnthropicProviderAdapter(credential);
     default:
       throw new ContentStudioAIResolutionError('PROVIDER_UNSUPPORTED');
   }

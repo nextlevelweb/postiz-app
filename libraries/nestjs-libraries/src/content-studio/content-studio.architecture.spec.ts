@@ -66,7 +66,7 @@ const MESSAGES: Record<Rule, string> = {
   CS_AI_PROVIDER_IMPORT_BOUNDARY:
     'Provider SDKs may only be imported by Content Studio provider adapters (content-studio/ai/providers/*.provider.ts); AI frameworks (ai, @ai-sdk/*) not at all',
   CS_AI_EXPLICIT_CLIENT_OPTIONS:
-    'An OpenAI SDK client takes one options literal with exactly apiKey, a fixed https baseURL, organization/project/webhookSecret null, logLevel off, maxRetries 0 and a bounded timeout, so nothing falls back to the environment',
+    'A provider SDK client (OpenAI, Anthropic) takes one options literal with exactly its environment backed options: apiKey, a fixed https baseURL of its provider, null for every other credential or account option, logLevel off, maxRetries 0 and a bounded timeout, so nothing falls back to the environment',
 };
 
 // OpenAI (sk-, sk-proj-, sk-svcacct-, ...) and Anthropic (sk-ant-) keys need at
@@ -137,23 +137,42 @@ const isAIFrameworkModule = (target: string) =>
 const PROVIDER_ADAPTER_FILE =
   /^libraries\/nestjs-libraries\/src\/content-studio\/ai\/providers\/[a-z0-9-]+\.provider\.ts$/;
 
-// The OpenAI SDK reads OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_ORG_ID,
-// OPENAI_PROJECT_ID, OPENAI_WEBHOOK_SECRET and OPENAI_LOG for every option
-// left out, and retries twice with a 10 minute timeout by default. So each
-// client gets all of them, as literals (or a module constant for baseURL and
-// timeout), and nothing else: no spread, no shorthand, no extra option
-const OPENAI_SDK_CLIENTS = new Set(['OpenAI']);
-const EXPLICIT_CLIENT_OPTIONS = [
+// The provider SDKs read an environment variable for every option left out
+// (OpenAI: OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_ORG_ID, OPENAI_PROJECT_ID,
+// OPENAI_WEBHOOK_SECRET, OPENAI_LOG; Anthropic: ANTHROPIC_API_KEY,
+// ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL, ANTHROPIC_LOG) and retry twice
+// with a 10 minute timeout by default. So each client gets all of them, as
+// literals (or a module constant for baseURL and timeout), and nothing else:
+// no spread, no shorthand, no extra option. The other credential and account
+// options are null, and baseURL names one of the SDK's own providers
+interface ExplicitClient {
+  nullOptions: string[];
+  hosts: string[];
+}
+const EXPLICIT_CLIENTS: Record<string, ExplicitClient> = {
+  OpenAI: {
+    nullOptions: ['organization', 'project', 'webhookSecret'],
+    hosts: ['api.openai.com', 'openrouter.ai'],
+  },
+  Anthropic: {
+    nullOptions: ['authToken'],
+    hosts: ['api.anthropic.com'],
+  },
+};
+const COMMON_CLIENT_OPTIONS = [
   'apiKey',
   'baseURL',
-  'organization',
-  'project',
-  'webhookSecret',
   'logLevel',
   'maxRetries',
   'timeout',
 ];
 const CLIENT_TIMEOUT_MAX_MS = 120_000;
+const explicitClient = (node: ts.NewExpression) => {
+  const name = calleeName(node.expression) || '';
+  return Object.prototype.hasOwnProperty.call(EXPLICIT_CLIENTS, name)
+    ? EXPLICIT_CLIENTS[name]
+    : undefined;
+};
 
 // Studio stores plain text and the server builds the composer HTML, so the
 // React and DOM ways of injecting markup are never needed in Studio code
@@ -335,8 +354,10 @@ const numericValue = (node: ts.Expression) =>
 
 function hasExplicitClientOptions(
   source: ts.SourceFile,
-  node: ts.NewExpression
+  node: ts.NewExpression,
+  client: ExplicitClient
 ) {
+  const expected = [...COMMON_CLIENT_OPTIONS, ...client.nullOptions];
   const args = node.arguments || [];
   if (args.length !== 1 || !ts.isObjectLiteralExpression(args[0])) {
     return false;
@@ -350,7 +371,7 @@ function hasExplicitClientOptions(
         : undefined;
     if (
       !name ||
-      !EXPLICIT_CLIENT_OPTIONS.includes(name) ||
+      !expected.includes(name) ||
       values.has(name) ||
       !ts.isPropertyAssignment(property)
     ) {
@@ -358,7 +379,7 @@ function hasExplicitClientOptions(
     }
     values.set(name, withoutParentheses(property.initializer));
   }
-  if (values.size !== EXPLICIT_CLIENT_OPTIONS.length) {
+  if (values.size !== expected.length) {
     return false;
   }
   const value = (name: string) => {
@@ -381,8 +402,12 @@ function hasExplicitClientOptions(
     !ts.isVoidExpression(apiKey) &&
     !(ts.isIdentifier(apiKey) && apiKey.text === 'undefined') &&
     ts.isStringLiteralLike(baseURL) &&
-    /^https:\/\/[a-z0-9.-]+(\/[A-Za-z0-9._/-]*)?$/.test(baseURL.text) &&
-    ['organization', 'project', 'webhookSecret'].every(
+    client.hosts.some((host) =>
+      new RegExp(
+        `^https://${host.replace(/\./g, '\\.')}(/[A-Za-z0-9._/-]*)?$`
+      ).test(baseURL.text)
+    ) &&
+    client.nullOptions.every(
       (name) => values.get(name)?.kind === ts.SyntaxKind.NullKeyword
     ) &&
     ts.isStringLiteralLike(logLevel) &&
@@ -468,8 +493,12 @@ function checkSource(file: string, text: string): Violation[] {
     }
     if (
       ts.isNewExpression(node) &&
-      OPENAI_SDK_CLIENTS.has(calleeName(node.expression) || '') &&
-      !hasExplicitClientOptions(source, node)
+      explicitClient(node) &&
+      !hasExplicitClientOptions(
+        source,
+        node,
+        explicitClient(node) as ExplicitClient
+      )
     ) {
       report(node, 'CS_AI_EXPLICIT_CLIENT_OPTIONS');
     }
@@ -607,6 +636,8 @@ const PROVIDER_FIXTURE = path.join(
 // about another rule reports that rule only
 const OPTIONS =
   "{ apiKey: key, baseURL: 'https://api.openai.com/v1', organization: null, project: null, webhookSecret: null, logLevel: 'off', maxRetries: 0, timeout: 30_000 }";
+const ANTHROPIC_OPTIONS =
+  "{ apiKey: key, authToken: null, baseURL: 'https://api.anthropic.com', logLevel: 'off', maxRetries: 0, timeout: 30_000 }";
 const rules = (text: string, file = FIXTURE) =>
   checkSource(file, text).map((violation) => violation.rule);
 
@@ -672,7 +703,7 @@ describe('Content Studio architecture guard', () => {
       ['export const model = new ChatOpenAI({ model: "gpt" });'],
       ['const dalle = new DallEAPIWrapper({});'],
       ['const adapter = new OpenAIAdapter({ openai });'],
-      ['const client = new Anthropic({ apiKey: key });'],
+      [`const client = new Anthropic(${ANTHROPIC_OPTIONS});`],
       [`const client = new sdk.OpenAI(${OPTIONS});`],
       [`const clients = { main: new OpenAI(${OPTIONS}) };`],
       ['const client = createOpenAI({ apiKey: key });'],
@@ -1035,6 +1066,9 @@ describe('Content Studio architecture guard', () => {
       ['baseURL', 'baseURL: url,'],
       ['baseURL', 'baseURL: MUTABLE_URL,'],
       ['baseURL', "baseURL: 'http://api.openai.com/v1',"],
+      ['baseURL', "baseURL: 'https://evil.example/v1',"],
+      ['baseURL', "baseURL: 'https://api.anthropic.com',"],
+      ['baseURL', "baseURL: 'https://api.openai.com.evil.test/v1',"],
       ['baseURL', 'baseURL: `https://${host}/v1`,'],
       ['baseURL', "baseURL: BASE_URL + '/x?y',"],
       ['organization', 'organization: undefined,'],
@@ -1099,6 +1133,136 @@ describe('Content Studio architecture guard', () => {
       expect(report).toEqual([
         `libraries/nestjs-libraries/src/content-studio/ai/providers/openai.provider.ts:1:27 [CS_AI_EXPLICIT_CLIENT_OPTIONS] ${MESSAGES.CS_AI_EXPLICIT_CLIENT_OPTIONS}`,
       ]);
+    });
+  });
+
+  describe('CS_AI_EXPLICIT_CLIENT_OPTIONS for Anthropic', () => {
+    const ANTHROPIC_FIXTURE = path.join(
+      REPO_ROOT,
+      'libraries/nestjs-libraries/src/content-studio/ai/providers/anthropic.provider.ts'
+    );
+    const EXPLICIT: Record<string, string> = {
+      apiKey: 'apiKey: credential.apiKey,',
+      authToken: 'authToken: null,',
+      baseURL: 'baseURL: BASE_URL,',
+      logLevel: "logLevel: 'off',",
+      maxRetries: 'maxRetries: 0,',
+      timeout: 'timeout: TIMEOUT_MS,',
+    };
+    const client = (
+      options: Record<string, string> = EXPLICIT,
+      callee = 'Anthropic'
+    ) =>
+      [
+        "import Anthropic from '@anthropic-ai/sdk';",
+        "const BASE_URL = 'https://api.anthropic.com';",
+        'const TIMEOUT_MS = 30_000;',
+        'let MUTABLE_URL = BASE_URL;',
+        'export const make = (credential: { apiKey: string }, sdk = { Anthropic }) =>',
+        `  new ${callee}({ ${Object.values(options).join(' ')} });`,
+      ].join('\n');
+    const replaced = (name: string, line: string) => ({
+      ...EXPLICIT,
+      [name]: line,
+    });
+
+    it('allows a client with every option explicit, as module constants or literals', () => {
+      expect(rules(client(), ANTHROPIC_FIXTURE)).toEqual([]);
+      expect(
+        rules(client(EXPLICIT, 'sdk.Anthropic'), ANTHROPIC_FIXTURE)
+      ).toEqual([]);
+      expect(
+        rules(
+          client({
+            ...EXPLICIT,
+            baseURL: "baseURL: 'https://api.anthropic.com',",
+            timeout: 'timeout: 30000,',
+          }),
+          ANTHROPIC_FIXTURE
+        )
+      ).toEqual([]);
+    });
+
+    it.each(Object.keys(EXPLICIT).map((name) => [name]))(
+      'rejects a client without %s',
+      (name) => {
+        const options = { ...EXPLICIT };
+        delete options[name];
+        expect(rules(client(options), ANTHROPIC_FIXTURE)).toEqual([
+          'CS_AI_EXPLICIT_CLIENT_OPTIONS',
+        ]);
+        expect(
+          rules(client(options, 'sdk.Anthropic'), ANTHROPIC_FIXTURE)
+        ).toEqual(['CS_AI_EXPLICIT_CLIENT_OPTIONS']);
+      }
+    );
+
+    it.each([
+      ['apiKey', 'apiKey: undefined,'],
+      ['apiKey', 'apiKey: null,'],
+      ['apiKey', "apiKey: 'a-literal-key',"],
+      ['authToken', 'authToken: undefined,'],
+      ['authToken', 'authToken: credential.apiKey,'],
+      ['baseURL', 'baseURL: url,'],
+      ['baseURL', 'baseURL: MUTABLE_URL,'],
+      ['baseURL', "baseURL: 'http://api.anthropic.com',"],
+      ['baseURL', "baseURL: 'https://api.openai.com/v1',"],
+      ['baseURL', "baseURL: 'https://api.anthropic.com.evil.test',"],
+      ['baseURL', 'baseURL: `https://${host}`,'],
+      ['logLevel', "logLevel: 'debug',"],
+      ['maxRetries', 'maxRetries: 2,'],
+      ['timeout', 'timeout: 0,'],
+      ['timeout', 'timeout: 600_000,'],
+    ])('rejects %s given as %s', (name, line) => {
+      expect(rules(client(replaced(name, line)), ANTHROPIC_FIXTURE)).toEqual([
+        'CS_AI_EXPLICIT_CLIENT_OPTIONS',
+      ]);
+    });
+
+    it.each([
+      ['apiKey', 'apiKey: process.env.ANTHROPIC_API_KEY,'],
+      ['baseURL', 'baseURL: process.env.ANTHROPIC_BASE_URL,'],
+      ['authToken', 'authToken: process.env.ANTHROPIC_AUTH_TOKEN,'],
+    ])('rejects %s from the environment under both rules', (name, line) => {
+      expect(
+        rules(client(replaced(name, line)), ANTHROPIC_FIXTURE).sort()
+      ).toEqual(
+        name === 'apiKey'
+          ? ['CS_NO_PROCESS_ENV']
+          : ['CS_AI_EXPLICIT_CLIENT_OPTIONS', 'CS_NO_PROCESS_ENV']
+      );
+    });
+
+    it.each([
+      ['a spread', { ...EXPLICIT, spread: '...overrides,' }],
+      ['a custom fetch', { ...EXPLICIT, fetch: 'fetch: customFetch,' }],
+      ['default headers', { ...EXPLICIT, headers: 'defaultHeaders: {},' }],
+      ['an OpenAI only option', { ...EXPLICIT, project: 'project: null,' }],
+      ['a repeated option', { ...EXPLICIT, again: 'maxRetries: 0,' }],
+      ['a computed key', { ...EXPLICIT, apiKey: '[key]: credential.apiKey,' }],
+    ])('rejects options with %s', (_name, options) => {
+      expect(rules(client(options), ANTHROPIC_FIXTURE)).toEqual([
+        'CS_AI_EXPLICIT_CLIENT_OPTIONS',
+      ]);
+    });
+
+    it.each([
+      ['new Anthropic();'],
+      ['new Anthropic(options);'],
+      ['new Anthropic({ ...options });'],
+    ])('rejects %s', (call) => {
+      expect(
+        rules(`export const make = (key: string) => ${call}`, ANTHROPIC_FIXTURE)
+      ).toEqual(['CS_AI_EXPLICIT_CLIENT_OPTIONS']);
+    });
+
+    it('does not accept OpenAI options for an Anthropic client', () => {
+      expect(
+        rules(
+          `export const make = () => new Anthropic(${OPTIONS});`,
+          ANTHROPIC_FIXTURE
+        )
+      ).toEqual(['CS_AI_EXPLICIT_CLIENT_OPTIONS']);
     });
   });
 
@@ -1277,11 +1441,12 @@ describe('Content Studio architecture guard', () => {
       expect(found.every((file) => !file.endsWith('.d.ts'))).toBe(true);
     });
 
-    it('holds both provider adapters to one explicit OpenAI client each', () => {
+    it('holds every provider adapter to one explicit SDK client', () => {
       const adapters = files
         .map((file) => relativePath(REPO_ROOT, file))
         .filter((file) => PROVIDER_ADAPTER_FILE.test(file));
       expect(adapters).toEqual([
+        'libraries/nestjs-libraries/src/content-studio/ai/providers/anthropic.provider.ts',
         'libraries/nestjs-libraries/src/content-studio/ai/providers/openai.provider.ts',
         'libraries/nestjs-libraries/src/content-studio/ai/providers/openrouter.provider.ts',
       ]);
@@ -1295,17 +1460,20 @@ describe('Content Studio architecture guard', () => {
         );
         const clients: ts.NewExpression[] = [];
         const collect = (node: ts.Node) => {
-          if (
-            ts.isNewExpression(node) &&
-            OPENAI_SDK_CLIENTS.has(calleeName(node.expression) || '')
-          ) {
+          if (ts.isNewExpression(node) && explicitClient(node)) {
             clients.push(node);
           }
           ts.forEachChild(node, collect);
         };
         collect(source);
         expect(clients).toHaveLength(1);
-        expect(hasExplicitClientOptions(source, clients[0])).toBe(true);
+        expect(
+          hasExplicitClientOptions(
+            source,
+            clients[0],
+            explicitClient(clients[0]) as ExplicitClient
+          )
+        ).toBe(true);
         expect(rules(text, path.join(REPO_ROOT, file))).toEqual([]);
       }
     });
@@ -1319,9 +1487,51 @@ describe('Content Studio architecture guard', () => {
         )
         .map((file) => relativePath(REPO_ROOT, file));
       expect(importers).toEqual([
+        'libraries/nestjs-libraries/src/content-studio/ai/providers/anthropic.provider.ts',
         'libraries/nestjs-libraries/src/content-studio/ai/providers/openai.provider.ts',
         'libraries/nestjs-libraries/src/content-studio/ai/providers/openrouter.provider.ts',
       ]);
+      // the Anthropic SDK in its own adapter only, and no AI SDK wrapper
+      expect(
+        files
+          .filter((file) =>
+            /from '@anthropic-ai\/sdk(\/[^']*)?'/.test(
+              fs.readFileSync(file, 'utf8')
+            )
+          )
+          .map((file) => relativePath(REPO_ROOT, file))
+      ).toEqual([
+        'libraries/nestjs-libraries/src/content-studio/ai/providers/anthropic.provider.ts',
+      ]);
+      expect(
+        files.filter((file) =>
+          /@ai-sdk\/anthropic|@langchain\/anthropic/.test(
+            fs.readFileSync(file, 'utf8')
+          )
+        )
+      ).toEqual([]);
+    });
+
+    it('declares @anthropic-ai/sdk directly, at the pinned version', () => {
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')
+      );
+      expect(manifest.dependencies['@anthropic-ai/sdk']).toBe('0.57.0');
+      const lock = fs.readFileSync(
+        path.join(REPO_ROOT, 'pnpm-lock.yaml'),
+        'utf8'
+      );
+      expect(lock).toContain(
+        "      '@anthropic-ai/sdk':\n        specifier: 0.57.0\n        version: 0.57.0\n"
+      );
+      expect(
+        JSON.parse(
+          fs.readFileSync(
+            path.join(REPO_ROOT, 'node_modules/@anthropic-ai/sdk/package.json'),
+            'utf8'
+          )
+        ).version
+      ).toBe('0.57.0');
     });
 
     it(`has no violations in ${files.length} production file(s) under ${SOURCE_BASES.length} source bases`, () => {

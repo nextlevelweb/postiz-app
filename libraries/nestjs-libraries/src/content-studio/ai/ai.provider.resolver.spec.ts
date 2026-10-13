@@ -10,6 +10,7 @@ import { ContentStudioAIResolutionError } from '@gitroom/nestjs-libraries/conten
 import { ContentStudioAIProviderResolver } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.resolver';
 import { createOpenAIProviderAdapter } from '@gitroom/nestjs-libraries/content-studio/ai/providers/openai.provider';
 import { createOpenRouterProviderAdapter } from '@gitroom/nestjs-libraries/content-studio/ai/providers/openrouter.provider';
+import { createAnthropicProviderAdapter } from '@gitroom/nestjs-libraries/content-studio/ai/providers/anthropic.provider';
 import { ContentStudioAIConnectionRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.repository';
 
 // No database and no provider: the repository is mocked, the credential
@@ -62,6 +63,15 @@ jest.mock(
     createOpenRouterProviderAdapter: jest.fn(),
   })
 );
+jest.mock(
+  '@gitroom/nestjs-libraries/content-studio/ai/providers/anthropic.provider',
+  () => ({
+    ...jest.requireActual(
+      '@gitroom/nestjs-libraries/content-studio/ai/providers/anthropic.provider'
+    ),
+    createAnthropicProviderAdapter: jest.fn(),
+  })
+);
 
 const actualCredential = jest.requireActual(
   '@gitroom/nestjs-libraries/content-studio/ai/ai.credential'
@@ -72,9 +82,13 @@ const actualOpenAI = jest.requireActual(
 const actualOpenRouter = jest.requireActual(
   '@gitroom/nestjs-libraries/content-studio/ai/providers/openrouter.provider'
 );
+const actualAnthropic = jest.requireActual(
+  '@gitroom/nestjs-libraries/content-studio/ai/providers/anthropic.provider'
+);
 const open = jest.mocked(openContentStudioAICredential);
 const openAIFactory = jest.mocked(createOpenAIProviderAdapter);
 const openRouterFactory = jest.mocked(createOpenRouterProviderAdapter);
+const anthropicFactory = jest.mocked(createAnthropicProviderAdapter);
 
 const MARKER = 'sk-content-studio-test-secret-123';
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -131,6 +145,7 @@ const resolutionError = async (promise: Promise<unknown>) => {
 const factoriesUnused = () => {
   expect(openAIFactory).not.toHaveBeenCalled();
   expect(openRouterFactory).not.toHaveBeenCalled();
+  expect(anthropicFactory).not.toHaveBeenCalled();
 };
 
 beforeEach(() => {
@@ -142,6 +157,9 @@ beforeEach(() => {
   openAIFactory.mockImplementation(actualOpenAI.createOpenAIProviderAdapter);
   openRouterFactory.mockImplementation(
     actualOpenRouter.createOpenRouterProviderAdapter
+  );
+  anthropicFactory.mockImplementation(
+    actualAnthropic.createAnthropicProviderAdapter
   );
 });
 
@@ -276,7 +294,7 @@ describe('ContentStudioAIProviderResolver', () => {
     }
   );
 
-  it.each([['anthropic'], ['OpenAI'], [''], ['constructor']])(
+  it.each([['mistral'], ['Anthropic'], ['OpenAI'], [''], ['constructor']])(
     'RSL10/RSL12 refuses stored provider %p without any default adapter',
     async (provider) => {
       const { resolver } = setup({ provider });
@@ -370,5 +388,131 @@ describe('ContentStudioAIProviderResolver source', () => {
     expect(text).toMatch(
       /default:\n\s+throw new ContentStudioAIResolutionError\('PROVIDER_UNSUPPORTED'\);/
     );
+  });
+});
+
+describe('ContentStudioAIProviderResolver: Anthropic', () => {
+  const anthropicRow = (overrides: Record<string, unknown> = {}) =>
+    setup({
+      provider: 'anthropic',
+      sealedCredential: sealed('anthropic'),
+      ...overrides,
+    });
+
+  it('AR1-AR3 resolves an Anthropic connection with the Anthropic adapter only', async () => {
+    const { repository, resolver } = anthropicRow();
+    const resolved = await resolver.resolve({
+      organizationId: ORG,
+      connectionId: ID,
+    });
+
+    expect(repository.getSealedCredentialForResolver).toHaveBeenCalledWith(
+      ORG,
+      ID
+    );
+    expect(open).toHaveBeenCalledWith({
+      organizationId: ORG,
+      connectionId: ID,
+      provider: 'anthropic',
+      envelope: expect.stringMatching(/^sb1\.k1\./),
+    });
+    expect(anthropicFactory.mock.calls).toEqual([[{ apiKey: MARKER }]]);
+    expect(openAIFactory).not.toHaveBeenCalled();
+    expect(openRouterFactory).not.toHaveBeenCalled();
+    expect(resolved.provider).toBe('anthropic');
+    expect(resolved.adapter).toBe(anthropicFactory.mock.results[0].value);
+    expect(resolved.adapter.provider).toBe('anthropic');
+  });
+
+  it('AR4 refuses a disabled Anthropic connection before opening it', async () => {
+    const { resolver } = anthropicRow({ disabledAt: new Date() });
+    expect(
+      await resolutionError(
+        resolver.resolve({ organizationId: ORG, connectionId: ID })
+      )
+    ).toBe('DISABLED');
+    expect(open).not.toHaveBeenCalled();
+    factoriesUnused();
+  });
+
+  it('AR5 reads a missing, foreign or archived Anthropic connection as not found', async () => {
+    const { resolver } = anthropicRow();
+    for (const [organizationId, connectionId] of [
+      [ORG, OTHER_ID],
+      [OTHER_ORG, ID],
+    ]) {
+      expect(
+        await resolutionError(
+          resolver.resolve({ organizationId, connectionId })
+        )
+      ).toBe('NOT_FOUND');
+    }
+    factoriesUnused();
+  });
+
+  it.each([
+    ['tampered', () => `${sealed('anthropic').slice(0, -4)}AAAA`],
+    ['sealed for another connection', () => sealed('anthropic', ORG, OTHER_ID)],
+    ['missing', () => null],
+  ])('AR6 maps a %s credential to CREDENTIAL_INVALID', async (_n, envelope) => {
+    const { resolver } = anthropicRow({ sealedCredential: envelope() });
+    expect(
+      await resolutionError(
+        resolver.resolve({ organizationId: ORG, connectionId: ID })
+      )
+    ).toBe('CREDENTIAL_INVALID');
+    factoriesUnused();
+  });
+
+  it('AR7 never uses an Anthropic key or token from the environment', async () => {
+    const saved = { ...process.env };
+    try {
+      Object.assign(process.env, {
+        ANTHROPIC_API_KEY: 'sk-ant-from-the-environment-000000',
+        ANTHROPIC_AUTH_TOKEN: 'token-from-the-environment',
+      });
+      const { repository, resolver } = anthropicRow();
+      repository.getSealedCredentialForResolver.mockResolvedValue(null);
+      expect(
+        await resolutionError(
+          resolver.resolve({ organizationId: ORG, connectionId: ID })
+        )
+      ).toBe('NOT_FOUND');
+      factoriesUnused();
+    } finally {
+      process.env = saved;
+    }
+  });
+
+  it('AR8/AR9 makes a new adapter on every resolve and returns no key', async () => {
+    const { resolver } = anthropicRow();
+    const first = await resolver.resolve({
+      organizationId: ORG,
+      connectionId: ID,
+    });
+    const second = await resolver.resolve({
+      organizationId: ORG,
+      connectionId: ID,
+    });
+    expect(anthropicFactory).toHaveBeenCalledTimes(2);
+    expect(first.adapter).not.toBe(second.adapter);
+    expect(
+      [
+        JSON.stringify(first),
+        inspect(first, { depth: 10, showHidden: true }),
+      ].join('\n')
+    ).not.toMatch(/sk-content-studio|sb1\./);
+  });
+
+  it('AR10 still refuses a provider it does not know, Anthropic look-alikes included', async () => {
+    for (const provider of ['anthropic ', 'claude', 'ANTHROPIC']) {
+      const { resolver } = setup({ provider });
+      expect(
+        await resolutionError(
+          resolver.resolve({ organizationId: ORG, connectionId: ID })
+        )
+      ).toBe('PROVIDER_UNSUPPORTED');
+    }
+    factoriesUnused();
   });
 });

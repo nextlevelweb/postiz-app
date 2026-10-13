@@ -35,6 +35,34 @@ export const safeRetryAfterSeconds = (value: unknown) => {
   return seconds <= RETRY_AFTER_MAX_SECONDS ? seconds : undefined;
 };
 
+// The HTTP status of a failed provider call as a normalized code, the same
+// for every provider. An adapter may refine it from a documented error code
+export const contentStudioAIErrorCodeForStatus = (
+  status: number | undefined
+): ContentStudioAIProviderErrorCode => {
+  if (status === 401 || status === 403) {
+    return 'AUTH_FAILED';
+  }
+  if (status === 402) {
+    return 'QUOTA_EXCEEDED';
+  }
+  if (status === 429) {
+    return 'RATE_LIMITED';
+  }
+  if (status === 408 || status === 504) {
+    return 'TIMEOUT';
+  }
+  if (status === 404) {
+    return 'MODEL_UNAVAILABLE';
+  }
+  if (status === 400 || status === 409 || status === 413 || status === 422) {
+    return 'REQUEST_REJECTED';
+  }
+  // other 5xx (529 overloaded included), no status (the connection failed)
+  // or anything unexpected
+  return 'PROVIDER_UNAVAILABLE';
+};
+
 interface ProviderErrorMetadata {
   httpStatus?: unknown;
   providerRequestId?: unknown;

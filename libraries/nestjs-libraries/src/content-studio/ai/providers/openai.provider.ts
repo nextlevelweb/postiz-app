@@ -10,6 +10,7 @@ import {
   getContentStudioAIModel,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.catalog';
 import {
+  contentStudioAIErrorCodeForStatus,
   ContentStudioAIProviderError,
   safeProviderRequestId,
   safeRetryAfterSeconds,
@@ -55,34 +56,14 @@ const openAIClient = (
     timeout: OPENAI_TIMEOUT_MS,
   });
 
+// OpenAI answers an exhausted quota with 429 insufficient_quota
 const codeForStatus = (
   status: number | undefined,
   errorCode: unknown
-): ContentStudioAIProviderErrorCode => {
-  if (status === 401 || status === 403) {
-    return 'AUTH_FAILED';
-  }
-  if (
-    status === 402 ||
-    (status === 429 && errorCode === 'insufficient_quota')
-  ) {
-    return 'QUOTA_EXCEEDED';
-  }
-  if (status === 429) {
-    return 'RATE_LIMITED';
-  }
-  if (status === 408) {
-    return 'TIMEOUT';
-  }
-  if (status === 404) {
-    return 'MODEL_UNAVAILABLE';
-  }
-  if (status === 400 || status === 409 || status === 413 || status === 422) {
-    return 'REQUEST_REJECTED';
-  }
-  // 5xx, no status (the connection failed) or anything unexpected
-  return 'PROVIDER_UNAVAILABLE';
-};
+): ContentStudioAIProviderErrorCode =>
+  status === 429 && errorCode === 'insufficient_quota'
+    ? 'QUOTA_EXCEEDED'
+    : contentStudioAIErrorCodeForStatus(status);
 
 // Any failure of an OpenAI SDK call (OpenAI or OpenRouter) as a provider
 // error: the status, the request id header and Retry-After are kept, the

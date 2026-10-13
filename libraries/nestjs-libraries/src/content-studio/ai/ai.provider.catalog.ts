@@ -4,7 +4,11 @@ import { z } from 'zod';
 // credential and models each one takes. A connection keeps its provider for
 // life. No SDK or network here: clients are made per call by the provider
 // adapters
-export const CONTENT_STUDIO_AI_PROVIDERS = ['openai', 'openrouter'] as const;
+export const CONTENT_STUDIO_AI_PROVIDERS = [
+  'openai',
+  'openrouter',
+  'anthropic',
+] as const;
 
 export type ContentStudioAIProvider =
   (typeof CONTENT_STUDIO_AI_PROVIDERS)[number];
@@ -31,6 +35,7 @@ const CREDENTIAL_SCHEMAS: Record<
 > = {
   openai: apiKeyCredential,
   openrouter: apiKeyCredential,
+  anthropic: apiKeyCredential,
 };
 
 export type ContentStudioAICredentialErrorCode =
@@ -89,10 +94,11 @@ export interface ContentStudioAIProviderInfo {
 const DISPLAY_NAMES: Record<ContentStudioAIProvider, string> = {
   openai: 'OpenAI',
   openrouter: 'OpenRouter',
+  anthropic: 'Anthropic',
 };
 
 // The only models a connection may use, by the exact id of their provider,
-// as documented by OpenAI and OpenRouter (checked 2026-10). A model belongs to
+// as documented by OpenAI, OpenRouter and Anthropic (checked 2026-10). A model belongs to
 // the provider it is listed under: an OpenAI id is not an OpenRouter id. No
 // discovery and no user supplied ids
 const MODELS: Record<
@@ -129,12 +135,33 @@ const MODELS: Record<
       capabilities: { text: true, structuredOutput: false },
     },
   ],
+  // The Claude API has structured outputs (output_config.format), but the
+  // pinned Anthropic SDK (0.57.0) does not type it yet, so the adapter does
+  // not offer JSON output for these models
+  anthropic: [
+    {
+      id: 'claude-opus-5-5',
+      label: 'Claude Opus 5.5',
+      capabilities: { text: true, structuredOutput: false },
+    },
+    {
+      id: 'claude-sonnet-5-5',
+      label: 'Claude Sonnet 5.5',
+      capabilities: { text: true, structuredOutput: false },
+    },
+    {
+      id: 'claude-haiku-5-5',
+      label: 'Claude Haiku 5.5',
+      capabilities: { text: true, structuredOutput: false },
+    },
+  ],
 };
 
 // The model a new connection gets when none is chosen
 const DEFAULT_MODELS: Record<ContentStudioAIProvider, string> = {
   openai: 'gpt-6.1-sol',
   openrouter: 'openai/gpt-6.1-sol',
+  anthropic: 'claude-opus-5-5',
 };
 
 const copyModel = (model: ContentStudioAIModelInfo) => ({

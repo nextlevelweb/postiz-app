@@ -180,7 +180,8 @@ describe('sealing and opening AI connection credentials', () => {
     for (const [provider, credential] of [
       ['openai', { apiKey: `${MARKER} ` }],
       ['openai', { apiKey: MARKER, baseURL: 'https://x.test' }],
-      ['anthropic', { apiKey: MARKER }],
+      ['mistral', { apiKey: MARKER }],
+      ['anthropic', { apiKey: MARKER, authToken: MARKER }],
       ['openrouter', {}],
     ] as const) {
       const err = failure(() => seal(ORG_A, CONN_A, provider, credential));
@@ -194,9 +195,48 @@ describe('sealing and opening AI connection credentials', () => {
     expect(open(envelope, ORG_A, CONN_A, 'openrouter')).toEqual({
       apiKey: MARKER,
     });
-    expect(failure(() => open(envelope, ORG_A, CONN_A, 'anthropic')).code).toBe(
+    expect(failure(() => open(envelope, ORG_A, CONN_A, 'mistral')).code).toBe(
       'UNREADABLE'
     );
+  });
+
+  // The provider is not part of the SecretBox context (P2-01): it is the
+  // row's own, immutable column, so the same key rules apply to every provider
+  describe('Anthropic', () => {
+    it('CR1/CR2 seals and opens an Anthropic API key for its connection', () => {
+      const envelope = seal(ORG_A, CONN_A, 'anthropic');
+      expect(envelope.startsWith('sb1.k1.')).toBe(true);
+      expect(envelope).not.toContain(MARKER);
+      expect(open(envelope, ORG_A, CONN_A, 'anthropic')).toEqual({
+        apiKey: MARKER,
+      });
+    });
+
+    it('CR3 does not open for another organization or connection', () => {
+      const envelope = seal(ORG_A, CONN_A, 'anthropic');
+      for (const [organizationId, connectionId] of [
+        [ORG_B, CONN_A],
+        [ORG_A, CONN_B],
+      ]) {
+        const err = failure(() =>
+          open(envelope, organizationId, connectionId, 'anthropic')
+        );
+        expect(err.code).toBe('UNREADABLE');
+        expect(rendered(err)).not.toContain(MARKER);
+      }
+    });
+
+    it.each([
+      ['CR4 an unknown field', { apiKey: MARKER, baseURL: 'https://x.test' }],
+      ['CR4 an auth token', { apiKey: MARKER, authToken: MARKER }],
+      ['CR5 a trailing space', { apiKey: `${MARKER} ` }],
+      ['CR5 a newline', { apiKey: `${MARKER}\n` }],
+      ['CR5 a tab', { apiKey: `\t${MARKER}` }],
+    ])('%s is refused without repeating the key (CR6)', (_name, credential) => {
+      const err = failure(() => seal(ORG_A, CONN_A, 'anthropic', credential));
+      expect(err.code).toBe('INVALID');
+      expect(rendered(err)).not.toContain(MARKER);
+    });
   });
 
   it.each([
