@@ -50,6 +50,8 @@ model Organization {
   contentPackageRevisions    ContentPackageRevision[]
   contentStudioHandoffs      ContentStudioHandoff[]
   contentStudioAIConnections ContentStudioAIConnection[]
+  contentStudioAIOperations  ContentStudioAIOperation[]
+  contentStudioAIUsages      ContentStudioAIUsage[]
 
   @@index([apiKey])
   @@index([streakSince])
@@ -127,6 +129,7 @@ model User {
   contentPackageRevisions    ContentPackageRevision[]    @relation("ContentPackageRevisionCreatedBy")
   contentStudioHandoffs      ContentStudioHandoff[]
   contentStudioAIConnections ContentStudioAIConnection[] @relation("ContentStudioAIConnectionCreatedBy")
+  contentStudioAIOperations  ContentStudioAIOperation[]
 
   @@unique([email, providerName])
   @@index([lastReadNotifications])
@@ -1865,22 +1868,23 @@ model ContentStudioProject {
 // draft is the editable package as JSON text, validated by the Content Studio
 // draft schema. Every save compares and bumps draftVersion
 model ContentPackage {
-  id                   String                   @id @default(uuid())
+  id                   String                     @id @default(uuid())
   organizationId       String
   projectId            String?
   name                 String
   draft                String
-  draftVersion         Int                      @default(1)
-  latestRevisionNumber Int                      @default(0)
+  draftVersion         Int                        @default(1)
+  latestRevisionNumber Int                        @default(0)
   createdById          String
-  createdAt            DateTime                 @default(now())
-  updatedAt            DateTime                 @updatedAt
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
   archivedAt           DateTime?
-  organization         Organization             @relation(fields: [organizationId], references: [id])
-  project              ContentStudioProject?    @relation(fields: [projectId], references: [id])
-  createdBy            User                     @relation("ContentPackageCreatedBy", fields: [createdById], references: [id])
+  organization         Organization               @relation(fields: [organizationId], references: [id])
+  project              ContentStudioProject?      @relation(fields: [projectId], references: [id])
+  createdBy            User                       @relation("ContentPackageCreatedBy", fields: [createdById], references: [id])
   revisions            ContentPackageRevision[]
   handoffs             ContentStudioHandoff[]
+  aiOperations         ContentStudioAIOperation[]
 
   @@unique([id, organizationId])
   @@index([organizationId, archivedAt, updatedAt])
@@ -1941,7 +1945,7 @@ model ContentStudioHandoff {
 // opened to call the provider. The provider is set once; archiving wipes the
 // credential in the same write
 model ContentStudioAIConnection {
-  id                   String       @id @default(uuid())
+  id                   String                     @id @default(uuid())
   organizationId       String
   name                 String
   provider             String
@@ -1954,12 +1958,75 @@ model ContentStudioAIConnection {
   lastValidationStatus String?
   lastValidationCode   String?
   createdById          String
-  createdAt            DateTime     @default(now())
-  updatedAt            DateTime     @updatedAt
-  organization         Organization @relation(fields: [organizationId], references: [id])
-  createdBy            User         @relation("ContentStudioAIConnectionCreatedBy", fields: [createdById], references: [id])
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+  organization         Organization               @relation(fields: [organizationId], references: [id])
+  createdBy            User                       @relation("ContentStudioAIConnectionCreatedBy", fields: [createdById], references: [id])
+  operations           ContentStudioAIOperation[]
 
   @@unique([id, organizationId])
   @@index([organizationId, archivedAt])
   @@index([createdById])
+}
+
+// One AI execution for one package of an organization, with a connection of
+// that same organization. Only hashes describe what was asked and answered:
+// no prompt, instruction or generated text is stored. kind and status are
+// checked in code (running, succeeded, failed); errorCode is a normalized code
+model ContentStudioAIOperation {
+  id               String                    @id
+  organizationId   String
+  userId           String
+  connectionId     String
+  packageId        String
+  kind             String
+  status           String
+  provider         String
+  model            String
+  promptVersion    String
+  baseDraftVersion Int
+  context          Json
+  requestHash      String
+  resultHash       String?
+  errorCode        String?
+  startedAt        DateTime                  @default(now())
+  completedAt      DateTime?
+  organization     Organization              @relation(fields: [organizationId], references: [id])
+  user             User                      @relation(fields: [userId], references: [id])
+  connection       ContentStudioAIConnection @relation(fields: [connectionId, organizationId], references: [id, organizationId])
+  package          ContentPackage            @relation(fields: [packageId, organizationId], references: [id, organizationId])
+  usages           ContentStudioAIUsage[]
+
+  @@unique([id, organizationId])
+  @@index([organizationId, startedAt])
+  @@index([connectionId])
+  @@index([packageId])
+  @@index([userId])
+}
+
+// Append-only: one row per provider attempt of an operation, with only what
+// the provider reported (nothing is estimated). No commercial credit
+model ContentStudioAIUsage {
+  id                 String                   @id @default(uuid())
+  organizationId     String
+  operationId        String
+  attempt            Int
+  provider           String
+  model              String
+  outcome            String
+  usageSource        String
+  inputTokens        Int?
+  outputTokens       Int?
+  cachedInputTokens  Int?
+  reasoningTokens    Int?
+  totalTokens        Int?
+  providerCostMicros BigInt?
+  costCurrency       String?
+  providerRequestId  String?
+  createdAt          DateTime                 @default(now())
+  organization       Organization             @relation(fields: [organizationId], references: [id])
+  operation          ContentStudioAIOperation @relation(fields: [operationId, organizationId], references: [id, organizationId])
+
+  @@unique([operationId, attempt])
+  @@index([organizationId, createdAt])
 }

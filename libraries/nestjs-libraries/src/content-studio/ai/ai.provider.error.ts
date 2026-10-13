@@ -144,3 +144,34 @@ export class ContentStudioAIResolutionError extends Error {
     return { name: this.name, code: this.code, message: this.message };
   }
 }
+
+export type ContentStudioAIExecutionErrorCode =
+  | 'INVALID_INPUT'
+  | 'PACKAGE_NOT_FOUND'
+  | 'PACKAGE_ARCHIVED'
+  | 'DRAFT_VERSION_CONFLICT'
+  | 'MODEL_UNSUPPORTED'
+  | 'PERSISTENCE_FAILED';
+
+const EXECUTION_MESSAGES: Record<ContentStudioAIExecutionErrorCode, string> = {
+  INVALID_INPUT: 'The AI operation request is invalid',
+  PACKAGE_NOT_FOUND: 'The content package was not found',
+  PACKAGE_ARCHIVED: 'The content package is archived',
+  DRAFT_VERSION_CONFLICT: 'The content package changed since it was read',
+  MODEL_UNSUPPORTED: 'The AI model is not supported for this connection',
+  PERSISTENCE_FAILED: 'The AI operation could not be recorded',
+};
+
+// Why an AI operation was not run or not recorded. A provider failure is a
+// ContentStudioAIProviderError instead, and a connection that cannot be used
+// a ContentStudioAIResolutionError. No cause, no underlying message
+export class ContentStudioAIExecutionError extends Error {
+  constructor(readonly code: ContentStudioAIExecutionErrorCode) {
+    super(EXECUTION_MESSAGES[code]);
+    this.name = 'ContentStudioAIExecutionError';
+  }
+
+  toJSON() {
+    return { name: this.name, code: this.code, message: this.message };
+  }
+}

@@ -58,6 +58,8 @@ import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/
 import { ContentStudioAIConnectionRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.repository';
 import { ContentStudioAIConnectionService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.service';
 import { ContentStudioAIProviderResolver } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.resolver';
+import { ContentStudioAIOperationRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-operation.repository';
+import { ContentStudioAIExecutionService } from '@gitroom/nestjs-libraries/content-studio/ai/ai.execution.service';
 
 @Global()
 @Module({
@@ -125,6 +127,8 @@ import { ContentStudioAIProviderResolver } from '@gitroom/nestjs-libraries/conte
     ContentStudioAIConnectionRepository,
     ContentStudioAIConnectionService,
     ContentStudioAIProviderResolver,
+    ContentStudioAIOperationRepository,
+    ContentStudioAIExecutionService,
   ],
   get exports() {
     return this.providers;
