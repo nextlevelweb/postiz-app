@@ -1,8 +1,9 @@
 import { z } from 'zod';
 
 // The providers a Content Studio AI connection can belong to, and the exact
-// credential each one takes. A connection keeps its provider for life. No SDK,
-// model or network here: clients are made per call by the provider adapters
+// credential and models each one takes. A connection keeps its provider for
+// life. No SDK or network here: clients are made per call by the provider
+// adapters
 export const CONTENT_STUDIO_AI_PROVIDERS = ['openai', 'openrouter'] as const;
 
 export type ContentStudioAIProvider =
@@ -58,9 +59,20 @@ export class ContentStudioAICredentialError extends Error {
   }
 }
 
-// What the settings screen may know about a provider: names and the fields to
-// ask for. No endpoint, SDK option, environment name or example key. Models
-// stay empty until the curated per-provider catalog exists
+// What a model can do. text is always true; structuredOutput says whether
+// the provider documents JSON schema output for it
+export interface ContentStudioAIModelInfo {
+  id: string;
+  label: string;
+  capabilities: {
+    text: true;
+    structuredOutput: boolean;
+  };
+}
+
+// What the settings screen may know about a provider: names, the fields to
+// ask for and the curated models. No endpoint, SDK option, environment name,
+// example key or price
 export interface ContentStudioAIProviderInfo {
   provider: ContentStudioAIProvider;
   displayName: string;
@@ -70,7 +82,8 @@ export interface ContentStudioAIProviderInfo {
     secret: true;
     required: true;
   }>;
-  models: Array<{ id: string; label: string }>;
+  defaultModel: string;
+  models: ContentStudioAIModelInfo[];
 }
 
 const DISPLAY_NAMES: Record<ContentStudioAIProvider, string> = {
@@ -78,16 +91,76 @@ const DISPLAY_NAMES: Record<ContentStudioAIProvider, string> = {
   openrouter: 'OpenRouter',
 };
 
+// The only models a connection may use, by the exact id of their provider,
+// as documented by OpenAI and OpenRouter (checked 2026-10). A model belongs to
+// the provider it is listed under: an OpenAI id is not an OpenRouter id. No
+// discovery and no user supplied ids
+const MODELS: Record<
+  ContentStudioAIProvider,
+  readonly ContentStudioAIModelInfo[]
+> = {
+  openai: [
+    {
+      id: 'gpt-6.1-sol',
+      label: 'GPT-6.1 Sol',
+      capabilities: { text: true, structuredOutput: true },
+    },
+    {
+      id: 'gpt-6-luna',
+      label: 'GPT-6 Luna',
+      capabilities: { text: true, structuredOutput: true },
+    },
+  ],
+  openrouter: [
+    {
+      id: 'openai/gpt-6.1-sol',
+      label: 'GPT-6.1 Sol (OpenAI)',
+      capabilities: { text: true, structuredOutput: true },
+    },
+    {
+      id: 'google/gemini-3.8-flash',
+      label: 'Gemini 3.8 Flash (Google)',
+      capabilities: { text: true, structuredOutput: true },
+    },
+    // OpenRouter does not list response_format for it
+    {
+      id: 'openai/gpt-6-luna',
+      label: 'GPT-6 Luna (OpenAI)',
+      capabilities: { text: true, structuredOutput: false },
+    },
+  ],
+};
+
+// The model a new connection gets when none is chosen
+const DEFAULT_MODELS: Record<ContentStudioAIProvider, string> = {
+  openai: 'gpt-6.1-sol',
+  openrouter: 'openai/gpt-6.1-sol',
+};
+
+const copyModel = (model: ContentStudioAIModelInfo) => ({
+  id: model.id,
+  label: model.label,
+  capabilities: {
+    text: model.capabilities.text,
+    structuredOutput: model.capabilities.structuredOutput,
+  },
+});
+
+const providerInfo = (
+  provider: ContentStudioAIProvider
+): ContentStudioAIProviderInfo => ({
+  provider,
+  displayName: DISPLAY_NAMES[provider],
+  credentialFields: [
+    { name: 'apiKey', label: 'API key', secret: true, required: true },
+  ],
+  defaultModel: DEFAULT_MODELS[provider],
+  models: MODELS[provider].map(copyModel),
+});
+
 // A new copy on every call, in catalog order
 export const listContentStudioAIProviders = (): ContentStudioAIProviderInfo[] =>
-  CONTENT_STUDIO_AI_PROVIDERS.map((provider) => ({
-    provider,
-    displayName: DISPLAY_NAMES[provider],
-    credentialFields: [
-      { name: 'apiKey', label: 'API key', secret: true, required: true },
-    ],
-    models: [],
-  }));
+  CONTENT_STUDIO_AI_PROVIDERS.map(providerInfo);
 
 export const isContentStudioAIProvider = (
   value: unknown
@@ -110,3 +183,29 @@ export function parseContentStudioAICredential(
   }
   return result.data;
 }
+
+export const getContentStudioAIProvider = (
+  provider: unknown
+): ContentStudioAIProviderInfo | undefined =>
+  isContentStudioAIProvider(provider) ? providerInfo(provider) : undefined;
+
+export const getContentStudioAIDefaultModel = (
+  provider: ContentStudioAIProvider
+) => DEFAULT_MODELS[provider];
+
+// The model with exactly this id in this provider's list, as a copy
+export const getContentStudioAIModel = (
+  provider: unknown,
+  model: unknown
+): ContentStudioAIModelInfo | undefined => {
+  if (!isContentStudioAIProvider(provider) || typeof model !== 'string') {
+    return undefined;
+  }
+  const found = MODELS[provider].find((entry) => entry.id === model);
+  return found ? copyModel(found) : undefined;
+};
+
+export const isContentStudioAIModelSupported = (
+  provider: unknown,
+  model: unknown
+) => getContentStudioAIModel(provider, model) !== undefined;

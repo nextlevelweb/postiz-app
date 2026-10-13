@@ -123,6 +123,30 @@ export class ContentStudioAIConnectionRepository {
     });
   }
 
+  // The outcome of a connection test. Only an active connection (not
+  // archived, not disabled) is marked; code is a normalized provider code
+  setValidationResult(input: {
+    organizationId: string;
+    connectionId: string;
+    validatedAt: Date;
+    status: 'valid' | 'invalid';
+    code: string | null;
+  }) {
+    return this._connection.model.contentStudioAIConnection.updateMany({
+      where: {
+        id: input.connectionId,
+        organizationId: input.organizationId,
+        archivedAt: null,
+        disabledAt: null,
+      },
+      data: {
+        lastValidatedAt: input.validatedAt,
+        lastValidationStatus: input.status,
+        lastValidationCode: input.code,
+      },
+    });
+  }
+
   disableConnection(organizationId: string, id: string, disabledAt: Date) {
     return this._connection.model.contentStudioAIConnection.updateMany({
       where: {

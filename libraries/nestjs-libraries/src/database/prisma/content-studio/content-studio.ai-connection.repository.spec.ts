@@ -83,6 +83,13 @@ const callEveryMethod = async (
     sealedCredential: ENVELOPE,
     credentialUpdatedAt: NOW,
   });
+  await repository.setValidationResult({
+    organizationId: ORG,
+    connectionId: ID,
+    validatedAt: NOW,
+    status: 'invalid',
+    code: 'AUTH_FAILED',
+  });
   await repository.disableConnection(ORG, ID, NOW);
   await repository.enableConnection(ORG, ID);
   await repository.archiveConnection(ORG, ID, NOW);
@@ -197,6 +204,58 @@ describe('ContentStudioAIConnectionRepository', () => {
     expect(JSON.stringify(result)).not.toContain('sk-content-studio');
   });
 
+  it('R25/R26 records a test result on an active, enabled connection of the organization only', async () => {
+    const { connection, repository } = setup();
+    const valid = await repository.setValidationResult({
+      organizationId: ORG,
+      connectionId: ID,
+      validatedAt: NOW,
+      status: 'valid',
+      code: null,
+    });
+    await repository.setValidationResult({
+      organizationId: ORG,
+      connectionId: ID,
+      validatedAt: NOW,
+      status: 'invalid',
+      code: 'RATE_LIMITED',
+    });
+
+    expect(connection.updateMany.mock.calls).toEqual([
+      [
+        {
+          where: {
+            id: ID,
+            organizationId: ORG,
+            archivedAt: null,
+            disabledAt: null,
+          },
+          data: {
+            lastValidatedAt: NOW,
+            lastValidationStatus: 'valid',
+            lastValidationCode: null,
+          },
+        },
+      ],
+      [
+        {
+          where: {
+            id: ID,
+            organizationId: ORG,
+            archivedAt: null,
+            disabledAt: null,
+          },
+          data: {
+            lastValidatedAt: NOW,
+            lastValidationStatus: 'invalid',
+            lastValidationCode: 'RATE_LIMITED',
+          },
+        },
+      ],
+    ]);
+    expect(valid).toEqual({ count: 1 });
+  });
+
   it('R15 disables an active, enabled connection of the organization', async () => {
     const { connection, repository } = setup();
     await repository.disableConnection(ORG, ID, NOW);
@@ -275,7 +334,7 @@ describe('ContentStudioAIConnectionRepository', () => {
     await callEveryMethod(repository);
 
     const calls = Object.values(connection).flatMap((fn) => fn.mock.calls);
-    expect(calls.length).toBe(9);
+    expect(calls.length).toBe(10);
     for (const [args] of calls) {
       const scope = args.where || args.data;
       expect(scope.organizationId).toBe(ORG);
@@ -391,14 +450,18 @@ describe('AI connection surface so far', () => {
     }
   });
 
-  it('has no provider adapters yet', () => {
-    expect(
-      fs.existsSync(
+  it('has the OpenAI and OpenRouter adapters only, no Anthropic yet', () => {
+    const providers = fs
+      .readdirSync(
         path.join(
           REPO_ROOT,
           'libraries/nestjs-libraries/src/content-studio/ai/providers'
         )
       )
-    ).toBe(false);
+      .filter((file) => !/\.spec\.ts$/.test(file));
+    expect(providers.sort()).toEqual([
+      'openai.provider.ts',
+      'openrouter.provider.ts',
+    ]);
   });
 });

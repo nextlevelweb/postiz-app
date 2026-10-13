@@ -304,6 +304,7 @@ export class ContentStudioController {
         name: body.name,
         provider: body.provider,
         credential: body.credential,
+        defaultModel: body.defaultModel,
       }
     );
   }
@@ -315,10 +316,10 @@ export class ContentStudioController {
     @Param('id') id: string,
     @Body() body: UpdateContentStudioAIConnectionDto
   ) {
-    return this._contentStudioAIConnectionService.renameConnection(
+    return this._contentStudioAIConnectionService.updateConnection(
       { organization: org, user },
       id,
-      body.name
+      { name: body.name, defaultModel: body.defaultModel }
     );
   }
 
@@ -357,6 +358,20 @@ export class ContentStudioController {
     @Param('id') id: string
   ) {
     return this._contentStudioAIConnectionService.enableConnection(
+      { organization: org, user },
+      id
+    );
+  }
+
+  // Answers { ok, code? } with 200 whatever the provider said; see the service
+  @Post('/ai/connections/:id/test')
+  @HttpCode(200)
+  testAIConnection(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioAIConnectionService.testConnection(
       { organization: org, user },
       id
     );

@@ -52,11 +52,12 @@ const setup = () => {
     listConnections: jest.fn().mockResolvedValue(result),
     getConnection: jest.fn().mockResolvedValue(result),
     createConnection: jest.fn().mockResolvedValue(result),
-    renameConnection: jest.fn().mockResolvedValue(result),
+    updateConnection: jest.fn().mockResolvedValue(result),
     replaceCredential: jest.fn().mockResolvedValue(result),
     disableConnection: jest.fn().mockResolvedValue(result),
     enableConnection: jest.fn().mockResolvedValue(result),
     archiveConnection: jest.fn().mockResolvedValue(result),
+    testConnection: jest.fn().mockResolvedValue({ ok: true }),
   };
   const controller = new ContentStudioController(
     {} as ContentStudioService,
@@ -73,7 +74,7 @@ const withExtras = <T extends object>(dto: T) =>
     organizationId: 'org-b',
     createdById: 'user-b',
     sealedCredential: 'sb1.k1.x.y.z',
-    defaultModel: 'any-model',
+    provider: 'openrouter',
     role: 'ADMIN',
   });
 
@@ -107,25 +108,32 @@ describe('ContentStudioController AI connection routes', () => {
     body.name = 'Main';
     body.provider = 'openai';
     body.credential = { apiKey: MARKER };
+    body.defaultModel = 'gpt-6-luna';
 
     await expect(controller.createAIConnection(ORG, USER, body)).resolves.toBe(
       result
     );
     expect(ai.createConnection).toHaveBeenCalledWith(
       { organization: ORG, user: USER },
-      { name: 'Main', provider: 'openai', credential: { apiKey: MARKER } }
+      {
+        name: 'Main',
+        provider: 'openai',
+        credential: { apiKey: MARKER },
+        defaultModel: 'gpt-6-luna',
+      }
     );
   });
 
-  it('C5 renames with the name only', async () => {
+  it('C5 updates with the name and the default model only', async () => {
     const { ai, controller } = setup();
     const body = withExtras(new UpdateContentStudioAIConnectionDto());
     body.name = 'Renamed';
+    body.defaultModel = null;
     await controller.updateAIConnection(ORG, USER, ID, body);
-    expect(ai.renameConnection).toHaveBeenCalledWith(
+    expect(ai.updateConnection).toHaveBeenCalledWith(
       { organization: ORG, user: USER },
       ID,
-      'Renamed'
+      { name: 'Renamed', defaultModel: null }
     );
   });
 
@@ -157,6 +165,18 @@ describe('ContentStudioController AI connection routes', () => {
     }
   });
 
+  it('C12 tests a connection for the request org and user, with no body', async () => {
+    const { ai, controller } = setup();
+    await expect(controller.testAIConnection(ORG, USER, ID)).resolves.toEqual({
+      ok: true,
+    });
+    expect(ai.testConnection).toHaveBeenCalledWith(
+      { organization: ORG, user: USER },
+      ID
+    );
+    expect(controller.testAIConnection).toHaveLength(3);
+  });
+
   it('declares exactly these AI routes, with 200 for the lifecycle posts', () => {
     const names = Object.getOwnPropertyNames(
       ContentStudioController.prototype
@@ -170,6 +190,7 @@ describe('ContentStudioController AI connection routes', () => {
       'POST /ai/connections/:id/archive',
       'POST /ai/connections/:id/disable',
       'POST /ai/connections/:id/enable',
+      'POST /ai/connections/:id/test',
       'PUT /ai/connections/:id/credential',
     ]);
     expect(
@@ -179,12 +200,13 @@ describe('ContentStudioController AI connection routes', () => {
       'disableAIConnection',
       'enableAIConnection',
       'archiveAIConnection',
+      'testAIConnection',
     ]) {
       expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler(name))).toBe(200);
     }
   });
 
-  it('C10/C11 has no test, delete, restore, model or usage route', () => {
+  it('C10/C11 has no delete, restore, model, usage, operation or generation route', () => {
     const routes = Object.getOwnPropertyNames(ContentStudioController.prototype)
       .filter((name) => name !== 'constructor')
       .map(route);
@@ -193,7 +215,7 @@ describe('ContentStudioController AI connection routes', () => {
     );
     expect(
       routes.filter((r) =>
-        /\/ai\/.*(test|restore|model|usage|validate)/.test(r)
+        /\/ai\/.*(restore|model|usage|validate|operation|generat)/.test(r)
       )
     ).toEqual([]);
     expect(routes.filter((r) => r.startsWith('DELETE '))).toEqual([]);
@@ -225,7 +247,6 @@ describe('ContentStudioController AI connection routes', () => {
         'organizationId',
         'createdById',
         'sealedCredential',
-        'defaultModel',
         'id',
         'role',
       ]) {
@@ -321,11 +342,6 @@ describe('AI connection DTO validation', () => {
       CreateContentStudioAIConnectionDto,
       { ...VALID, sealedCredential: `sb1.k1.${MARKER}` },
     ],
-    [
-      'D8 defaultModel',
-      CreateContentStudioAIConnectionDto,
-      { ...VALID, defaultModel: 'any-model' },
-    ],
     ['id', CreateContentStudioAIConnectionDto, { ...VALID, id: ID }],
     ['role', CreateContentStudioAIConnectionDto, { ...VALID, role: 'ADMIN' }],
     [
@@ -337,11 +353,6 @@ describe('AI connection DTO validation', () => {
       'credential',
       UpdateContentStudioAIConnectionDto,
       { name: 'x', credential: { apiKey: MARKER } },
-    ],
-    [
-      'defaultModel',
-      UpdateContentStudioAIConnectionDto,
-      { name: 'x', defaultModel: 'm' },
     ],
     [
       'disabledAt',
@@ -382,10 +393,46 @@ describe('AI connection DTO validation', () => {
     // a blank name is a string within limits; the service answers 400
     const body = await run(UpdateContentStudioAIConnectionDto, { name: '   ' });
     expect(body.name).toBe('   ');
-    await rejected(UpdateContentStudioAIConnectionDto, {});
     await rejected(UpdateContentStudioAIConnectionDto, {
       name: 'x'.repeat(101),
     });
+    await rejected(UpdateContentStudioAIConnectionDto, { name: null });
+    // an empty update passes the DTO; the service refuses it with a 400
+    expect({ ...(await run(UpdateContentStudioAIConnectionDto, {})) }).toEqual(
+      {}
+    );
+  });
+
+  it('D8 takes a default model as text on create and as text or null on update', async () => {
+    // which models exist is the service's catalog check, not the DTO's
+    expect(
+      (
+        await run(CreateContentStudioAIConnectionDto, {
+          ...VALID,
+          defaultModel: 'any-model',
+        })
+      ).defaultModel
+    ).toBe('any-model');
+    expect(
+      (
+        await run(UpdateContentStudioAIConnectionDto, {
+          defaultModel: 'gpt-6-luna',
+        })
+      ).defaultModel
+    ).toBe('gpt-6-luna');
+    expect(
+      (await run(UpdateContentStudioAIConnectionDto, { defaultModel: null }))
+        .defaultModel
+    ).toBeNull();
+    for (const defaultModel of [null, 42, ['gpt-6-luna'], 'm'.repeat(129)]) {
+      await rejected(CreateContentStudioAIConnectionDto, {
+        ...VALID,
+        defaultModel,
+      });
+    }
+    for (const defaultModel of [42, { id: 'gpt-6-luna' }, 'm'.repeat(129)]) {
+      await rejected(UpdateContentStudioAIConnectionDto, { defaultModel });
+    }
   });
 
   it('accepts a replacement with the credential only', async () => {

@@ -43,7 +43,8 @@ type Rule =
   | 'CS_NO_LEGACY_AI_SERVICE'
   | 'CS_NO_SAFEFETCH_FACTORY'
   | 'CS_NO_RAW_HTML_SINK'
-  | 'CS_AI_PROVIDER_IMPORT_BOUNDARY';
+  | 'CS_AI_PROVIDER_IMPORT_BOUNDARY'
+  | 'CS_AI_EXPLICIT_CLIENT_OPTIONS';
 
 // Fixed messages: a violation never echoes source text, so a committed key
 // does not end up in CI logs a second time
@@ -64,6 +65,8 @@ const MESSAGES: Record<Rule, string> = {
     'Content Studio code must not render or assign raw HTML directly',
   CS_AI_PROVIDER_IMPORT_BOUNDARY:
     'Provider SDKs may only be imported by Content Studio provider adapters (content-studio/ai/providers/*.provider.ts); AI frameworks (ai, @ai-sdk/*) not at all',
+  CS_AI_EXPLICIT_CLIENT_OPTIONS:
+    'An OpenAI SDK client takes one options literal with exactly apiKey, a fixed https baseURL, organization/project/webhookSecret null, logLevel off, maxRetries 0 and a bounded timeout, so nothing falls back to the environment',
 };
 
 // OpenAI (sk-, sk-proj-, sk-svcacct-, ...) and Anthropic (sk-ant-) keys need at
@@ -133,6 +136,24 @@ const isAIFrameworkModule = (target: string) =>
   target === 'ai' || target.startsWith('ai/') || target.startsWith('@ai-sdk/');
 const PROVIDER_ADAPTER_FILE =
   /^libraries\/nestjs-libraries\/src\/content-studio\/ai\/providers\/[a-z0-9-]+\.provider\.ts$/;
+
+// The OpenAI SDK reads OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_ORG_ID,
+// OPENAI_PROJECT_ID, OPENAI_WEBHOOK_SECRET and OPENAI_LOG for every option
+// left out, and retries twice with a 10 minute timeout by default. So each
+// client gets all of them, as literals (or a module constant for baseURL and
+// timeout), and nothing else: no spread, no shorthand, no extra option
+const OPENAI_SDK_CLIENTS = new Set(['OpenAI']);
+const EXPLICIT_CLIENT_OPTIONS = [
+  'apiKey',
+  'baseURL',
+  'organization',
+  'project',
+  'webhookSecret',
+  'logLevel',
+  'maxRetries',
+  'timeout',
+];
+const CLIENT_TIMEOUT_MAX_MS = 120_000;
 
 // Studio stores plain text and the server builds the composer HTML, so the
 // React and DOM ways of injecting markup are never needed in Studio code
@@ -288,6 +309,90 @@ function moduleReferences(node: ts.Node) {
   return undefined;
 }
 
+// The initializer of a top level `const name = ...` of the file
+function moduleConstant(source: ts.SourceFile, name: string) {
+  for (const statement of source.statements) {
+    if (
+      ts.isVariableStatement(statement) &&
+      statement.declarationList.flags & ts.NodeFlags.Const
+    ) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (
+          ts.isIdentifier(declaration.name) &&
+          declaration.name.text === name &&
+          declaration.initializer
+        ) {
+          return withoutParentheses(declaration.initializer);
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+const numericValue = (node: ts.Expression) =>
+  ts.isNumericLiteral(node) ? Number(node.text.replace(/_/g, '')) : NaN;
+
+function hasExplicitClientOptions(
+  source: ts.SourceFile,
+  node: ts.NewExpression
+) {
+  const args = node.arguments || [];
+  if (args.length !== 1 || !ts.isObjectLiteralExpression(args[0])) {
+    return false;
+  }
+  const values = new Map<string, ts.Expression>();
+  for (const property of args[0].properties) {
+    const name =
+      ts.isPropertyAssignment(property) &&
+      (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name))
+        ? property.name.text
+        : undefined;
+    if (
+      !name ||
+      !EXPLICIT_CLIENT_OPTIONS.includes(name) ||
+      values.has(name) ||
+      !ts.isPropertyAssignment(property)
+    ) {
+      return false;
+    }
+    values.set(name, withoutParentheses(property.initializer));
+  }
+  if (values.size !== EXPLICIT_CLIENT_OPTIONS.length) {
+    return false;
+  }
+  const value = (name: string) => {
+    const expression = values.get(name) as ts.Expression;
+    return (
+      (ts.isIdentifier(expression) &&
+        moduleConstant(source, expression.text)) ||
+      expression
+    );
+  };
+
+  const apiKey = values.get('apiKey') as ts.Expression;
+  const baseURL = value('baseURL');
+  const logLevel = values.get('logLevel') as ts.Expression;
+  const timeout = numericValue(value('timeout'));
+  return (
+    // the credential, never a literal, null or undefined
+    !ts.isLiteralExpression(apiKey) &&
+    apiKey.kind !== ts.SyntaxKind.NullKeyword &&
+    !ts.isVoidExpression(apiKey) &&
+    !(ts.isIdentifier(apiKey) && apiKey.text === 'undefined') &&
+    ts.isStringLiteralLike(baseURL) &&
+    /^https:\/\/[a-z0-9.-]+(\/[A-Za-z0-9._/-]*)?$/.test(baseURL.text) &&
+    ['organization', 'project', 'webhookSecret'].every(
+      (name) => values.get(name)?.kind === ts.SyntaxKind.NullKeyword
+    ) &&
+    ts.isStringLiteralLike(logLevel) &&
+    logLevel.text === 'off' &&
+    numericValue(values.get('maxRetries') as ts.Expression) === 0 &&
+    timeout >= 1 &&
+    timeout <= CLIENT_TIMEOUT_MAX_MS
+  );
+}
+
 function checkSource(file: string, text: string): Violation[] {
   const source = ts.createSourceFile(
     file,
@@ -360,6 +465,13 @@ function checkSource(file: string, text: string): Violation[] {
       !runsPerCall(node)
     ) {
       report(node, 'CS_NO_GLOBAL_AI_CLIENT');
+    }
+    if (
+      ts.isNewExpression(node) &&
+      OPENAI_SDK_CLIENTS.has(calleeName(node.expression) || '') &&
+      !hasExplicitClientOptions(source, node)
+    ) {
+      report(node, 'CS_AI_EXPLICIT_CLIENT_OPTIONS');
     }
 
     const reference = moduleReferences(node);
@@ -491,6 +603,10 @@ const PROVIDER_FIXTURE = path.join(
   REPO_ROOT,
   'libraries/nestjs-libraries/src/content-studio/ai/providers/openai.provider.ts'
 );
+// Client options that satisfy CS_AI_EXPLICIT_CLIENT_OPTIONS, so a fixture
+// about another rule reports that rule only
+const OPTIONS =
+  "{ apiKey: key, baseURL: 'https://api.openai.com/v1', organization: null, project: null, webhookSecret: null, logLevel: 'off', maxRetries: 0, timeout: 30_000 }";
 const rules = (text: string, file = FIXTURE) =>
   checkSource(file, text).map((violation) => violation.rule);
 
@@ -552,28 +668,26 @@ describe('Content Studio architecture guard', () => {
 
   describe('CS_NO_GLOBAL_AI_CLIENT', () => {
     it.each([
-      ['const client = new OpenAI({ apiKey: key });'],
+      [`const client = new OpenAI(${OPTIONS});`],
       ['export const model = new ChatOpenAI({ model: "gpt" });'],
       ['const dalle = new DallEAPIWrapper({});'],
       ['const adapter = new OpenAIAdapter({ openai });'],
       ['const client = new Anthropic({ apiKey: key });'],
-      ['const client = new sdk.OpenAI({ apiKey: key });'],
-      ['const clients = { main: new OpenAI({ apiKey: key }) };'],
+      [`const client = new sdk.OpenAI(${OPTIONS});`],
+      [`const clients = { main: new OpenAI(${OPTIONS}) };`],
       ['const client = createOpenAI({ apiKey: key });'],
       ['const client = createOpenAICompatible({ baseURL: url });'],
-      ['const client = (() => new OpenAI({ apiKey: key }))();'],
+      [`const client = (() => new OpenAI(${OPTIONS}))();`],
       ['const client = (function () { return createOpenAI({}); })();'],
-      ['class Service { client = new OpenAI({ apiKey: key }); }'],
+      [`class Service { client = new OpenAI(${OPTIONS}); }`],
       ['class Service { static client = createOpenAI({}); }'],
-      ['class Service { static { const c = new OpenAI({}); } }'],
+      [`class Service { static { const c = new OpenAI(${OPTIONS}); } }`],
     ])('rejects %s', (text) => {
       expect(rules(text)).toEqual(['CS_NO_GLOBAL_AI_CLIENT']);
     });
 
     it.each([
-      [
-        'function makeClient(key: string) { return new OpenAI({ apiKey: key }); }',
-      ],
+      [`function makeClient(key: string) { return new OpenAI(${OPTIONS}); }`],
       [
         'function makeClient(key: string) { return createOpenAI({ apiKey: key }); }',
       ],
@@ -582,11 +696,9 @@ describe('Content Studio architecture guard', () => {
         'class Adapter { run(key: string) { return createOpenAI({ apiKey: key }); } }',
       ],
       [
-        'class Adapter { constructor(key: string) { this.c = new OpenAI({ apiKey: key }); } }',
+        `class Adapter { constructor(key: string) { this.c = new OpenAI(${OPTIONS}); } }`,
       ],
-      [
-        'const adapters = { openai: (key: string) => new OpenAI({ apiKey: key }) };',
-      ],
+      [`const adapters = { openai: (key: string) => new OpenAI(${OPTIONS}) };`],
       [
         "import OpenAI from 'openai'; type Client = OpenAI; let client: OpenAI;",
       ],
@@ -853,6 +965,143 @@ describe('Content Studio architecture guard', () => {
     });
   });
 
+  describe('CS_AI_EXPLICIT_CLIENT_OPTIONS', () => {
+    const EXPLICIT: Record<string, string> = {
+      apiKey: 'apiKey: credential.apiKey,',
+      baseURL: 'baseURL: BASE_URL,',
+      organization: 'organization: null,',
+      project: 'project: null,',
+      webhookSecret: 'webhookSecret: null,',
+      logLevel: "logLevel: 'off',",
+      maxRetries: 'maxRetries: 0,',
+      timeout: 'timeout: TIMEOUT_MS,',
+    };
+    const client = (
+      options: Record<string, string> = EXPLICIT,
+      callee = 'OpenAI'
+    ) =>
+      [
+        "import OpenAI from 'openai';",
+        "const BASE_URL = 'https://api.openai.com/v1';",
+        'const TIMEOUT_MS = 30_000;',
+        'let MUTABLE_URL = BASE_URL;',
+        'export const make = (credential: { apiKey: string }, sdk = { OpenAI }) =>',
+        `  new ${callee}({ ${Object.values(options).join(' ')} });`,
+      ].join('\n');
+    const replaced = (name: string, line: string) => ({
+      ...EXPLICIT,
+      [name]: line,
+    });
+
+    it('allows a client with every option explicit, as module constants or literals', () => {
+      expect(rules(client(), PROVIDER_FIXTURE)).toEqual([]);
+      expect(rules(client(EXPLICIT, 'sdk.OpenAI'), PROVIDER_FIXTURE)).toEqual(
+        []
+      );
+      expect(
+        rules(
+          client({
+            ...EXPLICIT,
+            baseURL: "baseURL: 'https://openrouter.ai/api/v1',",
+            timeout: 'timeout: 30000,',
+          }),
+          PROVIDER_FIXTURE
+        )
+      ).toEqual([]);
+    });
+
+    it.each(Object.keys(EXPLICIT).map((name) => [name]))(
+      'rejects a client without %s',
+      (name) => {
+        const options = { ...EXPLICIT };
+        delete options[name];
+        expect(rules(client(options), PROVIDER_FIXTURE)).toEqual([
+          'CS_AI_EXPLICIT_CLIENT_OPTIONS',
+        ]);
+        expect(rules(client(options, 'sdk.OpenAI'), PROVIDER_FIXTURE)).toEqual([
+          'CS_AI_EXPLICIT_CLIENT_OPTIONS',
+        ]);
+      }
+    );
+
+    it.each([
+      ['apiKey', 'apiKey: undefined,'],
+      ['apiKey', 'apiKey: void 0,'],
+      ['apiKey', 'apiKey: null,'],
+      ['apiKey', "apiKey: 'a-literal-key',"],
+      ['apiKey', 'apiKey,'],
+      ['baseURL', 'baseURL: undefined,'],
+      ['baseURL', 'baseURL: null,'],
+      ['baseURL', 'baseURL: url,'],
+      ['baseURL', 'baseURL: MUTABLE_URL,'],
+      ['baseURL', "baseURL: 'http://api.openai.com/v1',"],
+      ['baseURL', 'baseURL: `https://${host}/v1`,'],
+      ['baseURL', "baseURL: BASE_URL + '/x?y',"],
+      ['organization', 'organization: undefined,'],
+      ['organization', "organization: 'org-1',"],
+      ['project', 'project: undefined,'],
+      ['project', 'project: credential.project,'],
+      ['webhookSecret', 'webhookSecret: undefined,'],
+      ['webhookSecret', "webhookSecret: '',"],
+      ['logLevel', "logLevel: 'warn',"],
+      ['logLevel', 'logLevel: level,'],
+      ['logLevel', 'logLevel: undefined,'],
+      ['maxRetries', 'maxRetries: 2,'],
+      ['maxRetries', 'maxRetries: retries,'],
+      ['maxRetries', 'maxRetries: undefined,'],
+      ['timeout', 'timeout: 0,'],
+      ['timeout', 'timeout: 600_000,'],
+      ['timeout', 'timeout: ms,'],
+      ['timeout', 'timeout: undefined,'],
+    ])('rejects %s given as %s', (name, line) => {
+      expect(rules(client(replaced(name, line)), PROVIDER_FIXTURE)).toEqual([
+        'CS_AI_EXPLICIT_CLIENT_OPTIONS',
+      ]);
+    });
+
+    it('rejects a base URL from the environment under both rules', () => {
+      expect(
+        rules(
+          client(replaced('baseURL', 'baseURL: process.env.OPENAI_BASE_URL,')),
+          PROVIDER_FIXTURE
+        ).sort()
+      ).toEqual(['CS_AI_EXPLICIT_CLIENT_OPTIONS', 'CS_NO_PROCESS_ENV']);
+    });
+
+    it.each([
+      ['a spread', { ...EXPLICIT, spread: '...overrides,' }],
+      ['a custom fetch', { ...EXPLICIT, fetch: 'fetch: customFetch,' }],
+      ['default headers', { ...EXPLICIT, headers: 'defaultHeaders: {},' }],
+      ['a repeated option', { ...EXPLICIT, again: 'maxRetries: 0,' }],
+      ['a computed key', { ...EXPLICIT, apiKey: '[key]: credential.apiKey,' }],
+    ])('rejects options with %s', (_name, options) => {
+      expect(rules(client(options), PROVIDER_FIXTURE)).toEqual([
+        'CS_AI_EXPLICIT_CLIENT_OPTIONS',
+      ]);
+    });
+
+    it.each([
+      ['new OpenAI();'],
+      ['new OpenAI(options);'],
+      ['new OpenAI({ ...options });'],
+      [`new OpenAI(${OPTIONS}, extra);`],
+    ])('rejects %s', (call) => {
+      expect(
+        rules(`export const make = (key: string) => ${call}`, PROVIDER_FIXTURE)
+      ).toEqual(['CS_AI_EXPLICIT_CLIENT_OPTIONS']);
+    });
+
+    it('never prints the options it found', () => {
+      const report = checkSource(
+        PROVIDER_FIXTURE,
+        "export const make = () => new OpenAI({ apiKey: 'sk-never-printed' });"
+      ).map(format);
+      expect(report).toEqual([
+        `libraries/nestjs-libraries/src/content-studio/ai/providers/openai.provider.ts:1:27 [CS_AI_EXPLICIT_CLIENT_OPTIONS] ${MESSAGES.CS_AI_EXPLICIT_CLIENT_OPTIONS}`,
+      ]);
+    });
+  });
+
   it('reports every violation in a file with its location', () => {
     const text = [
       "import { openai } from '@ai-sdk/openai';",
@@ -878,6 +1127,7 @@ describe('Content Studio architecture guard', () => {
       { line: 4, column: 13, rule: 'CS_NO_PROCESS_ENV' },
       { line: 5, column: 18, rule: 'CS_NO_HARDCODED_AI_KEY' },
       { line: 6, column: 16, rule: 'CS_NO_GLOBAL_AI_CLIENT' },
+      { line: 6, column: 16, rule: 'CS_AI_EXPLICIT_CLIENT_OPTIONS' },
     ]);
   });
 
@@ -1025,6 +1275,53 @@ describe('Content Studio architecture guard', () => {
       expect(found).toContain('webhooks/safe.fetch.ts');
       expect(found).not.toContain('webhooks/safe.fetch.spec.ts');
       expect(found.every((file) => !file.endsWith('.d.ts'))).toBe(true);
+    });
+
+    it('holds both provider adapters to one explicit OpenAI client each', () => {
+      const adapters = files
+        .map((file) => relativePath(REPO_ROOT, file))
+        .filter((file) => PROVIDER_ADAPTER_FILE.test(file));
+      expect(adapters).toEqual([
+        'libraries/nestjs-libraries/src/content-studio/ai/providers/openai.provider.ts',
+        'libraries/nestjs-libraries/src/content-studio/ai/providers/openrouter.provider.ts',
+      ]);
+      for (const file of adapters) {
+        const text = fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
+        const source = ts.createSourceFile(
+          file,
+          text,
+          ts.ScriptTarget.Latest,
+          true
+        );
+        const clients: ts.NewExpression[] = [];
+        const collect = (node: ts.Node) => {
+          if (
+            ts.isNewExpression(node) &&
+            OPENAI_SDK_CLIENTS.has(calleeName(node.expression) || '')
+          ) {
+            clients.push(node);
+          }
+          ts.forEachChild(node, collect);
+        };
+        collect(source);
+        expect(clients).toHaveLength(1);
+        expect(hasExplicitClientOptions(source, clients[0])).toBe(true);
+        expect(rules(text, path.join(REPO_ROOT, file))).toEqual([]);
+      }
+    });
+
+    it('lets only the provider adapters import a provider SDK', () => {
+      const importers = files
+        .filter((file) =>
+          /from '(openai|@anthropic-ai\/sdk)(\/[^']*)?'/.test(
+            fs.readFileSync(file, 'utf8')
+          )
+        )
+        .map((file) => relativePath(REPO_ROOT, file));
+      expect(importers).toEqual([
+        'libraries/nestjs-libraries/src/content-studio/ai/providers/openai.provider.ts',
+        'libraries/nestjs-libraries/src/content-studio/ai/providers/openrouter.provider.ts',
+      ]);
     });
 
     it(`has no violations in ${files.length} production file(s) under ${SOURCE_BASES.length} source bases`, () => {

@@ -13,6 +13,9 @@ import {
   sealContentStudioAICredential,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.credential';
 import { ContentStudioAIConnectionRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.repository';
+import { ContentStudioAIProviderResolver } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.resolver';
+import { ContentStudioAIResolutionError } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.error';
+import { ContentStudioAIConnectionValidationResult } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.types';
 import {
   ContentStudioAIConnectionActor,
   ContentStudioAIConnectionService,
@@ -148,12 +151,31 @@ const setup = () => {
     disableConnection: jest.fn(async () => ({ count: 1 })),
     enableConnection: jest.fn(async () => ({ count: 1 })),
     archiveConnection: jest.fn(async () => ({ count: 1 })),
+    setValidationResult: jest.fn(async () => ({ count: 1 })),
     getSealedCredentialForResolver: jest.fn(),
   };
+  // a resolved connection whose adapter answers without any provider
+  const adapter = {
+    provider: 'openai' as const,
+    validateConnection: jest.fn(
+      async (): Promise<ContentStudioAIConnectionValidationResult> => ({
+        ok: true,
+      })
+    ),
+    generateText: jest.fn(),
+  };
+  const resolver = {
+    resolve: jest.fn(async () => ({
+      connectionId: ID,
+      provider: 'openai' as const,
+      adapter,
+    })),
+  };
   const service = new ContentStudioAIConnectionService(
-    repository as unknown as ContentStudioAIConnectionRepository
+    repository as unknown as ContentStudioAIConnectionRepository,
+    resolver as unknown as ContentStudioAIProviderResolver
   );
-  return { repository, service };
+  return { repository, resolver, adapter, service };
 };
 type Repository = ReturnType<typeof setup>['repository'];
 
@@ -165,6 +187,7 @@ const writes = (repository: Repository) =>
     repository.disableConnection,
     repository.enableConnection,
     repository.archiveConnection,
+    repository.setValidationResult,
   ].flatMap((fn) => (fn as jest.Mock).mock.calls);
 
 const httpError = async (promise: Promise<unknown>) => {
@@ -210,8 +233,8 @@ describe('ContentStudioAIConnectionService: managers', () => {
         provider: 'openai',
         credential: { apiKey: MARKER },
       }),
-    rename: (a: ContentStudioAIConnectionActor) =>
-      service.renameConnection(a, ID, 'Renamed'),
+    update: (a: ContentStudioAIConnectionActor) =>
+      service.updateConnection(a, ID, { name: 'Renamed' }),
     replace: (a: ContentStudioAIConnectionActor) =>
       service.replaceCredential(a, ID, { apiKey: MARKER }),
     disable: (a: ContentStudioAIConnectionActor) =>
@@ -220,15 +243,17 @@ describe('ContentStudioAIConnectionService: managers', () => {
       service.enableConnection(a, ID),
     archive: (a: ContentStudioAIConnectionActor) =>
       service.archiveConnection(a, ID),
+    test: (a: ContentStudioAIConnectionActor) => service.testConnection(a, ID),
   });
 
   it.each([
     ['create'],
-    ['rename'],
+    ['update'],
     ['replace'],
     ['disable'],
     ['enable'],
     ['archive'],
+    ['test'],
   ])('allows ADMIN and SUPERADMIN to %s', async (name) => {
     for (const manager of [ADMIN, SUPERADMIN]) {
       const { service } = setup();
@@ -240,11 +265,12 @@ describe('ContentStudioAIConnectionService: managers', () => {
 
   it.each([
     ['create'],
-    ['rename'],
+    ['update'],
     ['replace'],
     ['disable'],
     ['enable'],
     ['archive'],
+    ['test'],
   ])(
     'refuses a USER member to %s with a 403 before any lookup or write',
     async (name) => {
@@ -350,7 +376,7 @@ describe('ContentStudioAIConnectionService: create', () => {
         name: 'Main OpenAI',
         provider: 'openrouter',
         sealedCredential: expect.stringMatching(/^sb1\.k1\./),
-        defaultModel: null,
+        defaultModel: 'openai/gpt-6.1-sol',
         credentialUpdatedAt: expect.any(Date),
         createdById: USER,
       });
@@ -563,14 +589,16 @@ describe('ContentStudioAIConnectionService: read', () => {
   });
 });
 
-describe('ContentStudioAIConnectionService: rename', () => {
+describe('ContentStudioAIConnectionService: update', () => {
   it('S23/S24/S26/S31 renames, trimmed, and answers the re-read summary', async () => {
     for (const who of [ADMIN, SUPERADMIN]) {
       const { repository, service } = setup();
       repository.getConnectionForOrganization
         .mockResolvedValueOnce(row())
         .mockResolvedValueOnce(row({ name: 'Renamed' }));
-      const result = await service.renameConnection(who, ID, '  Renamed ');
+      const result = await service.updateConnection(who, ID, {
+        name: '  Renamed ',
+      });
       expect(repository.updateConnectionMetadata).toHaveBeenCalledWith({
         organizationId: ORG,
         connectionId: ID,
@@ -584,7 +612,8 @@ describe('ContentStudioAIConnectionService: rename', () => {
   it('S27 rejects a blank name before any write', async () => {
     const { repository, service } = setup();
     expect(
-      (await httpError(service.renameConnection(ADMIN, ID, '  '))).status
+      (await httpError(service.updateConnection(ADMIN, ID, { name: '  ' })))
+        .status
     ).toBe(400);
     expect(repository.updateConnectionMetadata).not.toHaveBeenCalled();
   });
@@ -592,17 +621,18 @@ describe('ContentStudioAIConnectionService: rename', () => {
   it('S28/S29 answers 404 for a missing connection or a lost race', async () => {
     const { repository, service } = setup();
     expect(
-      (await httpError(service.renameConnection(ADMIN, NEW_ID, 'X'))).body
+      (await httpError(service.updateConnection(ADMIN, NEW_ID, { name: 'X' })))
+        .body
     ).toEqual(NOT_FOUND);
     repository.updateConnectionMetadata.mockResolvedValueOnce({ count: 0 });
     expect(
-      (await httpError(service.renameConnection(ADMIN, ID, 'X'))).body
+      (await httpError(service.updateConnection(ADMIN, ID, { name: 'X' }))).body
     ).toEqual(NOT_FOUND);
   });
 
   it('S30 sends the name only, never a provider or model', async () => {
     const { repository, service } = setup();
-    await service.renameConnection(ADMIN, ID, 'Renamed');
+    await service.updateConnection(ADMIN, ID, { name: 'Renamed' });
     const [[input]] = repository.updateConnectionMetadata.mock
       .calls as unknown as [[Record<string, unknown>]];
     expect(Object.keys(input).sort()).toEqual([
@@ -802,13 +832,15 @@ describe('ContentStudioAIConnectionService: archive', () => {
     ).toEqual(NOT_FOUND);
   });
 
-  it('S53/S54 has no delete, restore, test or model method', () => {
+  it('S53/S54 has no delete, restore, generation or usage method', () => {
     const methods = Object.getOwnPropertyNames(
       ContentStudioAIConnectionService.prototype
     );
-    expect(methods.filter((m) => /delete|restore|test|model/i.test(m))).toEqual(
-      []
-    );
+    expect(
+      methods.filter((m) =>
+        /delete|restore|generat|usage|operation|provider(?!s)/i.test(m)
+      )
+    ).toEqual([]);
   });
 });
 
@@ -835,5 +867,455 @@ describe('ContentStudioAIConnectionService source', () => {
     );
     expect(text).not.toMatch(/JSON\.stringify|\.message\b/);
     expect(text).not.toMatch(/\b40[126]\b/);
+  });
+});
+
+const MODEL_UNSUPPORTED = {
+  msg: 'This AI model is not supported for this connection.',
+  code: 'CS_AI_MODEL_UNSUPPORTED',
+};
+
+describe('ContentStudioAIConnectionService: default model', () => {
+  const create = (
+    service: ContentStudioAIConnectionService,
+    provider: string,
+    defaultModel?: unknown
+  ) =>
+    service.createConnection(ADMIN, {
+      name: 'Main',
+      provider,
+      credential: { apiKey: MARKER },
+      ...(defaultModel === undefined ? {} : { defaultModel }),
+    });
+  const created = (repository: Repository) =>
+    (
+      repository.createConnection.mock.calls[0] as unknown as [
+        Record<string, unknown>
+      ]
+    )[0];
+
+  it("DM1/DM10 gives a new connection its provider's catalog default", async () => {
+    for (const [provider, model] of [
+      ['openai', 'gpt-6.1-sol'],
+      ['openrouter', 'openai/gpt-6.1-sol'],
+    ]) {
+      const { repository, service } = setup();
+      await create(service, provider);
+      expect(created(repository).defaultModel).toBe(model);
+      expect(
+        service.listProviders().find((p) => p.provider === provider)
+          ?.defaultModel
+      ).toBe(model);
+    }
+  });
+
+  it('DM2 accepts a model of the chosen provider', async () => {
+    const { repository, service } = setup();
+    await create(service, 'openai', 'gpt-6-luna');
+    await create(service, 'openrouter', 'google/gemini-3.8-flash');
+    expect(
+      repository.createConnection.mock.calls.map(
+        (call) =>
+          (call as unknown as [{ defaultModel: string }])[0].defaultModel
+      )
+    ).toEqual(['gpt-6-luna', 'google/gemini-3.8-flash']);
+  });
+
+  it.each([
+    ['openai', 'gpt-4o'],
+    ['openai', MARKER],
+    ['openai', ' gpt-6-luna'],
+    ['openai', ''],
+    ['openai', null],
+    ['openai', 42],
+    ['openai', { id: 'gpt-6-luna' }],
+    // DM4: a model of the other provider
+    ['openai', 'openai/gpt-6.1-sol'],
+    ['openrouter', 'gpt-6.1-sol'],
+  ])(
+    'DM3/DM4/DM9 refuses %s model %p before sealing or writing',
+    async (provider, model) => {
+      const { repository, service } = setup();
+      const err = await httpError(create(service, provider, model));
+      expect(err.status).toBe(400);
+      expect(err.body).toEqual(MODEL_UNSUPPORTED);
+      expect(err.text).not.toContain(MARKER);
+      expect(seal).not.toHaveBeenCalled();
+      expect(writes(repository)).toEqual([]);
+    }
+  );
+
+  const metadata = (repository: Repository) =>
+    (
+      repository.updateConnectionMetadata.mock.calls[0] as unknown as [
+        Record<string, unknown>
+      ]
+    )[0];
+
+  it('DM5 renaming leaves the default model alone', async () => {
+    const { repository, service } = setup();
+    await service.updateConnection(ADMIN, ID, { name: 'Renamed' });
+    expect(metadata(repository)).toEqual({
+      organizationId: ORG,
+      connectionId: ID,
+      name: 'Renamed',
+    });
+  });
+
+  it('DM6 sets a model of the stored provider', async () => {
+    const { repository, service } = setup();
+    repository.getConnectionForOrganization
+      .mockResolvedValueOnce(row({ provider: 'openrouter' }))
+      .mockResolvedValueOnce(
+        row({ provider: 'openrouter', defaultModel: 'google/gemini-3.8-flash' })
+      );
+    const result = await service.updateConnection(SUPERADMIN, ID, {
+      defaultModel: 'google/gemini-3.8-flash',
+    });
+    expect(metadata(repository)).toEqual({
+      organizationId: ORG,
+      connectionId: ID,
+      defaultModel: 'google/gemini-3.8-flash',
+    });
+    expect(result.defaultModel).toBe('google/gemini-3.8-flash');
+  });
+
+  it('changes the name and the model together', async () => {
+    const { repository, service } = setup();
+    await service.updateConnection(ADMIN, ID, {
+      name: ' Both ',
+      defaultModel: 'gpt-6-luna',
+    });
+    expect(metadata(repository)).toEqual({
+      organizationId: ORG,
+      connectionId: ID,
+      name: 'Both',
+      defaultModel: 'gpt-6-luna',
+    });
+  });
+
+  it.each([
+    ['openai', 'openai/gpt-6.1-sol'],
+    ['openai', 'gpt-4o'],
+    ['openrouter', 'gpt-6-luna'],
+    ['openrouter', 42],
+  ])(
+    'DM7/DM8 refuses a %s connection model %p without writing',
+    async (provider, model) => {
+      const { repository, service } = setup();
+      repository.getConnectionForOrganization.mockResolvedValue(
+        row({ provider })
+      );
+      const err = await httpError(
+        service.updateConnection(ADMIN, ID, { defaultModel: model })
+      );
+      expect(err.body).toEqual(MODEL_UNSUPPORTED);
+      expect(repository.updateConnectionMetadata).not.toHaveBeenCalled();
+    }
+  );
+
+  it('DM8 never changes the provider', async () => {
+    const { repository, service } = setup();
+    await service.updateConnection(ADMIN, ID, {
+      defaultModel: 'gpt-6-luna',
+      ...({ provider: 'openrouter' } as object),
+    });
+    expect(metadata(repository)).not.toHaveProperty('provider');
+  });
+
+  it('DM11 removes the default model with null', async () => {
+    const { repository, service } = setup();
+    await service.updateConnection(ADMIN, ID, { defaultModel: null });
+    expect(metadata(repository)).toEqual({
+      organizationId: ORG,
+      connectionId: ID,
+      defaultModel: null,
+    });
+  });
+
+  it('refuses an empty update and a null name', async () => {
+    const { repository, service } = setup();
+    const empty = await httpError(service.updateConnection(ADMIN, ID, {}));
+    expect(empty.status).toBe(400);
+    expect(empty.body).toEqual({
+      msg: 'The AI connection update is empty.',
+      code: 'CS_INVALID_REQUEST',
+    });
+    const nullName = await httpError(
+      service.updateConnection(ADMIN, ID, { name: null })
+    );
+    expect(nullName.body).toMatchObject({ code: 'CS_INVALID_REQUEST' });
+    expect(repository.getConnectionForOrganization).not.toHaveBeenCalled();
+    expect(repository.updateConnectionMetadata).not.toHaveBeenCalled();
+  });
+});
+
+describe('ContentStudioAIConnectionService: test connection', () => {
+  const recorded = (repository: Repository) =>
+    repository.setValidationResult.mock.calls.map(
+      (call) => (call as unknown as [Record<string, unknown>])[0]
+    );
+
+  it('CTS1/CTS2/CTS8/CTS13 lets managers test and records a valid result', async () => {
+    for (const who of [ADMIN, SUPERADMIN]) {
+      const { repository, resolver, adapter, service } = setup();
+      const before = Date.now();
+      const result = await service.testConnection(who, ID);
+
+      expect(result).toEqual({ ok: true });
+      expect(resolver.resolve).toHaveBeenCalledWith({
+        organizationId: ORG,
+        connectionId: ID,
+      });
+      expect(adapter.validateConnection).toHaveBeenCalledTimes(1);
+      expect(recorded(repository)).toEqual([
+        {
+          organizationId: ORG,
+          connectionId: ID,
+          validatedAt: expect.any(Date),
+          status: 'valid',
+          code: null,
+        },
+      ]);
+      const at = (recorded(repository)[0].validatedAt as Date).getTime();
+      expect(at).toBeGreaterThanOrEqual(before);
+      expect(at).toBeLessThanOrEqual(Date.now());
+    }
+  });
+
+  it('CTS3 refuses a USER member before any lookup or provider', async () => {
+    const { repository, resolver, service } = setup();
+    const err = await httpError(service.testConnection(MEMBER, ID));
+    expect(err.status).toBe(403);
+    expect(err.body).toEqual(ADMIN_REQUIRED);
+    expect(repository.getConnectionForOrganization).not.toHaveBeenCalled();
+    expect(resolver.resolve).not.toHaveBeenCalled();
+  });
+
+  it('CTS4 answers 404 for a missing, foreign or malformed connection', async () => {
+    const { repository, resolver, service } = setup();
+    for (const id of [NEW_ID, 'not-a-uuid']) {
+      expect((await httpError(service.testConnection(ADMIN, id))).body).toEqual(
+        NOT_FOUND
+      );
+    }
+    expect(resolver.resolve).not.toHaveBeenCalled();
+    // gone between the read and the resolve
+    resolver.resolve.mockRejectedValueOnce(
+      new ContentStudioAIResolutionError('NOT_FOUND')
+    );
+    expect((await httpError(service.testConnection(ADMIN, ID))).body).toEqual(
+      NOT_FOUND
+    );
+    expect(repository.setValidationResult).not.toHaveBeenCalled();
+  });
+
+  it('CTS5 refuses a disabled connection with 409 and asks no provider', async () => {
+    const { repository, resolver, service } = setup();
+    repository.getConnectionForOrganization.mockResolvedValue(
+      row({ disabledAt: T0 })
+    );
+    const err = await httpError(service.testConnection(ADMIN, ID));
+    expect(err.status).toBe(409);
+    expect(err.body).toEqual({
+      msg: 'This AI connection is disabled.',
+      code: 'CS_AI_CONNECTION_DISABLED',
+    });
+    expect(resolver.resolve).not.toHaveBeenCalled();
+    expect(repository.setValidationResult).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'DISABLED',
+      409,
+      {
+        msg: 'This AI connection is disabled.',
+        code: 'CS_AI_CONNECTION_DISABLED',
+      },
+    ],
+    [
+      'CREDENTIAL_INVALID',
+      409,
+      {
+        msg: 'This AI connection credential cannot be read. Replace the credential and try again.',
+        code: 'CS_AI_CONNECTION_CREDENTIAL_INVALID',
+      },
+    ],
+    [
+      'SECRET_STORE_UNAVAILABLE',
+      503,
+      {
+        msg: 'AI credential storage is not available.',
+        code: 'CS_AI_SECRET_STORE_UNAVAILABLE',
+      },
+    ],
+    [
+      'PROVIDER_UNSUPPORTED',
+      400,
+      {
+        msg: 'This AI provider is not supported.',
+        code: 'CS_AI_PROVIDER_UNSUPPORTED',
+      },
+    ],
+  ] as const)(
+    'CTS6/CTS7 maps a resolver %s to %s and records nothing',
+    async (code, status, body) => {
+      const { repository, resolver, adapter, service } = setup();
+      resolver.resolve.mockRejectedValueOnce(
+        new ContentStudioAIResolutionError(code)
+      );
+      const err = await httpError(service.testConnection(ADMIN, ID));
+      expect(err.status).toBe(status);
+      expect(err.body).toEqual(body);
+      expect(adapter.validateConnection).not.toHaveBeenCalled();
+      expect(repository.setValidationResult).not.toHaveBeenCalled();
+    }
+  );
+
+  // the real resolver on a mocked row: every one of these stops before an
+  // adapter, so no client and no network
+  describe('with the real resolver', () => {
+    const real = (sealedCredential: string | null) => {
+      const context = setup();
+      context.repository.getSealedCredentialForResolver.mockResolvedValue({
+        id: ID,
+        provider: 'openai',
+        sealedCredential,
+        disabledAt: null,
+      });
+      const service = new ContentStudioAIConnectionService(
+        context.repository as unknown as ContentStudioAIConnectionRepository,
+        new ContentStudioAIProviderResolver(
+          context.repository as unknown as ContentStudioAIConnectionRepository
+        )
+      );
+      return { ...context, service };
+    };
+    const envelope = () =>
+      actualCredential.sealContentStudioAICredential({
+        organizationId: ORG,
+        connectionId: ID,
+        provider: 'openai',
+        credential: { apiKey: MARKER },
+      });
+
+    it('CTS6 answers 409 for a credential that does not open, metadata unchanged', async () => {
+      for (const sealed of [
+        `${envelope().slice(0, -4)}AAAA`,
+        actualCredential.sealContentStudioAICredential({
+          organizationId: ORG,
+          connectionId: NEW_ID,
+          provider: 'openai',
+          credential: { apiKey: MARKER },
+        }),
+        null,
+      ]) {
+        const { repository, service } = real(sealed);
+        const err = await httpError(service.testConnection(ADMIN, ID));
+        expect(err.status).toBe(409);
+        expect(err.body).toMatchObject({
+          code: 'CS_AI_CONNECTION_CREDENTIAL_INVALID',
+        });
+        expect(err.text).not.toMatch(/sk-content-studio|sb1\.|SecretBox/);
+        expect(repository.setValidationResult).not.toHaveBeenCalled();
+      }
+    });
+
+    it('CTS7 answers 503 without a keyring, metadata unchanged', async () => {
+      const { repository, service } = real(envelope());
+      mockKeyring.box = null;
+      const err = await httpError(service.testConnection(ADMIN, ID));
+      expect(err.status).toBe(503);
+      expect(err.body).toMatchObject({
+        code: 'CS_AI_SECRET_STORE_UNAVAILABLE',
+      });
+      expect(repository.setValidationResult).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each([
+    ['CTS9', 'AUTH_FAILED'],
+    ['CTS10', 'RATE_LIMITED'],
+    ['CTS11', 'PROVIDER_UNAVAILABLE'],
+    ['CTS12', 'TIMEOUT'],
+    ['', 'QUOTA_EXCEEDED'],
+    ['', 'INVALID_RESPONSE'],
+  ] as const)(
+    '%s answers { ok: false, %s } and records it as invalid',
+    async (_id, code) => {
+      const { repository, adapter, service } = setup();
+      adapter.validateConnection.mockResolvedValueOnce({ ok: false, code });
+      const result = await service.testConnection(ADMIN, ID);
+      expect(result).toEqual({ ok: false, code });
+      expect(recorded(repository)).toEqual([
+        {
+          organizationId: ORG,
+          connectionId: ID,
+          validatedAt: expect.any(Date),
+          status: 'invalid',
+          code,
+        },
+      ]);
+    }
+  );
+
+  it('CTS14/CTS15 answers ok and code only, whatever the adapter carried', async () => {
+    const { adapter, service } = setup();
+    adapter.validateConnection.mockResolvedValueOnce({
+      ok: false,
+      code: 'AUTH_FAILED',
+      ...({ message: MARKER, raw: { apiKey: MARKER } } as object),
+    } as ContentStudioAIConnectionValidationResult);
+    const failed = await service.testConnection(ADMIN, ID);
+    expect(Object.keys(failed).sort()).toEqual(['code', 'ok']);
+    expect(JSON.stringify(failed)).not.toContain(MARKER);
+
+    adapter.validateConnection.mockResolvedValueOnce({
+      ok: true,
+      ...({ key: MARKER } as object),
+    } as ContentStudioAIConnectionValidationResult);
+    expect(await service.testConnection(ADMIN, ID)).toEqual({ ok: true });
+  });
+
+  it('CTS18 validates without generating', async () => {
+    const { adapter, service } = setup();
+    await service.testConnection(ADMIN, ID);
+    expect(adapter.generateText).not.toHaveBeenCalled();
+  });
+
+  it('refuses with 409 when the connection was disabled while the provider answered', async () => {
+    const { repository, service } = setup();
+    repository.setValidationResult.mockResolvedValueOnce({ count: 0 });
+    repository.getConnectionForOrganization
+      .mockResolvedValueOnce(row())
+      .mockResolvedValueOnce(row({ disabledAt: T0 }));
+    expect((await httpError(service.testConnection(ADMIN, ID))).status).toBe(
+      409
+    );
+  });
+
+  it('answers 404 when the connection was archived while the provider answered', async () => {
+    const { repository, service } = setup();
+    repository.setValidationResult.mockResolvedValueOnce({ count: 0 });
+    repository.getConnectionForOrganization
+      .mockResolvedValueOnce(row())
+      .mockResolvedValueOnce(null);
+    expect((await httpError(service.testConnection(ADMIN, ID))).body).toEqual(
+      NOT_FOUND
+    );
+  });
+
+  it('CTS16/CTS17 records no AI operation or usage and has no billing gate', () => {
+    // code only: the comments explain these rules and may name them
+    const text = fs
+      .readFileSync(
+        path.join(__dirname, 'content-studio.ai-connection.service.ts'),
+        'utf8'
+      )
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    expect(text).not.toMatch(/AIOperation|AIUsage|aIOperation|aIUsage/);
+    expect(text).not.toMatch(/CheckPolicies|Sections\.AI|subscription/);
   });
 });

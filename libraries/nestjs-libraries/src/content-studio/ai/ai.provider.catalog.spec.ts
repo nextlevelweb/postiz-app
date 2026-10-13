@@ -4,6 +4,10 @@ import {
   AI_API_KEY_MIN,
   CONTENT_STUDIO_AI_PROVIDERS,
   ContentStudioAICredentialError,
+  getContentStudioAIDefaultModel,
+  getContentStudioAIModel,
+  getContentStudioAIProvider,
+  isContentStudioAIModelSupported,
   isContentStudioAIProvider,
   listContentStudioAIProviders,
   parseContentStudioAICredential,
@@ -162,16 +166,18 @@ describe('Content Studio AI provider catalog: public metadata', () => {
     ]);
   });
 
-  it('P4/P5 describes the API key field only and no models yet', () => {
+  it('P4/P5 describes the API key field, the default model and the models only', () => {
     for (const info of listContentStudioAIProviders()) {
-      expect(info).toEqual({
-        provider: info.provider,
-        displayName: info.displayName,
-        credentialFields: [
-          { name: 'apiKey', label: 'API key', secret: true, required: true },
-        ],
-        models: [],
-      });
+      expect(Object.keys(info)).toEqual([
+        'provider',
+        'displayName',
+        'credentialFields',
+        'defaultModel',
+        'models',
+      ]);
+      expect(info.credentialFields).toEqual([
+        { name: 'apiKey', label: 'API key', secret: true, required: true },
+      ]);
     }
   });
 
@@ -179,7 +185,7 @@ describe('Content Studio AI provider catalog: public metadata', () => {
     const json = JSON.stringify(listContentStudioAIProviders());
     expect(JSON.parse(json)).toEqual(listContentStudioAIProviders());
     expect(json).not.toMatch(
-      /baseURL|baseUrl|https?:|api\.openai|openrouter\.ai|_API_KEY|process|env|sk-|AIza|example|placeholder|regex|min|max|_def|ZodObject|safeParse/i
+      /baseURL|baseUrl|https?:|api\.openai|openrouter\.ai|_API_KEY|process|env|sk-|AIza|example|placeholder|regex|\bmin|\bmax|_def|ZodObject|safeParse/i
     );
     for (const info of listContentStudioAIProviders()) {
       for (const value of Object.values(info)) {
@@ -209,5 +215,149 @@ describe('Content Studio AI provider catalog: public metadata', () => {
       displayName: 'OpenAI',
       credentialFields: [{ name: 'apiKey' }],
     });
+  });
+});
+
+describe('Content Studio AI provider catalog: models', () => {
+  const ids = (provider: string) =>
+    getContentStudioAIProvider(provider)?.models.map((model) => model.id);
+
+  it('MC1 lists the curated OpenAI models', () => {
+    expect(getContentStudioAIProvider('openai')?.models).toEqual([
+      {
+        id: 'gpt-6.1-sol',
+        label: 'GPT-6.1 Sol',
+        capabilities: { text: true, structuredOutput: true },
+      },
+      {
+        id: 'gpt-6-luna',
+        label: 'GPT-6 Luna',
+        capabilities: { text: true, structuredOutput: true },
+      },
+    ]);
+  });
+
+  it('MC2 lists the curated OpenRouter models', () => {
+    expect(getContentStudioAIProvider('openrouter')?.models).toEqual([
+      {
+        id: 'openai/gpt-6.1-sol',
+        label: 'GPT-6.1 Sol (OpenAI)',
+        capabilities: { text: true, structuredOutput: true },
+      },
+      {
+        id: 'google/gemini-3.8-flash',
+        label: 'Gemini 3.8 Flash (Google)',
+        capabilities: { text: true, structuredOutput: true },
+      },
+      {
+        id: 'openai/gpt-6-luna',
+        label: 'GPT-6 Luna (OpenAI)',
+        capabilities: { text: true, structuredOutput: false },
+      },
+    ]);
+  });
+
+  it('MC3/MC10 gives each provider a default model of its own list', () => {
+    expect(getContentStudioAIDefaultModel('openai')).toBe('gpt-6.1-sol');
+    expect(getContentStudioAIDefaultModel('openrouter')).toBe(
+      'openai/gpt-6.1-sol'
+    );
+    for (const info of listContentStudioAIProviders()) {
+      expect(info.defaultModel).toBe(
+        getContentStudioAIDefaultModel(info.provider)
+      );
+      expect(ids(info.provider)).toContain(info.defaultModel);
+    }
+  });
+
+  it('MC4 has unique ids within a provider and a small list', () => {
+    for (const provider of CONTENT_STUDIO_AI_PROVIDERS) {
+      const list = ids(provider) as string[];
+      expect(new Set(list).size).toBe(list.length);
+      expect(list.length).toBeGreaterThanOrEqual(2);
+      expect(list.length).toBeLessThanOrEqual(4);
+    }
+  });
+
+  it('MC5-MC8/MC12 models are plain metadata: no price, endpoint, limit or SDK detail', () => {
+    for (const info of listContentStudioAIProviders()) {
+      for (const model of info.models) {
+        expect(Object.keys(model)).toEqual(['id', 'label', 'capabilities']);
+        expect(Object.keys(model.capabilities)).toEqual([
+          'text',
+          'structuredOutput',
+        ]);
+        expect(model.capabilities.text).toBe(true);
+        expect(typeof model.capabilities.structuredOutput).toBe('boolean');
+        expect(model.id).toMatch(/^[a-z0-9][a-z0-9./-]*$/);
+      }
+    }
+    expect(JSON.stringify(listContentStudioAIProviders())).not.toMatch(
+      /price|pricing|cost|credit|token|context|baseURL|https?:|endpoint|chat\.completions|responses|sdk/i
+    );
+  });
+
+  it('MC9 has no Anthropic provider or model', () => {
+    expect(getContentStudioAIProvider('anthropic')).toBeUndefined();
+    expect(JSON.stringify(listContentStudioAIProviders())).not.toMatch(
+      /anthropic|claude/i
+    );
+  });
+
+  it.each([
+    ['openai', 'gpt-6.1-sol', true],
+    ['openai', 'gpt-6-luna', true],
+    ['openrouter', 'openai/gpt-6.1-sol', true],
+    ['openrouter', 'google/gemini-3.8-flash', true],
+    ['openrouter', 'openai/gpt-6-luna', true],
+    // MC11: a model belongs to the provider it is listed under
+    ['openai', 'openai/gpt-6.1-sol', false],
+    ['openrouter', 'gpt-6.1-sol', false],
+    ['openai', 'google/gemini-3.8-flash', false],
+    // MC10: anything that is not exactly a listed id
+    ['openai', 'GPT-6.1-SOL', false],
+    ['openai', ' gpt-6.1-sol', false],
+    ['openai', 'gpt-6.1-sol-latest', false],
+    ['openai', 'gpt-4o', false],
+    ['openai', '', false],
+    ['openai', 'constructor', false],
+    ['openai', '__proto__', false],
+    ['openai', null, false],
+    ['openai', ['gpt-6.1-sol'], false],
+    ['anthropic', 'gpt-6.1-sol', false],
+    ['__proto__', 'gpt-6.1-sol', false],
+  ])('MC10/MC11 %s supports %p: %s', (provider, model, supported) => {
+    expect(isContentStudioAIModelSupported(provider, model)).toBe(supported);
+    expect(getContentStudioAIModel(provider, model) !== undefined).toBe(
+      supported
+    );
+  });
+
+  it('MC13 answers new copies of providers and models', () => {
+    const provider = getContentStudioAIProvider('openai');
+    const model = getContentStudioAIModel('openai', 'gpt-6-luna');
+    if (!provider || !model) {
+      throw new Error('expected the catalog entries');
+    }
+    provider.models[0].capabilities.structuredOutput = false;
+    provider.models.length = 0;
+    provider.defaultModel = 'changed';
+    model.id = 'changed';
+    model.capabilities.structuredOutput = false;
+    const listed = listContentStudioAIProviders();
+    listed[1].models[0].label = 'changed';
+
+    expect(getContentStudioAIProvider('openai')?.defaultModel).toBe(
+      'gpt-6.1-sol'
+    );
+    expect(getContentStudioAIModel('openai', 'gpt-6-luna')).toEqual({
+      id: 'gpt-6-luna',
+      label: 'GPT-6 Luna',
+      capabilities: { text: true, structuredOutput: true },
+    });
+    expect(getContentStudioAIProvider('openai')?.models).toHaveLength(2);
+    expect(listContentStudioAIProviders()[1].models[0].label).toBe(
+      'GPT-6.1 Sol (OpenAI)'
+    );
   });
 });

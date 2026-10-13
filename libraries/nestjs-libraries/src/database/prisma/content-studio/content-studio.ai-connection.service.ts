@@ -4,11 +4,18 @@ import { randomUUID } from 'crypto';
 import { ContentStudioAIConnectionRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.repository';
 import {
   ContentStudioAICredentialError,
+  getContentStudioAIDefaultModel,
+  isContentStudioAIModelSupported,
   isContentStudioAIProvider,
   listContentStudioAIProviders,
   parseContentStudioAICredential,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.catalog';
 import { sealContentStudioAICredential } from '@gitroom/nestjs-libraries/content-studio/ai/ai.credential';
+import { ContentStudioAIResolutionError } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.error';
+import {
+  ContentStudioAIProviderResolver,
+  ContentStudioResolvedAIConnection,
+} from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.resolver';
 import { AI_CONNECTION_NAME_MAX } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.ai-connection.dto';
 
 // Fixed messages only: never a key, an envelope, a SecretBox or Zod message.
@@ -33,6 +40,35 @@ const invalidName = () =>
   new HttpException(
     { msg: 'The AI connection name is invalid.', code: 'CS_INVALID_REQUEST' },
     400
+  );
+const emptyUpdate = () =>
+  new HttpException(
+    { msg: 'The AI connection update is empty.', code: 'CS_INVALID_REQUEST' },
+    400
+  );
+const modelUnsupported = () =>
+  new HttpException(
+    {
+      msg: 'This AI model is not supported for this connection.',
+      code: 'CS_AI_MODEL_UNSUPPORTED',
+    },
+    400
+  );
+const connectionDisabled = () =>
+  new HttpException(
+    {
+      msg: 'This AI connection is disabled.',
+      code: 'CS_AI_CONNECTION_DISABLED',
+    },
+    409
+  );
+const connectionCredentialInvalid = () =>
+  new HttpException(
+    {
+      msg: 'This AI connection credential cannot be read. Replace the credential and try again.',
+      code: 'CS_AI_CONNECTION_CREDENTIAL_INVALID',
+    },
+    409
   );
 const providerUnsupported = () =>
   new HttpException(
@@ -77,6 +113,26 @@ const fromCredentialError = (err: unknown) => {
       // ids come from the request context and the server, so a bad context
       // or an unreadable value here is a server fault
       return operationFailed();
+  }
+};
+
+// A connection that cannot become a provider adapter. Nothing of the
+// underlying failure is passed on
+const fromResolutionError = (err: unknown) => {
+  if (!(err instanceof ContentStudioAIResolutionError)) {
+    return err;
+  }
+  switch (err.code) {
+    case 'NOT_FOUND':
+      return notFound();
+    case 'DISABLED':
+      return connectionDisabled();
+    case 'CREDENTIAL_INVALID':
+      return connectionCredentialInvalid();
+    case 'SECRET_STORE_UNAVAILABLE':
+      return secretStoreUnavailable();
+    default:
+      return providerUnsupported();
   }
 };
 
@@ -139,7 +195,8 @@ export const toPublicAIConnection = (row: ConnectionRow) => ({
 @Injectable()
 export class ContentStudioAIConnectionService {
   constructor(
-    private _contentStudioAIConnectionRepository: ContentStudioAIConnectionRepository
+    private _contentStudioAIConnectionRepository: ContentStudioAIConnectionRepository,
+    private _contentStudioAIProviderResolver: ContentStudioAIProviderResolver
   ) {}
 
   listProviders() {
@@ -160,13 +217,23 @@ export class ContentStudioAIConnectionService {
 
   async createConnection(
     actor: ContentStudioAIConnectionActor,
-    input: { name: string; provider: string; credential: unknown }
+    input: {
+      name: string;
+      provider: string;
+      credential: unknown;
+      defaultModel?: unknown;
+    }
   ) {
     this.assertManager(actor);
     const name = this.connectionName(input.name);
     if (!isContentStudioAIProvider(input.provider)) {
       throw providerUnsupported();
     }
+    // left out, the connection gets its provider's default model
+    const defaultModel =
+      input.defaultModel === undefined
+        ? getContentStudioAIDefaultModel(input.provider)
+        : this.supportedModel(input.provider, input.defaultModel);
 
     // the id exists before the row: the credential is sealed for it
     const id = randomUUID();
@@ -193,28 +260,42 @@ export class ContentStudioAIConnectionService {
         name,
         provider: input.provider,
         sealedCredential,
-        defaultModel: null,
+        defaultModel,
         credentialUpdatedAt: new Date(),
         createdById: actor.user.id,
       });
     return toPublicAIConnection(row);
   }
 
-  async renameConnection(
+  // The name, the default model or both; a field left out stays as it is and
+  // defaultModel null removes it. The model must be one of the provider the
+  // connection already has
+  async updateConnection(
     actor: ContentStudioAIConnectionActor,
     id: string,
-    rawName: string
+    input: { name?: unknown; defaultModel?: unknown }
   ) {
     this.assertManager(actor);
-    const name = this.connectionName(rawName);
+    if (input.name === undefined && input.defaultModel === undefined) {
+      throw emptyUpdate();
+    }
+    const name =
+      input.name === undefined ? undefined : this.connectionName(input.name);
     const organizationId = actor.organization.id;
-    await this.getRow(organizationId, id);
+    const current = await this.getRow(organizationId, id);
+    let defaultModel: string | null | undefined;
+    if (input.defaultModel === null) {
+      defaultModel = null;
+    } else if (input.defaultModel !== undefined) {
+      defaultModel = this.supportedModel(current.provider, input.defaultModel);
+    }
 
     const { count } =
       await this._contentStudioAIConnectionRepository.updateConnectionMetadata({
         organizationId,
         connectionId: id,
-        name,
+        ...(name === undefined ? {} : { name }),
+        ...(defaultModel === undefined ? {} : { defaultModel }),
       });
     if (count !== 1) {
       throw notFound();
@@ -312,6 +393,50 @@ export class ContentStudioAIConnectionService {
     return { id };
   }
 
+  // Asks the provider whether the connection works. A provider failure is an
+  // answer, not an HTTP error: { ok: false, code } with a normalized code, and
+  // it is recorded on the connection. A disabled connection, a credential
+  // that cannot be read or a missing keyring are refused before any provider
+  // call and leave the recorded result as it is
+  async testConnection(actor: ContentStudioAIConnectionActor, id: string) {
+    this.assertManager(actor);
+    const organizationId = actor.organization.id;
+    const current = await this.getRow(organizationId, id);
+    if (current.disabledAt) {
+      throw connectionDisabled();
+    }
+
+    let resolved: ContentStudioResolvedAIConnection;
+    try {
+      resolved = await this._contentStudioAIProviderResolver.resolve({
+        organizationId,
+        connectionId: current.id,
+      });
+    } catch (err) {
+      throw fromResolutionError(err);
+    }
+
+    const result = await resolved.adapter.validateConnection();
+    // `in` narrows without strictNullChecks too (the backend build has it off)
+    const code = !result.ok && 'code' in result ? result.code : null;
+    const { count } =
+      await this._contentStudioAIConnectionRepository.setValidationResult({
+        organizationId,
+        connectionId: current.id,
+        validatedAt: new Date(),
+        status: result.ok ? 'valid' : 'invalid',
+        code,
+      });
+    if (count !== 1) {
+      // archived or disabled while the provider answered
+      const latest = await this.getRow(organizationId, id);
+      if (latest.disabledAt) {
+        throw connectionDisabled();
+      }
+    }
+    return result.ok ? { ok: true as const } : { ok: false as const, code };
+  }
+
   // Exactly one membership, the requesting user's own, enabled, with a
   // manager role. Anything else (no membership, a disabled one, several, one
   // of another user) is refused
@@ -344,6 +469,15 @@ export class ContentStudioAIConnectionService {
       throw invalidName();
     }
     return trimmed;
+  }
+
+  // A model of this provider's catalog, or a fixed 400 that does not repeat
+  // what was sent
+  private supportedModel(provider: string, model: unknown) {
+    if (!isContentStudioAIModelSupported(provider, model)) {
+      throw modelUnsupported();
+    }
+    return model as string;
   }
 
   private async getRow(organizationId: string, id: string) {

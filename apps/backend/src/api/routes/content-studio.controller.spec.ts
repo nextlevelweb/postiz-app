@@ -296,6 +296,7 @@ describe('ContentStudioController wiring', () => {
       'POST /ai/connections/:id/archive',
       'POST /ai/connections/:id/disable',
       'POST /ai/connections/:id/enable',
+      'POST /ai/connections/:id/test',
       'POST /handoffs/:handoffId/revoke',
       'POST /packages',
       'POST /packages/:id/archive',
