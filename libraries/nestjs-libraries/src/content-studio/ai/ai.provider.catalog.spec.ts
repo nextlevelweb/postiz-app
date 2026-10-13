@@ -5,6 +5,7 @@ import {
   CONTENT_STUDIO_AI_PROVIDERS,
   ContentStudioAICredentialError,
   isContentStudioAIProvider,
+  listContentStudioAIProviders,
   parseContentStudioAICredential,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.catalog';
 
@@ -145,5 +146,68 @@ describe('Content Studio AI provider catalog', () => {
     expect(JSON.stringify(CONTENT_STUDIO_AI_PROVIDERS)).toBe(
       '["openai","openrouter"]'
     );
+  });
+});
+
+describe('Content Studio AI provider catalog: public metadata', () => {
+  it('P1-P3 lists openai then openrouter with their display names', () => {
+    expect(
+      listContentStudioAIProviders().map(({ provider, displayName }) => [
+        provider,
+        displayName,
+      ])
+    ).toEqual([
+      ['openai', 'OpenAI'],
+      ['openrouter', 'OpenRouter'],
+    ]);
+  });
+
+  it('P4/P5 describes the API key field only and no models yet', () => {
+    for (const info of listContentStudioAIProviders()) {
+      expect(info).toEqual({
+        provider: info.provider,
+        displayName: info.displayName,
+        credentialFields: [
+          { name: 'apiKey', label: 'API key', secret: true, required: true },
+        ],
+        models: [],
+      });
+    }
+  });
+
+  it('P6-P9/P11 is plain JSON with no endpoint, environment name, key or schema', () => {
+    const json = JSON.stringify(listContentStudioAIProviders());
+    expect(JSON.parse(json)).toEqual(listContentStudioAIProviders());
+    expect(json).not.toMatch(
+      /baseURL|baseUrl|https?:|api\.openai|openrouter\.ai|_API_KEY|process|env|sk-|AIza|example|placeholder|regex|min|max|_def|ZodObject|safeParse/i
+    );
+    for (const info of listContentStudioAIProviders()) {
+      for (const value of Object.values(info)) {
+        expect(
+          value?.constructor === Object ||
+            Array.isArray(value) ||
+            typeof value === 'string'
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('P10 has no Anthropic entry yet', () => {
+    expect(
+      listContentStudioAIProviders().map((info) => info.provider)
+    ).not.toContain('anthropic');
+    expect(JSON.stringify(listContentStudioAIProviders())).not.toMatch(
+      /anthropic|claude/i
+    );
+  });
+
+  it('answers a new copy every time', () => {
+    const first = listContentStudioAIProviders();
+    first[0].displayName = 'changed';
+    first[0].credentialFields.length = 0;
+    expect(listContentStudioAIProviders()[0]).toMatchObject({
+      displayName: 'OpenAI',
+      credentialFields: [{ name: 'apiKey' }],
+    });
   });
 });

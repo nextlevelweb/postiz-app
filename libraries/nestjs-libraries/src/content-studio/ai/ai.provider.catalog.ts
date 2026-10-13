@@ -58,6 +58,37 @@ export class ContentStudioAICredentialError extends Error {
   }
 }
 
+// What the settings screen may know about a provider: names and the fields to
+// ask for. No endpoint, SDK option, environment name or example key. Models
+// stay empty until the curated per-provider catalog exists
+export interface ContentStudioAIProviderInfo {
+  provider: ContentStudioAIProvider;
+  displayName: string;
+  credentialFields: Array<{
+    name: 'apiKey';
+    label: string;
+    secret: true;
+    required: true;
+  }>;
+  models: Array<{ id: string; label: string }>;
+}
+
+const DISPLAY_NAMES: Record<ContentStudioAIProvider, string> = {
+  openai: 'OpenAI',
+  openrouter: 'OpenRouter',
+};
+
+// A new copy on every call, in catalog order
+export const listContentStudioAIProviders = (): ContentStudioAIProviderInfo[] =>
+  CONTENT_STUDIO_AI_PROVIDERS.map((provider) => ({
+    provider,
+    displayName: DISPLAY_NAMES[provider],
+    credentialFields: [
+      { name: 'apiKey', label: 'API key', secret: true, required: true },
+    ],
+    models: [],
+  }));
+
 export const isContentStudioAIProvider = (
   value: unknown
 ): value is ContentStudioAIProvider =>

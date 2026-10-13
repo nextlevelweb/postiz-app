@@ -19,6 +19,7 @@ import { GetOrgFromRequest } from '@gitroom/nestjs-libraries/user/org.from.reque
 import { GetUserFromRequest } from '@gitroom/nestjs-libraries/user/user.from.request';
 import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.service';
 import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.service';
+import { ContentStudioAIConnectionService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -32,6 +33,11 @@ import {
   SaveContentPackageDraftDto,
   UpdateContentPackageDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.package.dto';
+import {
+  CreateContentStudioAIConnectionDto,
+  ReplaceContentStudioAIConnectionCredentialDto,
+  UpdateContentStudioAIConnectionDto,
+} from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.ai-connection.dto';
 
 // The global pipe neither strips nor rejects unknown fields; here any field
 // the DTO does not declare (organizationId, createdById, ...) is a 400
@@ -47,7 +53,8 @@ const contentStudioValidationPipe = new ValidationPipe({
 export class ContentStudioController {
   constructor(
     private _contentStudioService: ContentStudioService,
-    private _contentStudioHandoffService: ContentStudioHandoffService
+    private _contentStudioHandoffService: ContentStudioHandoffService,
+    private _contentStudioAIConnectionService: ContentStudioAIConnectionService
   ) {}
 
   @Get('/projects')
@@ -261,5 +268,110 @@ export class ContentStudioController {
       userId: user.id,
       handoffId,
     });
+  }
+
+  // AI connections: any member reads them, only ADMIN and SUPERADMIN change
+  // them (checked by the service from the request's own membership). Keys
+  // come in on create and replace only and never go back out
+
+  @Get('/ai/providers')
+  listAIProviders() {
+    return this._contentStudioAIConnectionService.listProviders();
+  }
+
+  @Get('/ai/connections')
+  listAIConnections(@GetOrgFromRequest() org: Organization) {
+    return this._contentStudioAIConnectionService.listConnections(org.id);
+  }
+
+  @Get('/ai/connections/:id')
+  getAIConnection(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioAIConnectionService.getConnection(org.id, id);
+  }
+
+  @Post('/ai/connections')
+  createAIConnection(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Body() body: CreateContentStudioAIConnectionDto
+  ) {
+    return this._contentStudioAIConnectionService.createConnection(
+      { organization: org, user },
+      {
+        name: body.name,
+        provider: body.provider,
+        credential: body.credential,
+      }
+    );
+  }
+
+  @Patch('/ai/connections/:id')
+  updateAIConnection(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Body() body: UpdateContentStudioAIConnectionDto
+  ) {
+    return this._contentStudioAIConnectionService.renameConnection(
+      { organization: org, user },
+      id,
+      body.name
+    );
+  }
+
+  @Put('/ai/connections/:id/credential')
+  replaceAIConnectionCredential(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Body() body: ReplaceContentStudioAIConnectionCredentialDto
+  ) {
+    return this._contentStudioAIConnectionService.replaceCredential(
+      { organization: org, user },
+      id,
+      body.credential
+    );
+  }
+
+  @Post('/ai/connections/:id/disable')
+  @HttpCode(200)
+  disableAIConnection(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioAIConnectionService.disableConnection(
+      { organization: org, user },
+      id
+    );
+  }
+
+  @Post('/ai/connections/:id/enable')
+  @HttpCode(200)
+  enableAIConnection(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioAIConnectionService.enableConnection(
+      { organization: org, user },
+      id
+    );
+  }
+
+  @Post('/ai/connections/:id/archive')
+  @HttpCode(200)
+  archiveAIConnection(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioAIConnectionService.archiveConnection(
+      { organization: org, user },
+      id
+    );
   }
 }

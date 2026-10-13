@@ -376,11 +376,10 @@ describe('ContentStudioAIConnection schema', () => {
   });
 });
 
-describe('P2-01 adds no API, frontend or provider surface', () => {
-  it('has no AI connection route or frontend code yet', () => {
-    expect(
-      read('apps/backend/src/api/routes/content-studio.controller.ts')
-    ).not.toMatch(/ai\/connections|AIConnection|ai\/providers/);
+// The API arrived with P2-02 (its routes are pinned by the controller specs);
+// the frontend and the provider adapters have not
+describe('AI connection surface so far', () => {
+  it('has no AI connection frontend code yet', () => {
     const frontend = path.join(
       REPO_ROOT,
       'apps/frontend/src/components/content-studio'

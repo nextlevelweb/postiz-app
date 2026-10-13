@@ -15,6 +15,7 @@ import { Organization, User } from '@prisma/client';
 import { ContentStudioController } from '@gitroom/backend/api/routes/content-studio.controller';
 import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.service';
 import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.service';
+import { ContentStudioAIConnectionService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -76,7 +77,8 @@ const setup = () => {
   };
   const controller = new ContentStudioController(
     service as unknown as ContentStudioService,
-    handoffs as unknown as ContentStudioHandoffService
+    handoffs as unknown as ContentStudioHandoffService,
+    {} as ContentStudioAIConnectionService
   );
   return { service, handoffs, controller, result };
 };
@@ -261,7 +263,7 @@ describe('ContentStudioController wiring', () => {
     expect(types('listRevisions')[2]).toBe(ListContentPackageRevisionsDto);
   });
 
-  it('exposes exactly the Phase 1 project, package, draft, revision and handoff routes', () => {
+  it('exposes exactly the project, package, draft, revision, handoff and AI connection routes', () => {
     expect(Reflect.getMetadata(PATH_METADATA, ContentStudioController)).toBe(
       '/content-studio'
     );
@@ -278,14 +280,22 @@ describe('ContentStudioController wiring', () => {
       .sort();
 
     expect(routes).toEqual([
+      'GET /ai/connections',
+      'GET /ai/connections/:id',
+      'GET /ai/providers',
       'GET /handoffs/:handoffId',
       'GET /packages',
       'GET /packages/:id',
       'GET /packages/:id/revisions',
       'GET /packages/:id/revisions/:revisionId',
       'GET /projects',
+      'PATCH /ai/connections/:id',
       'PATCH /packages/:id',
       'PATCH /projects/:id',
+      'POST /ai/connections',
+      'POST /ai/connections/:id/archive',
+      'POST /ai/connections/:id/disable',
+      'POST /ai/connections/:id/enable',
       'POST /handoffs/:handoffId/revoke',
       'POST /packages',
       'POST /packages/:id/archive',
@@ -295,6 +305,7 @@ describe('ContentStudioController wiring', () => {
       'POST /projects',
       'POST /projects/:id/archive',
       'POST /projects/:id/restore',
+      'PUT /ai/connections/:id/credential',
       'PUT /packages/:id/draft',
     ]);
   });
@@ -394,7 +405,11 @@ describe('ContentStudioController handoffs', () => {
     ).toHaveLength(1);
     expect(
       Reflect.getMetadata('design:paramtypes', ContentStudioController)
-    ).toEqual([ContentStudioService, ContentStudioHandoffService]);
+    ).toEqual([
+      ContentStudioService,
+      ContentStudioHandoffService,
+      ContentStudioAIConnectionService,
+    ]);
   });
 });
 
