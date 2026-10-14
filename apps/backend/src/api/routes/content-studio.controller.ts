@@ -22,6 +22,7 @@ import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/
 import { ContentStudioAIConnectionService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.service';
 import { ContentStudioWritingProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.writing-profile.service';
 import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
+import { ContentStudioAudienceProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.audience-profile.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -51,6 +52,13 @@ import {
   CreateContentStudioEditorialPolicyRevisionDto,
   ListContentStudioEditorialPolicyRevisionsDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.editorial-policy.dto';
+import {
+  CreateContentStudioAudienceProfileDto,
+  CreateContentStudioAudienceProfileRevisionDto,
+  ListContentStudioAudienceProfileRevisionsDto,
+  ListContentStudioAudienceProfilesDto,
+  UpdateContentStudioAudienceProfileDto,
+} from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.audience-profile.dto';
 
 // The global pipe neither strips nor rejects unknown fields; here any field
 // the DTO does not declare (organizationId, createdById, ...) is a 400
@@ -69,7 +77,8 @@ export class ContentStudioController {
     private _contentStudioHandoffService: ContentStudioHandoffService,
     private _contentStudioAIConnectionService: ContentStudioAIConnectionService,
     private _contentStudioWritingProfileService: ContentStudioWritingProfileService,
-    private _contentStudioEditorialPolicyService: ContentStudioEditorialPolicyService
+    private _contentStudioEditorialPolicyService: ContentStudioEditorialPolicyService,
+    private _contentStudioAudienceProfileService: ContentStudioAudienceProfileService
   ) {}
 
   @Get('/projects')
@@ -555,5 +564,115 @@ export class ContentStudioController {
       organizationId: org.id,
       revisionId,
     });
+  }
+
+  // Audience Profiles: editorial context about who content is for, never ad
+  // targeting. Every member of the organization may read and change them; the
+  // organization and the user come from the request only
+  @Get('/audience-profiles')
+  listAudienceProfiles(
+    @GetOrgFromRequest() org: Organization,
+    @Query() query: ListContentStudioAudienceProfilesDto
+  ) {
+    return this._contentStudioAudienceProfileService.listProfiles({
+      organizationId: org.id,
+      archived: query.archived,
+      page: query.page,
+    });
+  }
+
+  @Post('/audience-profiles')
+  createAudienceProfile(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Body() body: CreateContentStudioAudienceProfileDto
+  ) {
+    return this._contentStudioAudienceProfileService.createProfile({
+      organizationId: org.id,
+      userId: user.id,
+      name: body.name,
+      content: body.content,
+    });
+  }
+
+  @Get('/audience-profiles/:id')
+  getAudienceProfile(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioAudienceProfileService.getProfile(org.id, id);
+  }
+
+  @Patch('/audience-profiles/:id')
+  updateAudienceProfile(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Body() body: UpdateContentStudioAudienceProfileDto
+  ) {
+    return this._contentStudioAudienceProfileService.renameProfile(
+      org.id,
+      id,
+      body.name
+    );
+  }
+
+  @Post('/audience-profiles/:id/revisions')
+  createAudienceProfileRevision(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Body() body: CreateContentStudioAudienceProfileRevisionDto
+  ) {
+    return this._contentStudioAudienceProfileService.createRevision({
+      organizationId: org.id,
+      profileId: id,
+      userId: user.id,
+      baseRevisionNumber: body.baseRevisionNumber,
+      content: body.content,
+    });
+  }
+
+  @Get('/audience-profiles/:id/revisions')
+  listAudienceProfileRevisions(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Query() query: ListContentStudioAudienceProfileRevisionsDto
+  ) {
+    return this._contentStudioAudienceProfileService.listRevisions({
+      organizationId: org.id,
+      profileId: id,
+      page: query.page,
+    });
+  }
+
+  @Get('/audience-profiles/:id/revisions/:revisionId')
+  getAudienceProfileRevision(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Param('revisionId') revisionId: string
+  ) {
+    return this._contentStudioAudienceProfileService.getRevision({
+      organizationId: org.id,
+      profileId: id,
+      revisionId,
+    });
+  }
+
+  @Post('/audience-profiles/:id/archive')
+  @HttpCode(200)
+  archiveAudienceProfile(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioAudienceProfileService.archiveProfile(org.id, id);
+  }
+
+  @Post('/audience-profiles/:id/restore')
+  @HttpCode(200)
+  restoreAudienceProfile(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioAudienceProfileService.restoreProfile(org.id, id);
   }
 }

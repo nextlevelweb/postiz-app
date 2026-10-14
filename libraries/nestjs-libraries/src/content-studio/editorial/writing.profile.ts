@@ -66,7 +66,7 @@ export const trimmedText = (max: number, min = 0) =>
     .pipe(z.string().min(min).max(max).refine(isSafeText, 'Unsafe text'));
 
 // A note left out, null or blank is stored as null
-const optionalNote = (max: number) =>
+export const optionalNote = (max: number) =>
   trimmedText(max)
     .nullable()
     .optional()

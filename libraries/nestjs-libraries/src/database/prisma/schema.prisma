@@ -56,6 +56,8 @@ model Organization {
   contentStudioWritingProfileRevisions  ContentStudioWritingProfileRevision[]
   contentStudioEditorialPolicy          ContentStudioEditorialPolicy?
   contentStudioEditorialPolicyRevisions ContentStudioEditorialPolicyRevision[]
+  contentStudioAudienceProfiles         ContentStudioAudienceProfile[]
+  contentStudioAudienceProfileRevisions ContentStudioAudienceProfileRevision[]
 
   @@index([apiKey])
   @@index([streakSince])
@@ -138,6 +140,8 @@ model User {
   contentStudioWritingProfileRevisions  ContentStudioWritingProfileRevision[]  @relation("ContentStudioWritingProfileRevisionCreatedBy")
   contentStudioEditorialPolicies        ContentStudioEditorialPolicy[]         @relation("ContentStudioEditorialPolicyCreatedBy")
   contentStudioEditorialPolicyRevisions ContentStudioEditorialPolicyRevision[] @relation("ContentStudioEditorialPolicyRevisionCreatedBy")
+  contentStudioAudienceProfiles         ContentStudioAudienceProfile[]         @relation("ContentStudioAudienceProfileCreatedBy")
+  contentStudioAudienceProfileRevisions ContentStudioAudienceProfileRevision[] @relation("ContentStudioAudienceProfileRevisionCreatedBy")
 
   @@unique([email, providerName])
   @@index([lastReadNotifications])
@@ -2116,6 +2120,47 @@ model ContentStudioEditorialPolicyRevision {
   createdBy      User                         @relation("ContentStudioEditorialPolicyRevisionCreatedBy", fields: [createdById], references: [id])
 
   @@unique([policyId, revisionNumber])
+  @@unique([id, organizationId])
+  @@index([organizationId])
+  @@index([createdById])
+}
+
+// Who an organization's content is written for, as editorial context only:
+// the content lives in immutable revisions, and there is no targeting,
+// contact or demographic field
+model ContentStudioAudienceProfile {
+  id                   String                                 @id @default(uuid())
+  organizationId       String
+  name                 String
+  latestRevisionNumber Int
+  archivedAt           DateTime?
+  createdById          String
+  createdAt            DateTime                               @default(now())
+  updatedAt            DateTime                               @updatedAt
+  organization         Organization                           @relation(fields: [organizationId], references: [id])
+  createdBy            User                                   @relation("ContentStudioAudienceProfileCreatedBy", fields: [createdById], references: [id])
+  revisions            ContentStudioAudienceProfileRevision[]
+
+  @@unique([id, organizationId])
+  @@index([organizationId, archivedAt])
+  @@index([createdById])
+}
+
+model ContentStudioAudienceProfileRevision {
+  id             String                       @id @default(uuid())
+  organizationId String
+  profileId      String
+  revisionNumber Int
+  schemaVersion  Int
+  content        String
+  contentHash    String
+  createdById    String
+  createdAt      DateTime                     @default(now())
+  organization   Organization                 @relation(fields: [organizationId], references: [id])
+  profile        ContentStudioAudienceProfile @relation(fields: [profileId, organizationId], references: [id, organizationId])
+  createdBy      User                         @relation("ContentStudioAudienceProfileRevisionCreatedBy", fields: [createdById], references: [id])
+
+  @@unique([profileId, revisionNumber])
   @@unique([id, organizationId])
   @@index([organizationId])
   @@index([createdById])
