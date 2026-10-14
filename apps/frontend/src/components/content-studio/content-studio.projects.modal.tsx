@@ -17,7 +17,7 @@ import {
 
 // One write at a time per modal: a second click while a request runs does
 // nothing
-const useSingleFlight = () => {
+export const useSingleFlight = () => {
   const running = useRef(false);
   const [busy, setBusy] = useState<string | null>(null);
   const run = useCallback(async (id: string, task: () => Promise<void>) => {

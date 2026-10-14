@@ -435,19 +435,38 @@ describe('ContentStudioAIConnection schema', () => {
   });
 });
 
-// The API arrived with P2-02 (its routes are pinned by the controller specs);
-// the frontend and the provider adapters have not
+// The API arrived with P2-02 (its routes are pinned by the controller specs)
+// and its settings screen with P2-09, in the Brand & AI folder only
 describe('AI connection surface so far', () => {
-  it('has no AI connection frontend code yet', () => {
+  it('keeps AI connection frontend code in the Brand & AI screen only', () => {
     const frontend = path.join(
       REPO_ROOT,
       'apps/frontend/src/components/content-studio'
     );
-    for (const file of fs.readdirSync(frontend)) {
-      expect(fs.readFileSync(path.join(frontend, file), 'utf8')).not.toMatch(
-        /ai\/connections|AIConnection/
-      );
+    for (const entry of fs.readdirSync(frontend, { withFileTypes: true })) {
+      if (entry.isFile()) {
+        expect(
+          fs.readFileSync(path.join(frontend, entry.name), 'utf8')
+        ).not.toMatch(/ai\/connections|AIConnection/);
+      }
     }
+    const intelligence = path.join(frontend, 'intelligence');
+    expect(
+      fs
+        .readdirSync(intelligence)
+        .filter((file) =>
+          /ai\/connections|AIConnection/.test(
+            fs.readFileSync(path.join(intelligence, file), 'utf8')
+          )
+        )
+        .sort()
+    ).toEqual([
+      'content-studio.ai-connections.spec.ts',
+      'content-studio.ai-connections.tsx',
+      'content-studio.intelligence.api.ts',
+      'content-studio.intelligence.spec.ts',
+      'content-studio.intelligence.tsx',
+    ]);
   });
 
   it('has the OpenAI, OpenRouter and Anthropic adapters only', () => {

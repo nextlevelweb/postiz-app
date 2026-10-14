@@ -56,7 +56,7 @@ type Fetch = ReturnType<typeof useFetch>;
 
 // useFetch answers every HTTP status with a Response: anything but 2xx is a
 // failure here
-const request = async <T>(
+export const request = async <T>(
   fetch: Fetch,
   path: string,
   init?: RequestInit
@@ -92,7 +92,7 @@ export const packagesPath = (filters: ContentStudioFilters) => {
 export const packagePath = (id: string) =>
   `/content-studio/${encodeURIComponent(id)}`;
 
-const swrOptions = {
+export const swrOptions = {
   revalidateOnFocus: false,
   revalidateOnReconnect: false,
   refreshWhenHidden: false,

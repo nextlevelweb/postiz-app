@@ -2,6 +2,7 @@
 
 import { FC, useCallback, useEffect, useMemo } from 'react';
 import clsx from 'clsx';
+import Link from 'next/link';
 import { Button } from '@gitroom/react/form/button';
 import { Select } from '@gitroom/react/form/select';
 import { useToaster } from '@gitroom/react/toaster/toaster';
@@ -120,6 +121,12 @@ export const ContentStudioHome: FC = () => {
           )}
         </div>
         <div className="flex flex-wrap gap-[8px]">
+          <Link
+            href="/content-studio/intelligence"
+            className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
+          >
+            {t('content_studio_brand_ai', 'Brand & AI')}
+          </Link>
           <Button secondary onClick={manageProjects}>
             {t('content_studio_manage_projects', 'Manage projects')}
           </Button>
