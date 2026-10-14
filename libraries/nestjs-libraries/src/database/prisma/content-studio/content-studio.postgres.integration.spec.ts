@@ -19,7 +19,7 @@ import {
 import { createContentStudioPostgresClient } from '../../../../../../jest.content-studio.postgres.guard';
 
 // Opt-in: runs only through jest.content-studio.integration.config.ts against
-// the disposable local P1-11 database (see jest.content-studio.postgres.guard.ts).
+// the disposable local database (see jest.content-studio.postgres.guard.ts).
 // The repositories run unchanged on a real PostgreSQL; Prisma is used directly
 // only to build fixtures, read final state and bypass the repositories on
 // purpose to prove what the database itself enforces. Concurrent calls are

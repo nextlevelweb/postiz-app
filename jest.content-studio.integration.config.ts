@@ -8,7 +8,7 @@ import { contentStudioPostgresUrlFromEnv } from './jest.content-studio.postgres.
 // disposable local database described in jest.content-studio.postgres.guard.ts
 // and refuses to start without it:
 //
-//   CONTENT_STUDIO_POSTGRES_INTEGRATION_URL='postgresql://p111:p111_local_only@127.0.0.1:55432/postiz_content_studio_p111' \
+//   CONTENT_STUDIO_POSTGRES_INTEGRATION_URL='postgresql://p211:p211_local_only@127.0.0.1:55433/postiz_content_studio_p211' \
 //   node_modules/.bin/jest --config jest.content-studio.integration.config.ts --runInBand
 //
 // pnpm test:unit never runs it (jest.unit.config.ts ignores *.integration.spec.ts)
