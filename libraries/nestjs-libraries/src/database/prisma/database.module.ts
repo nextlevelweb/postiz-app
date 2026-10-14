@@ -66,6 +66,8 @@ import { ContentStudioEditorialPolicyRepository } from '@gitroom/nestjs-librarie
 import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
 import { ContentStudioAudienceProfileRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.audience-profile.repository';
 import { ContentStudioAudienceProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.audience-profile.service';
+import { ContentStudioExpertiseProfileRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.repository';
+import { ContentStudioExpertiseProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.service';
 
 @Global()
 @Module({
@@ -141,6 +143,8 @@ import { ContentStudioAudienceProfileService } from '@gitroom/nestjs-libraries/d
     ContentStudioEditorialPolicyService,
     ContentStudioAudienceProfileRepository,
     ContentStudioAudienceProfileService,
+    ContentStudioExpertiseProfileRepository,
+    ContentStudioExpertiseProfileService,
   ],
   get exports() {
     return this.providers;

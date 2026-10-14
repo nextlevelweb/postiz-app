@@ -23,6 +23,7 @@ import { ContentStudioAIConnectionService } from '@gitroom/nestjs-libraries/data
 import { ContentStudioWritingProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.writing-profile.service';
 import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
 import { ContentStudioAudienceProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.audience-profile.service';
+import { ContentStudioExpertiseProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -59,6 +60,13 @@ import {
   ListContentStudioAudienceProfilesDto,
   UpdateContentStudioAudienceProfileDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.audience-profile.dto';
+import {
+  CreateContentStudioExpertiseProfileDto,
+  CreateContentStudioExpertiseProfileRevisionDto,
+  ListContentStudioExpertiseProfileRevisionsDto,
+  ListContentStudioExpertiseProfilesDto,
+  UpdateContentStudioExpertiseProfileDto,
+} from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.expertise-profile.dto';
 
 // The global pipe neither strips nor rejects unknown fields; here any field
 // the DTO does not declare (organizationId, createdById, ...) is a 400
@@ -78,7 +86,8 @@ export class ContentStudioController {
     private _contentStudioAIConnectionService: ContentStudioAIConnectionService,
     private _contentStudioWritingProfileService: ContentStudioWritingProfileService,
     private _contentStudioEditorialPolicyService: ContentStudioEditorialPolicyService,
-    private _contentStudioAudienceProfileService: ContentStudioAudienceProfileService
+    private _contentStudioAudienceProfileService: ContentStudioAudienceProfileService,
+    private _contentStudioExpertiseProfileService: ContentStudioExpertiseProfileService
   ) {}
 
   @Get('/projects')
@@ -674,5 +683,121 @@ export class ContentStudioController {
     @Param('id') id: string
   ) {
     return this._contentStudioAudienceProfileService.restoreProfile(org.id, id);
+  }
+
+  // Expertise Profiles: organization-provided context, never verified fact.
+  // Every member of the organization may read and change them; the
+  // organization and the user come from the request only
+  @Get('/expertise-profiles')
+  listExpertiseProfiles(
+    @GetOrgFromRequest() org: Organization,
+    @Query() query: ListContentStudioExpertiseProfilesDto
+  ) {
+    return this._contentStudioExpertiseProfileService.listProfiles({
+      organizationId: org.id,
+      archived: query.archived,
+      page: query.page,
+    });
+  }
+
+  @Post('/expertise-profiles')
+  createExpertiseProfile(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Body() body: CreateContentStudioExpertiseProfileDto
+  ) {
+    return this._contentStudioExpertiseProfileService.createProfile({
+      organizationId: org.id,
+      userId: user.id,
+      name: body.name,
+      content: body.content,
+    });
+  }
+
+  @Get('/expertise-profiles/:id')
+  getExpertiseProfile(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioExpertiseProfileService.getProfile(org.id, id);
+  }
+
+  @Patch('/expertise-profiles/:id')
+  updateExpertiseProfile(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Body() body: UpdateContentStudioExpertiseProfileDto
+  ) {
+    return this._contentStudioExpertiseProfileService.renameProfile(
+      org.id,
+      id,
+      body.name
+    );
+  }
+
+  @Post('/expertise-profiles/:id/revisions')
+  createExpertiseProfileRevision(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Body() body: CreateContentStudioExpertiseProfileRevisionDto
+  ) {
+    return this._contentStudioExpertiseProfileService.createRevision({
+      organizationId: org.id,
+      profileId: id,
+      userId: user.id,
+      baseRevisionNumber: body.baseRevisionNumber,
+      content: body.content,
+    });
+  }
+
+  @Get('/expertise-profiles/:id/revisions')
+  listExpertiseProfileRevisions(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Query() query: ListContentStudioExpertiseProfileRevisionsDto
+  ) {
+    return this._contentStudioExpertiseProfileService.listRevisions({
+      organizationId: org.id,
+      profileId: id,
+      page: query.page,
+    });
+  }
+
+  @Get('/expertise-profiles/:id/revisions/:revisionId')
+  getExpertiseProfileRevision(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Param('revisionId') revisionId: string
+  ) {
+    return this._contentStudioExpertiseProfileService.getRevision({
+      organizationId: org.id,
+      profileId: id,
+      revisionId,
+    });
+  }
+
+  @Post('/expertise-profiles/:id/archive')
+  @HttpCode(200)
+  archiveExpertiseProfile(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioExpertiseProfileService.archiveProfile(
+      org.id,
+      id
+    );
+  }
+
+  @Post('/expertise-profiles/:id/restore')
+  @HttpCode(200)
+  restoreExpertiseProfile(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioExpertiseProfileService.restoreProfile(
+      org.id,
+      id
+    );
   }
 }
