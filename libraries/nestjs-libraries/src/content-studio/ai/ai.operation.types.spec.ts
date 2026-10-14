@@ -135,3 +135,171 @@ describe('Content Studio AI operation context', () => {
     expect(parsed).not.toBe(input);
   });
 });
+
+describe('Content Studio AI operation context: profile and policy revisions', () => {
+  const WRITING = {
+    kind: 'writing' as const,
+    profileId: '11111111-1111-4111-8111-111111111111',
+    revisionId: '22222222-2222-4222-8222-222222222222',
+    revisionNumber: 4,
+  };
+  const AUDIENCE = {
+    kind: 'audience' as const,
+    profileId: '33333333-3333-4333-8333-333333333333',
+    revisionId: '44444444-4444-4444-8444-444444444444',
+    revisionNumber: 1,
+  };
+  const EXPERTISE = {
+    kind: 'expertise' as const,
+    profileId: '55555555-5555-4555-8555-555555555555',
+    revisionId: '66666666-6666-4666-8666-666666666666',
+    revisionNumber: 2_147_483_647,
+  };
+  const POLICY = {
+    revisionId: '77777777-7777-4777-8777-777777777777',
+    revisionNumber: 9,
+  };
+  const parse = parseContentStudioAIOperationContext;
+
+  it('OC1/OC2 still reads the contexts stored before the references existed', () => {
+    expect(parse({ v: 1 })).toEqual({ v: 1 });
+    expect(parse({ v: 1, itemId: 'main' })).toEqual({ v: 1, itemId: 'main' });
+  });
+
+  it('OC3 takes one writing profile revision', () => {
+    expect(parse({ v: 1, itemId: 'main', profiles: [WRITING] })).toEqual({
+      v: 1,
+      itemId: 'main',
+      profiles: [WRITING],
+    });
+  });
+
+  it('OC4/OC5 takes all three profiles in their order and the policy revision', () => {
+    const context = {
+      v: 1,
+      profiles: [WRITING, AUDIENCE, EXPERTISE],
+      editorialPolicy: POLICY,
+    };
+    expect(parse(context)).toEqual(context);
+    expect(parse({ v: 1, editorialPolicy: POLICY })).toEqual({
+      v: 1,
+      editorialPolicy: POLICY,
+    });
+  });
+
+  it.each([
+    ['OC6 the same kind twice', { v: 1, profiles: [WRITING, WRITING] }],
+    [
+      'OC6 the same kind twice with other ids',
+      {
+        v: 1,
+        profiles: [AUDIENCE, { ...AUDIENCE, profileId: WRITING.profileId }],
+      },
+    ],
+    ['kinds out of order', { v: 1, profiles: [AUDIENCE, WRITING] }],
+    [
+      'four profiles',
+      { v: 1, profiles: [WRITING, AUDIENCE, EXPERTISE, EXPERTISE] },
+    ],
+    ['no profiles', { v: 1, profiles: [] }],
+    [
+      'OC7 an unknown kind',
+      { v: 1, profiles: [{ ...WRITING, kind: 'brand' }] },
+    ],
+    [
+      'OC7 the policy as a profile',
+      { v: 1, profiles: [{ ...WRITING, kind: 'editorial' }] },
+    ],
+    [
+      'OC8 a malformed profile id',
+      { v: 1, profiles: [{ ...WRITING, profileId: 'writing-1' }] },
+    ],
+    [
+      'OC8 an upper case revision id',
+      {
+        v: 1,
+        profiles: [
+          { ...WRITING, revisionId: 'AAAAAAAA-2222-4222-8222-222222222222' },
+        ],
+      },
+    ],
+    [
+      'OC8 a malformed policy revision id',
+      { v: 1, editorialPolicy: { ...POLICY, revisionId: 'rev-1' } },
+    ],
+    ['OC9 revision 0', { v: 1, profiles: [{ ...WRITING, revisionNumber: 0 }] }],
+    [
+      'OC9 a fractional revision',
+      { v: 1, profiles: [{ ...WRITING, revisionNumber: 1.5 }] },
+    ],
+    [
+      'OC9 a revision past int4',
+      { v: 1, profiles: [{ ...WRITING, revisionNumber: 2 ** 31 }] },
+    ],
+    [
+      'OC9 a string revision',
+      { v: 1, editorialPolicy: { ...POLICY, revisionNumber: '9' } },
+    ],
+    [
+      'OC9 a policy revision 0',
+      { v: 1, editorialPolicy: { ...POLICY, revisionNumber: 0 } },
+    ],
+    [
+      'a reference without revision',
+      { v: 1, profiles: [{ kind: 'writing', profileId: WRITING.profileId }] },
+    ],
+    [
+      'a policy without revision id',
+      { v: 1, editorialPolicy: { revisionNumber: 9 } },
+    ],
+    ['OC10 an unknown key', { v: 1, writingProfileId: WRITING.profileId }],
+    ['OC10 a policy id', { v: 1, editorialPolicyId: POLICY.revisionId }],
+    [
+      'OC12 profile content in a reference',
+      {
+        v: 1,
+        profiles: [
+          { ...WRITING, content: { voice: 'PROFILE_PRIVATE_MARKER_789' } },
+        ],
+      },
+    ],
+    [
+      'OC12 a profile name in a reference',
+      { v: 1, profiles: [{ ...WRITING, name: 'Brand voice' }] },
+    ],
+    [
+      'OC12 a content hash in a reference',
+      { v: 1, profiles: [{ ...WRITING, contentHash: 'a'.repeat(64) }] },
+    ],
+    [
+      'OC12 policy content',
+      {
+        v: 1,
+        editorialPolicy: {
+          ...POLICY,
+          principles: ['PROFILE_PRIVATE_MARKER_789'],
+        },
+      },
+    ],
+    ['profiles that are not a list', { v: 1, profiles: WRITING }],
+    [
+      'a policy that is not an object',
+      { v: 1, editorialPolicy: POLICY.revisionId },
+    ],
+  ])('refuses %s', (_name, value) => {
+    expect(parse(value)).toBeUndefined();
+  });
+
+  it('OC11 the largest context stays far below 8 KiB', () => {
+    const context = {
+      v: 1,
+      itemId: 'x'.repeat(32),
+      profiles: [WRITING, AUDIENCE, EXPERTISE],
+      editorialPolicy: POLICY,
+    };
+    expect(parse(context)).toEqual(context);
+    expect(Buffer.byteLength(JSON.stringify(context), 'utf8')).toBeLessThan(
+      1024
+    );
+  });
+});

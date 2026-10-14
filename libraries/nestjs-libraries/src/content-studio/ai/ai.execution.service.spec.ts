@@ -618,6 +618,151 @@ describe('ContentStudioAIExecutionService: provider failures', () => {
   });
 });
 
+describe('ContentStudioAIExecutionService: result validation', () => {
+  it('EV1 without a validator succeeds exactly as before', async () => {
+    const { service, operations } = setup();
+    await expect(service.execute(input(), {})).resolves.toEqual({
+      operationId: OPERATION,
+      result: providerResult(),
+    });
+    expect(operations.completeSucceededWithUsage).toHaveBeenCalledTimes(1);
+    expect(operations.completeFailedWithUsage).not.toHaveBeenCalled();
+  });
+
+  it('EV2-EV4 checks the answer once, after the provider and before the success is recorded', async () => {
+    const { service, adapter, operations } = setup();
+    const validateResult = jest.fn();
+    const value = await service.execute(input(), { validateResult });
+    expect(validateResult).toHaveBeenCalledTimes(1);
+    expect(validateResult).toHaveBeenCalledWith(providerResult());
+    const order = [
+      operations.createRunningOperation,
+      adapter.generateText,
+      validateResult,
+      operations.completeSucceededWithUsage,
+    ].map((fn) => fn.mock.invocationCallOrder[0]);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(value.operationId).toBe(OPERATION);
+    expect(succeeded(operations).usage.outcome).toBe('succeeded');
+  });
+
+  it('EV5 records a refused answer as a failed INVALID_RESPONSE attempt with its usage, asking the provider once', async () => {
+    const { service, adapter, operations } = setup();
+    const refusal = new ContentStudioAIProviderError('INVALID_RESPONSE');
+    const err = await failure(
+      service.execute(input(), {
+        validateResult: () => {
+          throw refusal;
+        },
+      })
+    );
+    expect(err).toBe(refusal);
+    expect(adapter.generateText).toHaveBeenCalledTimes(1);
+    expect(operations.completeSucceededWithUsage).not.toHaveBeenCalled();
+    expect(failed(operations)).toEqual({
+      organizationId: ORG,
+      operationId: OPERATION,
+      completedAt: expect.any(Date),
+      errorCode: 'INVALID_RESPONSE',
+      usage: {
+        attempt: 1,
+        provider: 'openai',
+        model: 'gpt-6.1-sol',
+        outcome: 'failed',
+        usageSource: 'provider',
+        inputTokens: 12,
+        outputTokens: 30,
+        cachedInputTokens: 4,
+        reasoningTokens: 9,
+        totalTokens: 42,
+        providerCostMicros: null,
+        costCurrency: null,
+        providerRequestId: 'req_ok_1',
+      },
+    });
+    expect(persisted(operations)).not.toMatch(MARKERS);
+  });
+
+  it('keeps another normalized code of the validator, such as CONTENT_REJECTED', async () => {
+    const { service, operations } = setup();
+    const err = await failure(
+      service.execute(input(), {
+        validateResult: () => {
+          throw new ContentStudioAIProviderError('CONTENT_REJECTED');
+        },
+      })
+    );
+    expect(err.code).toBe('CONTENT_REJECTED');
+    expect(failed(operations).errorCode).toBe('CONTENT_REJECTED');
+  });
+
+  it('EV6 turns any other validator error into INVALID_RESPONSE without its message', async () => {
+    const { service, adapter, operations } = setup();
+    const raw = new Error(`could not parse ${RESULT} ${KEY}`);
+    const err = await failure(
+      service.execute(input(), {
+        validateResult: () => {
+          throw raw;
+        },
+      })
+    );
+    expect(err).toBeInstanceOf(ContentStudioAIProviderError);
+    expect(err.code).toBe('INVALID_RESPONSE');
+    expect(err).not.toBe(raw);
+    expect(adapter.generateText).toHaveBeenCalledTimes(1);
+    expect(failed(operations).errorCode).toBe('INVALID_RESPONSE');
+    expect(persisted(operations)).not.toMatch(MARKERS);
+  });
+
+  it('EV7 never runs the validator when the provider fails', async () => {
+    const { service, adapter, operations } = setup();
+    adapter.generateText.mockRejectedValueOnce(
+      new ContentStudioAIProviderError('TIMEOUT')
+    );
+    const validateResult = jest.fn();
+    expect(
+      (await failure(service.execute(input(), { validateResult }))).code
+    ).toBe('TIMEOUT');
+    expect(validateResult).not.toHaveBeenCalled();
+    expect(failed(operations).errorCode).toBe('TIMEOUT');
+  });
+
+  it('never runs the validator before a valid answer shape', async () => {
+    const { service, adapter } = setup();
+    adapter.generateText.mockResolvedValueOnce(
+      providerResult({ text: undefined as unknown as string })
+    );
+    const validateResult = jest.fn();
+    expect(
+      (await failure(service.execute(input(), { validateResult }))).code
+    ).toBe('INVALID_RESPONSE');
+    expect(validateResult).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['success', () => undefined, 'completeSucceededWithUsage'],
+    [
+      'refusal',
+      () => {
+        throw new ContentStudioAIProviderError('INVALID_RESPONSE');
+      },
+      'completeFailedWithUsage',
+    ],
+  ] as const)(
+    'EV8 never asks the provider again when the %s cannot be recorded',
+    async (_name, validateResult, completion) => {
+      const { service, adapter, operations } = setup();
+      operations[completion].mockRejectedValueOnce(
+        new Error(`deadlock ${KEY}`)
+      );
+      const err = await failure(service.execute(input(), { validateResult }));
+      expect(err.code).toBe('PERSISTENCE_FAILED');
+      expect(adapter.generateText).toHaveBeenCalledTimes(1);
+      expect(operations[completion]).toHaveBeenCalledTimes(1);
+    }
+  );
+});
+
 describe('ContentStudioAIExecutionService: persistence failures', () => {
   it('E50 never calls the provider when the operation cannot be created', async () => {
     const { service, adapter, operations } = setup();

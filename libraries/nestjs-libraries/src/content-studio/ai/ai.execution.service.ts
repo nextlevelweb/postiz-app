@@ -61,6 +61,14 @@ export interface ContentStudioAIExecutionInput {
   request: ContentStudioAITextRequest;
 }
 
+export interface ContentStudioAIExecutionOptions {
+  // The caller's own check of the answer (that it parses as what was asked
+  // for), run once before the operation is recorded as succeeded. It throws
+  // to refuse the answer: a ContentStudioAIProviderError as it is, anything
+  // else as INVALID_RESPONSE. It must not keep or record the answer
+  validateResult?: (result: ContentStudioAITextResult) => void;
+}
+
 const isId = (value: unknown) => typeof value === 'string' && UUID.test(value);
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -159,7 +167,8 @@ export class ContentStudioAIExecutionService {
   ) {}
 
   async execute(
-    input: ContentStudioAIExecutionInput
+    input: ContentStudioAIExecutionInput,
+    options: ContentStudioAIExecutionOptions = {}
   ): Promise<{ operationId: string; result: ContentStudioAITextResult }> {
     const context = this.checkInput(input);
     const { organizationId } = input;
@@ -266,6 +275,28 @@ export class ContentStudioAIExecutionService {
 
     const providerRequestId =
       safeProviderRequestId(result.providerRequestId) ?? null;
+
+    // A refused answer is a failed attempt, with the usage the provider
+    // reported for it. The provider is not asked again
+    const rejection = this.rejection(result, options.validateResult);
+    if (rejection) {
+      await this.record(() =>
+        this._contentStudioAIOperationRepository.completeFailedWithUsage({
+          organizationId,
+          operationId,
+          completedAt: new Date(),
+          errorCode: rejection.code,
+          usage: {
+            ...usageBase,
+            ...providerUsage(result.usage),
+            outcome: 'failed',
+            providerRequestId,
+          },
+        })
+      );
+      throw rejection;
+    }
+
     await this.record(() =>
       this._contentStudioAIOperationRepository.completeSucceededWithUsage({
         organizationId,
@@ -285,6 +316,23 @@ export class ContentStudioAIExecutionService {
       })
     );
     return { operationId, result };
+  }
+
+  private rejection(
+    result: ContentStudioAITextResult,
+    validateResult: ContentStudioAIExecutionOptions['validateResult']
+  ) {
+    if (!validateResult) {
+      return undefined;
+    }
+    try {
+      validateResult(result);
+      return undefined;
+    } catch (err) {
+      return err instanceof ContentStudioAIProviderError
+        ? err
+        : new ContentStudioAIProviderError('INVALID_RESPONSE');
+    }
   }
 
   // The completion after the provider answered. It is never retried and the

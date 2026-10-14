@@ -20,6 +20,7 @@ import { ContentStudioWritingProfileService } from '@gitroom/nestjs-libraries/da
 import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
 import { ContentStudioAudienceProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.audience-profile.service';
 import { ContentStudioExpertiseProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.service';
+import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -86,7 +87,8 @@ const setup = () => {
     {} as ContentStudioWritingProfileService,
     {} as ContentStudioEditorialPolicyService,
     {} as ContentStudioAudienceProfileService,
-    {} as ContentStudioExpertiseProfileService
+    {} as ContentStudioExpertiseProfileService,
+    {} as ContentStudioAIWritingService
   );
   return { service, handoffs, controller, result };
 };
@@ -271,7 +273,7 @@ describe('ContentStudioController wiring', () => {
     expect(types('listRevisions')[2]).toBe(ListContentPackageRevisionsDto);
   });
 
-  it('exposes exactly the project, package, draft, revision, handoff and AI connection routes', () => {
+  it('exposes exactly the project, package, draft, revision, handoff, AI connection, profile and AI writing routes', () => {
     expect(Reflect.getMetadata(PATH_METADATA, ContentStudioController)).toBe(
       '/content-studio'
     );
@@ -334,6 +336,8 @@ describe('ContentStudioController wiring', () => {
       'POST /expertise-profiles/:id/revisions',
       'POST /handoffs/:handoffId/revoke',
       'POST /packages',
+      'POST /packages/:id/ai/item',
+      'POST /packages/:id/ai/thread',
       'POST /packages/:id/archive',
       'POST /packages/:id/restore',
       'POST /packages/:id/revisions',
@@ -453,6 +457,7 @@ describe('ContentStudioController handoffs', () => {
       ContentStudioEditorialPolicyService,
       ContentStudioAudienceProfileService,
       ContentStudioExpertiseProfileService,
+      ContentStudioAIWritingService,
     ]);
   });
 });

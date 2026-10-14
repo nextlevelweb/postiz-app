@@ -21,6 +21,7 @@ import { ContentStudioAIConnectionService } from '@gitroom/nestjs-libraries/data
 import { ContentStudioWritingProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.writing-profile.service';
 import { ContentStudioAudienceProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.audience-profile.service';
 import { ContentStudioExpertiseProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.service';
+import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
 import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
 import {
   CreateContentStudioExpertiseProfileDto,
@@ -83,7 +84,8 @@ const setup = () => {
     {} as ContentStudioWritingProfileService,
     {} as ContentStudioEditorialPolicyService,
     {} as ContentStudioAudienceProfileService,
-    profiles as unknown as ContentStudioExpertiseProfileService
+    profiles as unknown as ContentStudioExpertiseProfileService,
+    {} as ContentStudioAIWritingService
   );
   return { profiles, controller, result };
 };

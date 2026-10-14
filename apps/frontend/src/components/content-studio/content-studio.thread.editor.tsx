@@ -1,6 +1,6 @@
 'use client';
 
-import { FC, useCallback } from 'react';
+import { FC, ReactNode, useCallback } from 'react';
 import { Button } from '@gitroom/react/form/button';
 import { Textarea } from '@gitroom/react/form/textarea';
 import { useToaster } from '@gitroom/react/toaster/toaster';
@@ -90,7 +90,7 @@ type PickedMedia = { id: string; path: string };
 
 // The thread of the draft: plain text and Media ids per item. Every change
 // goes through `edit`, which applies it to the latest draft (or refuses it
-// while the editor is locked)
+// while the editor is locked). itemActions adds controls to an item's header
 export const ContentStudioThreadEditor: FC<{
   draft: ContentStudioDraft;
   media: Map<string, ContentStudioMediaPreview | null>;
@@ -98,7 +98,8 @@ export const ContentStudioThreadEditor: FC<{
   edit: (update: (draft: ContentStudioDraft) => ContentStudioDraft) => boolean;
   getDraft: () => ContentStudioDraft | null;
   addPreviews: (previews: ContentStudioMediaPreview[]) => void;
-}> = ({ draft, media, disabled, edit, getDraft, addPreviews }) => {
+  itemActions?: (item: ContentStudioThreadItem, label: string) => ReactNode;
+}> = ({ draft, media, disabled, edit, getDraft, addPreviews, itemActions }) => {
   const t = useT();
   const toaster = useToaster();
   const modals = useModals();
@@ -267,6 +268,7 @@ export const ContentStudioThreadEditor: FC<{
           >
             <div className="flex items-center gap-[8px]">
               <h3 className="flex-1 font-[600]">{label}</h3>
+              {itemActions?.(item, label)}
               {index > 0 && (
                 <Button
                   secondary

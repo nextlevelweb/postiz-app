@@ -24,6 +24,7 @@ import { ContentStudioWritingProfileService } from '@gitroom/nestjs-libraries/da
 import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
 import { ContentStudioAudienceProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.audience-profile.service';
 import { ContentStudioExpertiseProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.service';
+import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -67,6 +68,10 @@ import {
   ListContentStudioExpertiseProfilesDto,
   UpdateContentStudioExpertiseProfileDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.expertise-profile.dto';
+import {
+  ContentStudioAIItemProposalDto,
+  ContentStudioAIThreadProposalDto,
+} from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.ai-writing.dto';
 
 // The global pipe neither strips nor rejects unknown fields; here any field
 // the DTO does not declare (organizationId, createdById, ...) is a 400
@@ -87,7 +92,8 @@ export class ContentStudioController {
     private _contentStudioWritingProfileService: ContentStudioWritingProfileService,
     private _contentStudioEditorialPolicyService: ContentStudioEditorialPolicyService,
     private _contentStudioAudienceProfileService: ContentStudioAudienceProfileService,
-    private _contentStudioExpertiseProfileService: ContentStudioExpertiseProfileService
+    private _contentStudioExpertiseProfileService: ContentStudioExpertiseProfileService,
+    private _contentStudioAIWritingService: ContentStudioAIWritingService
   ) {}
 
   @Get('/projects')
@@ -231,6 +237,63 @@ export class ContentStudioController {
     });
     response.status(result.created ? 201 : 200);
     return result;
+  }
+
+  // AI writing: a suggestion for one item or the whole thread, with the
+  // connection, model and profiles the user chose. Any member may ask; the
+  // draft is never changed here: an accepted suggestion is saved like any
+  // edit. 200, since nothing is created for the user to keep
+  @Post('/packages/:id/ai/item')
+  @HttpCode(200)
+  generateItemProposal(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Body() body: ContentStudioAIItemProposalDto
+  ) {
+    return this._contentStudioAIWritingService.proposeItem({
+      organizationId: org.id,
+      userId: user.id,
+      packageId: id,
+      operation: body.operation,
+      itemId: body.itemId,
+      selection: {
+        connectionId: body.connectionId,
+        model: body.model,
+        baseDraftVersion: body.baseDraftVersion,
+        writingProfileId: body.writingProfileId,
+        editorialPolicy: body.editorialPolicy,
+        audienceProfileId: body.audienceProfileId,
+        expertiseProfileId: body.expertiseProfileId,
+        instruction: body.instruction,
+      },
+    });
+  }
+
+  @Post('/packages/:id/ai/thread')
+  @HttpCode(200)
+  generateThreadProposal(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Body() body: ContentStudioAIThreadProposalDto
+  ) {
+    return this._contentStudioAIWritingService.proposeThread({
+      organizationId: org.id,
+      userId: user.id,
+      packageId: id,
+      operation: body.operation,
+      selection: {
+        connectionId: body.connectionId,
+        model: body.model,
+        baseDraftVersion: body.baseDraftVersion,
+        writingProfileId: body.writingProfileId,
+        editorialPolicy: body.editorialPolicy,
+        audienceProfileId: body.audienceProfileId,
+        expertiseProfileId: body.expertiseProfileId,
+        instruction: body.instruction,
+      },
+    });
   }
 
   @Get('/packages/:id/revisions')

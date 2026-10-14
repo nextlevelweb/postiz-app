@@ -435,21 +435,31 @@ describe('ContentStudioAIConnection schema', () => {
   });
 });
 
-// The API arrived with P2-02 (its routes are pinned by the controller specs)
-// and its settings screen with P2-09, in the Brand & AI folder only
+// The API arrived with P2-02 (its routes are pinned by the controller specs),
+// its settings screen with P2-09 in the Brand & AI folder, and with P2-10 the
+// workspace's AI writing dialog, which only reads the connection list
 describe('AI connection surface so far', () => {
-  it('keeps AI connection frontend code in the Brand & AI screen only', () => {
+  it('keeps AI connection frontend code in the Brand & AI screen and the AI writing dialog only', () => {
     const frontend = path.join(
       REPO_ROOT,
       'apps/frontend/src/components/content-studio'
     );
-    for (const entry of fs.readdirSync(frontend, { withFileTypes: true })) {
-      if (entry.isFile()) {
-        expect(
-          fs.readFileSync(path.join(frontend, entry.name), 'utf8')
-        ).not.toMatch(/ai\/connections|AIConnection/);
-      }
-    }
+    expect(
+      fs
+        .readdirSync(frontend, { withFileTypes: true })
+        .filter(
+          (entry) =>
+            entry.isFile() &&
+            /ai\/connections|AIConnection/.test(
+              fs.readFileSync(path.join(frontend, entry.name), 'utf8')
+            )
+        )
+        .map((entry) => entry.name)
+        .sort()
+    ).toEqual([
+      'content-studio.ai-writing.spec.ts',
+      'content-studio.ai-writing.tsx',
+    ]);
     const intelligence = path.join(frontend, 'intelligence');
     expect(
       fs

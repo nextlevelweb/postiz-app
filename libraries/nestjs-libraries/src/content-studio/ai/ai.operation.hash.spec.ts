@@ -189,3 +189,98 @@ describe('AI operation result hash', () => {
     });
   });
 });
+
+describe('AI operation request hash: profile and policy revisions', () => {
+  const ref = (kind: 'writing' | 'audience' | 'expertise', n: string) => ({
+    kind,
+    profileId: `${n}1111111-1111-4111-8111-111111111111`,
+    revisionId: `${n}2222222-2222-4222-8222-222222222222`,
+    revisionNumber: 4,
+  });
+  const context = {
+    v: 1 as const,
+    itemId: 'item-1',
+    profiles: [
+      ref('writing', 'a'),
+      ref('audience', 'b'),
+      ref('expertise', 'c'),
+    ],
+    editorialPolicy: {
+      revisionId: 'd2222222-2222-4222-8222-222222222222',
+      revisionNumber: 2,
+    },
+  };
+  const base = hashContentStudioAIRequest(provenance({ context }));
+  const withRevision = (index: number, revisionId: string) =>
+    provenance({
+      context: {
+        ...context,
+        profiles: context.profiles.map((profile, i) =>
+          i === index ? { ...profile, revisionId } : profile
+        ),
+      },
+    });
+
+  it('OH5 is the same for the same snapshots', () => {
+    expect(hashContentStudioAIRequest(provenance({ context }))).toBe(base);
+    expect(
+      hashContentStudioAIRequest(
+        provenance({ context: JSON.parse(JSON.stringify(context)) })
+      )
+    ).toBe(base);
+  });
+
+  it.each([
+    [
+      'OH1 another writing revision',
+      withRevision(0, 'e2222222-2222-4222-8222-222222222222'),
+    ],
+    [
+      'OH3 another audience revision',
+      withRevision(1, 'e2222222-2222-4222-8222-222222222222'),
+    ],
+    [
+      'OH4 another expertise revision',
+      withRevision(2, 'e2222222-2222-4222-8222-222222222222'),
+    ],
+    [
+      'OH2 another policy revision',
+      provenance({
+        context: {
+          ...context,
+          editorialPolicy: {
+            ...context.editorialPolicy,
+            revisionId: 'e2222222-2222-4222-8222-222222222222',
+          },
+        },
+      }),
+    ],
+    [
+      'another policy revision number',
+      provenance({
+        context: {
+          ...context,
+          editorialPolicy: { ...context.editorialPolicy, revisionNumber: 3 },
+        },
+      }),
+    ],
+    [
+      'no policy',
+      provenance({
+        context: { v: 1, itemId: 'item-1', profiles: context.profiles },
+      }),
+    ],
+    [
+      'no profiles',
+      provenance({
+        context: {
+          v: 1,
+          itemId: 'item-1',
+          editorialPolicy: context.editorialPolicy,
+        },
+      }),
+    ],
+  ])('changes with %s', (_name, value) => {
+    expect(hashContentStudioAIRequest(value)).not.toBe(base);
+  });
+});

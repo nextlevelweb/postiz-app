@@ -49,7 +49,9 @@ const hasLoneSurrogate = (text: string) => {
   return false;
 };
 
-const itemText = z
+// The text of one item, as a draft holds it. AI proposals are checked with
+// it too, so a suggestion is exactly what the editor could save
+export const contentPackageItemText = z
   .string()
   .transform(normalizeLineEndings)
   .pipe(
@@ -63,7 +65,7 @@ const itemText = z
 const threadItem = z
   .object({
     id: z.string().regex(ITEM_ID),
-    text: itemText,
+    text: contentPackageItemText,
     mediaIds: z.array(z.string().regex(MEDIA_ID)).max(ITEM_MEDIA_MAX),
   })
   .strict()

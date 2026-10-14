@@ -23,6 +23,19 @@ import {
 } from '@gitroom/frontend/components/content-studio/content-studio.autosave';
 import { ContentStudioThreadEditor } from '@gitroom/frontend/components/content-studio/content-studio.thread.editor';
 import { ContentStudioRevisionHistory } from '@gitroom/frontend/components/content-studio/content-studio.revision.history';
+import {
+  aiWritingErrorMessage,
+  ContentStudioAIProposal,
+  ContentStudioAIWritingDialog,
+  ContentStudioAIWritingRequest,
+  ContentStudioAIWritingTarget,
+  useContentStudioAIWritingApi,
+} from '@gitroom/frontend/components/content-studio/content-studio.ai-writing';
+import {
+  applyContentStudioAIProposal,
+  ContentStudioAIProposalReview,
+  isContentStudioAIProposalCurrent,
+} from '@gitroom/frontend/components/content-studio/content-studio.ai-proposal';
 
 const HANDOFF_ID = /^[0-9a-f]{64}$/;
 
@@ -49,9 +62,10 @@ interface PackageMeta {
 
 // The editor of one package. The draft is seeded once from the server and then
 // lives in the autosave controller; the server's answers to saves keep its
-// version. Saving a version, restoring one and "Use in Post" first wait until
-// the latest draft is saved, with the editor locked so nothing changes under
-// them. Leaving the page within 1500 ms of an edit can lose that edit
+// version. Saving a version, restoring one, "Use in Post" and AI writing first
+// wait until the latest draft is saved, with the editor locked so nothing
+// changes under them. Leaving the page within 1500 ms of an edit can lose
+// that edit
 export const ContentStudioWorkspace: FC<{ packageId: string }> = ({
   packageId,
 }) => {
@@ -60,6 +74,7 @@ export const ContentStudioWorkspace: FC<{ packageId: string }> = ({
   const toaster = useToaster();
   const modals = useModals();
   const api = useContentStudioWorkspaceApi();
+  const aiWriting = useContentStudioAIWritingApi();
   const detail = useContentStudioPackage(packageId);
   const save = useCallback(
     (draft: ContentStudioDraft, base: number) =>
@@ -75,6 +90,11 @@ export const ContentStudioWorkspace: FC<{ packageId: string }> = ({
   const seeded = useRef<string | null>(null);
   const [locked, setLocked] = useState(false);
   const lockedRef = useRef(false);
+  // an AI suggestion under review; it lives here only and is never saved
+  // until it is accepted
+  const [proposal, setProposal] = useState<ContentStudioAIProposal | null>(
+    null
+  );
 
   const seed = useCallback(
     (data: ContentStudioPackageDetail) => {
@@ -362,6 +382,98 @@ export const ContentStudioWorkspace: FC<{ packageId: string }> = ({
     [api, controller, packageId, reload, runAction, toaster, t]
   );
 
+  // AI writing asks about the saved draft: the latest edit is saved first,
+  // and the request names the version that save returned. A save that fails
+  // or conflicts asks nothing. The answer is a suggestion for review only
+  const generate = useCallback(
+    async (request: ContentStudioAIWritingRequest) => {
+      let generated = false;
+      await runAction(async () => {
+        await controller.flush();
+        const base = controller.currentVersion;
+        let result: ContentStudioAIProposal;
+        try {
+          result = await aiWriting.propose(packageId, base, request);
+        } catch (err) {
+          const message = aiWritingErrorMessage(t, err);
+          if (!message) {
+            throw err;
+          }
+          if (
+            err instanceof ContentStudioRequestError &&
+            err.code === 'CS_DRAFT_VERSION_CONFLICT'
+          ) {
+            controller.markConflict();
+          }
+          toaster.show(message, 'warning');
+          return;
+        }
+        const draft = controller.currentDraft;
+        if (
+          result?.baseDraftVersion !== base ||
+          !draft ||
+          !isContentStudioAIProposalCurrent(result, draft, base, true) ||
+          (result.proposal.type === 'item') !== !!request.itemId
+        ) {
+          throw new Error('Unexpected suggestion');
+        }
+        setProposal(result);
+        generated = true;
+      }, t('content_studio_ai_writing_error_failed', 'Could not generate a suggestion.'));
+      return generated;
+    },
+    [aiWriting, controller, packageId, runAction, t, toaster]
+  );
+
+  const openAIWriting = useCallback(
+    (target: ContentStudioAIWritingTarget) => {
+      modals.openModal({
+        title: t('content_studio_ai_writing', 'AI writing'),
+        children: (close) => (
+          <ContentStudioAIWritingDialog
+            target={target}
+            onGenerate={generate}
+            close={close}
+          />
+        ),
+      });
+    },
+    [modals, generate, t]
+  );
+
+  // Puts the suggested texts into the draft and saves it the usual way, in
+  // one save. Only a suggestion for exactly the current saved draft is
+  // applied; it is never merged into a newer one
+  const acceptProposal = useCallback(
+    () =>
+      runAction(async () => {
+        const draft = controller.currentDraft;
+        const snapshot = controller.snapshot();
+        if (
+          !proposal ||
+          !draft ||
+          !isContentStudioAIProposalCurrent(
+            proposal,
+            draft,
+            snapshot.version,
+            snapshot.state === 'idle'
+          )
+        ) {
+          return;
+        }
+        if (
+          !controller.change((latest) =>
+            applyContentStudioAIProposal(latest, proposal)
+          )
+        ) {
+          throw new Error('Read-only draft');
+        }
+        setProposal(null);
+        await controller.flush();
+      }, t('content_studio_save_error', 'Could not save this Content Studio draft.')),
+    [controller, proposal, runAction, t]
+  );
+
   const openHistory = useCallback(() => {
     modals.openModal({
       title: t('content_studio_history', 'History'),
@@ -412,6 +524,7 @@ export const ContentStudioWorkspace: FC<{ packageId: string }> = ({
   }
 
   const conflict = autosave.state === 'conflict';
+  const aiDisabled = meta.archived || conflict || locked;
   const stateLabel = meta.archived
     ? t('content_studio_read_only_archived', 'Archived - read only')
     : {
@@ -441,6 +554,13 @@ export const ContentStudioWorkspace: FC<{ packageId: string }> = ({
         <div className="flex flex-wrap gap-[8px]">
           <Button secondary onClick={openHistory}>
             {t('content_studio_history', 'History')}
+          </Button>
+          <Button
+            secondary
+            disabled={aiDisabled}
+            onClick={() => openAIWriting({ type: 'thread' })}
+          >
+            {t('content_studio_ai_thread', 'AI thread')}
           </Button>
           <Button
             secondary
@@ -519,6 +639,22 @@ export const ContentStudioWorkspace: FC<{ packageId: string }> = ({
         </div>
       )}
 
+      {proposal && (
+        <ContentStudioAIProposalReview
+          proposal={proposal}
+          draft={autosave.draft}
+          current={isContentStudioAIProposalCurrent(
+            proposal,
+            autosave.draft,
+            autosave.version,
+            autosave.state === 'idle'
+          )}
+          busy={locked}
+          onAccept={acceptProposal}
+          onDiscard={() => setProposal(null)}
+        />
+      )}
+
       <ContentStudioThreadEditor
         draft={autosave.draft}
         media={media}
@@ -526,6 +662,26 @@ export const ContentStudioWorkspace: FC<{ packageId: string }> = ({
         edit={edit}
         getDraft={getDraft}
         addPreviews={addPreviews}
+        itemActions={(item, label) => (
+          <Button
+            secondary
+            disabled={aiDisabled}
+            aria-label={`${t(
+              'content_studio_ai_writing',
+              'AI writing'
+            )} ${label}`}
+            onClick={() =>
+              openAIWriting({
+                type: 'item',
+                itemId: item.id,
+                label,
+                hasText: !!item.text.trim(),
+              })
+            }
+          >
+            {t('content_studio_ai', 'AI')}
+          </Button>
+        )}
       />
     </div>
   );
