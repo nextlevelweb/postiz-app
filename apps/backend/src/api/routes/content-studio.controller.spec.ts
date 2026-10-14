@@ -16,6 +16,7 @@ import { ContentStudioController } from '@gitroom/backend/api/routes/content-stu
 import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.service';
 import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.service';
 import { ContentStudioAIConnectionService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.service';
+import { ContentStudioWritingProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.writing-profile.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -78,7 +79,8 @@ const setup = () => {
   const controller = new ContentStudioController(
     service as unknown as ContentStudioService,
     handoffs as unknown as ContentStudioHandoffService,
-    {} as ContentStudioAIConnectionService
+    {} as ContentStudioAIConnectionService,
+    {} as ContentStudioWritingProfileService
   );
   return { service, handoffs, controller, result };
 };
@@ -289,9 +291,14 @@ describe('ContentStudioController wiring', () => {
       'GET /packages/:id/revisions',
       'GET /packages/:id/revisions/:revisionId',
       'GET /projects',
+      'GET /writing-profiles',
+      'GET /writing-profiles/:id',
+      'GET /writing-profiles/:id/revisions',
+      'GET /writing-profiles/:id/revisions/:revisionId',
       'PATCH /ai/connections/:id',
       'PATCH /packages/:id',
       'PATCH /projects/:id',
+      'PATCH /writing-profiles/:id',
       'POST /ai/connections',
       'POST /ai/connections/:id/archive',
       'POST /ai/connections/:id/disable',
@@ -306,6 +313,10 @@ describe('ContentStudioController wiring', () => {
       'POST /projects',
       'POST /projects/:id/archive',
       'POST /projects/:id/restore',
+      'POST /writing-profiles',
+      'POST /writing-profiles/:id/archive',
+      'POST /writing-profiles/:id/restore',
+      'POST /writing-profiles/:id/revisions',
       'PUT /ai/connections/:id/credential',
       'PUT /packages/:id/draft',
     ]);
@@ -410,6 +421,7 @@ describe('ContentStudioController handoffs', () => {
       ContentStudioService,
       ContentStudioHandoffService,
       ContentStudioAIConnectionService,
+      ContentStudioWritingProfileService,
     ]);
   });
 });
@@ -539,8 +551,11 @@ describe('ContentStudioController revisions', () => {
     expect(revisionRoutes).toEqual([
       'GET /packages/:id/revisions',
       'GET /packages/:id/revisions/:revisionId',
+      'GET /writing-profiles/:id/revisions',
+      'GET /writing-profiles/:id/revisions/:revisionId',
       'POST /packages/:id/revisions',
       'POST /packages/:id/revisions/:revisionId/handoffs',
+      'POST /writing-profiles/:id/revisions',
     ]);
   });
 });

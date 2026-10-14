@@ -20,6 +20,7 @@ import { GetUserFromRequest } from '@gitroom/nestjs-libraries/user/user.from.req
 import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.service';
 import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.service';
 import { ContentStudioAIConnectionService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.service';
+import { ContentStudioWritingProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.writing-profile.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -38,6 +39,13 @@ import {
   ReplaceContentStudioAIConnectionCredentialDto,
   UpdateContentStudioAIConnectionDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.ai-connection.dto';
+import {
+  CreateContentStudioWritingProfileDto,
+  CreateContentStudioWritingProfileRevisionDto,
+  ListContentStudioWritingProfileRevisionsDto,
+  ListContentStudioWritingProfilesDto,
+  UpdateContentStudioWritingProfileDto,
+} from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.writing-profile.dto';
 
 // The global pipe neither strips nor rejects unknown fields; here any field
 // the DTO does not declare (organizationId, createdById, ...) is a 400
@@ -54,7 +62,8 @@ export class ContentStudioController {
   constructor(
     private _contentStudioService: ContentStudioService,
     private _contentStudioHandoffService: ContentStudioHandoffService,
-    private _contentStudioAIConnectionService: ContentStudioAIConnectionService
+    private _contentStudioAIConnectionService: ContentStudioAIConnectionService,
+    private _contentStudioWritingProfileService: ContentStudioWritingProfileService
   ) {}
 
   @Get('/projects')
@@ -388,5 +397,114 @@ export class ContentStudioController {
       { organization: org, user },
       id
     );
+  }
+
+  // Writing Profiles: every member of the organization may read and change
+  // them; the organization and the user come from the request only
+  @Get('/writing-profiles')
+  listWritingProfiles(
+    @GetOrgFromRequest() org: Organization,
+    @Query() query: ListContentStudioWritingProfilesDto
+  ) {
+    return this._contentStudioWritingProfileService.listProfiles({
+      organizationId: org.id,
+      archived: query.archived,
+      page: query.page,
+    });
+  }
+
+  @Post('/writing-profiles')
+  createWritingProfile(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Body() body: CreateContentStudioWritingProfileDto
+  ) {
+    return this._contentStudioWritingProfileService.createProfile({
+      organizationId: org.id,
+      userId: user.id,
+      name: body.name,
+      content: body.content,
+    });
+  }
+
+  @Get('/writing-profiles/:id')
+  getWritingProfile(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioWritingProfileService.getProfile(org.id, id);
+  }
+
+  @Patch('/writing-profiles/:id')
+  updateWritingProfile(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Body() body: UpdateContentStudioWritingProfileDto
+  ) {
+    return this._contentStudioWritingProfileService.renameProfile(
+      org.id,
+      id,
+      body.name
+    );
+  }
+
+  @Post('/writing-profiles/:id/revisions')
+  createWritingProfileRevision(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Body() body: CreateContentStudioWritingProfileRevisionDto
+  ) {
+    return this._contentStudioWritingProfileService.createRevision({
+      organizationId: org.id,
+      profileId: id,
+      userId: user.id,
+      baseRevisionNumber: body.baseRevisionNumber,
+      content: body.content,
+    });
+  }
+
+  @Get('/writing-profiles/:id/revisions')
+  listWritingProfileRevisions(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Query() query: ListContentStudioWritingProfileRevisionsDto
+  ) {
+    return this._contentStudioWritingProfileService.listRevisions({
+      organizationId: org.id,
+      profileId: id,
+      page: query.page,
+    });
+  }
+
+  @Get('/writing-profiles/:id/revisions/:revisionId')
+  getWritingProfileRevision(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Param('revisionId') revisionId: string
+  ) {
+    return this._contentStudioWritingProfileService.getRevision({
+      organizationId: org.id,
+      profileId: id,
+      revisionId,
+    });
+  }
+
+  @Post('/writing-profiles/:id/archive')
+  @HttpCode(200)
+  archiveWritingProfile(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioWritingProfileService.archiveProfile(org.id, id);
+  }
+
+  @Post('/writing-profiles/:id/restore')
+  @HttpCode(200)
+  restoreWritingProfile(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioWritingProfileService.restoreProfile(org.id, id);
   }
 }

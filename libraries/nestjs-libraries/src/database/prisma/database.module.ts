@@ -60,6 +60,8 @@ import { ContentStudioAIConnectionService } from '@gitroom/nestjs-libraries/data
 import { ContentStudioAIProviderResolver } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.resolver';
 import { ContentStudioAIOperationRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-operation.repository';
 import { ContentStudioAIExecutionService } from '@gitroom/nestjs-libraries/content-studio/ai/ai.execution.service';
+import { ContentStudioWritingProfileRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.writing-profile.repository';
+import { ContentStudioWritingProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.writing-profile.service';
 
 @Global()
 @Module({
@@ -129,6 +131,8 @@ import { ContentStudioAIExecutionService } from '@gitroom/nestjs-libraries/conte
     ContentStudioAIProviderResolver,
     ContentStudioAIOperationRepository,
     ContentStudioAIExecutionService,
+    ContentStudioWritingProfileRepository,
+    ContentStudioWritingProfileService,
   ],
   get exports() {
     return this.providers;

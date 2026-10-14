@@ -18,6 +18,7 @@ import { ContentStudioController } from '@gitroom/backend/api/routes/content-stu
 import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.service';
 import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.service';
 import { ContentStudioAIConnectionService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.service';
+import { ContentStudioWritingProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.writing-profile.service';
 import {
   CreateContentStudioAIConnectionDto,
   ReplaceContentStudioAIConnectionCredentialDto,
@@ -62,7 +63,8 @@ const setup = () => {
   const controller = new ContentStudioController(
     {} as ContentStudioService,
     {} as ContentStudioHandoffService,
-    ai as unknown as ContentStudioAIConnectionService
+    ai as unknown as ContentStudioAIConnectionService,
+    {} as ContentStudioWritingProfileService
   );
   return { ai, controller, result };
 };
