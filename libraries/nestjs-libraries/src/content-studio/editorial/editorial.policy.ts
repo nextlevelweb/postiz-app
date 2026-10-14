@@ -1,0 +1,141 @@
+import { z } from 'zod';
+import {
+  distinctList,
+  isPlainData,
+  trimmedText,
+  utf8ByteLength,
+} from '@gitroom/nestjs-libraries/content-studio/editorial/writing.profile';
+
+// Editorial Policy v1: the editorial rules of an organization, as structured,
+// bounded data that later AI generation reads from an exact revision and
+// later review shows next to a draft. Entered by hand. It is context, not
+// enforcement: nothing here checks content against it, verifies a claim or
+// promises compliance. Lengths count UTF-16 code units after line endings are
+// normalized, like the Writing DNA. Like that parser this file uses no
+// Node-only module
+
+export const EDITORIAL_POLICY_SCHEMA_VERSION = 1;
+
+export const EDITORIAL_PRINCIPLES_MAX = 20;
+export const EDITORIAL_PRINCIPLE_MAX = 500;
+export const EDITORIAL_PROHIBITED_TOPICS_MAX = 30;
+export const EDITORIAL_PROHIBITED_TOPIC_MAX = 200;
+export const EDITORIAL_CLAIM_RULES_MAX = 20;
+export const EDITORIAL_CLAIM_RULE_MAX = 500;
+export const EDITORIAL_CTA_RULES_MAX = 10;
+export const EDITORIAL_CTA_RULE_MAX = 300;
+export const EDITORIAL_FORMAT_CONVENTIONS_MAX = 20;
+export const EDITORIAL_FORMAT_CONVENTION_MAX = 300;
+export const EDITORIAL_COMPLIANCE_NOTES_MAX = 4000;
+// UTF-8 bytes of the normalized policy as JSON. canonicalJson writes the same
+// keys and strings in another order only, so this is its size too
+export const EDITORIAL_POLICY_CONTENT_MAX_BYTES = 32_768;
+
+// Every key is required. Each list refuses an entry it already has; the same
+// text in two different lists is allowed
+const contentSchema = z
+  .object({
+    schemaVersion: z.literal(EDITORIAL_POLICY_SCHEMA_VERSION),
+    principles: distinctList(
+      trimmedText(EDITORIAL_PRINCIPLE_MAX, 1),
+      EDITORIAL_PRINCIPLES_MAX
+    ),
+    prohibitedTopics: distinctList(
+      trimmedText(EDITORIAL_PROHIBITED_TOPIC_MAX, 1),
+      EDITORIAL_PROHIBITED_TOPICS_MAX
+    ),
+    claimRules: distinctList(
+      trimmedText(EDITORIAL_CLAIM_RULE_MAX, 1),
+      EDITORIAL_CLAIM_RULES_MAX
+    ),
+    ctaRules: distinctList(
+      trimmedText(EDITORIAL_CTA_RULE_MAX, 1),
+      EDITORIAL_CTA_RULES_MAX
+    ),
+    formatConventions: distinctList(
+      trimmedText(EDITORIAL_FORMAT_CONVENTION_MAX, 1),
+      EDITORIAL_FORMAT_CONVENTIONS_MAX
+    ),
+    // one free text, trimmed outside and kept as written inside; empty when
+    // there is nothing to note
+    complianceNotes: trimmedText(EDITORIAL_COMPLIANCE_NOTES_MAX),
+  })
+  .strict();
+
+export interface ContentStudioEditorialPolicyContentV1 {
+  schemaVersion: 1;
+  principles: string[];
+  prohibitedTopics: string[];
+  claimRules: string[];
+  ctaRules: string[];
+  formatConventions: string[];
+  complianceNotes: string;
+}
+
+export type ContentStudioEditorialPolicyErrorCode = 'INVALID' | 'TOO_LARGE';
+
+export interface ContentStudioEditorialPolicyIssue {
+  path: Array<string | number>;
+  code: string;
+}
+
+const ERROR_MESSAGES: Record<ContentStudioEditorialPolicyErrorCode, string> = {
+  INVALID: 'The editorial policy does not match schema version 1',
+  TOO_LARGE: 'The editorial policy is larger than allowed',
+};
+
+// Fixed messages, and issues carry only the path and the kind of problem:
+// zod messages can quote the rejected value, which may be confidential
+export class ContentStudioEditorialPolicyError extends Error {
+  readonly issues?: ContentStudioEditorialPolicyIssue[];
+
+  constructor(
+    readonly code: ContentStudioEditorialPolicyErrorCode,
+    issues?: ContentStudioEditorialPolicyIssue[]
+  ) {
+    super(ERROR_MESSAGES[code]);
+    this.name = 'ContentStudioEditorialPolicyError';
+    this.issues = issues;
+  }
+}
+
+// Validates and normalizes an editorial policy (from a request or read back
+// from the database) into a new object: line endings normalized, entries and
+// notes trimmed. The input is never changed. Anything else is refused, never
+// repaired: no entry is dropped or merged
+export function parseContentStudioEditorialPolicyContent(
+  input: unknown
+): ContentStudioEditorialPolicyContentV1 {
+  if (!isPlainData(input)) {
+    throw new ContentStudioEditorialPolicyError('INVALID', [
+      { path: [], code: 'not_plain_data' },
+    ]);
+  }
+  const result = contentSchema.safeParse(input);
+  if (!result.success) {
+    throw new ContentStudioEditorialPolicyError(
+      'INVALID',
+      result.error.issues.map(({ path, code }) => ({ path, code }))
+    );
+  }
+  if (
+    utf8ByteLength(JSON.stringify(result.data)) >
+    EDITORIAL_POLICY_CONTENT_MAX_BYTES
+  ) {
+    throw new ContentStudioEditorialPolicyError('TOO_LARGE');
+  }
+  return result.data as ContentStudioEditorialPolicyContentV1;
+}
+
+// A policy with no rules yet
+export const emptyContentStudioEditorialPolicyContent =
+  (): ContentStudioEditorialPolicyContentV1 =>
+    parseContentStudioEditorialPolicyContent({
+      schemaVersion: EDITORIAL_POLICY_SCHEMA_VERSION,
+      principles: [],
+      prohibitedTopics: [],
+      claimRules: [],
+      ctaRules: [],
+      formatConventions: [],
+      complianceNotes: '',
+    });

@@ -21,6 +21,7 @@ import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/
 import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.service';
 import { ContentStudioAIConnectionService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.service';
 import { ContentStudioWritingProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.writing-profile.service';
+import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -46,6 +47,10 @@ import {
   ListContentStudioWritingProfilesDto,
   UpdateContentStudioWritingProfileDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.writing-profile.dto';
+import {
+  CreateContentStudioEditorialPolicyRevisionDto,
+  ListContentStudioEditorialPolicyRevisionsDto,
+} from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.editorial-policy.dto';
 
 // The global pipe neither strips nor rejects unknown fields; here any field
 // the DTO does not declare (organizationId, createdById, ...) is a 400
@@ -63,7 +68,8 @@ export class ContentStudioController {
     private _contentStudioService: ContentStudioService,
     private _contentStudioHandoffService: ContentStudioHandoffService,
     private _contentStudioAIConnectionService: ContentStudioAIConnectionService,
-    private _contentStudioWritingProfileService: ContentStudioWritingProfileService
+    private _contentStudioWritingProfileService: ContentStudioWritingProfileService,
+    private _contentStudioEditorialPolicyService: ContentStudioEditorialPolicyService
   ) {}
 
   @Get('/projects')
@@ -506,5 +512,48 @@ export class ContentStudioController {
     @Param('id') id: string
   ) {
     return this._contentStudioWritingProfileService.restoreProfile(org.id, id);
+  }
+
+  // The editorial policy: one per organization, addressed by the request
+  // organization and never by an id. Every member may read and revise it
+  @Get('/editorial-policy')
+  getEditorialPolicy(@GetOrgFromRequest() org: Organization) {
+    return this._contentStudioEditorialPolicyService.getPolicy(org.id);
+  }
+
+  @Post('/editorial-policy/revisions')
+  createEditorialPolicyRevision(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Body() body: CreateContentStudioEditorialPolicyRevisionDto
+  ) {
+    return this._contentStudioEditorialPolicyService.createRevision({
+      organizationId: org.id,
+      userId: user.id,
+      baseRevisionNumber: body.baseRevisionNumber,
+      content: body.content,
+    });
+  }
+
+  @Get('/editorial-policy/revisions')
+  listEditorialPolicyRevisions(
+    @GetOrgFromRequest() org: Organization,
+    @Query() query: ListContentStudioEditorialPolicyRevisionsDto
+  ) {
+    return this._contentStudioEditorialPolicyService.listRevisions({
+      organizationId: org.id,
+      page: query.page,
+    });
+  }
+
+  @Get('/editorial-policy/revisions/:revisionId')
+  getEditorialPolicyRevision(
+    @GetOrgFromRequest() org: Organization,
+    @Param('revisionId') revisionId: string
+  ) {
+    return this._contentStudioEditorialPolicyService.getRevision({
+      organizationId: org.id,
+      revisionId,
+    });
   }
 }

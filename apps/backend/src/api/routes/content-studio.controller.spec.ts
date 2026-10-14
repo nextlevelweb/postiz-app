@@ -17,6 +17,7 @@ import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/
 import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.service';
 import { ContentStudioAIConnectionService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.service';
 import { ContentStudioWritingProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.writing-profile.service';
+import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -80,7 +81,8 @@ const setup = () => {
     service as unknown as ContentStudioService,
     handoffs as unknown as ContentStudioHandoffService,
     {} as ContentStudioAIConnectionService,
-    {} as ContentStudioWritingProfileService
+    {} as ContentStudioWritingProfileService,
+    {} as ContentStudioEditorialPolicyService
   );
   return { service, handoffs, controller, result };
 };
@@ -285,6 +287,9 @@ describe('ContentStudioController wiring', () => {
       'GET /ai/connections',
       'GET /ai/connections/:id',
       'GET /ai/providers',
+      'GET /editorial-policy',
+      'GET /editorial-policy/revisions',
+      'GET /editorial-policy/revisions/:revisionId',
       'GET /handoffs/:handoffId',
       'GET /packages',
       'GET /packages/:id',
@@ -304,6 +309,7 @@ describe('ContentStudioController wiring', () => {
       'POST /ai/connections/:id/disable',
       'POST /ai/connections/:id/enable',
       'POST /ai/connections/:id/test',
+      'POST /editorial-policy/revisions',
       'POST /handoffs/:handoffId/revoke',
       'POST /packages',
       'POST /packages/:id/archive',
@@ -422,6 +428,7 @@ describe('ContentStudioController handoffs', () => {
       ContentStudioHandoffService,
       ContentStudioAIConnectionService,
       ContentStudioWritingProfileService,
+      ContentStudioEditorialPolicyService,
     ]);
   });
 });
@@ -549,10 +556,13 @@ describe('ContentStudioController revisions', () => {
     ).toEqual([]);
 
     expect(revisionRoutes).toEqual([
+      'GET /editorial-policy/revisions',
+      'GET /editorial-policy/revisions/:revisionId',
       'GET /packages/:id/revisions',
       'GET /packages/:id/revisions/:revisionId',
       'GET /writing-profiles/:id/revisions',
       'GET /writing-profiles/:id/revisions/:revisionId',
+      'POST /editorial-policy/revisions',
       'POST /packages/:id/revisions',
       'POST /packages/:id/revisions/:revisionId/handoffs',
       'POST /writing-profiles/:id/revisions',

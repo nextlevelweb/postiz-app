@@ -57,8 +57,9 @@ const hasLoneSurrogate = (text: string) => {
 const isSafeText = (text: string) =>
   !text.includes('\u0000') && !hasLoneSurrogate(text);
 
-// Labels, rules and notes: line endings normalized, outer whitespace trimmed
-const trimmedText = (max: number, min = 0) =>
+// Labels, rules and notes: line endings normalized, outer whitespace trimmed.
+// The text helpers below are shared with the editorial policy
+export const trimmedText = (max: number, min = 0) =>
   z
     .string()
     .transform((text) => normalizeLineEndings(text).trim())
@@ -72,7 +73,7 @@ const optionalNote = (max: number) =>
     .transform((note) => (note ? note : null));
 
 // A list of distinct entries: the same entry twice is refused, not merged
-const distinctList = (entry: z.ZodTypeAny, max: number) =>
+export const distinctList = (entry: z.ZodTypeAny, max: number) =>
   z
     .array(entry)
     .max(max)
@@ -203,7 +204,7 @@ export class ContentStudioWritingProfileError extends Error {
   }
 }
 
-const isPlainData = (value: unknown): boolean => {
+export const isPlainData = (value: unknown): boolean => {
   if (value === null || typeof value !== 'object') {
     return true;
   }
@@ -217,7 +218,8 @@ const isPlainData = (value: unknown): boolean => {
   );
 };
 
-const utf8ByteLength = (text: string) => new TextEncoder().encode(text).length;
+export const utf8ByteLength = (text: string) =>
+  new TextEncoder().encode(text).length;
 
 // Validates and normalizes Writing DNA (from a request or read back from the
 // database) into a new object: line endings normalized, labels and rules

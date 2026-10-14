@@ -62,6 +62,8 @@ import { ContentStudioAIOperationRepository } from '@gitroom/nestjs-libraries/da
 import { ContentStudioAIExecutionService } from '@gitroom/nestjs-libraries/content-studio/ai/ai.execution.service';
 import { ContentStudioWritingProfileRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.writing-profile.repository';
 import { ContentStudioWritingProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.writing-profile.service';
+import { ContentStudioEditorialPolicyRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.repository';
+import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
 
 @Global()
 @Module({
@@ -133,6 +135,8 @@ import { ContentStudioWritingProfileService } from '@gitroom/nestjs-libraries/da
     ContentStudioAIExecutionService,
     ContentStudioWritingProfileRepository,
     ContentStudioWritingProfileService,
+    ContentStudioEditorialPolicyRepository,
+    ContentStudioEditorialPolicyService,
   ],
   get exports() {
     return this.providers;
