@@ -21,6 +21,7 @@ import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/d
 import { ContentStudioAudienceProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.audience-profile.service';
 import { ContentStudioExpertiseProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.service';
 import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
+import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -88,7 +89,8 @@ const setup = () => {
     {} as ContentStudioEditorialPolicyService,
     {} as ContentStudioAudienceProfileService,
     {} as ContentStudioExpertiseProfileService,
-    {} as ContentStudioAIWritingService
+    {} as ContentStudioAIWritingService,
+    {} as ContentStudioSourceService
   );
   return { service, handoffs, controller, result };
 };
@@ -273,7 +275,7 @@ describe('ContentStudioController wiring', () => {
     expect(types('listRevisions')[2]).toBe(ListContentPackageRevisionsDto);
   });
 
-  it('exposes exactly the project, package, draft, revision, handoff, AI connection, profile and AI writing routes', () => {
+  it('exposes exactly the project, package, draft, revision, handoff, AI connection, profile, AI writing and source routes', () => {
     expect(Reflect.getMetadata(PATH_METADATA, ContentStudioController)).toBe(
       '/content-studio'
     );
@@ -310,6 +312,10 @@ describe('ContentStudioController wiring', () => {
       'GET /packages/:id/revisions',
       'GET /packages/:id/revisions/:revisionId',
       'GET /projects',
+      'GET /sources',
+      'GET /sources/:id',
+      'GET /sources/:id/versions',
+      'GET /sources/:id/versions/:versionId',
       'GET /writing-profiles',
       'GET /writing-profiles/:id',
       'GET /writing-profiles/:id/revisions',
@@ -319,6 +325,7 @@ describe('ContentStudioController wiring', () => {
       'PATCH /expertise-profiles/:id',
       'PATCH /packages/:id',
       'PATCH /projects/:id',
+      'PATCH /sources/:id',
       'PATCH /writing-profiles/:id',
       'POST /ai/connections',
       'POST /ai/connections/:id/archive',
@@ -345,6 +352,9 @@ describe('ContentStudioController wiring', () => {
       'POST /projects',
       'POST /projects/:id/archive',
       'POST /projects/:id/restore',
+      'POST /sources',
+      'POST /sources/:id/archive',
+      'POST /sources/:id/restore',
       'POST /writing-profiles',
       'POST /writing-profiles/:id/archive',
       'POST /writing-profiles/:id/restore',
@@ -458,6 +468,7 @@ describe('ContentStudioController handoffs', () => {
       ContentStudioAudienceProfileService,
       ContentStudioExpertiseProfileService,
       ContentStudioAIWritingService,
+      ContentStudioSourceService,
     ]);
   });
 });

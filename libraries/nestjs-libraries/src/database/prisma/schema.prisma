@@ -60,6 +60,8 @@ model Organization {
   contentStudioAudienceProfileRevisions  ContentStudioAudienceProfileRevision[]
   contentStudioExpertiseProfiles         ContentStudioExpertiseProfile[]
   contentStudioExpertiseProfileRevisions ContentStudioExpertiseProfileRevision[]
+  contentStudioSources                   ContentStudioSource[]
+  contentStudioSourceVersions            ContentStudioSourceVersion[]
 
   @@index([apiKey])
   @@index([streakSince])
@@ -146,6 +148,8 @@ model User {
   contentStudioAudienceProfileRevisions  ContentStudioAudienceProfileRevision[]  @relation("ContentStudioAudienceProfileRevisionCreatedBy")
   contentStudioExpertiseProfiles         ContentStudioExpertiseProfile[]         @relation("ContentStudioExpertiseProfileCreatedBy")
   contentStudioExpertiseProfileRevisions ContentStudioExpertiseProfileRevision[] @relation("ContentStudioExpertiseProfileRevisionCreatedBy")
+  contentStudioSources                   ContentStudioSource[]                   @relation("ContentStudioSourceCreatedBy")
+  contentStudioSourceVersions            ContentStudioSourceVersion[]            @relation("ContentStudioSourceVersionCreatedBy")
 
   @@unique([email, providerName])
   @@index([lastReadNotifications])
@@ -2208,5 +2212,66 @@ model ContentStudioExpertiseProfileRevision {
   @@unique([profileId, revisionNumber])
   @@unique([id, organizationId])
   @@index([organizationId])
+  @@index([createdById])
+}
+
+// A source an organization tracks (a web page for now), with its captures in
+// immutable versions. Provenance only, never verified fact: a stored source
+// does not make any claim true. The canonical URL is the source's identity,
+// once per organization; it is never changed after creation
+model ContentStudioSource {
+  id                  String                       @id @default(uuid())
+  organizationId      String
+  kind                String
+  name                String
+  canonicalUrl        String?
+  latestVersionNumber Int                          @default(0)
+  archivedAt          DateTime?
+  createdById         String
+  createdAt           DateTime                     @default(now())
+  updatedAt           DateTime                     @updatedAt
+  organization        Organization                 @relation(fields: [organizationId], references: [id])
+  createdBy           User                         @relation("ContentStudioSourceCreatedBy", fields: [createdById], references: [id])
+  versions            ContentStudioSourceVersion[]
+
+  @@unique([id, organizationId])
+  @@unique([organizationId, canonicalUrl])
+  @@index([organizationId, archivedAt])
+  @@index([organizationId, kind])
+  @@index([createdById])
+}
+
+// One capture of a source: where it was requested and where it ended up, when,
+// and the normalized text blocks extracted from it (canonical JSON, never
+// HTML). contentHash covers those blocks; sourceHash, when ingestion has one,
+// covers what was fetched before extraction
+model ContentStudioSourceVersion {
+  id                String              @id @default(uuid())
+  organizationId    String
+  sourceId          String
+  versionNumber     Int
+  schemaVersion     Int
+  extractionVersion String
+  requestedUrl      String
+  finalUrl          String
+  redirectCount     Int
+  fetchedAt         DateTime
+  httpStatus        Int?
+  contentType       String?
+  contentLength     Int?
+  title             String?
+  content           String
+  contentHash       String
+  sourceHash        String?
+  createdById       String
+  createdAt         DateTime            @default(now())
+  organization      Organization        @relation(fields: [organizationId], references: [id])
+  source            ContentStudioSource @relation(fields: [sourceId, organizationId], references: [id, organizationId])
+  createdBy         User                @relation("ContentStudioSourceVersionCreatedBy", fields: [createdById], references: [id])
+
+  @@unique([sourceId, versionNumber])
+  @@unique([id, organizationId])
+  @@index([organizationId])
+  @@index([sourceId, createdAt])
   @@index([createdById])
 }

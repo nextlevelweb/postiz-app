@@ -25,6 +25,7 @@ import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/d
 import { ContentStudioAudienceProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.audience-profile.service';
 import { ContentStudioExpertiseProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.service';
 import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
+import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -72,6 +73,12 @@ import {
   ContentStudioAIItemProposalDto,
   ContentStudioAIThreadProposalDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.ai-writing.dto';
+import {
+  CreateContentStudioSourceDto,
+  ListContentStudioSourcesDto,
+  ListContentStudioSourceVersionsDto,
+  UpdateContentStudioSourceDto,
+} from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.source.dto';
 
 // The global pipe neither strips nor rejects unknown fields; here any field
 // the DTO does not declare (organizationId, createdById, ...) is a 400
@@ -93,7 +100,8 @@ export class ContentStudioController {
     private _contentStudioEditorialPolicyService: ContentStudioEditorialPolicyService,
     private _contentStudioAudienceProfileService: ContentStudioAudienceProfileService,
     private _contentStudioExpertiseProfileService: ContentStudioExpertiseProfileService,
-    private _contentStudioAIWritingService: ContentStudioAIWritingService
+    private _contentStudioAIWritingService: ContentStudioAIWritingService,
+    private _contentStudioSourceService: ContentStudioSourceService
   ) {}
 
   @Get('/projects')
@@ -484,6 +492,95 @@ export class ContentStudioController {
       { organization: org, user },
       id
     );
+  }
+
+  // Sources: pages an organization tracks, with their captured versions as
+  // provenance. Every member may manage them; the organization and the user
+  // come from the request only. There is deliberately no route that creates a
+  // version or fetches anything: versions come from server-side ingestion
+  @Get('/sources')
+  listSources(
+    @GetOrgFromRequest() org: Organization,
+    @Query() query: ListContentStudioSourcesDto
+  ) {
+    return this._contentStudioSourceService.listSources({
+      organizationId: org.id,
+      archived: query.archived,
+      page: query.page,
+    });
+  }
+
+  @Post('/sources')
+  createSource(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Body() body: CreateContentStudioSourceDto
+  ) {
+    return this._contentStudioSourceService.createSource({
+      organizationId: org.id,
+      userId: user.id,
+      kind: body.kind,
+      name: body.name,
+      url: body.url,
+    });
+  }
+
+  @Get('/sources/:id')
+  getSource(@GetOrgFromRequest() org: Organization, @Param('id') id: string) {
+    return this._contentStudioSourceService.getSource(org.id, id);
+  }
+
+  @Patch('/sources/:id')
+  updateSource(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Body() body: UpdateContentStudioSourceDto
+  ) {
+    return this._contentStudioSourceService.renameSource(org.id, id, body.name);
+  }
+
+  @Get('/sources/:id/versions')
+  listSourceVersions(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Query() query: ListContentStudioSourceVersionsDto
+  ) {
+    return this._contentStudioSourceService.listVersions({
+      organizationId: org.id,
+      sourceId: id,
+      page: query.page,
+    });
+  }
+
+  @Get('/sources/:id/versions/:versionId')
+  getSourceVersion(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Param('versionId') versionId: string
+  ) {
+    return this._contentStudioSourceService.getVersion({
+      organizationId: org.id,
+      sourceId: id,
+      versionId,
+    });
+  }
+
+  @Post('/sources/:id/archive')
+  @HttpCode(200)
+  archiveSource(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioSourceService.archiveSource(org.id, id);
+  }
+
+  @Post('/sources/:id/restore')
+  @HttpCode(200)
+  restoreSource(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioSourceService.restoreSource(org.id, id);
   }
 
   // Writing Profiles: every member of the organization may read and change

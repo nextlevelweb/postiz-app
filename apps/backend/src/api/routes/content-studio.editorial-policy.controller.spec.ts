@@ -23,6 +23,7 @@ import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/d
 import { ContentStudioAudienceProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.audience-profile.service';
 import { ContentStudioExpertiseProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.service';
 import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
+import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import {
   CreateContentStudioEditorialPolicyRevisionDto,
   ListContentStudioEditorialPolicyRevisionsDto,
@@ -75,7 +76,8 @@ const setup = () => {
     policy as unknown as ContentStudioEditorialPolicyService,
     {} as ContentStudioAudienceProfileService,
     {} as ContentStudioExpertiseProfileService,
-    {} as ContentStudioAIWritingService
+    {} as ContentStudioAIWritingService,
+    {} as ContentStudioSourceService
   );
   return { policy, controller, result };
 };
