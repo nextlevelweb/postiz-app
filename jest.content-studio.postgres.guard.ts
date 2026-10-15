@@ -1,14 +1,16 @@
 import { PrismaClient } from '@prisma/client';
 
 // Test infrastructure only. The Content Studio PostgreSQL integration suite
-// may only ever reach the disposable local database made for it (since P2-11;
-// the P1-11 database on port 55432 is no longer accepted). No volume: the
-// data is gone with the container:
+// may only ever reach the disposable local database made for it (since P3-06;
+// the P1-11 database on port 55432 and the P2-11 database on port 55433 are
+// no longer accepted). No volume: the data lives in a tmpfs and is gone with
+// the container:
 //
-//   docker run --name postiz-content-studio-p211-postgres --rm \
-//     -e POSTGRES_USER=p211 -e POSTGRES_PASSWORD=p211_local_only \
-//     -e POSTGRES_DB=postiz_content_studio_p211 \
-//     -p 127.0.0.1:55433:5432 -d postgres:16-alpine
+//   docker run --name postiz-content-studio-p306-postgres --rm \
+//     -e POSTGRES_USER=p306 -e POSTGRES_PASSWORD=p306_local_only \
+//     -e POSTGRES_DB=postiz_content_studio_p306 \
+//     --tmpfs /var/lib/postgresql/data:rw \
+//     -p 127.0.0.1:55434:5432 -d postgres:16-alpine
 //
 // The URL comes from CONTENT_STUDIO_POSTGRES_INTEGRATION_URL only, never from
 // DATABASE_URL or the schema, and is checked before any client exists.
@@ -17,14 +19,14 @@ export const CONTENT_STUDIO_POSTGRES_URL_ENV =
   'CONTENT_STUDIO_POSTGRES_INTEGRATION_URL';
 
 export const CONTENT_STUDIO_POSTGRES_URL =
-  'postgresql://p211:p211_local_only@127.0.0.1:55433/postiz_content_studio_p211';
+  'postgresql://p306:p306_local_only@127.0.0.1:55434/postiz_content_studio_p306';
 
 const PROTOCOLS = ['postgresql:', 'postgres:'];
 // exactly the address the container is published on: no name to resolve
 const HOST = '127.0.0.1';
-const PORT = '55433';
-const DATABASE = '/postiz_content_studio_p211';
-const USER = 'p211';
+const PORT = '55434';
+const DATABASE = '/postiz_content_studio_p306';
+const USER = 'p306';
 
 export class ContentStudioPostgresSafetyError extends Error {
   constructor(reason: string) {
@@ -50,15 +52,15 @@ export function assertContentStudioPostgresUrl(raw: unknown): string {
     throw new ContentStudioPostgresSafetyError('host is not 127.0.0.1');
   }
   if (url.port !== PORT) {
-    throw new ContentStudioPostgresSafetyError('port is not 55433');
+    throw new ContentStudioPostgresSafetyError('port is not 55434');
   }
   if (url.pathname !== DATABASE) {
     throw new ContentStudioPostgresSafetyError(
-      'database is not postiz_content_studio_p211'
+      'database is not postiz_content_studio_p306'
     );
   }
   if (url.username !== USER) {
-    throw new ContentStudioPostgresSafetyError('user is not p211');
+    throw new ContentStudioPostgresSafetyError('user is not p306');
   }
   // libpq style parameters (host=, hostaddr=, ...) could point elsewhere
   if (url.search || url.hash) {
