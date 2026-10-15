@@ -85,7 +85,7 @@ describe('parseContentStudioSourceVersionInput', () => {
       contentLength: 5120,
       title: 'A title',
       sourceHash: SOURCE_HASH,
-      extractionVersion: 'content-studio-source-v1',
+      extractionVersion: 'content-studio-source-v2',
       schemaVersion: 1,
       content: canonicalJson(blocks),
       contentHash: sha256Hex(canonicalJson(blocks)),
@@ -237,14 +237,17 @@ describe('parseContentStudioSourceVersionInput', () => {
     }
   });
 
-  it('SV22 takes an extraction version of the safe pattern', () => {
+  it('SV22/XV5/XV6 takes any extraction version of the safe pattern, current or historical', () => {
     expect(CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION).toBe(
-      'content-studio-source-v1'
+      'content-studio-source-v2'
     );
     expect(CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION).toMatch(
       CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION_PATTERN
     );
     for (const extractionVersion of [
+      // XV3 the version P3-02 wrote stays valid
+      'content-studio-source-v1',
+      'content-studio-source-v2',
       'v2',
       'readability-0.5.1',
       'a',

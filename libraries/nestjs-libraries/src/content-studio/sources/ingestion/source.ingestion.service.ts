@@ -25,9 +25,12 @@ import { CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION } from '@gitroom/nestjs-librar
 
 // The one place Content Studio fetches a source, and only through safeFetch:
 // it refuses private, loopback, link-local and reserved destinations, checks
-// every redirect hop again (at most 5, its production policy), allows https
-// only and caps time and size. Nothing here resolves names, follows
-// redirects or sends headers of its own. Fixed limits, never configuration
+// every redirect hop again, allows https only and caps time and size. Nothing
+// here resolves names, follows redirects or sends headers of its own. Fixed
+// limits, never configuration. Two limits belong to SafeFetch's production
+// policy and are deliberately not widened here (createSafeFetch is not used):
+// - an http:// source is a valid source URL but is refused when refreshed
+// - at most 5 redirects; safeFetch takes no per-request redirect limit
 export const SOURCE_FETCH_MAX_BYTES = 2_097_152;
 export const SOURCE_FETCH_TIMEOUT_MS = 15_000;
 export const SOURCE_FETCH_ALLOWED_CONTENT_TYPES = [
@@ -181,6 +184,15 @@ export class ContentStudioSourceIngestionService {
       throw fromSafeFetchError(err);
     }
     const fetchedAt = new Date();
+    // SafeFetch records each URL that redirected: the first is the requested
+    // one, and without redirects the answer came from the requested URL
+    if (
+      fetched.redirects.length
+        ? fetched.redirects[0].url !== fetched.requestedUrl
+        : fetched.finalUrl !== fetched.requestedUrl
+    ) {
+      throw fetchFailed();
+    }
     // the exact bytes SafeFetch returned (after HTTP content encoding is
     // undone), before anything is extracted from them
     const sourceHash = createHash('sha256').update(fetched.body).digest('hex');
@@ -192,9 +204,15 @@ export class ContentStudioSourceIngestionService {
         body: fetched.body,
       });
     } catch (err) {
-      throw err instanceof ContentStudioSourceExtractionError
+      if (!(err instanceof ContentStudioSourceExtractionError)) {
+        throw extractionFailed();
+      }
+      // a type or charset that is not read, or bytes that do not decode in
+      // their charset or nest too deeply
+      throw err.code === 'UNSUPPORTED_MEDIA_TYPE' ||
+        err.code === 'UNSUPPORTED_CHARSET'
         ? contentTypeUnsupported()
-        : extractionFailed();
+        : contentInvalid();
     }
 
     let version;

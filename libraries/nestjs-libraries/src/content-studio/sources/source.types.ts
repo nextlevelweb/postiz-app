@@ -21,9 +21,14 @@ export const isContentStudioSourceKind = (
 export const CONTENT_STUDIO_SOURCE_NAME_MAX = 200;
 
 // Names the extraction and normalization code that produced a version's
-// blocks. Changing that code means a new name here, deliberately; a version
-// keeps the name it was made with
+// title and blocks. It changes, deliberately, whenever that code can produce a
+// different block selection, order, text, type or level, or another title from
+// the same bytes; a refactor with byte-identical output keeps it. A version
+// keeps the name it was made with, and every well-formed name stays readable:
+// older versions are never extracted again.
+// v1: P3-02, the first extractor. v2: content root, chrome and hidden
+// subtrees left out, list items and quotes without repeats, charsets
 export const CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION =
-  'content-studio-source-v1';
+  'content-studio-source-v2';
 export const CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION_PATTERN =
   /^[a-z0-9][a-z0-9._-]{0,63}$/;

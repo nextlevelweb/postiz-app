@@ -616,6 +616,20 @@ describe('ContentStudioSourceService: versions', () => {
     );
   });
 
+  it('XV4 still reads a version captured by an older extractor, as it was stored', async () => {
+    const { repository, service } = setup();
+    repository.getVersionForSource.mockResolvedValueOnce(
+      versionDetailRow({ extractionVersion: 'content-studio-source-v1' })
+    );
+    const result = await service.getVersion({
+      organizationId: ORG,
+      sourceId: SOURCE,
+      versionId: VERSION,
+    });
+    expect(result.extractionVersion).toBe('content-studio-source-v1');
+    expect(result.content.blocks).toHaveLength(2);
+  });
+
   it('SS37/SS38 answers 404 for a version of another source or organization', async () => {
     const { repository, service } = setup();
     for (const input of [

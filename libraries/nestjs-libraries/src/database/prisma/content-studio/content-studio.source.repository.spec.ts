@@ -451,7 +451,7 @@ describe('ContentStudioSourceRepository: version append', () => {
         sourceId: SOURCE,
         versionNumber: 1,
         schemaVersion: 1,
-        extractionVersion: 'content-studio-source-v1',
+        extractionVersion: 'content-studio-source-v2',
         requestedUrl: URL_A,
         finalUrl: 'https://www.example.com/news/a',
         redirectCount: 1,
