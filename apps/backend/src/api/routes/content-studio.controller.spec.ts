@@ -22,6 +22,7 @@ import { ContentStudioAudienceProfileService } from '@gitroom/nestjs-libraries/d
 import { ContentStudioExpertiseProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.service';
 import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
+import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -90,7 +91,8 @@ const setup = () => {
     {} as ContentStudioAudienceProfileService,
     {} as ContentStudioExpertiseProfileService,
     {} as ContentStudioAIWritingService,
-    {} as ContentStudioSourceService
+    {} as ContentStudioSourceService,
+    {} as ContentStudioSourceIngestionService
   );
   return { service, handoffs, controller, result };
 };
@@ -354,6 +356,7 @@ describe('ContentStudioController wiring', () => {
       'POST /projects/:id/restore',
       'POST /sources',
       'POST /sources/:id/archive',
+      'POST /sources/:id/refresh',
       'POST /sources/:id/restore',
       'POST /writing-profiles',
       'POST /writing-profiles/:id/archive',
@@ -469,6 +472,7 @@ describe('ContentStudioController handoffs', () => {
       ContentStudioExpertiseProfileService,
       ContentStudioAIWritingService,
       ContentStudioSourceService,
+      ContentStudioSourceIngestionService,
     ]);
   });
 });

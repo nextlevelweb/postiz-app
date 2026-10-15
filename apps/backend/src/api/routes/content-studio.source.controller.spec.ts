@@ -10,7 +10,9 @@ import {
   METHOD_METADATA,
   PATH_METADATA,
   PIPES_METADATA,
+  ROUTE_ARGS_METADATA,
 } from '@nestjs/common/constants';
+import { RouteParamtypes } from '@nestjs/common/enums/route-paramtypes.enum';
 import fs from 'fs';
 import path from 'path';
 import { Organization, User } from '@prisma/client';
@@ -24,6 +26,7 @@ import { ContentStudioAudienceProfileService } from '@gitroom/nestjs-libraries/d
 import { ContentStudioExpertiseProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.service';
 import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
+import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 import {
   CreateContentStudioSourceDto,
   ListContentStudioSourcesDto,
@@ -65,6 +68,9 @@ const setup = () => {
     archiveSource: jest.fn().mockResolvedValue(result),
     restoreSource: jest.fn().mockResolvedValue(result),
   };
+  const ingestion = {
+    refreshSource: jest.fn().mockResolvedValue(result),
+  };
   const controller = new ContentStudioController(
     {} as ContentStudioService,
     {} as ContentStudioHandoffService,
@@ -74,9 +80,10 @@ const setup = () => {
     {} as ContentStudioAudienceProfileService,
     {} as ContentStudioExpertiseProfileService,
     {} as ContentStudioAIWritingService,
-    sources as unknown as ContentStudioSourceService
+    sources as unknown as ContentStudioSourceService,
+    ingestion as unknown as ContentStudioSourceIngestionService
   );
-  return { sources, controller, result };
+  return { sources, ingestion, controller, result };
 };
 
 // Provenance a client might try to send: the controller must forward only the
@@ -118,7 +125,7 @@ const allRoutes = () =>
     .map(route);
 
 describe('ContentStudioController source routes', () => {
-  it('SRC1-SRC8 declares exactly these eight routes, with 200 for archive and restore', () => {
+  it('SRC1-SRC8/CR1 declares exactly these nine routes, with 200 for archive, restore and refresh', () => {
     expect(
       allRoutes()
         .filter((r) => / \/sources/.test(r))
@@ -131,9 +138,10 @@ describe('ContentStudioController source routes', () => {
       'PATCH /sources/:id',
       'POST /sources',
       'POST /sources/:id/archive',
+      'POST /sources/:id/refresh',
       'POST /sources/:id/restore',
     ]);
-    for (const name of ['archiveSource', 'restoreSource']) {
+    for (const name of ['archiveSource', 'restoreSource', 'refreshSource']) {
       expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler(name))).toBe(200);
     }
     expect(
@@ -141,16 +149,17 @@ describe('ContentStudioController source routes', () => {
     ).toBeUndefined();
   });
 
-  it('has no route that creates a version, fetches, ingests, verifies, grounds or deletes', () => {
+  it('CR10 has no route that creates a version, fetches a given URL, verifies, grounds or deletes', () => {
     const routes = allRoutes();
     expect(
       routes.filter(
         (r) =>
           /sources/.test(r) &&
+          r !== 'POST /sources/:id/refresh' &&
           (/^(DELETE|PUT) /.test(r) ||
             /^POST .*versions/.test(r) ||
             /^PATCH .*versions/.test(r) ||
-            /fetch|ingest|refresh|crawl|scrape|verif|fact|ground|research|radar|import|upload|ai\b/i.test(
+            /fetch|ingest|refresh|crawl|scrape|proxy|preview|url|verif|fact|ground|research|radar|import|upload|ai\b/i.test(
               r
             ))
       )
@@ -250,7 +259,7 @@ describe('ContentStudioController source routes', () => {
       text.indexOf("@Get('/sources')"),
       text.indexOf("@Get('/writing-profiles')")
     );
-    expect(block.match(/@(Get|Post|Patch|Put|Delete)\(/g)).toHaveLength(8);
+    expect(block.match(/@(Get|Post|Patch|Put|Delete)\(/g)).toHaveLength(9);
     expect(block).not.toMatch(
       /AIConnection|AIExecution|Role\.|assertManager|actor|users|appendVersion|safeFetch|fetch\(/
     );
@@ -425,6 +434,7 @@ describe('Source trusted-provenance boundary', () => {
       'PATCH /sources/:id',
       'POST /sources',
       'POST /sources/:id/archive',
+      'POST /sources/:id/refresh',
       'POST /sources/:id/restore',
     ]);
     // no handler that reaches the append
@@ -458,5 +468,79 @@ describe('Source trusted-provenance boundary', () => {
     for (const field of Object.keys(PROVENANCE)) {
       expect(body).toContain(`property ${field} should not exist`);
     }
+  });
+});
+
+describe('ContentStudioController source refresh', () => {
+  const refreshBlock = () => {
+    const text = fs
+      .readFileSync(
+        path.join(__dirname, 'content-studio.controller.ts'),
+        'utf8'
+      )
+      .replace(/^\s*\/\/.*$/gm, '');
+    const start = text.indexOf("@Post('/sources/:id/refresh')");
+    expect(start).toBeGreaterThan(-1);
+    return text.slice(start, text.indexOf('\n  }\n', start));
+  };
+
+  it('CR1/CR2 is POST /sources/:id/refresh and answers 200', () => {
+    expect(route('refreshSource')).toBe('POST /sources/:id/refresh');
+    expect(
+      Reflect.getMetadata(HTTP_CODE_METADATA, handler('refreshSource'))
+    ).toBe(200);
+  });
+
+  it('CR3-CR5/CR7 refreshes for any member, with the request organization, user and path id only', async () => {
+    const { ingestion, sources, controller, result } = setup();
+    await expect(controller.refreshSource(ORG, USER, ID)).resolves.toBe(result);
+    expect(ingestion.refreshSource).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      userId: 'user-1',
+      sourceId: ID,
+    });
+    expect(Object.values(sources).every((fn) => !fn.mock.calls.length)).toBe(
+      true
+    );
+  });
+
+  it('CR6 takes no body, query or DTO: nothing about the fetch comes from the request', () => {
+    const args = Reflect.getMetadata(
+      ROUTE_ARGS_METADATA,
+      ContentStudioController,
+      'refreshSource'
+    ) as Record<string, { index: number; data?: string }>;
+    const keys = Object.keys(args);
+    expect(keys).toHaveLength(3);
+    expect(
+      keys.filter(
+        (key) =>
+          key.startsWith(`${RouteParamtypes.BODY}:`) ||
+          key.startsWith(`${RouteParamtypes.QUERY}:`) ||
+          key.startsWith(`${RouteParamtypes.HEADERS}:`) ||
+          key.startsWith(`${RouteParamtypes.REQUEST}:`)
+      )
+    ).toEqual([]);
+    const params = keys.filter((key) =>
+      key.startsWith(`${RouteParamtypes.PARAM}:`)
+    );
+    expect(params.map((key) => args[key].data)).toEqual(['id']);
+    expect(
+      Reflect.getMetadata(
+        'design:paramtypes',
+        ContentStudioController.prototype,
+        'refreshSource'
+      )
+    ).toHaveLength(3);
+    expect(refreshBlock()).not.toMatch(/@Body|@Query|@Headers|@Req|Dto/);
+  });
+
+  it('CR8/CR9 adds no admin, policy, billing or AI gate', () => {
+    expect(refreshBlock()).toContain(
+      '_contentStudioSourceIngestionService.refreshSource'
+    );
+    expect(refreshBlock()).not.toMatch(
+      /CheckPolicies|UseGuards|Sections\.|Role\.|assertManager|users|AIConnection|AIExecution|safeFetch|fetch\(|url/i
+    );
   });
 });

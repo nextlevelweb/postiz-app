@@ -44,7 +44,8 @@ type Rule =
   | 'CS_NO_SAFEFETCH_FACTORY'
   | 'CS_NO_RAW_HTML_SINK'
   | 'CS_AI_PROVIDER_IMPORT_BOUNDARY'
-  | 'CS_AI_EXPLICIT_CLIENT_OPTIONS';
+  | 'CS_AI_EXPLICIT_CLIENT_OPTIONS'
+  | 'CS_SOURCE_NETWORK_BOUNDARY';
 
 // Fixed messages: a violation never echoes source text, so a committed key
 // does not end up in CI logs a second time
@@ -67,6 +68,8 @@ const MESSAGES: Record<Rule, string> = {
     'Provider SDKs may only be imported by Content Studio provider adapters (content-studio/ai/providers/*.provider.ts); AI frameworks (ai, @ai-sdk/*) not at all',
   CS_AI_EXPLICIT_CLIENT_OPTIONS:
     'A provider SDK client (OpenAI, Anthropic) takes one options literal with exactly its environment backed options: apiKey, a fixed https baseURL of its provider, null for every other credential or account option, logLevel off, maxRetries 0 and a bounded timeout, so nothing falls back to the environment',
+  CS_SOURCE_NETWORK_BOUNDARY:
+    'Content Studio Source code reaches the network only through safeFetch, and only in the source ingestion service (content-studio/sources/ingestion/source.ingestion.service.ts); no Source file uses fetch, an HTTP client, sockets or DNS directly',
 };
 
 // OpenAI (sk-, sk-proj-, sk-svcacct-, ...) and Anthropic (sk-ant-) keys need at
@@ -127,6 +130,59 @@ const LEGACY_AI_MODULES = [
 ];
 
 const SAFE_FETCH_MODULE = /(^|\/)safe\.fetch$/;
+
+// The Source layer (content-studio/sources and the source repository, service
+// and DTO) fetches pages, so its network access is held to one path: safeFetch,
+// imported by the ingestion service and nowhere else in the layer. No Source
+// file, the ingestion service included, may use another HTTP client, sockets,
+// DNS or the global fetch. Other Content Studio code is not judged by this rule
+const SOURCE_LAYER_FILE =
+  /^libraries\/nestjs-libraries\/src\/(content-studio\/sources\/.+|database\/prisma\/content-studio\/content-studio\.source\.[a-z.-]+|dtos\/content-studio\/content-studio\.source\.[a-z.-]+)\.tsx?$/;
+const SOURCE_INGESTION_FILE =
+  'libraries/nestjs-libraries/src/content-studio/sources/ingestion/source.ingestion.service.ts';
+const NETWORK_MODULES = [
+  'axios',
+  'undici',
+  'node-fetch',
+  'cross-fetch',
+  'isomorphic-fetch',
+  'got',
+  'ky',
+  'superagent',
+  'request',
+  'http',
+  'https',
+  'http2',
+  'net',
+  'tls',
+  'dns',
+  'dgram',
+];
+const isNetworkModule = (target: string) => {
+  const name = target.replace(/^node:/, '');
+  return NETWORK_MODULES.some(
+    (entry) => name === entry || name.startsWith(`${entry}/`)
+  );
+};
+const NETWORK_GLOBALS = ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource'];
+
+// fetch(...), globalThis.fetch(...), new WebSocket(...): the name being called
+function networkGlobal(node: ts.Node) {
+  if (!ts.isCallExpression(node) && !ts.isNewExpression(node)) {
+    return undefined;
+  }
+  const callee = withoutParentheses(node.expression);
+  const name = ts.isIdentifier(callee)
+    ? callee.text
+    : ts.isPropertyAccessExpression(callee) &&
+      ts.isIdentifier(callee.expression) &&
+      ['globalThis', 'global', 'window', 'self'].includes(
+        callee.expression.text
+      )
+    ? callee.name.text
+    : undefined;
+  return name && NETWORK_GLOBALS.includes(name) ? name : undefined;
+}
 
 // Direct provider SDKs: only the provider adapters may import them, so every
 // call goes through an organization connection and the operation tracking.
@@ -427,9 +483,10 @@ function checkSource(file: string, text: string): Violation[] {
     file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS
   );
   const violations: Violation[] = [];
-  const providerAdapter = PROVIDER_ADAPTER_FILE.test(
-    path.relative(REPO_ROOT, file).split(path.sep).join('/')
-  );
+  const relative = path.relative(REPO_ROOT, file).split(path.sep).join('/');
+  const providerAdapter = PROVIDER_ADAPTER_FILE.test(relative);
+  const sourceLayer = SOURCE_LAYER_FILE.test(relative);
+  const sourceIngestion = relative === SOURCE_INGESTION_FILE;
   const report = (node: ts.Node, rule: Rule) => {
     const { line, character } = source.getLineAndCharacterOfPosition(
       node.getStart(source)
@@ -535,6 +592,16 @@ function checkSource(file: string, text: string): Violation[] {
       ) {
         report(node, 'CS_NO_SAFEFETCH_FACTORY');
       }
+      if (
+        sourceLayer &&
+        (isNetworkModule(target) ||
+          (SAFE_FETCH_MODULE.test(target) && !sourceIngestion))
+      ) {
+        report(node, 'CS_SOURCE_NETWORK_BOUNDARY');
+      }
+    }
+    if (sourceLayer && networkGlobal(node)) {
+      report(node, 'CS_SOURCE_NETWORK_BOUNDARY');
     }
 
     // <div dangerouslySetInnerHTML={...} />, on any element or component
@@ -843,6 +910,133 @@ describe('Content Studio architecture guard', () => {
       ],
     ])('allows %s', (text) => {
       expect(rules(text)).toEqual([]);
+    });
+  });
+
+  describe('CS_SOURCE_NETWORK_BOUNDARY', () => {
+    const SAFE_FETCH_IMPORT =
+      "import { safeFetch } from '@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch';";
+    const at = (relative: string) => path.join(REPO_ROOT, relative);
+    const INGESTION = at(SOURCE_INGESTION_FILE);
+    const SOURCE_SERVICE = at(
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.service.ts'
+    );
+    const SOURCE_REPOSITORY = at(
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.repository.ts'
+    );
+    const SOURCE_DOMAIN = at(
+      'libraries/nestjs-libraries/src/content-studio/sources/source.extract.ts'
+    );
+    const SOURCE_DTO = at(
+      'libraries/nestjs-libraries/src/dtos/content-studio/content-studio.source.dto.ts'
+    );
+    const OTHER_SOURCE_FILE = at(
+      'libraries/nestjs-libraries/src/content-studio/sources/research/source.preview.ts'
+    );
+
+    it('NG1 lets the ingestion service import safeFetch', () => {
+      expect(rules(SAFE_FETCH_IMPORT, INGESTION)).toEqual([]);
+      expect(
+        rules(
+          "import { safeFetch, SafeFetchError } from '../../../dtos/webhooks/safe.fetch';",
+          INGESTION
+        )
+      ).toEqual([]);
+    });
+
+    it.each([
+      ['NG2 the source service', SOURCE_SERVICE],
+      ['NG3 the source repository', SOURCE_REPOSITORY],
+      ['NG4 the source domain', SOURCE_DOMAIN],
+      ['the source DTO', SOURCE_DTO],
+      ['NG9 any other Source file', OTHER_SOURCE_FILE],
+    ])('refuses a safeFetch import in %s', (_name, file) => {
+      expect(rules(SAFE_FETCH_IMPORT, file)).toEqual([
+        'CS_SOURCE_NETWORK_BOUNDARY',
+      ]);
+      expect(
+        rules(
+          "export { safeFetch } from '@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch';",
+          file
+        )
+      ).toEqual(['CS_SOURCE_NETWORK_BOUNDARY']);
+      expect(
+        rules(
+          "const load = () => import('@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch');",
+          file
+        )
+      ).toEqual(['CS_NO_SAFEFETCH_FACTORY', 'CS_SOURCE_NETWORK_BOUNDARY']);
+    });
+
+    it('NG5 still refuses createSafeFetch in the ingestion service', () => {
+      expect(
+        rules(
+          "import { createSafeFetch } from '@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch';",
+          INGESTION
+        )
+      ).toEqual(['CS_NO_SAFEFETCH_FACTORY']);
+    });
+
+    it.each([
+      ['NG6 axios', "import axios from 'axios';"],
+      ['NG7 undici', "import { request } from 'undici';"],
+      ['undici fetch', "import { fetch } from 'undici';"],
+      ['node-fetch', "import fetch from 'node-fetch';"],
+      ['got', "import got from 'got';"],
+      ['node:http', "import http from 'node:http';"],
+      ['https', "import * as https from 'https';"],
+      ['dns', "import { lookup } from 'node:dns/promises';"],
+      ['net', "import net from 'net';"],
+      ['a require of axios', "const axios = require('axios');"],
+      ['NG8 the global fetch', 'export const run = (u: string) => fetch(u);'],
+      [
+        'globalThis.fetch',
+        'export const run = (u: string) => globalThis.fetch(u);',
+      ],
+      ['a WebSocket', "export const open = () => new WebSocket('wss://x');"],
+      ['an XMLHttpRequest', 'export const open = () => new XMLHttpRequest();'],
+    ])(
+      'refuses %s in any Source file, the ingestion service included',
+      (_name, text) => {
+        for (const file of [INGESTION, SOURCE_SERVICE, SOURCE_DOMAIN]) {
+          expect(rules(text, file)).toEqual(['CS_SOURCE_NETWORK_BOUNDARY']);
+        }
+      }
+    );
+
+    it('judges Source files only: other Content Studio code and look-alike names are left alone', () => {
+      expect(rules(SAFE_FETCH_IMPORT)).toEqual([]);
+      expect(rules('export const run = (u: string) => fetch(u);')).toEqual([]);
+      expect(
+        rules(
+          SAFE_FETCH_IMPORT,
+          at(
+            'libraries/nestjs-libraries/src/content-studio/ai/ai.execution.service.ts'
+          )
+        )
+      ).toEqual([]);
+      expect(
+        rules(
+          [
+            '// fetch(url) and axios are named in a comment only',
+            "const label = 'fetch(url) through undici';",
+            'export const fetched = (refetch: () => void) => refetch();',
+            'export const run = (client: { fetch(u: string): void }) => client.fetch("x");',
+          ].join('\n'),
+          SOURCE_SERVICE
+        )
+      ).toEqual([]);
+    });
+
+    it('never prints the code it found', () => {
+      const report = checkSource(
+        SOURCE_SERVICE,
+        "import axios from 'axios';\nexport const leak = 'SOURCE_GUARD_MARKER';"
+      ).map(format);
+      expect(report).toEqual([
+        `libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.service.ts:1:1 [CS_SOURCE_NETWORK_BOUNDARY] ${MESSAGES.CS_SOURCE_NETWORK_BOUNDARY}`,
+      ]);
+      expect(report.join('\n')).not.toMatch(/axios'|SOURCE_GUARD_MARKER/);
     });
   });
 
@@ -1532,6 +1726,39 @@ describe('Content Studio architecture guard', () => {
           )
         ).version
       ).toBe('0.57.0');
+    });
+
+    it('NG10 has exactly one SafeFetch importer in the Source layer: the ingestion service', () => {
+      const sourceLayer = files
+        .map((file) => relativePath(REPO_ROOT, file))
+        .filter((file) => SOURCE_LAYER_FILE.test(file));
+      expect(sourceLayer).toContain(SOURCE_INGESTION_FILE);
+      expect(sourceLayer.length).toBeGreaterThan(5);
+      const importers = sourceLayer.filter((file) => {
+        const text = fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
+        const source = ts.createSourceFile(
+          file,
+          text,
+          ts.ScriptTarget.Latest,
+          true
+        );
+        let found = false;
+        const visit = (node: ts.Node) => {
+          const reference = moduleReferences(node);
+          if (
+            reference &&
+            SAFE_FETCH_MODULE.test(
+              normalizeModule(path.join(REPO_ROOT, file), reference.specifier)
+            )
+          ) {
+            found = true;
+          }
+          ts.forEachChild(node, visit);
+        };
+        visit(source);
+        return found;
+      });
+      expect(importers).toEqual([SOURCE_INGESTION_FILE]);
     });
 
     it(`has no violations in ${files.length} production file(s) under ${SOURCE_BASES.length} source bases`, () => {

@@ -89,8 +89,9 @@ interface VersionRow {
   createdAt: Date;
 }
 
-// Built field by field: no organization, creator or stored text leaves
-const sourceSummary = (row: SourceRow) => ({
+// Built field by field: no organization, creator or stored text leaves.
+// Shared with source ingestion, so a refresh answers in the same shape
+export const toPublicContentStudioSource = (row: SourceRow) => ({
   id: row.id,
   kind: row.kind,
   name: row.name,
@@ -101,7 +102,7 @@ const sourceSummary = (row: SourceRow) => ({
   updatedAt: row.updatedAt,
 });
 
-const versionSummary = (row: VersionRow) => ({
+export const toPublicContentStudioSourceVersion = (row: VersionRow) => ({
   id: row.id,
   versionNumber: row.versionNumber,
   schemaVersion: row.schemaVersion,
@@ -149,7 +150,7 @@ export class ContentStudioSourceService {
     ]);
     return {
       pages: Math.ceil(count / PAGE_SIZE),
-      results: rows.map(sourceSummary),
+      results: rows.map(toPublicContentStudioSource),
     };
   }
 
@@ -177,7 +178,7 @@ export class ContentStudioSourceService {
       throw alreadyExists();
     }
     try {
-      return sourceSummary(
+      return toPublicContentStudioSource(
         await this._contentStudioSourceRepository.createSource({
           id: randomUUID(),
           organizationId: input.organizationId,
@@ -200,7 +201,7 @@ export class ContentStudioSourceService {
   async getSource(organizationId: string, id: string) {
     const source = await this.getRow(organizationId, id);
     if (source.latestVersionNumber === 0) {
-      return { ...sourceSummary(source), currentVersion: null };
+      return { ...toPublicContentStudioSource(source), currentVersion: null };
     }
     const current =
       await this._contentStudioSourceRepository.getVersionByNumber(
@@ -212,8 +213,8 @@ export class ContentStudioSourceService {
       throw integrityError();
     }
     return {
-      ...sourceSummary(source),
-      currentVersion: versionSummary(current),
+      ...toPublicContentStudioSource(source),
+      currentVersion: toPublicContentStudioSourceVersion(current),
     };
   }
 
@@ -232,7 +233,7 @@ export class ContentStudioSourceService {
     if (count === 0) {
       throw sourceArchived();
     }
-    return sourceSummary(source);
+    return toPublicContentStudioSource(source);
   }
 
   // Archiving an archived source (or restoring an active one) changes nothing
@@ -244,13 +245,13 @@ export class ContentStudioSourceService {
       id,
       new Date()
     );
-    return sourceSummary(await this.getRow(organizationId, id));
+    return toPublicContentStudioSource(await this.getRow(organizationId, id));
   }
 
   async restoreSource(organizationId: string, id: string) {
     this.assertId(id);
     await this._contentStudioSourceRepository.restoreSource(organizationId, id);
-    return sourceSummary(await this.getRow(organizationId, id));
+    return toPublicContentStudioSource(await this.getRow(organizationId, id));
   }
 
   // History stays readable when the source is archived. Metadata only
@@ -274,7 +275,7 @@ export class ContentStudioSourceService {
     ]);
     return {
       pages: Math.ceil(count / PAGE_SIZE),
-      results: rows.map(versionSummary),
+      results: rows.map(toPublicContentStudioSourceVersion),
     };
   }
 
@@ -304,7 +305,7 @@ export class ContentStudioSourceService {
       }
       throw err;
     }
-    return { ...versionSummary(row), content };
+    return { ...toPublicContentStudioSourceVersion(row), content };
   }
 
   // Trimmed, 1-200 characters, no NUL or unpaired surrogate

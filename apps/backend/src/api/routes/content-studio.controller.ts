@@ -26,6 +26,7 @@ import { ContentStudioAudienceProfileService } from '@gitroom/nestjs-libraries/d
 import { ContentStudioExpertiseProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.service';
 import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
+import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -101,7 +102,8 @@ export class ContentStudioController {
     private _contentStudioAudienceProfileService: ContentStudioAudienceProfileService,
     private _contentStudioExpertiseProfileService: ContentStudioExpertiseProfileService,
     private _contentStudioAIWritingService: ContentStudioAIWritingService,
-    private _contentStudioSourceService: ContentStudioSourceService
+    private _contentStudioSourceService: ContentStudioSourceService,
+    private _contentStudioSourceIngestionService: ContentStudioSourceIngestionService
   ) {}
 
   @Get('/projects')
@@ -496,8 +498,9 @@ export class ContentStudioController {
 
   // Sources: pages an organization tracks, with their captured versions as
   // provenance. Every member may manage them; the organization and the user
-  // come from the request only. There is deliberately no route that creates a
-  // version or fetches anything: versions come from server-side ingestion
+  // come from the request only. No route takes a version, a URL to fetch or
+  // fetch options: refresh fetches the stored URL of the source, and versions
+  // come from that server-side ingestion only
   @Get('/sources')
   listSources(
     @GetOrgFromRequest() org: Organization,
@@ -581,6 +584,22 @@ export class ContentStudioController {
     @Param('id') id: string
   ) {
     return this._contentStudioSourceService.restoreSource(org.id, id);
+  }
+
+  // Fetches the source's own stored URL and stores the capture as its next
+  // version. No body: nothing about the fetch comes from the request
+  @Post('/sources/:id/refresh')
+  @HttpCode(200)
+  refreshSource(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioSourceIngestionService.refreshSource({
+      organizationId: org.id,
+      userId: user.id,
+      sourceId: id,
+    });
   }
 
   // Writing Profiles: every member of the organization may read and change
