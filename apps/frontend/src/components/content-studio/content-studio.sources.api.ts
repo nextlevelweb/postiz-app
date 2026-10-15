@@ -1,16 +1,20 @@
 'use client';
 
-import { useCallback } from 'react';
-import useSWR from 'swr';
+import { useCallback, useMemo } from 'react';
+import useSWR, { useSWRConfig } from 'swr';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import {
+  ContentStudioRequestError,
   request,
   swrOptions,
 } from '@gitroom/frontend/components/content-studio/content-studio.api';
 
-// Sources of the organization, as the source list answers them: names and
-// version numbers only. A version's blocks are never loaded here, and a
-// source is provenance, not a statement that its text is true
+// Sources of the organization: pages it tracks, with their captured versions
+// as provenance. A source is never a statement that its text is true. The
+// browser only names a source (kind, name, URL) and asks the server to
+// capture it; every version and its provenance come from the server's own
+// fetch. Lists and the source carry metadata only: a version's blocks are
+// loaded for the one version opened
 
 export interface ContentStudioSourceSummary {
   id: string;
@@ -29,10 +33,71 @@ export interface ContentStudioSourceList {
   results: ContentStudioSourceSummary[];
 }
 
+// What the server recorded about one capture
+export interface ContentStudioSourceVersionSummary {
+  id: string;
+  versionNumber: number;
+  schemaVersion: number;
+  extractionVersion: string;
+  requestedUrl: string;
+  finalUrl: string;
+  redirectCount: number;
+  fetchedAt: string;
+  httpStatus: number | null;
+  contentType: string | null;
+  // bytes the fetch received
+  contentLength: number | null;
+  title: string | null;
+  contentHash: string;
+  sourceHash: string | null;
+  createdAt: string;
+}
+
+export interface ContentStudioSourceVersionList {
+  pages: number;
+  results: ContentStudioSourceVersionSummary[];
+}
+
+export interface ContentStudioSourceDetail extends ContentStudioSourceSummary {
+  // metadata of the latest capture, null before the first one
+  currentVersion: ContentStudioSourceVersionSummary | null;
+}
+
+// Plain text blocks: never HTML, no links or attributes
+export interface ContentStudioSourceBlock {
+  id: string;
+  type: 'heading' | 'paragraph' | 'list_item' | 'quote';
+  text: string;
+  // heading 1-6, list item nesting 0-8, null otherwise
+  level: number | null;
+}
+
+export interface ContentStudioSourceVersionDetail
+  extends ContentStudioSourceVersionSummary {
+  content: {
+    schemaVersion: number;
+    blocks: ContentStudioSourceBlock[];
+  };
+}
+
+export interface ContentStudioSourceRefreshResult {
+  source: ContentStudioSourceSummary;
+  version: ContentStudioSourceVersionSummary;
+}
+
+// The limit the API enforces
+export const SOURCE_NAME_MAX = 200;
+
 export const SOURCES_PATH = '/content-studio/sources';
 
 export const sourcesListPath = (archived: boolean, page: number) =>
   `${SOURCES_PATH}?page=${page}&archived=${archived}`;
+export const sourcePath = (id: string) =>
+  `${SOURCES_PATH}/${encodeURIComponent(id)}`;
+export const sourceVersionsPath = (id: string, page: number) =>
+  `${sourcePath(id)}/versions?page=${page}`;
+const sourceVersionPath = (id: string, versionId: string) =>
+  `${sourcePath(id)}/versions/${encodeURIComponent(versionId)}`;
 
 // One summary page
 export const useContentStudioSources = (archived: boolean, page: number) => {
@@ -42,4 +107,201 @@ export const useContentStudioSources = (archived: boolean, page: number) => {
     [fetch]
   );
   return useSWR(sourcesListPath(archived, page), load, swrOptions);
+};
+
+export const useContentStudioSource = (id: string) => {
+  const fetch = useFetch();
+  const load = useCallback(
+    (path: string) => request<ContentStudioSourceDetail>(fetch, path),
+    [fetch]
+  );
+  return useSWR(sourcePath(id), load, swrOptions);
+};
+
+// Version metadata, newest first
+export const useContentStudioSourceVersions = (id: string, page: number) => {
+  const fetch = useFetch();
+  const load = useCallback(
+    (path: string) => request<ContentStudioSourceVersionList>(fetch, path),
+    [fetch]
+  );
+  return useSWR(sourceVersionsPath(id, page), load, swrOptions);
+};
+
+// Loaded only for the version the user opens. A version never changes, so
+// its answer is never revalidated
+export const useContentStudioSourceVersion = (
+  id: string,
+  versionId: string | null
+) => {
+  const fetch = useFetch();
+  const load = useCallback(
+    (path: string) => request<ContentStudioSourceVersionDetail>(fetch, path),
+    [fetch]
+  );
+  return useSWR(versionId ? sourceVersionPath(id, versionId) : null, load, {
+    ...swrOptions,
+    revalidateIfStale: false,
+  });
+};
+
+// Source writes: one request each, never retried (a capture repeated after a
+// conflict or a timeout is the user's decision), then the source lists (the
+// AI writing source list too), the source and its history reload. Nothing is
+// edited in the cache by hand
+export const useContentStudioSourceActions = () => {
+  const fetch = useFetch();
+  const { mutate } = useSWRConfig();
+  // matcher only, no data: the cached pages stay shown while they reload
+  const refresh = useCallback(
+    (id?: string) =>
+      mutate(
+        (key) =>
+          typeof key === 'string' &&
+          (key.startsWith(`${SOURCES_PATH}?`) ||
+            (!!id &&
+              (key === sourcePath(id) ||
+                key.startsWith(`${sourcePath(id)}/versions?`))))
+      ),
+    [mutate]
+  );
+
+  return useMemo(
+    () => ({
+      refresh,
+      // a new source has no capture yet: nothing is fetched here
+      createSource: async (name: string, url: string) => {
+        const created = await request<ContentStudioSourceSummary>(
+          fetch,
+          SOURCES_PATH,
+          {
+            method: 'POST',
+            body: JSON.stringify({ kind: 'url', name, url }),
+          }
+        );
+        await refresh();
+        return created;
+      },
+      // the name only: the URL is the source's identity
+      renameSource: async (id: string, name: string) => {
+        await request(fetch, sourcePath(id), {
+          method: 'PATCH',
+          body: JSON.stringify({ name }),
+        });
+        await refresh(id);
+      },
+      archiveSource: async (id: string) => {
+        await request(fetch, `${sourcePath(id)}/archive`, { method: 'POST' });
+        await refresh(id);
+      },
+      restoreSource: async (id: string) => {
+        await request(fetch, `${sourcePath(id)}/restore`, { method: 'POST' });
+        await refresh(id);
+      },
+      // No body: the server fetches the source's own stored URL
+      captureSource: async (id: string) => {
+        const result = await request<ContentStudioSourceRefreshResult>(
+          fetch,
+          `${sourcePath(id)}/refresh`,
+          { method: 'POST' }
+        );
+        await refresh(id);
+        return result;
+      },
+    }),
+    [fetch, refresh]
+  );
+};
+
+// --- messages: fixed text for every outcome, never a server message ---
+
+type Translate = (key: string, fallback: string) => string;
+
+export const sourceErrorCode = (error: unknown) =>
+  error instanceof ContentStudioRequestError ? error.code : undefined;
+
+// Why a write or a capture failed. A blocked address says no more than that
+// the policy refused it
+export const sourceErrorMessage = (t: Translate, error: unknown) => {
+  switch (sourceErrorCode(error)) {
+    case 'CS_SOURCE_ALREADY_EXISTS':
+      return t(
+        'content_studio_source_error_exists',
+        'This source already exists.'
+      );
+    case 'CS_SOURCE_INVALID':
+    case 'CS_INVALID_REQUEST':
+      return t(
+        'content_studio_error_invalid',
+        'Check the values and try again.'
+      );
+    case 'CS_SOURCE_FETCH_BLOCKED':
+      return t(
+        'content_studio_source_error_blocked',
+        'This source cannot be fetched by the current security policy.'
+      );
+    case 'CS_SOURCE_URL_INVALID':
+      return t(
+        'content_studio_source_error_url_invalid',
+        'The source URL is invalid.'
+      );
+    case 'CS_SOURCE_FETCH_TOO_LARGE':
+      return t(
+        'content_studio_source_error_fetch_too_large',
+        'The source response is too large.'
+      );
+    case 'CS_SOURCE_CONTENT_TYPE_UNSUPPORTED':
+      return t(
+        'content_studio_source_error_content_type',
+        'This source content type or character encoding is not supported.'
+      );
+    case 'CS_SOURCE_FETCH_TIMEOUT':
+      return t(
+        'content_studio_source_error_timeout',
+        'The source did not respond in time.'
+      );
+    case 'CS_SOURCE_FETCH_FAILED':
+      return t(
+        'content_studio_source_error_fetch_failed',
+        'The source could not be fetched.'
+      );
+    case 'CS_SOURCE_CONTENT_INVALID':
+    case 'CS_SOURCE_EXTRACTION_FAILED':
+      return t(
+        'content_studio_source_error_content_invalid',
+        'The source content could not be processed.'
+      );
+    case 'CS_SOURCE_TOO_LARGE':
+      return t(
+        'content_studio_source_error_too_large',
+        'The extracted source content is too large.'
+      );
+    case 'CS_SOURCE_VERSION_CONFLICT':
+      return t(
+        'content_studio_source_error_conflict',
+        'The source changed while it was being captured. Try again.'
+      );
+    case 'CS_SOURCE_ARCHIVED':
+      return t(
+        'content_studio_source_error_archived',
+        'This source is archived.'
+      );
+    case 'CS_SOURCE_KIND_UNSUPPORTED':
+      return t(
+        'content_studio_source_error_kind',
+        'This source type cannot be captured.'
+      );
+    case 'CS_SOURCE_INTEGRITY_ERROR':
+      return t(
+        'content_studio_source_error_integrity',
+        'Stored source data could not be read safely.'
+      );
+    case 'CS_NOT_FOUND':
+      return t('content_studio_source_not_found', 'Source not found.');
+    default:
+      return t(
+        'content_studio_source_error',
+        'Something went wrong while updating the source.'
+      );
+  }
 };

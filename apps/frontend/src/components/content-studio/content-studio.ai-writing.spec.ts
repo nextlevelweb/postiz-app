@@ -1911,17 +1911,41 @@ describe('AI writing: source surface', () => {
   });
 
   it('UI-S12 the source list is the one source request: names only, no version or content route, no write', () => {
+    // the shared Source API also serves the Source Library; the dialog takes
+    // only its list hook, and that hook loads only the list path
     const api = code(
       readFileSync(join(__dirname, 'content-studio.sources.api.ts'), 'utf8')
     );
-    expect(api).not.toMatch(
-      /method:|mutate|\/versions|\/refresh|localStorage|sessionStorage|console\./
+    const listHook = api.slice(
+      api.indexOf('export const useContentStudioSources ='),
+      api.indexOf('export const useContentStudioSource =')
     );
-    expect(
-      Array.from(api.matchAll(/['`](\/content-studio[^'`]*)['`]/g)).map(
-        (m) => m[1]
-      )
-    ).toEqual(['/content-studio/sources']);
+    expect(listHook).toContain(
+      'useSWR(sourcesListPath(archived, page), load, swrOptions)'
+    );
+    expect(listHook).not.toMatch(/method:|mutate|\/versions|\/refresh/);
+    expect(api).not.toMatch(/localStorage|sessionStorage|console\./);
+    for (const [, text] of sources) {
+      const imports = Array.from(
+        text.matchAll(
+          /import \{([^}]*)\} from '[^']*content-studio\.sources\.api'/g
+        )
+      ).flatMap((m) =>
+        m[1]
+          .split(',')
+          .map((name) => name.trim())
+          .filter(Boolean)
+      );
+      for (const name of imports) {
+        expect([
+          'useContentStudioSources',
+          'ContentStudioSourceSummary',
+        ]).toContain(name);
+      }
+    }
+    expect(all).not.toMatch(
+      /\/versions|\/refresh|useContentStudioSource\b|useContentStudioSourceVersions?\b|useContentStudioSourceActions|captureSource|sourcePath\(/
+    );
     const dialogCode = sources.find(
       ([file]) => file === 'content-studio.ai-writing.tsx'
     )![1];

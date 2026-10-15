@@ -1,0 +1,636 @@
+'use client';
+
+import { FC, FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import clsx from 'clsx';
+import Link from 'next/link';
+import { Button } from '@gitroom/react/form/button';
+import { Input } from '@gitroom/react/form/input';
+import { useToaster } from '@gitroom/react/toaster/toaster';
+import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
+import { useT } from '@gitroom/react/translation/get.transation.service.client';
+import { useModals } from '@gitroom/frontend/components/layout/new-modal';
+import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
+import { ContentStudioPager } from '@gitroom/frontend/components/content-studio/content-studio.package.list';
+import { useSingleFlight } from '@gitroom/frontend/components/content-studio/content-studio.projects.modal';
+import { formatDate } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
+import {
+  ContentStudioSourceSummary,
+  SOURCE_NAME_MAX,
+  sourceErrorCode,
+  sourceErrorMessage,
+  useContentStudioSourceActions,
+  useContentStudioSources,
+} from '@gitroom/frontend/components/content-studio/content-studio.sources.api';
+
+export const SOURCE_LIBRARY_PATH = '/content-studio/sources';
+export const sourcePagePath = (id: string) =>
+  `${SOURCE_LIBRARY_PATH}/${encodeURIComponent(id)}`;
+
+const WEB_URL = /^https?:\/\/\S+$/i;
+
+// A size as received, e.g. 842 B, 24.3 KB, 1.8 MB (1 KB is 1024 bytes)
+export const formatSourceBytes = (bytes: number) => {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+export const useSourceKindLabel = () => {
+  const t = useT();
+  return (kind: string) =>
+    kind === 'url' ? t('content_studio_source_kind_url', 'URL') : kind;
+};
+
+// The stored URL, as a plain outgoing link: showing it fetches nothing
+export const SourceUrl: FC<{ url: string | null; className?: string }> = ({
+  url,
+  className,
+}) => {
+  if (!url) {
+    return null;
+  }
+  return WEB_URL.test(url) ? (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={url}
+      className={clsx('block min-w-0 truncate hover:underline', className)}
+    >
+      {url}
+    </a>
+  ) : (
+    <span title={url} className={clsx('block min-w-0 truncate', className)}>
+      {url}
+    </span>
+  );
+};
+
+// A new URL source: its name and address only. It is not captured here;
+// that is a separate, explicit action
+const AddSourceForm: FC<{ close: () => void }> = ({ close }) => {
+  const t = useT();
+  const toaster = useToaster();
+  const { createSource } = useContentStudioSourceActions();
+  const [name, setName] = useState('');
+  const [url, setUrl] = useState('');
+  const [urlInvalid, setUrlInvalid] = useState(false);
+  const { busy, run } = useSingleFlight();
+  const address = url.trim();
+
+  const submit = useCallback(
+    async (e: FormEvent) => {
+      e.preventDefault();
+      if (!name.trim() || !address) {
+        return;
+      }
+      // the syntax only: whether the address may be fetched is the server's
+      // decision, when it is captured
+      if (!WEB_URL.test(address)) {
+        setUrlInvalid(true);
+        return;
+      }
+      await run('create', async () => {
+        try {
+          await createSource(name.trim(), address);
+          toaster.show(
+            t('content_studio_source_added', 'Source added.'),
+            'success'
+          );
+          close();
+        } catch (err) {
+          // the input stays as typed, to correct and try again
+          toaster.show(sourceErrorMessage(t, err), 'warning');
+        }
+      });
+    },
+    [name, address, run, createSource, toaster, close, t]
+  );
+
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-[16px] min-w-0">
+      <Input
+        label="Name"
+        translationKey="content_studio_source_name"
+        name="name"
+        aria-label={t('content_studio_source_name', 'Name')}
+        disableForm={true}
+        removeError={true}
+        value={name}
+        maxLength={SOURCE_NAME_MAX}
+        onChange={(e) => setName(e.target.value)}
+        autoFocus
+      />
+      <div className="flex flex-col gap-[6px]">
+        <Input
+          label="URL"
+          translationKey="content_studio_source_url"
+          name="url"
+          aria-label={t('content_studio_source_url', 'URL')}
+          disableForm={true}
+          removeError={true}
+          inputMode="url"
+          value={url}
+          placeholder="https://"
+          onChange={(e) => {
+            setUrl(e.target.value);
+            setUrlInvalid(false);
+          }}
+        />
+        {urlInvalid && (
+          <div role="alert" className="text-red-400 text-[12px]">
+            {t(
+              'content_studio_source_url_syntax',
+              'Enter a URL that starts with http:// or https://.'
+            )}
+          </div>
+        )}
+        {/^http:\/\//i.test(address) && (
+          <div className="text-[12px] text-textItemBlur">
+            {t(
+              'content_studio_source_http_warning',
+              'This source can be saved, but the current capture policy only fetches HTTPS URLs.'
+            )}
+          </div>
+        )}
+      </div>
+      <div className="flex gap-[8px] justify-end">
+        <Button type="button" secondary onClick={close}>
+          {t('cancel', 'Cancel')}
+        </Button>
+        <Button
+          type="submit"
+          loading={!!busy}
+          disabled={!!busy || !name.trim() || !address}
+        >
+          {t('content_studio_add_source', 'Add source')}
+        </Button>
+      </div>
+    </form>
+  );
+};
+
+// The name only: the URL is the source's identity and never changes
+const RenameSourceForm: FC<{
+  source: ContentStudioSourceSummary;
+  close: () => void;
+}> = ({ source, close }) => {
+  const t = useT();
+  const toaster = useToaster();
+  const { renameSource } = useContentStudioSourceActions();
+  const [name, setName] = useState(source.name);
+  const { busy, run } = useSingleFlight();
+
+  const submit = useCallback(
+    async (e: FormEvent) => {
+      e.preventDefault();
+      if (!name.trim() || name.trim() === source.name) {
+        return;
+      }
+      await run('rename', async () => {
+        try {
+          await renameSource(source.id, name.trim());
+          toaster.show(
+            t('content_studio_source_renamed', 'Source renamed.'),
+            'success'
+          );
+          close();
+        } catch (err) {
+          toaster.show(sourceErrorMessage(t, err), 'warning');
+        }
+      });
+    },
+    [name, source, run, renameSource, toaster, close, t]
+  );
+
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-[16px] min-w-0">
+      <Input
+        label="Name"
+        translationKey="content_studio_source_name"
+        name="name"
+        aria-label={t('content_studio_source_name', 'Name')}
+        disableForm={true}
+        removeError={true}
+        value={name}
+        maxLength={SOURCE_NAME_MAX}
+        onChange={(e) => setName(e.target.value)}
+        autoFocus
+      />
+      <div className="flex gap-[8px] justify-end">
+        <Button type="button" secondary onClick={close}>
+          {t('cancel', 'Cancel')}
+        </Button>
+        <Button
+          type="submit"
+          loading={!!busy}
+          disabled={!!busy || !name.trim() || name.trim() === source.name}
+        >
+          {t('save', 'Save')}
+        </Button>
+      </div>
+    </form>
+  );
+};
+
+export type SourceTask = 'capture' | 'archive' | 'restore';
+
+// The source actions of the library and of one source. One action at a time
+// per source, so a double click sends one request; other sources stay usable.
+// A capture is only ever started here, by the user, and never repeated
+// automatically: after a conflict the source reloads and the user decides
+export const useSourceCommands = (onCaptured?: () => void) => {
+  const t = useT();
+  const toaster = useToaster();
+  const modals = useModals();
+  const actions = useContentStudioSourceActions();
+  const running = useRef(new Set<string>());
+  const [busy, setBusy] = useState<Record<string, SourceTask>>({});
+
+  const run = useCallback(
+    async (id: string, task: SourceTask, work: () => Promise<void>) => {
+      if (running.current.has(id)) {
+        return;
+      }
+      running.current.add(id);
+      setBusy((current) => ({ ...current, [id]: task }));
+      try {
+        await work();
+      } finally {
+        running.current.delete(id);
+        setBusy((current) => {
+          const next = { ...current };
+          delete next[id];
+          return next;
+        });
+      }
+    },
+    []
+  );
+
+  const capture = useCallback(
+    (source: ContentStudioSourceSummary) =>
+      run(source.id, 'capture', async () => {
+        try {
+          await actions.captureSource(source.id);
+          toaster.show(
+            t('content_studio_source_captured', 'Source captured.'),
+            'success'
+          );
+          onCaptured?.();
+        } catch (err) {
+          toaster.show(sourceErrorMessage(t, err), 'warning');
+          // another capture, an archive or a removal won: show what is there now
+          if (
+            [
+              'CS_SOURCE_VERSION_CONFLICT',
+              'CS_SOURCE_ARCHIVED',
+              'CS_NOT_FOUND',
+            ].includes(sourceErrorCode(err) ?? '')
+          ) {
+            await actions.refresh(source.id);
+          }
+        }
+      }),
+    [run, actions, toaster, onCaptured, t]
+  );
+
+  const archive = useCallback(
+    async (source: ContentStudioSourceSummary) => {
+      if (
+        !(await deleteDialog(
+          t(
+            'content_studio_source_archive_hint',
+            'It will no longer be available for new AI source selections. Its captured version history will remain available.'
+          ),
+          t('content_studio_archive', 'Archive'),
+          t('content_studio_source_archive_title', 'Archive this source?'),
+          t('cancel', 'Cancel')
+        ))
+      ) {
+        return;
+      }
+      await run(source.id, 'archive', async () => {
+        try {
+          await actions.archiveSource(source.id);
+          toaster.show(
+            t('content_studio_source_archived', 'Source archived.'),
+            'success'
+          );
+        } catch (err) {
+          toaster.show(sourceErrorMessage(t, err), 'warning');
+        }
+      });
+    },
+    [run, actions, toaster, t]
+  );
+
+  const restore = useCallback(
+    (source: ContentStudioSourceSummary) =>
+      run(source.id, 'restore', async () => {
+        try {
+          await actions.restoreSource(source.id);
+          toaster.show(
+            t('content_studio_source_restored', 'Source restored.'),
+            'success'
+          );
+        } catch (err) {
+          toaster.show(sourceErrorMessage(t, err), 'warning');
+        }
+      }),
+    [run, actions, toaster, t]
+  );
+
+  const rename = useCallback(
+    (source: ContentStudioSourceSummary) =>
+      modals.openModal({
+        title: t('content_studio_rename_source', 'Rename source'),
+        children: (close: () => void) => (
+          <RenameSourceForm source={source} close={close} />
+        ),
+      }),
+    [modals, t]
+  );
+
+  return { busy, capture, archive, restore, rename };
+};
+
+// Capture now before the first capture, Refresh after it: both ask the server
+// to fetch the stored URL and keep what it gets as the next version
+export const CaptureButton: FC<{
+  source: ContentStudioSourceSummary;
+  busy?: SourceTask;
+  onClick: () => void;
+}> = ({ source, busy, onClick }) => {
+  const t = useT();
+  const label =
+    source.latestVersionNumber > 0
+      ? t('content_studio_source_refresh', 'Refresh')
+      : t('content_studio_source_capture', 'Capture now');
+  return (
+    <Button
+      secondary
+      loading={busy === 'capture'}
+      disabled={!!busy}
+      aria-busy={busy === 'capture'}
+      aria-label={`${label} ${source.name}`}
+      onClick={onClick}
+    >
+      {label}
+    </Button>
+  );
+};
+
+// Active, Archived, Not captured yet or Version N: nothing about whether the
+// source is right
+export const SourceStatus: FC<{ source: ContentStudioSourceSummary }> = ({
+  source,
+}) => {
+  const t = useT();
+  return (
+    <span>
+      {source.latestVersionNumber > 0
+        ? `${t('content_studio_revision', 'Version')} ${
+            source.latestVersionNumber
+          }`
+        : t('content_studio_source_not_captured', 'Not captured yet')}
+    </span>
+  );
+};
+
+const SourceRow: FC<{
+  source: ContentStudioSourceSummary;
+  busy?: SourceTask;
+  commands: ReturnType<typeof useSourceCommands>;
+}> = ({ source, busy, commands }) => {
+  const t = useT();
+  const kindLabel = useSourceKindLabel();
+  const archived = !!source.archivedAt;
+  return (
+    <li className="flex flex-wrap items-center gap-[12px] p-[16px] border border-newTableBorder rounded-[8px]">
+      <div className="flex flex-col gap-[4px] flex-1 min-w-[200px]">
+        <Link
+          href={sourcePagePath(source.id)}
+          className="text-[16px] font-[600] break-words hover:underline"
+        >
+          {source.name}
+        </Link>
+        <SourceUrl
+          url={source.canonicalUrl}
+          className="text-[13px] text-textItemBlur"
+        />
+        <div className="flex flex-wrap gap-x-[16px] gap-y-[4px] text-[12px] text-textItemBlur">
+          <span>{kindLabel(source.kind)}</span>
+          <SourceStatus source={source} />
+          <span>
+            {t('content_studio_updated', 'Updated')}:{' '}
+            {formatDate(source.updatedAt)}
+          </span>
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-[8px]">
+        <Link
+          href={sourcePagePath(source.id)}
+          aria-label={`${t('content_studio_view_source', 'View')} ${
+            source.name
+          }`}
+          className="h-[40px] px-[24px] flex items-center rounded-full bg-[var(--brand-primary,#612ad5)] text-[var(--brand-action-text,#fff)]"
+        >
+          {t('content_studio_view_source', 'View')}
+        </Link>
+        {archived ? (
+          <Button
+            secondary
+            loading={busy === 'restore'}
+            disabled={!!busy}
+            aria-label={`${t('content_studio_restore', 'Restore')} ${
+              source.name
+            }`}
+            onClick={() => commands.restore(source)}
+          >
+            {t('content_studio_restore', 'Restore')}
+          </Button>
+        ) : (
+          <>
+            <CaptureButton
+              source={source}
+              busy={busy}
+              onClick={() => commands.capture(source)}
+            />
+            <Button
+              secondary
+              disabled={!!busy}
+              aria-label={`${t('content_studio_rename', 'Rename')} ${
+                source.name
+              }`}
+              onClick={() => commands.rename(source)}
+            >
+              {t('content_studio_rename', 'Rename')}
+            </Button>
+            <Button
+              secondary
+              loading={busy === 'archive'}
+              disabled={!!busy}
+              aria-label={`${t('content_studio_archive', 'Archive')} ${
+                source.name
+              }`}
+              onClick={() => commands.archive(source)}
+            >
+              {t('content_studio_archive', 'Archive')}
+            </Button>
+          </>
+        )}
+      </div>
+    </li>
+  );
+};
+
+// The Source Library: the organization's sources, active or archived, one
+// summary page at a time, in the server's order. Nothing is captured unless
+// the user asks for it
+export const ContentStudioSources: FC = () => {
+  const t = useT();
+  const modals = useModals();
+  const [archived, setArchived] = useState(false);
+  const [page, setPage] = useState(1);
+  const list = useContentStudioSources(archived, page);
+  const commands = useSourceCommands();
+
+  const pages = list.data?.pages;
+  // a page that no longer exists (after archiving, say) moves to the last one
+  useEffect(() => {
+    if (pages !== undefined && page > Math.max(pages, 1)) {
+      setPage(Math.max(pages, 1));
+    }
+  }, [pages, page]);
+
+  const addSource = useCallback(
+    () =>
+      modals.openModal({
+        title: t('content_studio_add_source', 'Add source'),
+        children: (close: () => void) => <AddSourceForm close={close} />,
+      }),
+    [modals, t]
+  );
+
+  return (
+    <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col gap-[16px] min-w-0">
+      <div className="flex flex-wrap items-center gap-[12px]">
+        <div className="flex flex-col gap-[4px] flex-1 min-w-[200px]">
+          <h1 className="text-[20px] font-[600]">
+            {t('content_studio_sources', 'Sources')}
+          </h1>
+          <div className="text-textItemBlur">
+            {t(
+              'content_studio_sources_subtitle',
+              'Save web sources for use as reference material in Content Studio.'
+            )}
+          </div>
+          <div className="text-[13px] text-textItemBlur">
+            {t(
+              'content_studio_sources_note',
+              'Captured source material is stored with version history and provenance. Sources are not automatically fact-checked.'
+            )}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-[8px]">
+          <Link
+            href="/content-studio"
+            className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
+          >
+            {t('content_studio', 'Content Studio')}
+          </Link>
+          <Button onClick={addSource}>
+            {t('content_studio_add_source', 'Add source')}
+          </Button>
+        </div>
+      </div>
+
+      <div
+        role="group"
+        aria-label={t('content_studio_status', 'Status')}
+        className="flex gap-[8px]"
+      >
+        {[false, true].map((value) => (
+          <Button
+            key={String(value)}
+            secondary={archived !== value}
+            aria-pressed={archived === value}
+            className={clsx(archived === value && 'font-[600]')}
+            onClick={() => {
+              if (archived !== value) {
+                setArchived(value);
+                setPage(1);
+              }
+            }}
+          >
+            {value
+              ? t('content_studio_archived', 'Archived')
+              : t('content_studio_active', 'Active')}
+          </Button>
+        ))}
+      </div>
+
+      {list.error ? (
+        <div className="flex flex-col items-center gap-[12px] py-[40px]">
+          <div>
+            {t(
+              'content_studio_sources_load_error',
+              'Sources could not be loaded.'
+            )}
+          </div>
+          <Button secondary onClick={() => list.mutate()}>
+            {t('content_studio_retry', 'Try again')}
+          </Button>
+        </div>
+      ) : !list.data ? (
+        <LoadingComponent />
+      ) : !list.data.results.length ? (
+        <div className="flex flex-col items-center gap-[12px] py-[40px] text-center">
+          {archived ? (
+            <div>
+              {t('content_studio_no_archived_sources', 'No archived sources.')}
+            </div>
+          ) : (
+            <>
+              <div>{t('content_studio_no_sources', 'No sources yet.')}</div>
+              <div className="text-textItemBlur">
+                {t(
+                  'content_studio_no_sources_hint',
+                  'Add a URL and capture it before using it as reference material.'
+                )}
+              </div>
+              <Button onClick={addSource}>
+                {t('content_studio_add_source', 'Add source')}
+              </Button>
+            </>
+          )}
+        </div>
+      ) : (
+        <>
+          <ul className="flex flex-col gap-[12px]">
+            {list.data.results.map((source) => (
+              <SourceRow
+                key={source.id}
+                source={source}
+                busy={commands.busy[source.id]}
+                commands={commands}
+              />
+            ))}
+          </ul>
+          {list.data.pages > 1 && (
+            <ContentStudioPager
+              page={page}
+              pages={list.data.pages}
+              setPage={setPage}
+            />
+          )}
+        </>
+      )}
+    </div>
+  );
+};

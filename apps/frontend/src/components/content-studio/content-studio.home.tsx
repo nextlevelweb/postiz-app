@@ -122,6 +122,12 @@ export const ContentStudioHome: FC = () => {
         </div>
         <div className="flex flex-wrap gap-[8px]">
           <Link
+            href="/content-studio/sources"
+            className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
+          >
+            {t('content_studio_sources', 'Sources')}
+          </Link>
+          <Link
             href="/content-studio/intelligence"
             className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
           >
