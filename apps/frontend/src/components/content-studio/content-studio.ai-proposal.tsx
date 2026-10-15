@@ -61,9 +61,44 @@ const TextPanel: FC<{ title: string; text: string }> = ({ title, text }) => (
   </div>
 );
 
+// The sources a suggestion was written from, each at the version used: what
+// was given to the AI as reference, never a check that it is true. Ids,
+// hashes and URLs stay out of view
+const ProposalSources: FC<{ proposal: ContentStudioAIProposal }> = ({
+  proposal,
+}) => {
+  const t = useT();
+  const sources = proposal.provenance?.sources || [];
+  if (!sources.length) {
+    return null;
+  }
+  return (
+    <div className="flex flex-col gap-[4px] text-[13px]">
+      <div className="font-[600]">
+        {t('content_studio_ai_based_on_sources', 'Based on selected sources')}
+      </div>
+      <ul className="flex flex-col gap-[2px]">
+        {sources.map((source) => (
+          <li key={source.versionId} className="break-words">
+            {[
+              source.name,
+              source.title,
+              `${t('content_studio_ai_source_version', 'Version')} ${
+                source.versionNumber
+              }`,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+};
+
 // Current and Suggestion side by side (stacked on narrow screens), for one
-// post or every post of the thread. Nothing changes until Accept; Discard
-// writes nothing
+// post or every post of the thread, and the sources it was written from.
+// Nothing changes until Accept; Discard writes nothing
 export const ContentStudioAIProposalReview: FC<{
   proposal: ContentStudioAIProposal;
   draft: ContentStudioDraft;
@@ -100,6 +135,7 @@ export const ContentStudioAIProposalReview: FC<{
           )}
         </div>
       )}
+      <ProposalSources proposal={proposal} />
       {items.map(({ item, label }) => (
         <div
           key={item.id}

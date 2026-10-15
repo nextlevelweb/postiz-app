@@ -49,6 +49,9 @@ const WRITING = 'a1111111-1111-4111-8111-111111111111';
 const AUDIENCE = 'b1111111-1111-4111-8111-111111111111';
 const EXPERTISE = 'c1111111-1111-4111-8111-111111111111';
 const REVISION = 'a2222222-2222-4222-8222-222222222222';
+const SOURCE_A = 'e1111111-1111-4111-8111-111111111111';
+const SOURCE_B = 'e2111111-1111-4111-8111-111111111111';
+const sourceIdN = (n: number) => `e${n}111111-1111-4111-8111-111111111111`;
 // an ordinary member: AI writing needs no manager role
 const ORG = {
   id: 'org-a',
@@ -94,6 +97,7 @@ const selection = {
   editorialPolicy: true,
   audienceProfileId: AUDIENCE,
   expertiseProfileId: EXPERTISE,
+  sourceIds: [SOURCE_B, SOURCE_A],
   instruction: `Bold ${MARKER}`,
 };
 const itemBody = () => ({
@@ -371,5 +375,95 @@ describe('AI writing DTO validation', () => {
       ...itemBody(),
       instruction: 'i'.repeat(2000),
     });
+  });
+});
+
+describe('AI writing DTO validation: sources', () => {
+  const both = [
+    [ContentStudioAIItemProposalDto, itemBody],
+    [ContentStudioAIThreadProposalDto, threadBody],
+  ] as const;
+  const withoutSources = (body: Record<string, unknown>) => {
+    const { sourceIds: _sourceIds, ...rest } = body;
+    return rest;
+  };
+
+  it('SD-AI1-SD-AI4 takes no sources, an empty list, one id or five ids, in the order given', async () => {
+    for (const [dto, body] of both) {
+      const none = withoutSources(body());
+      expect({ ...(await run(dto, none)) }).toEqual(none);
+      for (const sourceIds of [
+        [],
+        [SOURCE_A],
+        [5, 3, 1, 4, 2].map(sourceIdN),
+      ]) {
+        const value = await run(dto, { ...body(), sourceIds });
+        expect(value.sourceIds).toEqual(sourceIds);
+      }
+      expect(
+        (await run(dto, { ...body(), sourceIds: null })).sourceIds
+      ).toBeNull();
+    }
+  });
+
+  it.each([
+    ['SD-AI5 six ids', [1, 2, 3, 4, 5, 6].map(sourceIdN)],
+    ['SD-AI6 the same id twice', [SOURCE_A, SOURCE_B, SOURCE_A]],
+    ['SD-AI7 a malformed id', ['source-1']],
+    ['SD-AI7 an id that is not text', [7]],
+    ['SD-AI7 an object in the list', [{ id: SOURCE_A }]],
+    ['SD-AI8 one id as text instead of a list', SOURCE_A],
+    ['an object instead of a list', { 0: SOURCE_A }],
+  ])('refuses %s', async (_name, sourceIds) => {
+    for (const [dto, body] of both) {
+      await rejected(dto, { ...body(), sourceIds });
+    }
+  });
+
+  it.each([
+    ['SD-AI9 sourceVersionIds', { sourceVersionIds: [REVISION] }],
+    [
+      'SD-AI10 sourceVersions',
+      { sourceVersions: [{ sourceId: SOURCE_A, versionId: REVISION }] },
+    ],
+    ['SD-AI11 sourceContent', { sourceContent: 'SOURCE_CONTENT_PRIVATE_456' }],
+    ['SD-AI12 contentHash', { contentHash: 'a'.repeat(64) }],
+    ['SD-AI13 versionId', { versionId: REVISION }],
+    ['versionNumber', { versionNumber: 3 }],
+    ['sources', { sources: [{ sourceId: SOURCE_A }] }],
+    ['sourceId', { sourceId: SOURCE_A }],
+    ['extractionVersion', { extractionVersion: 'content-studio-source-v2' }],
+    ['finalUrl', { finalUrl: 'https://example.com/a' }],
+    ['blocks', { blocks: [] }],
+  ])('M1 refuses a body with %s', async (field, extra) => {
+    for (const [dto, body] of both) {
+      const message = await rejected(dto, { ...body(), ...extra });
+      expect(message).toContain(
+        `property ${field.replace(/^SD-AI\d+ /, '')} should not exist`
+      );
+      expect(message).not.toContain('SOURCE_CONTENT_PRIVATE_456');
+    }
+  });
+
+  it('forwards the source ids as they came, for the item and the thread route', async () => {
+    const { writing, controller } = setup();
+    await controller.generateItemProposal(
+      ORG,
+      USER,
+      PACKAGE,
+      Object.assign(new ContentStudioAIItemProposalDto(), itemBody())
+    );
+    await controller.generateThreadProposal(
+      ORG,
+      USER,
+      PACKAGE,
+      Object.assign(new ContentStudioAIThreadProposalDto(), threadBody())
+    );
+    for (const fn of [writing.proposeItem, writing.proposeThread]) {
+      expect(fn.mock.calls[0][0].selection.sourceIds).toEqual([
+        SOURCE_B,
+        SOURCE_A,
+      ]);
+    }
   });
 });

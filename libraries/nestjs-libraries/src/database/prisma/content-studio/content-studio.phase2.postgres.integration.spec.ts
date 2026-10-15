@@ -21,6 +21,7 @@ import { ContentStudioEditorialPolicyRepository } from '@gitroom/nestjs-librarie
 import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
 import { ContentStudioAudienceProfileRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.audience-profile.repository';
 import { ContentStudioExpertiseProfileRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.repository';
+import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
 import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
 import { ContentStudioAIExecutionService } from '@gitroom/nestjs-libraries/content-studio/ai/ai.execution.service';
 import { ContentStudioAIProviderResolver } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.resolver';
@@ -102,6 +103,7 @@ let writingRepository: ContentStudioWritingProfileRepository;
 let editorialRepository: ContentStudioEditorialPolicyRepository;
 let audienceRepository: ContentStudioAudienceProfileRepository;
 let expertiseRepository: ContentStudioExpertiseProfileRepository;
+let sourceRepository: ContentStudioSourceRepository;
 let fetchSpy: jest.SpyInstance;
 
 // --- profile content: valid v1, stored the way the services store it ---
@@ -522,6 +524,11 @@ beforeAll(async () => {
   expertiseRepository = new ContentStudioExpertiseProfileRepository(
     new PrismaRepository<'contentStudioExpertiseProfile'>(prisma),
     new PrismaRepository<'contentStudioExpertiseProfileRevision'>(prisma),
+    transaction
+  );
+  sourceRepository = new ContentStudioSourceRepository(
+    new PrismaRepository<'contentStudioSource'>(prisma),
+    new PrismaRepository<'contentStudioSourceVersion'>(prisma),
     transaction
   );
 
@@ -1885,7 +1892,8 @@ describe('AI execution and AI writing on PostgreSQL (fake adapter, no network)',
       editorialRepository,
       audienceRepository,
       expertiseRepository,
-      execution(resolver)
+      execution(resolver),
+      sourceRepository
     );
   const answer = (text: string): ContentStudioAITextResult => ({
     text,

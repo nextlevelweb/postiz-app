@@ -284,3 +284,62 @@ describe('AI operation request hash: profile and policy revisions', () => {
     expect(hashContentStudioAIRequest(value)).not.toBe(base);
   });
 });
+
+describe('AI operation request hash: source versions', () => {
+  const ref = (n: string) => ({
+    sourceId: `${n}1111111-1111-4111-8111-111111111111`,
+    versionId: `${n}2222222-2222-4222-8222-222222222222`,
+    versionNumber: 3,
+    contentHash: n.repeat(64),
+  });
+  const context = {
+    v: 1 as const,
+    itemId: 'item-1',
+    sources: [ref('a'), ref('b')],
+  };
+  const base = hashContentStudioAIRequest(provenance({ context }));
+  const withFirst = (change: Record<string, unknown>) =>
+    provenance({
+      context: {
+        ...context,
+        sources: [{ ...context.sources[0], ...change }, context.sources[1]],
+      },
+    });
+
+  it('OH-S6 is the same for the same source versions', () => {
+    expect(hashContentStudioAIRequest(provenance({ context }))).toBe(base);
+    expect(
+      hashContentStudioAIRequest(
+        provenance({ context: JSON.parse(JSON.stringify(context)) })
+      )
+    ).toBe(base);
+  });
+
+  it('carries the source references as they are, and no text', () => {
+    const descriptor = contentStudioAIRequestDescriptor(
+      provenance({ context })
+    );
+    expect(descriptor.context).toEqual(context);
+    expect(JSON.stringify(descriptor)).not.toContain(PROMPT);
+  });
+
+  it.each([
+    ['OH-S1 another source', withFirst({ sourceId: ref('c').sourceId })],
+    ['OH-S2 another version', withFirst({ versionId: ref('c').versionId })],
+    ['OH-S3 another version number', withFirst({ versionNumber: 4 })],
+    ['OH-S4 another content hash', withFirst({ contentHash: 'c'.repeat(64) })],
+    [
+      'OH-S5 the sources in another order',
+      provenance({
+        context: { ...context, sources: [ref('b'), ref('a')] },
+      }),
+    ],
+    [
+      'one source less',
+      provenance({ context: { ...context, sources: [ref('a')] } }),
+    ],
+    ['no sources', provenance({ context: { v: 1, itemId: 'item-1' } })],
+  ])('changes with %s', (_name, value) => {
+    expect(hashContentStudioAIRequest(value)).not.toBe(base);
+  });
+});

@@ -30,14 +30,17 @@ import {
   FieldGroup,
   LongTextField,
 } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
+import { useContentStudioSources } from '@gitroom/frontend/components/content-studio/content-studio.sources.api';
 
 // AI writing in the package workspace: one dialog to choose what to ask, and
 // the request that asks it. The server builds the prompt from the saved
-// draft and the current revision of each chosen profile, so the dialog loads
-// profile names only, never their content. Nothing chosen here is kept after
-// the dialog closes: there is no default connection, model or profile
+// draft, the current revision of each chosen profile and the current version
+// of each chosen source, so the dialog loads profile and source names only,
+// never their content. Nothing chosen here is kept after the dialog closes:
+// there is no default connection, model, profile or source
 
 export const AI_WRITING_INSTRUCTION_MAX = 2000;
+export const AI_WRITING_SOURCES_MAX = 5;
 
 export type ContentStudioAIItemOperation =
   | 'generate_item'
@@ -50,8 +53,9 @@ export type ContentStudioAIWritingTarget =
   | { type: 'item'; itemId: string; label: string; hasText: boolean }
   | { type: 'thread' };
 
-// What the user chose. Profiles are ids; the server takes their current
-// revision. There is no field for a provider, prompt, key or revision
+// What the user chose. Profiles and sources are ids; the server takes their
+// current revision or version. Sources are in the order chosen. There is no
+// field for a provider, prompt, key, revision, source version or source text
 export interface ContentStudioAIWritingRequest {
   operation: ContentStudioAIItemOperation | 'generate_thread';
   itemId?: string;
@@ -61,6 +65,7 @@ export interface ContentStudioAIWritingRequest {
   editorialPolicy: boolean;
   audienceProfileId: string | null;
   expertiseProfileId: string | null;
+  sourceIds: string[];
   instruction: string | null;
 }
 
@@ -68,12 +73,24 @@ export type ContentStudioAIProposalContent =
   | { type: 'item'; itemId: string; text: string }
   | { type: 'thread'; items: Array<{ itemId: string; text: string }> };
 
+// The exact source capture a suggestion was written from: its version, not
+// the source as it is now. Never its text or URLs
+export interface ContentStudioAIProposalSource {
+  sourceId: string;
+  versionId: string;
+  versionNumber: number;
+  contentHash: string;
+  name: string;
+  title: string | null;
+}
+
 // A suggestion for the draft at baseDraftVersion. It is shown for review and
 // never saved by itself
 export interface ContentStudioAIProposal {
   operationId: string;
   baseDraftVersion: number;
   proposal: ContentStudioAIProposalContent;
+  provenance: { sources: ContentStudioAIProposalSource[] };
 }
 
 // One request per action, never retried: a repeated request would be a
@@ -164,6 +181,31 @@ export const aiWritingErrorMessage = (
       return t(
         'content_studio_ai_writing_error_context_too_large',
         'The selected AI context is too large.'
+      );
+    case 'CS_AI_SOURCE_NOT_FOUND':
+      return t(
+        'content_studio_ai_writing_error_source_missing',
+        'A selected source is no longer available.'
+      );
+    case 'CS_AI_SOURCE_NOT_READY':
+      return t(
+        'content_studio_ai_writing_error_source_not_ready',
+        'A selected source has not been ingested yet.'
+      );
+    case 'CS_AI_SOURCE_ARCHIVED':
+      return t(
+        'content_studio_ai_writing_error_source_archived',
+        'A selected source is archived.'
+      );
+    case 'CS_AI_SOURCE_CONTEXT_TOO_LARGE':
+      return t(
+        'content_studio_ai_writing_error_source_too_large',
+        'The selected source context is too large.'
+      );
+    case 'CS_AI_SOURCE_INTEGRITY_ERROR':
+      return t(
+        'content_studio_ai_writing_error_source_integrity',
+        'Selected source context could not be verified.'
       );
     case 'CS_DRAFT_VERSION_CONFLICT':
       return t(
@@ -281,6 +323,79 @@ const ProfileChoice: FC<{
   );
 };
 
+// The active sources that have a captured version, by name only, from the
+// first page of the list. Checked in the order clicked, which is the order
+// the server uses; at most five. A list that cannot be loaded leaves AI
+// writing usable without sources
+const SourceChoice: FC<{
+  value: string[];
+  onChange: (next: string[]) => void;
+  disabled: boolean;
+}> = ({ value, onChange, disabled }) => {
+  const t = useT();
+  const { data, error } = useContentStudioSources(false, 1);
+  const ingested = (data?.results || []).filter(
+    (source) => !source.archivedAt && source.latestVersionNumber >= 1
+  );
+  const full = value.length >= AI_WRITING_SOURCES_MAX;
+  const note = (text: string) => (
+    <div className="text-[12px] text-textItemBlur">{text}</div>
+  );
+  return (
+    <FieldGroup
+      label={t('content_studio_ai_sources', 'Sources')}
+      hint={t(
+        'content_studio_ai_sources_hint',
+        'Use selected source material as reference context. Sources are not automatically fact-checked. Up to 5, used in the order you select them.'
+      )}
+    >
+      {error
+        ? note(
+            t(
+              'content_studio_ai_sources_error',
+              'Sources could not be loaded. You can still generate without them.'
+            )
+          )
+        : !data
+        ? null
+        : !ingested.length
+        ? note(t('content_studio_ai_no_sources', 'No ingested sources yet.'))
+        : ingested.map((source) => {
+            const position = value.indexOf(source.id);
+            return (
+              <div
+                key={source.id}
+                className="flex items-center gap-[8px] text-[14px] min-w-0"
+              >
+                <label className="flex items-center gap-[8px] min-w-0">
+                  <input
+                    type="checkbox"
+                    checked={position >= 0}
+                    disabled={disabled || (position < 0 && full)}
+                    onChange={(e) =>
+                      onChange(
+                        !e.target.checked
+                          ? value.filter((id) => id !== source.id)
+                          : position >= 0 || full
+                          ? value
+                          : [...value, source.id]
+                      )
+                    }
+                  />
+                  <span className="break-words min-w-0">{source.name}</span>
+                </label>
+                {position >= 0 && (
+                  <span className="text-[12px] text-textItemBlur">
+                    #{position + 1}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+    </FieldGroup>
+  );
+};
+
 // What to ask the AI for one post or the whole thread. onGenerate saves the
 // draft first and resolves true once a suggestion is shown
 export const ContentStudioAIWritingDialog: FC<{
@@ -339,6 +454,7 @@ export const ContentStudioAIWritingDialog: FC<{
   const [editorialPolicy, setEditorialPolicy] = useState(false);
   const [audienceProfileId, setAudienceProfileId] = useState('');
   const [expertiseProfileId, setExpertiseProfileId] = useState('');
+  const [sourceIds, setSourceIds] = useState<string[]>([]);
   const [instruction, setInstruction] = useState('');
 
   if (connections.error || providers.error) {
@@ -419,6 +535,7 @@ export const ContentStudioAIWritingDialog: FC<{
         editorialPolicy: editorialPolicy && policyAvailable,
         audienceProfileId: audienceProfileId || null,
         expertiseProfileId: expertiseProfileId || null,
+        sourceIds,
         instruction: trimmed || null,
       });
       if (generated) {
@@ -513,6 +630,11 @@ export const ContentStudioAIWritingDialog: FC<{
         value={expertiseProfileId}
         disabled={locked}
         onChange={setExpertiseProfileId}
+      />
+      <SourceChoice
+        value={sourceIds}
+        disabled={locked}
+        onChange={setSourceIds}
       />
       <LongTextField
         label={

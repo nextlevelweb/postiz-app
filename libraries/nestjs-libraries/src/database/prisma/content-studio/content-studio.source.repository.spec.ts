@@ -419,6 +419,7 @@ describe('ContentStudioSourceRepository: sources', () => {
       'getSourceByCanonicalUrlForOrganization',
       'getSourceForOrganization',
       'getVersionByNumber',
+      'getVersionDetailByNumber',
       'getVersionForSource',
       'listSourcesForOrganization',
       'listVersionsForSource',
@@ -664,6 +665,47 @@ describe('ContentStudioSourceRepository: history', () => {
     expect(
       await repository.getVersionByNumber(OTHER_ORG, SOURCE, 2)
     ).toBeNull();
+
+    // by number with its content, for AI writing: organization and source
+    // scoped like every other read
+    expect(
+      await repository.getVersionDetailByNumber(ORG, SOURCE, 2)
+    ).toMatchObject({ versionNumber: 2, content: capture('two').content });
+    expect(
+      await repository.getVersionDetailByNumber(OTHER_ORG, SOURCE, 2)
+    ).toBeNull();
+    expect(
+      await repository.getVersionDetailByNumber(ORG, OTHER_SOURCE, 2)
+    ).toBeNull();
+    expect(
+      await repository.getVersionDetailByNumber(ORG, SOURCE, 3)
+    ).toBeNull();
+    expect(version.findFirst.mock.calls.slice(-4).map(([a]) => a)).toEqual([
+      {
+        where: { organizationId: ORG, sourceId: SOURCE, versionNumber: 2 },
+        select: { ...VERSION_FIELDS, content: true },
+      },
+      {
+        where: {
+          organizationId: OTHER_ORG,
+          sourceId: SOURCE,
+          versionNumber: 2,
+        },
+        select: { ...VERSION_FIELDS, content: true },
+      },
+      {
+        where: {
+          organizationId: ORG,
+          sourceId: OTHER_SOURCE,
+          versionNumber: 2,
+        },
+        select: { ...VERSION_FIELDS, content: true },
+      },
+      {
+        where: { organizationId: ORG, sourceId: SOURCE, versionNumber: 3 },
+        select: { ...VERSION_FIELDS, content: true },
+      },
+    ]);
   });
 });
 

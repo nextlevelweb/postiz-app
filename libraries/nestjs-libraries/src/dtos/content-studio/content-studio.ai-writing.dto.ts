@@ -1,4 +1,7 @@
 import {
+  ArrayMaxSize,
+  ArrayUnique,
+  IsArray,
   IsBoolean,
   IsIn,
   IsInt,
@@ -10,6 +13,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+import { CONTENT_STUDIO_AI_MAX_SOURCES } from '@gitroom/nestjs-libraries/content-studio/ai/ai.operation.types';
 
 export const AI_WRITING_ITEM_OPERATIONS = [
   'generate_item',
@@ -36,7 +40,10 @@ const ITEM_ID = /^[A-Za-z0-9_-]{1,32}$/;
 // model are named explicitly: there is no default. A profile left out or
 // null, or the editorial policy left out or false, is not used. There is no
 // field for an organization, a user, a provider, a prompt, a credential or a
-// revision: the server takes the current revision of each selected profile
+// revision: the server takes the current revision of each selected profile.
+// Sources are named the same way, by id only and in the order chosen: the
+// server takes the current version of each and its blocks. There is no field
+// for a source version, a hash or source text
 class ContentStudioAIWritingSelectionDto {
   @IsUUID()
   connectionId: string;
@@ -65,6 +72,13 @@ class ContentStudioAIWritingSelectionDto {
   @IsOptional()
   @IsUUID()
   expertiseProfileId?: string | null;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(CONTENT_STUDIO_AI_MAX_SOURCES)
+  @ArrayUnique()
+  @IsUUID(undefined, { each: true })
+  sourceIds?: string[] | null;
 
   @IsOptional()
   @IsString()

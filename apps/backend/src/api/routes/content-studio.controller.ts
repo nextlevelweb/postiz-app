@@ -250,9 +250,9 @@ export class ContentStudioController {
   }
 
   // AI writing: a suggestion for one item or the whole thread, with the
-  // connection, model and profiles the user chose. Any member may ask; the
-  // draft is never changed here: an accepted suggestion is saved like any
-  // edit. 200, since nothing is created for the user to keep
+  // connection, model, profiles and sources the user chose. Any member may
+  // ask; the draft is never changed here: an accepted suggestion is saved
+  // like any edit. 200, since nothing is created for the user to keep
   @Post('/packages/:id/ai/item')
   @HttpCode(200)
   generateItemProposal(
@@ -275,6 +275,7 @@ export class ContentStudioController {
         editorialPolicy: body.editorialPolicy,
         audienceProfileId: body.audienceProfileId,
         expertiseProfileId: body.expertiseProfileId,
+        sourceIds: body.sourceIds,
         instruction: body.instruction,
       },
     });
@@ -301,6 +302,7 @@ export class ContentStudioController {
         editorialPolicy: body.editorialPolicy,
         audienceProfileId: body.audienceProfileId,
         expertiseProfileId: body.expertiseProfileId,
+        sourceIds: body.sourceIds,
         instruction: body.instruction,
       },
     });

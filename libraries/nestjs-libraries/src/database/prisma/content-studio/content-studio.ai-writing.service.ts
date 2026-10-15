@@ -4,6 +4,7 @@ import { ContentStudioWritingProfileRepository } from '@gitroom/nestjs-libraries
 import { ContentStudioEditorialPolicyRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.repository';
 import { ContentStudioAudienceProfileRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.audience-profile.repository';
 import { ContentStudioExpertiseProfileRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.repository';
+import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
 import {
   ContentStudioAIExecutionInput,
   ContentStudioAIExecutionService,
@@ -18,15 +19,19 @@ import {
   ContentStudioAITextResult,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.types';
 import {
+  CONTENT_STUDIO_AI_MAX_SOURCES,
   ContentStudioAIContextProfileKind,
   ContentStudioAIOperationContext,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.operation.types';
 import {
   AI_WRITING_PROMPT_MAX_BYTES,
   buildContentStudioAIWritingPrompt,
+  CONTENT_STUDIO_AI_SOURCE_CONTEXT_MAX_BYTES,
   ContentStudioAIItemOperation,
   ContentStudioAIWritingContext,
+  ContentStudioAIWritingSource,
   ContentStudioAIWritingTask,
+  contentStudioAISourceContextBytes,
   contentStudioAIWritingPromptBytes,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.writing.prompt';
 import {
@@ -42,14 +47,16 @@ import { parseVerifiedContentStudioWritingProfileRevision } from '@gitroom/nestj
 import { parseVerifiedContentStudioEditorialPolicyRevision } from '@gitroom/nestjs-libraries/content-studio/editorial/editorial.policy.revision';
 import { parseVerifiedContentStudioAudienceProfileRevision } from '@gitroom/nestjs-libraries/content-studio/editorial/audience.profile.revision';
 import { parseVerifiedContentStudioExpertiseProfileRevision } from '@gitroom/nestjs-libraries/content-studio/editorial/expertise.profile.revision';
+import { parseVerifiedContentStudioSourceVersion } from '@gitroom/nestjs-libraries/content-studio/sources/source.version';
 import {
   AI_WRITING_INSTRUCTION_MAX,
   ContentStudioAIWritingItemOperation,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.ai-writing.dto';
 
-// Fixed messages only: never a prompt, an instruction, draft or profile
-// text, a provider message or an id. Nothing here answers 401, 402 or 406,
-// which the app treats as session or billing problems
+// Fixed messages only: never a prompt, an instruction, draft, profile or
+// source text, a source name or title, a provider message or an id. Nothing
+// here answers 401, 402 or 406, which the app treats as session or billing
+// problems
 const fail = (status: number, code: string, msg: string) =>
   new HttpException({ msg, code }, status);
 
@@ -100,6 +107,33 @@ const contextIntegrityError = () =>
   );
 const contextTooLarge = () =>
   fail(400, 'CS_AI_CONTEXT_TOO_LARGE', 'The selected AI context is too large.');
+// missing and of another organization alike
+const sourceNotFound = () =>
+  fail(
+    400,
+    'CS_AI_SOURCE_NOT_FOUND',
+    'A selected source is no longer available.'
+  );
+const sourceNotReady = () =>
+  fail(
+    400,
+    'CS_AI_SOURCE_NOT_READY',
+    'A selected source has not been ingested yet.'
+  );
+const sourceArchived = () =>
+  fail(409, 'CS_AI_SOURCE_ARCHIVED', 'A selected source is archived.');
+const sourceContextTooLarge = () =>
+  fail(
+    400,
+    'CS_AI_SOURCE_CONTEXT_TOO_LARGE',
+    'The selected source context is too large.'
+  );
+const sourceIntegrityError = () =>
+  fail(
+    500,
+    'CS_AI_SOURCE_INTEGRITY_ERROR',
+    'Selected source context could not be verified.'
+  );
 
 const RESOLUTION_FAILURES: Record<
   ContentStudioAIResolutionError['code'],
@@ -218,7 +252,8 @@ const fromAIError = (err: unknown) => {
   return err;
 };
 
-// Package, connection, profile and revision ids are Prisma uuid() values
+// Package, connection, profile, revision and source ids are Prisma uuid()
+// values
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // draft versions are PostgreSQL integers
 const INT4_MAX = 2_147_483_647;
@@ -253,6 +288,7 @@ export interface ContentStudioAIWritingSelection {
   editorialPolicy?: unknown;
   audienceProfileId?: unknown;
   expertiseProfileId?: unknown;
+  sourceIds?: unknown;
   instruction?: unknown;
 }
 
@@ -264,6 +300,7 @@ interface Selection {
   editorialPolicy: boolean;
   audienceProfileId: string | null;
   expertiseProfileId: string | null;
+  sourceIds: string[];
   instruction: string | null;
 }
 
@@ -294,6 +331,28 @@ interface ProfileSource {
 type ProfileRef = NonNullable<
   ContentStudioAIOperationContext['profiles']
 >[number];
+
+// A selected source at the version this run uses. Never stored or answered
+// as a whole: the operation keeps the ids and contentHash, the proposal adds
+// the name and title
+interface ResolvedSource extends ContentStudioAIWritingSource {
+  sourceId: string;
+  versionId: string;
+  versionNumber: number;
+  contentHash: string;
+}
+
+// Which exact source capture a suggestion was written from. Never the
+// blocks, the URLs, the fetch provenance or sourceHash: those stay with the
+// source version
+const toProposalSource = (source: ResolvedSource) => ({
+  sourceId: source.sourceId,
+  versionId: source.versionId,
+  versionNumber: source.versionNumber,
+  contentHash: source.contentHash,
+  name: source.name,
+  title: source.title,
+});
 
 // A verified revision; anything that is not exactly what was stored is an
 // integrity error, never repaired and never quoted
@@ -350,10 +409,14 @@ const assertApplicable = (
 // by the editor like any edit. Any member may use the organization's AI
 // connections (managing them is for admins); there is no plan or credit
 // check, the connection's own key pays. Every selected profile is used at
-// its current revision, resolved once here: the operation records exactly
-// those revisions, and the prompt is built from exactly their content. The
-// provider is reached only through ContentStudioAIExecutionService, with
-// the connection and model the user chose and no fallback
+// its current revision, and every selected source at its current version,
+// resolved once here: the operation records exactly those revisions and
+// versions, and the prompt is built from exactly their content. Sources are
+// used only when the user selects them, as stored: nothing is fetched,
+// refreshed or searched here, and using a source says nothing about whether
+// its text is true. The provider is reached only through
+// ContentStudioAIExecutionService, with the connection and model the user
+// chose and no fallback
 @Injectable()
 export class ContentStudioAIWritingService {
   constructor(
@@ -362,7 +425,8 @@ export class ContentStudioAIWritingService {
     private _contentStudioEditorialPolicyRepository: ContentStudioEditorialPolicyRepository,
     private _contentStudioAudienceProfileRepository: ContentStudioAudienceProfileRepository,
     private _contentStudioExpertiseProfileRepository: ContentStudioExpertiseProfileRepository,
-    private _contentStudioAIExecutionService: ContentStudioAIExecutionService
+    private _contentStudioAIExecutionService: ContentStudioAIExecutionService,
+    private _contentStudioSourceRepository: ContentStudioSourceRepository
   ) {}
 
   async proposeItem(input: {
@@ -404,7 +468,7 @@ export class ContentStudioAIWritingService {
     }
 
     let text = '';
-    const operationId = await this.run(
+    const { operationId, provenance } = await this.run(
       input,
       selection,
       {
@@ -427,6 +491,7 @@ export class ContentStudioAIWritingService {
       operationId,
       baseDraftVersion: selection.baseDraftVersion,
       proposal: { type: 'item' as const, itemId, text },
+      provenance,
     };
   }
 
@@ -454,7 +519,7 @@ export class ContentStudioAIWritingService {
     const itemIds = items.map((item) => item.id);
 
     let proposed: ContentStudioAIThreadProposalItem[] = [];
-    const operationId = await this.run(
+    const { operationId, provenance } = await this.run(
       input,
       selection,
       { kind: 'generate_thread', items, instruction: selection.instruction },
@@ -471,11 +536,13 @@ export class ContentStudioAIWritingService {
       operationId,
       baseDraftVersion: selection.baseDraftVersion,
       proposal: { type: 'thread' as const, items: proposed },
+      provenance,
     };
   }
 
   // Resolves the context, builds the prompt and runs the operation once.
-  // The answer is checked by `accept` before the operation succeeds
+  // The answer is checked by `accept` before the operation succeeds. The
+  // source material has its own size limit, checked before the prompt's
   private async run(
     input: { organizationId: string; userId: string; packageId: string },
     selection: Selection,
@@ -484,10 +551,16 @@ export class ContentStudioAIWritingService {
     maxOutputTokens: number,
     accept: (result: ContentStudioAITextResult) => void
   ) {
-    const { context, refs } = await this.resolveContext(
+    const { context, refs, sources } = await this.resolveContext(
       input.organizationId,
       selection
     );
+    if (
+      contentStudioAISourceContextBytes(sources) >
+      CONTENT_STUDIO_AI_SOURCE_CONTEXT_MAX_BYTES
+    ) {
+      throw sourceContextTooLarge();
+    }
     const prompt = buildContentStudioAIWritingPrompt(task, context);
     if (
       contentStudioAIWritingPromptBytes(prompt) > AI_WRITING_PROMPT_MAX_BYTES
@@ -518,7 +591,10 @@ export class ContentStudioAIWritingService {
         await this._contentStudioAIExecutionService.execute(execution, {
           validateResult: accept,
         });
-      return operationId;
+      return {
+        operationId,
+        provenance: { sources: sources.map(toProposalSource) },
+      };
     } catch (err) {
       throw fromAIError(err);
     }
@@ -558,8 +634,26 @@ export class ContentStudioAIWritingService {
       editorialPolicy: input.editorialPolicy === true,
       audienceProfileId: profileId(input.audienceProfileId),
       expertiseProfileId: profileId(input.expertiseProfileId),
+      sourceIds: this.sourceIds(input.sourceIds),
       instruction: this.instruction(input.instruction),
     };
+  }
+
+  // Up to five distinct source ids, in the order chosen; none is none. Too
+  // many or a repeat is refused, never cut or merged
+  private sourceIds(value: unknown) {
+    if (value === undefined || value === null) {
+      return [];
+    }
+    if (
+      !Array.isArray(value) ||
+      value.length > CONTENT_STUDIO_AI_MAX_SOURCES ||
+      !value.every((id) => typeof id === 'string' && UUID.test(id)) ||
+      new Set(value).size !== value.length
+    ) {
+      throw invalidRequest();
+    }
+    return [...value] as string[];
   }
 
   // Line endings normalized and outer whitespace trimmed; blank is none.
@@ -612,7 +706,9 @@ export class ContentStudioAIWritingService {
   }
 
   // The current revision of every selected profile and of the policy, in a
-  // fixed order, each read once. A later revision does not change this run
+  // fixed order, then the current version of every selected source, in the
+  // order chosen, each read once. A later revision or version does not
+  // change this run
   private async resolveContext(organizationId: string, selection: Selection) {
     const writing = await this.profile(
       organizationId,
@@ -639,11 +735,14 @@ export class ContentStudioAIWritingService {
       parseVerifiedContentStudioExpertiseProfileRevision
     );
 
+    const sources = await this.sources(organizationId, selection.sourceIds);
+
     const context: ContentStudioAIWritingContext = {
       writing: writing?.content ?? null,
       editorialPolicy: editorialPolicy?.content ?? null,
       audience: audience?.content ?? null,
       expertise: expertise?.content ?? null,
+      sources,
     };
     const profiles = [writing, audience, expertise]
       .filter((profile) => !!profile)
@@ -653,8 +752,69 @@ export class ContentStudioAIWritingService {
       refs: {
         ...(profiles.length ? { profiles } : {}),
         ...(editorialPolicy ? { editorialPolicy: editorialPolicy.ref } : {}),
+        ...(sources.length
+          ? {
+              sources: sources.map((source) => ({
+                sourceId: source.sourceId,
+                versionId: source.versionId,
+                versionNumber: source.versionNumber,
+                contentHash: source.contentHash,
+              })),
+            }
+          : {}),
       },
+      sources,
     };
+  }
+
+  // Each selected source of this organization only (another organization's
+  // reads as missing), live and ingested, at its current version: the blocks
+  // are used only once they prove to be exactly what was stored. Who created
+  // the source does not matter. A source without its current version is a
+  // broken store, never "not ingested"
+  private async sources(organizationId: string, sourceIds: string[]) {
+    const sources: ResolvedSource[] = [];
+    for (const sourceId of sourceIds) {
+      const row =
+        await this._contentStudioSourceRepository.getSourceForOrganization(
+          organizationId,
+          sourceId
+        );
+      if (!row) {
+        throw sourceNotFound();
+      }
+      if (row.archivedAt) {
+        throw sourceArchived();
+      }
+      if (row.latestVersionNumber < 1) {
+        throw sourceNotReady();
+      }
+      const version =
+        await this._contentStudioSourceRepository.getVersionDetailByNumber(
+          organizationId,
+          row.id,
+          row.latestVersionNumber
+        );
+      if (!version || version.versionNumber !== row.latestVersionNumber) {
+        throw sourceIntegrityError();
+      }
+      let content;
+      try {
+        content = parseVerifiedContentStudioSourceVersion(version);
+      } catch {
+        throw sourceIntegrityError();
+      }
+      sources.push({
+        sourceId: row.id,
+        versionId: version.id,
+        versionNumber: version.versionNumber,
+        contentHash: version.contentHash,
+        name: row.name,
+        title: version.title,
+        content,
+      });
+    }
+    return sources;
   }
 
   // A profile of this organization only (another organization's reads as

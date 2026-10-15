@@ -37,10 +37,15 @@ const ITEM_ID = /^[A-Za-z0-9_-]{1,32}$/;
 
 export const AI_OPERATION_CONTEXT_MAX_BYTES = 8192;
 
-// Profile, policy and revision ids are Prisma uuid() values
+// Profile, policy, source, revision and version ids are Prisma uuid() values
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-// revision numbers are PostgreSQL integers
+// revision and version numbers are PostgreSQL integers
 const INT4_MAX = 2_147_483_647;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+// The most sources one AI operation can use. Each is chosen by the user for
+// that request; nothing is retrieved or added by the server
+export const CONTENT_STUDIO_AI_MAX_SOURCES = 5;
 
 // The named profiles an operation can use, in the order they are recorded
 export const CONTENT_STUDIO_AI_CONTEXT_PROFILE_KINDS = [
@@ -72,10 +77,24 @@ const editorialPolicyRef = z
   })
   .strict();
 
+// The exact immutable source version whose blocks were in the prompt, with
+// the hash of those blocks, so the operation identifies the text it used
+// without storing it. Nothing else of the source: no name, title, URL or
+// fetch provenance (that stays on the version)
+const sourceRef = z
+  .object({
+    sourceId: z.string().regex(UUID),
+    versionId: z.string().regex(UUID),
+    versionNumber: revisionNumber,
+    contentHash: z.string().regex(SHA256_HEX),
+  })
+  .strict();
+
 // What an operation was about, as ids only: never user text, a prompt, a
-// generated result, profile content or a credential. Built by the server,
-// never taken from a request as it is. The profile and policy references
-// were added after the first operations: a context without them is still v1
+// generated result, profile or source content or a credential. Built by the
+// server, never taken from a request as it is. The profile, policy and source
+// references were added after the first operations: a context without them
+// is still v1
 const contextV1 = z
   .object({
     v: z.literal(1),
@@ -100,6 +119,21 @@ const contextV1 = z
       )
       .optional(),
     editorialPolicy: editorialPolicyRef.optional(),
+    // in the order the user chose them, which is the order of the prompt;
+    // left out when none was used, never empty
+    sources: z
+      .array(sourceRef)
+      .min(1)
+      .max(CONTENT_STUDIO_AI_MAX_SOURCES)
+      .refine(
+        (sources) =>
+          new Set(sources.map((source) => source.sourceId)).size ===
+            sources.length &&
+          new Set(sources.map((source) => source.versionId)).size ===
+            sources.length,
+        'Source repeated'
+      )
+      .optional(),
   })
   .strict();
 

@@ -320,4 +320,21 @@ export class ContentStudioSourceRepository {
       select: VERSION_SUMMARY,
     });
   }
+
+  // One version with its content, by number: what AI writing reads for a
+  // selected source at its current version
+  getVersionDetailByNumber(
+    organizationId: string,
+    sourceId: string,
+    versionNumber: number
+  ) {
+    return this._version.model.contentStudioSourceVersion.findFirst({
+      where: {
+        organizationId,
+        sourceId,
+        versionNumber,
+      },
+      select: VERSION_DETAIL,
+    });
+  }
 }

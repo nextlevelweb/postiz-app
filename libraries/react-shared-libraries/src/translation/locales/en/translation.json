@@ -1126,5 +1126,16 @@
   "content_studio_ai_discard": "Discard",
   "content_studio_ai_writing": "AI writing",
   "content_studio_ai_thread": "AI thread",
-  "content_studio_ai": "AI"
+  "content_studio_ai": "AI",
+  "content_studio_ai_writing_error_source_missing": "A selected source is no longer available.",
+  "content_studio_ai_writing_error_source_not_ready": "A selected source has not been ingested yet.",
+  "content_studio_ai_writing_error_source_archived": "A selected source is archived.",
+  "content_studio_ai_writing_error_source_too_large": "The selected source context is too large.",
+  "content_studio_ai_writing_error_source_integrity": "Selected source context could not be verified.",
+  "content_studio_ai_sources": "Sources",
+  "content_studio_ai_sources_hint": "Use selected source material as reference context. Sources are not automatically fact-checked. Up to 5, used in the order you select them.",
+  "content_studio_ai_sources_error": "Sources could not be loaded. You can still generate without them.",
+  "content_studio_ai_no_sources": "No ingested sources yet.",
+  "content_studio_ai_based_on_sources": "Based on selected sources",
+  "content_studio_ai_source_version": "Version"
 }

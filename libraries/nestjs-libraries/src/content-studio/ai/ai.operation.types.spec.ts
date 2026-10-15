@@ -1,10 +1,13 @@
 import {
+  AI_OPERATION_CONTEXT_MAX_BYTES,
   AI_PROMPT_VERSION,
+  CONTENT_STUDIO_AI_MAX_SOURCES,
   CONTENT_STUDIO_AI_OPERATION_KINDS,
   isContentStudioAIOperationKind,
   parseContentStudioAIOperationContext,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.operation.types';
 import { parseContentPackageDraft } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
+import { canonicalJson } from '@gitroom/nestjs-libraries/content-studio/canonical.json';
 
 describe('Content Studio AI operation kinds', () => {
   it('OK1 lists exactly the package operations, and no connection test', () => {
@@ -301,5 +304,127 @@ describe('Content Studio AI operation context: profile and policy revisions', ()
     expect(Buffer.byteLength(JSON.stringify(context), 'utf8')).toBeLessThan(
       1024
     );
+  });
+});
+
+describe('Content Studio AI operation context: source versions', () => {
+  const source = (n: number, overrides: Record<string, unknown> = {}) => ({
+    sourceId: `a${n}111111-1111-4111-8111-111111111111`,
+    versionId: `b${n}222222-2222-4222-8222-222222222222`,
+    versionNumber: n,
+    contentHash: String(n).repeat(64),
+    ...overrides,
+  });
+  const PROFILES = [
+    {
+      kind: 'writing' as const,
+      profileId: '11111111-1111-4111-8111-111111111111',
+      revisionId: '22222222-2222-4222-8222-222222222222',
+      revisionNumber: 4,
+    },
+    {
+      kind: 'audience' as const,
+      profileId: '33333333-3333-4333-8333-333333333333',
+      revisionId: '44444444-4444-4444-8444-444444444444',
+      revisionNumber: 2_147_483_647,
+    },
+    {
+      kind: 'expertise' as const,
+      profileId: '55555555-5555-4555-8555-555555555555',
+      revisionId: '66666666-6666-4666-8666-666666666666',
+      revisionNumber: 2_147_483_647,
+    },
+  ];
+  const POLICY = {
+    revisionId: '77777777-7777-4777-8777-777777777777',
+    revisionNumber: 2_147_483_647,
+  };
+  const parse = parseContentStudioAIOperationContext;
+
+  it('OS1 still reads every context stored before sources existed', () => {
+    for (const context of [
+      { v: 1 },
+      { v: 1, itemId: 'main' },
+      { v: 1, itemId: 'main', profiles: [PROFILES[0]] },
+      { v: 1, profiles: PROFILES, editorialPolicy: POLICY },
+    ]) {
+      expect(parse(context)).toEqual(context);
+    }
+  });
+
+  it('OS2 takes one source version', () => {
+    const context = { v: 1, itemId: 'main', sources: [source(1)] };
+    expect(parse(context)).toEqual(context);
+  });
+
+  it('OS3 takes five, in the order given', () => {
+    expect(CONTENT_STUDIO_AI_MAX_SOURCES).toBe(5);
+    const sources = [source(5), source(2), source(4), source(1), source(3)];
+    expect(parse({ v: 1, sources })?.sources).toEqual(sources);
+  });
+
+  it.each([
+    ['OS4 six sources', [1, 2, 3, 4, 5, 6].map((n) => source(n))],
+    ['OS5 an empty list', []],
+    [
+      'OS6 the same source twice',
+      [source(1), source(2, { sourceId: source(1).sourceId })],
+    ],
+    [
+      'OS7 the same version twice',
+      [source(1), source(2, { versionId: source(1).versionId })],
+    ],
+    ['OS8 a malformed source id', [source(1, { sourceId: 'source-1' })]],
+    [
+      'OS8 an uppercase source id',
+      [source(1, { sourceId: source(1).sourceId.toUpperCase() })],
+    ],
+    ['OS9 a malformed version id', [source(1, { versionId: 'v1' })]],
+    ['OS10 version number 0', [source(1, { versionNumber: 0 })]],
+    ['OS10 a negative version number', [source(1, { versionNumber: -1 })]],
+    ['a fractional version number', [source(1, { versionNumber: 1.5 })]],
+    ['a version number as text', [source(1, { versionNumber: '1' })]],
+    [
+      'OS11 a version number past int4',
+      [source(1, { versionNumber: 2 ** 31 })],
+    ],
+    ['OS12 a short hash', [source(1, { contentHash: 'a'.repeat(63) })]],
+    ['OS12 an uppercase hash', [source(1, { contentHash: 'A'.repeat(64) })]],
+    [
+      'OS12 a hash that is not hex',
+      [source(1, { contentHash: 'g'.repeat(64) })],
+    ],
+    ['OS12 no hash', [source(1, { contentHash: undefined })]],
+    ['OS13 an unknown key', [source(1, { extra: true })]],
+    ['OS14 source content', [source(1, { content: '{"blocks":[]}' })]],
+    ['OS14 blocks', [source(1, { blocks: [] })]],
+    ['OS15 a title', [source(1, { title: 'SOURCE_TITLE_PRIVATE_789' })]],
+    ['OS15 a name', [source(1, { name: 'Weekly news' })]],
+    ['OS15 a URL', [source(1, { finalUrl: 'https://example.com/a' })]],
+    ['OS15 sourceHash', [source(1, { sourceHash: 'c'.repeat(64) })]],
+    [
+      'OS15 extractionVersion',
+      [source(1, { extractionVersion: 'content-studio-source-v2' })],
+    ],
+    ['sources that are not a list', source(1)],
+    ['a source that is not an object', [source(1).sourceId]],
+  ])('refuses %s', (_name, sources) => {
+    expect(parse({ v: 1, sources })).toBeUndefined();
+  });
+
+  it('OS16/OS17 profiles, the policy and five sources together stay valid and far below 8 KiB', () => {
+    const context = {
+      v: 1,
+      itemId: 'x'.repeat(32),
+      profiles: PROFILES,
+      editorialPolicy: POLICY,
+      sources: [1, 2, 3, 4, 5].map((n) =>
+        source(n, { versionNumber: 2_147_483_647 })
+      ),
+    };
+    expect(parse(context)).toEqual(context);
+    const bytes = Buffer.byteLength(canonicalJson(context), 'utf8');
+    expect(bytes).toBeLessThan(AI_OPERATION_CONTEXT_MAX_BYTES / 4);
+    expect(AI_OPERATION_CONTEXT_MAX_BYTES).toBe(8192);
   });
 });

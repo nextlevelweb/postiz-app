@@ -467,10 +467,42 @@ const profile = (
   updatedAt: '2026-10-01T10:00:00.000Z',
 });
 
+// sources: ingested ones, one never captured, one archived
+const SOURCE = (n: number) => `f${n}111111-1111-4111-8111-111111111111`;
+const sourceRow = (
+  n: number,
+  name: string,
+  latestVersionNumber: number,
+  archivedAt: string | null = null
+) => ({
+  id: SOURCE(n),
+  kind: 'url',
+  name,
+  canonicalUrl: `https://example.com/source-${n}?token=URL_PRIVATE`,
+  latestVersionNumber,
+  archivedAt,
+  createdAt: '2026-10-01T10:00:00.000Z',
+  updatedAt: '2026-10-01T10:00:00.000Z',
+});
+// the exact capture the server answers for a chosen source
+const capture = (id: string) => {
+  const row = ai.sources.find((source) => source.id === id)!;
+  const n = Number(id[1]);
+  return {
+    sourceId: id,
+    versionId: `0${n}222222-2222-4222-8222-222222222222`,
+    versionNumber: row.latestVersionNumber,
+    contentHash: String(n).repeat(64),
+    name: row.name,
+    title: n === 2 ? null : `Title of ${row.name}`,
+  };
+};
+
 let ai: {
   connections: ReturnType<typeof connection>[];
   profiles: Record<string, ReturnType<typeof profile>[]>;
   policyRevisions: number;
+  sources: ReturnType<typeof sourceRow>[];
   propose?: (kind: 'item' | 'thread', body: any) => Reply;
 };
 
@@ -481,6 +513,7 @@ const proposeAnswer = (kind: 'item' | 'thread', body: any): Reply => {
   return reply(200, {
     operationId: '66666666-6666-4666-8666-666666666666',
     baseDraftVersion: body.baseDraftVersion,
+    provenance: { sources: (body.sourceIds || []).map(capture) },
     proposal:
       kind === 'item'
         ? {
@@ -536,6 +569,14 @@ function handleAI(
       })),
     });
   }
+  if (method === 'GET' && path === '/content-studio/sources') {
+    const query = new URLSearchParams(url.split('?')[1]);
+    const archived = query.get('archived') === 'true';
+    return reply(200, {
+      pages: 1,
+      results: ai.sources.filter((s) => !!s.archivedAt === archived),
+    });
+  }
   const propose = path.match(
     /^\/content-studio\/packages\/pkg-1\/ai\/(item|thread)$/
   );
@@ -580,6 +621,16 @@ beforeEach(() => {
       expertise: [profile(EXPERTISE, 'Bookkeeping')],
     },
     policyRevisions: 2,
+    sources: [
+      sourceRow(1, 'Weekly news', 3),
+      sourceRow(2, 'Market report', 1),
+      sourceRow(3, 'Not captured yet', 0),
+      sourceRow(4, 'Old source', 2, '2026-10-02T10:00:00.000Z'),
+      sourceRow(5, 'Blog D', 1),
+      sourceRow(6, 'Blog E', 1),
+      sourceRow(7, 'Blog F', 1),
+      sourceRow(8, 'Blog G', 2),
+    ],
   };
 });
 
@@ -754,6 +805,7 @@ describe('AI writing: context selection', () => {
         '/content-studio/audience-profiles?page=1&archived=false',
         '/content-studio/editorial-policy/revisions?page=1',
         '/content-studio/expertise-profiles?page=1&archived=false',
+        '/content-studio/sources?page=1&archived=false',
         '/content-studio/writing-profiles?page=1&archived=false',
       ].sort()
     );
@@ -991,6 +1043,7 @@ describe('AI writing: item actions', () => {
       editorialPolicy: true,
       audienceProfileId: AUDIENCE,
       expertiseProfileId: EXPERTISE,
+      sourceIds: [],
       instruction: 'Mention the sale',
       baseDraftVersion: 4,
     });
@@ -1009,6 +1062,7 @@ describe('AI writing: item actions', () => {
       editorialPolicy: false,
       audienceProfileId: null,
       expertiseProfileId: null,
+      sourceIds: [],
       instruction: null,
       baseDraftVersion: 4,
     });
@@ -1037,6 +1091,7 @@ describe('AI writing: thread', () => {
       editorialPolicy: false,
       audienceProfileId: null,
       expertiseProfileId: null,
+      sourceIds: [],
       instruction: null,
       baseDraftVersion: 4,
     });
@@ -1269,6 +1324,23 @@ describe('AI writing: errors', () => {
       'Selected AI context could not be verified.',
     ],
     ['FE8', 'CS_AI_CONTEXT_TOO_LARGE', 'The selected AI context is too large.'],
+    ['', 'CS_AI_SOURCE_NOT_FOUND', 'A selected source is no longer available.'],
+    [
+      '',
+      'CS_AI_SOURCE_NOT_READY',
+      'A selected source has not been ingested yet.',
+    ],
+    ['', 'CS_AI_SOURCE_ARCHIVED', 'A selected source is archived.'],
+    [
+      '',
+      'CS_AI_SOURCE_CONTEXT_TOO_LARGE',
+      'The selected source context is too large.',
+    ],
+    [
+      '',
+      'CS_AI_SOURCE_INTEGRITY_ERROR',
+      'Selected source context could not be verified.',
+    ],
     [
       'FE9',
       'CS_DRAFT_VERSION_CONFLICT',
@@ -1444,6 +1516,345 @@ describe('AI writing: privacy', () => {
   });
 });
 
+// --- sources ---
+const SOURCES_LIST = '/content-studio/sources?page=1&archived=false';
+const sourceBox = (name: string) =>
+  within(dialog()).getByRole('checkbox', { name }) as HTMLInputElement;
+const sourceBoxes = () =>
+  within(
+    within(dialog()).getByRole('group', { name: 'Sources' })
+  ).queryAllByRole('checkbox') as HTMLInputElement[];
+const sourceNames = () =>
+  sourceBoxes().map((box) => box.closest('label')!.textContent);
+const tick = async (name: string) => {
+  fireEvent.click(sourceBox(name));
+  await settle();
+};
+const sourceGets = () =>
+  calls().filter(
+    (c) => c.method === 'GET' && c.url.startsWith('/content-studio/sources')
+  );
+
+describe('AI writing: sources', () => {
+  it('UI-S1/UI-S5 offers Sources in the dialog, explained, with none chosen', async () => {
+    await renderWorkspace();
+    const root = await openItem();
+    expect(within(root).getByRole('group', { name: 'Sources' })).toBeTruthy();
+    expect(
+      within(root).getByText(
+        'Use selected source material as reference context. Sources are not automatically fact-checked. Up to 5, used in the order you select them.'
+      )
+    ).toBeTruthy();
+    expect(sourceBoxes().length).toBeGreaterThan(0);
+    expect(sourceBoxes().filter((box) => box.checked)).toEqual([]);
+    expect(root.textContent).not.toMatch(/#\d/);
+  });
+
+  it('UI-S2 loads the active source list once, only when a dialog opens', async () => {
+    await renderWorkspace();
+    expect(sourceGets()).toEqual([]);
+    await openItem();
+    expect(sourceGets().map((c) => c.url)).toEqual([SOURCES_LIST]);
+  });
+
+  it('UI-S3/UI-S4 lists active sources with a captured version only, by name', async () => {
+    // an archived row in the active list is left out as well
+    ai.sources.push(
+      sourceRow(9, 'Archived but listed', 1, '2026-10-03T10:00:00.000Z')
+    );
+    override = (m, url) =>
+      m === 'GET' && url === SOURCES_LIST
+        ? reply(200, { pages: 1, results: ai.sources })
+        : undefined;
+    await renderWorkspace();
+    await openItem();
+    expect(sourceNames()).toEqual([
+      'Weekly news',
+      'Market report',
+      'Blog D',
+      'Blog E',
+      'Blog F',
+      'Blog G',
+    ]);
+    expect(dialog().textContent).not.toMatch(
+      /Not captured yet|Old source|Archived but listed|example\.com|URL_PRIVATE/
+    );
+  });
+
+  it('UI-S6/UI-S10/UI-S11 one source: the request names its id only, no version, hash or text', async () => {
+    await renderWorkspace();
+    await openItem();
+    await tick('Weekly news');
+    expect(sourceBox('Weekly news').checked).toBe(true);
+    await generate();
+    const body = aiPosts()[0].body;
+    expect(body.sourceIds).toEqual([SOURCE(1)]);
+    expect(Object.keys(body).sort()).toEqual(
+      [
+        'operation',
+        'itemId',
+        'connectionId',
+        'model',
+        'writingProfileId',
+        'editorialPolicy',
+        'audienceProfileId',
+        'expertiseProfileId',
+        'sourceIds',
+        'instruction',
+        'baseDraftVersion',
+      ].sort()
+    );
+    expect(JSON.stringify(body)).not.toMatch(
+      /version(Id|Number)|contentHash|sourceVersion|sources"|content|blocks|title|https?:|222222/
+    );
+  });
+
+  it('UI-S7 five sources go in the order they were ticked, numbered in the list', async () => {
+    await renderWorkspace();
+    await click('AI thread');
+    for (const name of [
+      'Blog F',
+      'Weekly news',
+      'Blog D',
+      'Market report',
+      'Blog G',
+    ]) {
+      await tick(name);
+    }
+    expect(dialog().textContent).toContain('Blog F#1');
+    expect(dialog().textContent).toContain('Blog G#5');
+    await generate();
+    expect(aiPosts()[0].body.sourceIds).toEqual([
+      SOURCE(7),
+      SOURCE(1),
+      SOURCE(5),
+      SOURCE(2),
+      SOURCE(8),
+    ]);
+  });
+
+  it('UI-S8 takes five at most: the others are turned off until one is removed', async () => {
+    await renderWorkspace();
+    await openItem();
+    for (const name of [
+      'Weekly news',
+      'Market report',
+      'Blog D',
+      'Blog E',
+      'Blog F',
+    ]) {
+      await tick(name);
+    }
+    expect(sourceBox('Blog G').disabled).toBe(true);
+    expect(dialog().textContent).not.toContain('#6');
+    // a browser sends no click to a disabled box; even one that arrives
+    // adds nothing
+    fireEvent.click(sourceBox('Blog G'));
+    await settle();
+    expect(dialog().textContent).not.toContain('#6');
+    await generate();
+    expect(aiPosts()[0].body.sourceIds).toEqual([1, 2, 5, 6, 7].map(SOURCE));
+  });
+
+  it('UI-S9 a ticked source can be removed; the rest keep their order', async () => {
+    await renderWorkspace();
+    await openItem();
+    for (const name of ['Blog D', 'Weekly news', 'Blog E']) {
+      await tick(name);
+    }
+    await tick('Weekly news');
+    expect(sourceBox('Weekly news').checked).toBe(false);
+    for (const name of ['Weekly news', 'Market report', 'Blog F', 'Blog G']) {
+      expect(sourceBox(name).disabled).toBe(false);
+    }
+    await generate();
+    expect(aiPosts()[0].body.sourceIds).toEqual([SOURCE(5), SOURCE(6)]);
+  });
+
+  it('UI-S12/UI-S13 never loads a source, its versions or their content', async () => {
+    await renderWorkspace();
+    await openItem();
+    await tick('Weekly news');
+    await tick('Market report');
+    await generate();
+    expect(sourceGets().map((c) => c.url)).toEqual([SOURCES_LIST]);
+    expect(
+      calls().filter((c) => /\/content-studio\/sources\//.test(c.url))
+    ).toEqual([]);
+  });
+
+  it('UI-S14 keeps no selection: nothing stored, and a new dialog starts empty', async () => {
+    const setItem = jest.spyOn(Storage.prototype, 'setItem');
+    try {
+      await renderWorkspace();
+      await openItem();
+      await tick('Weekly news');
+      await click('Cancel', dialog());
+      await openItem();
+      expect(sourceBoxes().filter((box) => box.checked)).toEqual([]);
+      expect(setItem).not.toHaveBeenCalled();
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+
+  it('a source list that cannot be loaded leaves AI writing usable without sources', async () => {
+    override = (m, url) =>
+      m === 'GET' && url === SOURCES_LIST
+        ? reply(500, { code: 'X', msg: MARKER })
+        : undefined;
+    await renderWorkspace();
+    const root = await openItem();
+    expect(
+      within(root).getByText(
+        'Sources could not be loaded. You can still generate without them.'
+      )
+    ).toBeTruthy();
+    expect(root.textContent).not.toContain(MARKER);
+    await generate();
+    expect(aiPosts()[0].body.sourceIds).toEqual([]);
+    expect(queryReview()).not.toBeNull();
+  });
+
+  it('says so when no source has been captured yet', async () => {
+    ai.sources = [sourceRow(3, 'Not captured yet', 0)];
+    await renderWorkspace();
+    await openItem();
+    expect(within(dialog()).getByText('No ingested sources yet.')).toBeTruthy();
+    expect(sourceBoxes()).toEqual([]);
+  });
+});
+
+describe('AI writing: source provenance', () => {
+  const sourced = async (...names: string[]) => {
+    await renderWorkspace();
+    await openItem();
+    for (const name of names) {
+      await tick(name);
+    }
+    await generate();
+    return review();
+  };
+  const SOURCE_WORDS = /Based on selected sources|Source-backed/;
+
+  it('UI-P1 a suggestion without sources shows no source part', async () => {
+    const root = await sourced();
+    expect(root.textContent).not.toMatch(SOURCE_WORDS);
+    expect(root.textContent).not.toMatch(/Version \d/);
+  });
+
+  it('UI-P2-UI-P5 names the sources it was written from: name, title when there is one, and the version', async () => {
+    const root = await sourced('Market report', 'Weekly news');
+    expect(within(root).getByText('Based on selected sources')).toBeTruthy();
+    expect(
+      Array.from(root.querySelectorAll('li')).map((li) => li.textContent)
+    ).toEqual([
+      'Market report · Version 1',
+      'Weekly news · Title of Weekly news · Version 3',
+    ]);
+  });
+
+  it('UI-P6-UI-P10 shows no hash, id or URL, and never calls the sources verified', async () => {
+    const root = await sourced('Weekly news', 'Market report');
+    const text = root.textContent as string;
+    expect(text).not.toMatch(/[0-9a-f]{64}|1111111111|2222222222/);
+    expect(text).not.toMatch(
+      /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/
+    );
+    expect(text).not.toMatch(/https?:|example\.com|URL_PRIVATE/);
+    expect(text).not.toMatch(/verified|fact[- ]?checked|trusted|accurate/i);
+    expect(root.innerHTML).not.toMatch(/f1111111|01222222|[0-9a-f]{64}/);
+  });
+
+  it('a thread suggestion names its sources the same way', async () => {
+    await renderWorkspace();
+    await click('AI thread');
+    await tick('Blog G');
+    await generate();
+    expect(
+      Array.from(review().querySelectorAll('li')).map((li) => li.textContent)
+    ).toEqual(['Blog G · Title of Blog G · Version 2']);
+  });
+
+  it('ST-S1/ST-S2/ST-S5 a refresh or archive of a source after the suggestion changes nothing: it stays current and Accept saves it', async () => {
+    await sourced('Weekly news');
+    ai.sources[0] = sourceRow(
+      1,
+      'Weekly news renamed',
+      4,
+      '2026-10-12T10:00:00.000Z'
+    );
+    await act(async () => {
+      await swrMutate(SOURCES_LIST);
+    });
+    await settle();
+    const root = review();
+    expect(within(root).queryByRole('alert')).toBeNull();
+    expect(
+      Array.from(root.querySelectorAll('li')).map((li) => li.textContent)
+    ).toEqual(['Weekly news · Title of Weekly news · Version 3']);
+    expect(button('Accept', root)).toHaveProperty('disabled', false);
+    await click('Accept');
+    expect(box('Post').value).toBe('Suggested main');
+    expect(
+      calls()
+        .filter((c) => c.method !== 'GET')
+        .map((c) => `${c.method} ${c.url}`)
+    ).toEqual([`POST ${BASE}/ai/item`, `PUT ${BASE}/draft`]);
+  });
+
+  it('ST-S3 an edit still makes a source-backed suggestion stale', async () => {
+    await sourced('Weekly news');
+    type('Post', 'Edited after');
+    expect(within(review()).getByRole('alert')).toBeTruthy();
+    expect(button('Accept', review())).toHaveProperty('disabled', true);
+  });
+
+  it('ST-S4 staleness looks at the draft only: the same sources or other ones make no difference', () => {
+    const {
+      isContentStudioAIProposalCurrent,
+    } = require('./content-studio.ai-proposal');
+    const draft = draftOf(item('main', 'a'), item('f1', 'b'));
+    const proposal = (sources: unknown[]) => ({
+      operationId: 'op',
+      baseDraftVersion: 4,
+      proposal: {
+        type: 'thread',
+        items: [
+          { itemId: 'main', text: 'x' },
+          { itemId: 'f1', text: 'y' },
+        ],
+      },
+      provenance: { sources },
+    });
+    const one = [capture(SOURCE(1))];
+    for (const sources of [[], one, [{ ...one[0], versionNumber: 9 }]]) {
+      expect(
+        isContentStudioAIProposalCurrent(proposal(sources), draft, 4, true)
+      ).toBe(true);
+      expect(
+        isContentStudioAIProposalCurrent(proposal(sources), draft, 5, true)
+      ).toBe(false);
+      expect(
+        isContentStudioAIProposalCurrent(
+          proposal(sources),
+          draftOf(item('f1', 'b'), item('main', 'a')),
+          4,
+          true
+        )
+      ).toBe(false);
+      expect(
+        isContentStudioAIProposalCurrent(
+          proposal(sources),
+          draftOf(item('main', 'a'), item('f1', 'b'), item('f2', 'c')),
+          4,
+          true
+        )
+      ).toBe(false);
+    }
+  });
+});
+
 describe('AI writing: source surface', () => {
   const files = [
     'content-studio.ai-writing.tsx',
@@ -1487,6 +1898,47 @@ describe('AI writing: source surface', () => {
     ).toEqual(['POST']);
     expect(text).toContain("/ai/${itemId ? 'item' : 'thread'}");
     expect(all).not.toMatch(/\/apply|\/accept|ai\/generate|\/operations/);
+  });
+
+  it('M13/M28 never calls sources verified, fact checked or trusted', () => {
+    const text = sources.map(([, t]) => t).join('\n');
+    expect(text).not.toMatch(
+      /verified sources?|sources? verified|source-backed|trusted|accurate|guaranteed/i
+    );
+    // the one mention: sources are not automatically fact-checked
+    expect(text.match(/fact[- ]?checked/gi)).toEqual(['fact-checked']);
+    expect(text).toContain('Sources are not automatically fact-checked.');
+  });
+
+  it('UI-S12 the source list is the one source request: names only, no version or content route, no write', () => {
+    const api = code(
+      readFileSync(join(__dirname, 'content-studio.sources.api.ts'), 'utf8')
+    );
+    expect(api).not.toMatch(
+      /method:|mutate|\/versions|\/refresh|localStorage|sessionStorage|console\./
+    );
+    expect(
+      Array.from(api.matchAll(/['`](\/content-studio[^'`]*)['`]/g)).map(
+        (m) => m[1]
+      )
+    ).toEqual(['/content-studio/sources']);
+    const dialogCode = sources.find(
+      ([file]) => file === 'content-studio.ai-writing.tsx'
+    )![1];
+    expect(dialogCode).toContain('useContentStudioSources(false, 1)');
+    // the request names sources by id only
+    const requestType = dialogCode.slice(
+      dialogCode.indexOf('export interface ContentStudioAIWritingRequest'),
+      dialogCode.indexOf(
+        '}',
+        dialogCode.indexOf('export interface ContentStudioAIWritingRequest')
+      )
+    );
+    expect(requestType).toContain('sourceIds: string[];');
+    expect(requestType).not.toMatch(
+      /[vV]ersion|[hH]ash|sourceContent|blocks|[tT]itle|[uU]rl/
+    );
+    expect(all).not.toMatch(/sourceVersionId/);
   });
 
   it('builds no prompt in the browser and fetches no profile content', () => {
