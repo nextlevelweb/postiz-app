@@ -62,6 +62,8 @@ model Organization {
   contentStudioExpertiseProfileRevisions ContentStudioExpertiseProfileRevision[]
   contentStudioSources                   ContentStudioSource[]
   contentStudioSourceVersions            ContentStudioSourceVersion[]
+  contentStudioBrandKit                  ContentStudioBrandKit?
+  contentStudioBrandKitRevisions         ContentStudioBrandKitRevision[]
 
   @@index([apiKey])
   @@index([streakSince])
@@ -150,6 +152,8 @@ model User {
   contentStudioExpertiseProfileRevisions ContentStudioExpertiseProfileRevision[] @relation("ContentStudioExpertiseProfileRevisionCreatedBy")
   contentStudioSources                   ContentStudioSource[]                   @relation("ContentStudioSourceCreatedBy")
   contentStudioSourceVersions            ContentStudioSourceVersion[]            @relation("ContentStudioSourceVersionCreatedBy")
+  contentStudioBrandKits                 ContentStudioBrandKit[]                 @relation("ContentStudioBrandKitCreatedBy")
+  contentStudioBrandKitRevisions         ContentStudioBrandKitRevision[]         @relation("ContentStudioBrandKitRevisionCreatedBy")
 
   @@unique([email, providerName])
   @@index([lastReadNotifications])
@@ -2273,5 +2277,44 @@ model ContentStudioSourceVersion {
   @@unique([id, organizationId])
   @@index([organizationId])
   @@index([sourceId, createdAt])
+  @@index([createdById])
+}
+
+// One per organization: organizationId is unique. The kit itself (identity,
+// color and type tokens, visual direction) lives in immutable revisions; the
+// only thing that changes here is the number of the latest one. No assets,
+// Media or design references yet
+model ContentStudioBrandKit {
+  id                   String                          @id @default(uuid())
+  organizationId       String                          @unique
+  latestRevisionNumber Int
+  createdById          String
+  createdAt            DateTime                        @default(now())
+  updatedAt            DateTime                        @updatedAt
+  organization         Organization                    @relation(fields: [organizationId], references: [id])
+  createdBy            User                            @relation("ContentStudioBrandKitCreatedBy", fields: [createdById], references: [id])
+  revisions            ContentStudioBrandKitRevision[]
+
+  @@unique([id, organizationId])
+  @@index([createdById])
+}
+
+model ContentStudioBrandKitRevision {
+  id             String                @id @default(uuid())
+  organizationId String
+  brandKitId     String
+  revisionNumber Int
+  schemaVersion  Int
+  content        String
+  contentHash    String
+  createdById    String
+  createdAt      DateTime              @default(now())
+  organization   Organization          @relation(fields: [organizationId], references: [id])
+  brandKit       ContentStudioBrandKit @relation(fields: [brandKitId, organizationId], references: [id, organizationId])
+  createdBy      User                  @relation("ContentStudioBrandKitRevisionCreatedBy", fields: [createdById], references: [id])
+
+  @@unique([brandKitId, revisionNumber])
+  @@unique([id, organizationId])
+  @@index([organizationId])
   @@index([createdById])
 }

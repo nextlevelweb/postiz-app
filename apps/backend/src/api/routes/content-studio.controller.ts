@@ -27,6 +27,7 @@ import { ContentStudioExpertiseProfileService } from '@gitroom/nestjs-libraries/
 import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
+import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -80,6 +81,10 @@ import {
   ListContentStudioSourceVersionsDto,
   UpdateContentStudioSourceDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.source.dto';
+import {
+  ListContentStudioBrandKitRevisionsDto,
+  SaveContentStudioBrandKitRevisionDto,
+} from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.brand-kit.dto';
 
 // The global pipe neither strips nor rejects unknown fields; here any field
 // the DTO does not declare (organizationId, createdById, ...) is a 400
@@ -103,7 +108,8 @@ export class ContentStudioController {
     private _contentStudioExpertiseProfileService: ContentStudioExpertiseProfileService,
     private _contentStudioAIWritingService: ContentStudioAIWritingService,
     private _contentStudioSourceService: ContentStudioSourceService,
-    private _contentStudioSourceIngestionService: ContentStudioSourceIngestionService
+    private _contentStudioSourceIngestionService: ContentStudioSourceIngestionService,
+    private _contentStudioBrandKitService: ContentStudioBrandKitService
   ) {}
 
   @Get('/projects')
@@ -751,6 +757,51 @@ export class ContentStudioController {
     @Param('revisionId') revisionId: string
   ) {
     return this._contentStudioEditorialPolicyService.getRevision({
+      organizationId: org.id,
+      revisionId,
+    });
+  }
+
+  // The Brand Kit: one per organization, addressed by the request
+  // organization and never by an id. Every member may read and revise it.
+  // Structured identity, color and type tokens only: no asset, font file,
+  // Media or URL route
+  @Get('/brand-kit')
+  getBrandKit(@GetOrgFromRequest() org: Organization) {
+    return this._contentStudioBrandKitService.getBrandKit(org.id);
+  }
+
+  @Post('/brand-kit/revisions')
+  createBrandKitRevision(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Body() body: SaveContentStudioBrandKitRevisionDto
+  ) {
+    return this._contentStudioBrandKitService.createRevision({
+      organizationId: org.id,
+      userId: user.id,
+      baseRevisionNumber: body.baseRevisionNumber,
+      content: body.content,
+    });
+  }
+
+  @Get('/brand-kit/revisions')
+  listBrandKitRevisions(
+    @GetOrgFromRequest() org: Organization,
+    @Query() query: ListContentStudioBrandKitRevisionsDto
+  ) {
+    return this._contentStudioBrandKitService.listRevisions({
+      organizationId: org.id,
+      page: query.page,
+    });
+  }
+
+  @Get('/brand-kit/revisions/:revisionId')
+  getBrandKitRevision(
+    @GetOrgFromRequest() org: Organization,
+    @Param('revisionId') revisionId: string
+  ) {
+    return this._contentStudioBrandKitService.getRevision({
       organizationId: org.id,
       revisionId,
     });

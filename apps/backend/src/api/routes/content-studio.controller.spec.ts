@@ -23,6 +23,7 @@ import { ContentStudioExpertiseProfileService } from '@gitroom/nestjs-libraries/
 import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
+import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -92,7 +93,8 @@ const setup = () => {
     {} as ContentStudioExpertiseProfileService,
     {} as ContentStudioAIWritingService,
     {} as ContentStudioSourceService,
-    {} as ContentStudioSourceIngestionService
+    {} as ContentStudioSourceIngestionService,
+    {} as ContentStudioBrandKitService
   );
   return { service, handoffs, controller, result };
 };
@@ -277,7 +279,7 @@ describe('ContentStudioController wiring', () => {
     expect(types('listRevisions')[2]).toBe(ListContentPackageRevisionsDto);
   });
 
-  it('exposes exactly the project, package, draft, revision, handoff, AI connection, profile, AI writing and source routes', () => {
+  it('exposes exactly the project, package, draft, revision, handoff, AI connection, profile, AI writing, source and Brand Kit routes', () => {
     expect(Reflect.getMetadata(PATH_METADATA, ContentStudioController)).toBe(
       '/content-studio'
     );
@@ -301,6 +303,9 @@ describe('ContentStudioController wiring', () => {
       'GET /audience-profiles/:id',
       'GET /audience-profiles/:id/revisions',
       'GET /audience-profiles/:id/revisions/:revisionId',
+      'GET /brand-kit',
+      'GET /brand-kit/revisions',
+      'GET /brand-kit/revisions/:revisionId',
       'GET /editorial-policy',
       'GET /editorial-policy/revisions',
       'GET /editorial-policy/revisions/:revisionId',
@@ -338,6 +343,7 @@ describe('ContentStudioController wiring', () => {
       'POST /audience-profiles/:id/archive',
       'POST /audience-profiles/:id/restore',
       'POST /audience-profiles/:id/revisions',
+      'POST /brand-kit/revisions',
       'POST /editorial-policy/revisions',
       'POST /expertise-profiles',
       'POST /expertise-profiles/:id/archive',
@@ -473,6 +479,7 @@ describe('ContentStudioController handoffs', () => {
       ContentStudioAIWritingService,
       ContentStudioSourceService,
       ContentStudioSourceIngestionService,
+      ContentStudioBrandKitService,
     ]);
   });
 });
@@ -602,6 +609,8 @@ describe('ContentStudioController revisions', () => {
     expect(revisionRoutes).toEqual([
       'GET /audience-profiles/:id/revisions',
       'GET /audience-profiles/:id/revisions/:revisionId',
+      'GET /brand-kit/revisions',
+      'GET /brand-kit/revisions/:revisionId',
       'GET /editorial-policy/revisions',
       'GET /editorial-policy/revisions/:revisionId',
       'GET /expertise-profiles/:id/revisions',
@@ -611,6 +620,7 @@ describe('ContentStudioController revisions', () => {
       'GET /writing-profiles/:id/revisions',
       'GET /writing-profiles/:id/revisions/:revisionId',
       'POST /audience-profiles/:id/revisions',
+      'POST /brand-kit/revisions',
       'POST /editorial-policy/revisions',
       'POST /expertise-profiles/:id/revisions',
       'POST /packages/:id/revisions',

@@ -72,6 +72,8 @@ import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/databas
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
+import { ContentStudioBrandKitRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.repository';
+import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.service';
 
 @Global()
 @Module({
@@ -153,6 +155,8 @@ import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/c
     ContentStudioSourceRepository,
     ContentStudioSourceService,
     ContentStudioSourceIngestionService,
+    ContentStudioBrandKitRepository,
+    ContentStudioBrandKitService,
   ],
   get exports() {
     return this.providers;
