@@ -74,6 +74,8 @@ import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/p
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 import { ContentStudioBrandKitRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.repository';
 import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.service';
+import { ContentStudioDesignRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.repository';
+import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
 
 @Global()
 @Module({
@@ -157,6 +159,8 @@ import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database
     ContentStudioSourceIngestionService,
     ContentStudioBrandKitRepository,
     ContentStudioBrandKitService,
+    ContentStudioDesignRepository,
+    ContentStudioDesignService,
   ],
   get exports() {
     return this.providers;

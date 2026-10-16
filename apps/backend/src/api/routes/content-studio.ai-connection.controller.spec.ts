@@ -26,6 +26,7 @@ import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/databas
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.service';
+import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
 import {
   CreateContentStudioAIConnectionDto,
   ReplaceContentStudioAIConnectionCredentialDto,
@@ -78,7 +79,8 @@ const setup = () => {
     {} as ContentStudioAIWritingService,
     {} as ContentStudioSourceService,
     {} as ContentStudioSourceIngestionService,
-    {} as ContentStudioBrandKitService
+    {} as ContentStudioBrandKitService,
+    {} as ContentStudioDesignService
   );
   return { ai, controller, result };
 };

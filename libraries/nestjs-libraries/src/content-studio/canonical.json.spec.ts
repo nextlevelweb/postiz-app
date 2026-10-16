@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import {
   canonicalJson,
   CanonicalJsonError,
+  canonicalJsonWithFiniteNumbers,
   sha256Hex,
 } from '@gitroom/nestjs-libraries/content-studio/canonical.json';
 import { parseContentPackageDraft } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
@@ -265,5 +266,53 @@ describe('revision content hashing', () => {
     expect(hashOf({ schemaVersion: 1, copy: { global: { thread } } })).not.toBe(
       hashOf({ schemaVersion: 1, copy: { global: { thread: swapped } } })
     );
+  });
+});
+
+// P4-02: design geometry has fractions. canonicalJson keeps refusing them
+// (the AI operation context relies on it); this variant writes finite numbers
+// the way JSON.stringify does and is otherwise identical
+describe('canonicalJsonWithFiniteNumbers', () => {
+  const finiteRejection = (value: unknown) => {
+    try {
+      canonicalJsonWithFiniteNumbers(value);
+    } catch (error) {
+      expect(error).toBeInstanceOf(CanonicalJsonError);
+      return (error as Error).message;
+    }
+    throw new Error('expected a CanonicalJsonError');
+  };
+
+  it('writes finite numbers as JSON.stringify does, keys sorted', () => {
+    expect(
+      canonicalJsonWithFiniteNumbers({
+        b: 0.1,
+        a: -12.75,
+        c: [1e-7, 2.5e21, 3],
+      })
+    ).toBe('{"a":-12.75,"b":0.1,"c":[1e-7,2.5e+21,3]}');
+    expect(canonicalJsonWithFiniteNumbers(-0)).toBe('0');
+    expect(canonicalJsonWithFiniteNumbers(0.1 + 0.2)).toBe(
+      '0.30000000000000004'
+    );
+    expect(JSON.parse(canonicalJsonWithFiniteNumbers({ x: 10.5 }))).toEqual({
+      x: 10.5,
+    });
+  });
+
+  it('writes integers and everything else exactly like canonicalJson', () => {
+    const value = { z: [1, 'two', null, true], a: { y: -3, x: '\u20ac' } };
+    expect(canonicalJsonWithFiniteNumbers(value)).toBe(canonicalJson(value));
+    expect(rejection(1.5)).toBe('Only safe integers are supported');
+  });
+
+  it.each([
+    ['NaN', NaN, 'Only finite numbers are supported'],
+    ['Infinity', Infinity, 'Only finite numbers are supported'],
+    ['-Infinity', -Infinity, 'Only finite numbers are supported'],
+    ['a Date', new Date(0), 'Only plain objects are supported'],
+    ['undefined', undefined, 'Unsupported undefined value'],
+  ])('still refuses %s', (_name, value, message) => {
+    expect(finiteRejection(value)).toBe(message);
   });
 });

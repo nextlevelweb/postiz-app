@@ -28,6 +28,7 @@ import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/databas
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.service';
+import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -85,6 +86,13 @@ import {
   ListContentStudioBrandKitRevisionsDto,
   SaveContentStudioBrandKitRevisionDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.brand-kit.dto';
+import {
+  CreateContentStudioDesignDto,
+  CreateContentStudioDesignRevisionDto,
+  ListContentStudioDesignRevisionsDto,
+  ListContentStudioDesignsDto,
+  UpdateContentStudioDesignDto,
+} from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design.dto';
 
 // The global pipe neither strips nor rejects unknown fields; here any field
 // the DTO does not declare (organizationId, createdById, ...) is a 400
@@ -109,7 +117,8 @@ export class ContentStudioController {
     private _contentStudioAIWritingService: ContentStudioAIWritingService,
     private _contentStudioSourceService: ContentStudioSourceService,
     private _contentStudioSourceIngestionService: ContentStudioSourceIngestionService,
-    private _contentStudioBrandKitService: ContentStudioBrandKitService
+    private _contentStudioBrandKitService: ContentStudioBrandKitService,
+    private _contentStudioDesignService: ContentStudioDesignService
   ) {}
 
   @Get('/projects')
@@ -805,6 +814,110 @@ export class ContentStudioController {
       organizationId: org.id,
       revisionId,
     });
+  }
+
+  // Designs: named design projects whose documents are immutable revisions.
+  // Every member may read, create, rename, revise, archive and restore them.
+  // The organization and the user come from the request only. No route
+  // renders, previews, exports, generates or deletes
+  @Get('/designs')
+  listDesigns(
+    @GetOrgFromRequest() org: Organization,
+    @Query() query: ListContentStudioDesignsDto
+  ) {
+    return this._contentStudioDesignService.listDesigns({
+      organizationId: org.id,
+      archived: query.archived,
+      page: query.page,
+    });
+  }
+
+  @Post('/designs')
+  createDesign(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Body() body: CreateContentStudioDesignDto
+  ) {
+    return this._contentStudioDesignService.createDesign({
+      organizationId: org.id,
+      userId: user.id,
+      name: body.name,
+      content: body.content,
+    });
+  }
+
+  @Get('/designs/:id')
+  getDesign(@GetOrgFromRequest() org: Organization, @Param('id') id: string) {
+    return this._contentStudioDesignService.getDesign(org.id, id);
+  }
+
+  @Patch('/designs/:id')
+  updateDesign(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Body() body: UpdateContentStudioDesignDto
+  ) {
+    return this._contentStudioDesignService.renameDesign(org.id, id, body.name);
+  }
+
+  @Post('/designs/:id/revisions')
+  createDesignRevision(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Body() body: CreateContentStudioDesignRevisionDto
+  ) {
+    return this._contentStudioDesignService.createRevision({
+      organizationId: org.id,
+      designId: id,
+      userId: user.id,
+      baseRevisionNumber: body.baseRevisionNumber,
+      content: body.content,
+    });
+  }
+
+  @Get('/designs/:id/revisions')
+  listDesignRevisions(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Query() query: ListContentStudioDesignRevisionsDto
+  ) {
+    return this._contentStudioDesignService.listRevisions({
+      organizationId: org.id,
+      designId: id,
+      page: query.page,
+    });
+  }
+
+  @Get('/designs/:id/revisions/:revisionId')
+  getDesignRevision(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Param('revisionId') revisionId: string
+  ) {
+    return this._contentStudioDesignService.getRevision({
+      organizationId: org.id,
+      designId: id,
+      revisionId,
+    });
+  }
+
+  @Post('/designs/:id/archive')
+  @HttpCode(200)
+  archiveDesign(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioDesignService.archiveDesign(org.id, id);
+  }
+
+  @Post('/designs/:id/restore')
+  @HttpCode(200)
+  restoreDesign(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioDesignService.restoreDesign(org.id, id);
   }
 
   // Audience Profiles: editorial context about who content is for, never ad

@@ -14,6 +14,22 @@ export class CanonicalJsonError extends Error {
 }
 
 export function canonicalJson(value: unknown): string {
+  return serialize(value, 'safe-integers');
+}
+
+// The same, for content with fractional numbers (design geometry). A finite
+// number is written the way JSON.stringify writes it: the shortest text that
+// reads back as the same number (ECMAScript Number::toString, which RFC 8785
+// uses too), -0 as 0. NaN and the infinities are still refused. canonicalJson
+// itself keeps refusing fractions: other content relies on that
+export function canonicalJsonWithFiniteNumbers(value: unknown): string {
+  return serialize(value, 'finite');
+}
+
+function serialize(
+  value: unknown,
+  numbers: 'safe-integers' | 'finite'
+): string {
   // objects on the current path only: a shared child is fine, a cycle is not
   const active = new WeakSet<object>();
 
@@ -27,6 +43,12 @@ export function canonicalJson(value: unknown): string {
       case 'string':
         return JSON.stringify(current);
       case 'number':
+        if (numbers === 'finite') {
+          if (!Number.isFinite(current)) {
+            throw new CanonicalJsonError('Only finite numbers are supported');
+          }
+          return JSON.stringify(current);
+        }
         if (!Number.isSafeInteger(current)) {
           throw new CanonicalJsonError('Only safe integers are supported');
         }

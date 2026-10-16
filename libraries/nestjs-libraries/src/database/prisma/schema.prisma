@@ -64,6 +64,8 @@ model Organization {
   contentStudioSourceVersions            ContentStudioSourceVersion[]
   contentStudioBrandKit                  ContentStudioBrandKit?
   contentStudioBrandKitRevisions         ContentStudioBrandKitRevision[]
+  contentStudioDesignProjects            ContentStudioDesignProject[]
+  contentStudioDesignRevisions           ContentStudioDesignRevision[]
 
   @@index([apiKey])
   @@index([streakSince])
@@ -154,6 +156,8 @@ model User {
   contentStudioSourceVersions            ContentStudioSourceVersion[]            @relation("ContentStudioSourceVersionCreatedBy")
   contentStudioBrandKits                 ContentStudioBrandKit[]                 @relation("ContentStudioBrandKitCreatedBy")
   contentStudioBrandKitRevisions         ContentStudioBrandKitRevision[]         @relation("ContentStudioBrandKitRevisionCreatedBy")
+  contentStudioDesignProjects            ContentStudioDesignProject[]            @relation("ContentStudioDesignProjectCreatedBy")
+  contentStudioDesignRevisions           ContentStudioDesignRevision[]           @relation("ContentStudioDesignRevisionCreatedBy")
 
   @@unique([email, providerName])
   @@index([lastReadNotifications])
@@ -2314,6 +2318,47 @@ model ContentStudioBrandKitRevision {
   createdBy      User                  @relation("ContentStudioBrandKitRevisionCreatedBy", fields: [createdById], references: [id])
 
   @@unique([brandKitId, revisionNumber])
+  @@unique([id, organizationId])
+  @@index([organizationId])
+  @@index([createdById])
+}
+
+// A named design of an organization. The design document itself lives in
+// immutable revisions; the project row holds only its name, archive state and
+// the number of the latest revision
+model ContentStudioDesignProject {
+  id                   String                        @id @default(uuid())
+  organizationId       String
+  name                 String
+  latestRevisionNumber Int
+  archivedAt           DateTime?
+  createdById          String
+  createdAt            DateTime                      @default(now())
+  updatedAt            DateTime                      @updatedAt
+  organization         Organization                  @relation(fields: [organizationId], references: [id])
+  createdBy            User                          @relation("ContentStudioDesignProjectCreatedBy", fields: [createdById], references: [id])
+  revisions            ContentStudioDesignRevision[]
+
+  @@unique([id, organizationId])
+  @@index([organizationId, archivedAt])
+  @@index([createdById])
+}
+
+model ContentStudioDesignRevision {
+  id              String                     @id @default(uuid())
+  organizationId  String
+  designProjectId String
+  revisionNumber  Int
+  schemaVersion   Int
+  content         String
+  contentHash     String
+  createdById     String
+  createdAt       DateTime                   @default(now())
+  organization    Organization               @relation(fields: [organizationId], references: [id])
+  designProject   ContentStudioDesignProject @relation(fields: [designProjectId, organizationId], references: [id, organizationId])
+  createdBy       User                       @relation("ContentStudioDesignRevisionCreatedBy", fields: [createdById], references: [id])
+
+  @@unique([designProjectId, revisionNumber])
   @@unique([id, organizationId])
   @@index([organizationId])
   @@index([createdById])
