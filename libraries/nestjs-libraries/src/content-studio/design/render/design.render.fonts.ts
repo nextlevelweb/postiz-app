@@ -50,7 +50,8 @@ const fontkit = fontkitModule as unknown as {
 };
 
 // sfnt versions of a single TrueType or OpenType (CFF) font
-const SINGLE_FONT = [0x00010000, 0x74727565, 0x4f54544f];
+const OPENTYPE_CFF = 0x4f54544f;
+const SINGLE_FONT = [0x00010000, 0x74727565, OPENTYPE_CFF];
 // collections (ttcf) and wrapped fonts (wOFF, wOF2) are not used in v1
 const OTHER_FONT = [0x74746366, 0x774f4646, 0x774f4632];
 // the path data fontkit writes: commands and numbers only
@@ -149,6 +150,79 @@ export function contentStudioDesignGlyphClusters(
   return cursor === points.length ? clusters : null;
 }
 
+interface ParsedFontFile {
+  format: 'ttf' | 'otf';
+  font: FontkitFont;
+  unitsPerEm: number;
+  ascent: number;
+  descent: number;
+  glyphCount: number;
+}
+
+// One font file as the renderer accepts it: a single TrueType or OpenType
+// (CFF) font that fontkit parses, with a usable em size and glyph count.
+// Throws ContentStudioDesignRenderError only
+function parseFontFile(bytes: Buffer): ParsedFontFile {
+  const tag = bytes.length >= 4 ? bytes.readUInt32BE(0) : -1;
+  if (OTHER_FONT.includes(tag)) {
+    throw new ContentStudioDesignRenderError('FONT_ASSET_UNSUPPORTED');
+  }
+  if (!SINGLE_FONT.includes(tag)) {
+    throw new ContentStudioDesignRenderError('FONT_ASSET_INVALID');
+  }
+  let font: FontkitFont;
+  let unitsPerEm: number;
+  let ascent: number;
+  let descent: number;
+  let glyphCount: number;
+  try {
+    font = fontkit.create(bytes) as FontkitFont;
+    if ('fonts' in (font as object)) {
+      throw new ContentStudioDesignRenderError('FONT_ASSET_UNSUPPORTED');
+    }
+    ({ unitsPerEm, ascent, descent } = font);
+    glyphCount = font.numGlyphs;
+  } catch (error) {
+    if (error instanceof ContentStudioDesignRenderError) {
+      throw error;
+    }
+    throw new ContentStudioDesignRenderError('FONT_ASSET_INVALID');
+  }
+  if (
+    !Number.isFinite(unitsPerEm) ||
+    unitsPerEm <= 0 ||
+    !Number.isSafeInteger(glyphCount) ||
+    glyphCount <= 0
+  ) {
+    throw new ContentStudioDesignRenderError('FONT_ASSET_INVALID');
+  }
+  return {
+    format: tag === OPENTYPE_CFF ? 'otf' : 'ttf',
+    font,
+    unitsPerEm,
+    ascent,
+    descent,
+    glyphCount,
+  };
+}
+
+// Checks a font file before it is stored for rendering, with exactly the
+// rules a render applies to it (size, format, fontkit parse, em size and
+// glyph count), and names its format: 'otf' for OpenType CFF ('OTTO'),
+// 'ttf' for TrueType. Throws ContentStudioDesignRenderError
+// (FONT_ASSET_INVALID or FONT_ASSET_UNSUPPORTED) with a fixed message. The
+// bytes are not kept or changed
+export function validateContentStudioRenderFontBytes(bytes: Uint8Array) {
+  if (
+    !(bytes instanceof Uint8Array) ||
+    bytes.length === 0 ||
+    bytes.length > DESIGN_RENDER_FONT_MAX_BYTES
+  ) {
+    throw new ContentStudioDesignRenderError('FONT_ASSET_INVALID');
+  }
+  return { format: parseFontFile(Buffer.from(bytes)).format };
+}
+
 export interface ContentStudioDesignRenderFont {
   key: string;
   sha256: string;
@@ -208,39 +282,13 @@ export function contentStudioDesignRenderFonts(
     if (known && known.sha256 !== sha256) {
       throw fail('FONT_ASSET_INTEGRITY_ERROR');
     }
-    const tag = bytes.length >= 4 ? bytes.readUInt32BE(0) : -1;
-    if (OTHER_FONT.includes(tag)) {
-      throw fail('FONT_ASSET_UNSUPPORTED');
-    }
-    if (!SINGLE_FONT.includes(tag)) {
-      throw fail('FONT_ASSET_INVALID');
-    }
-    let font: FontkitFont;
-    let unitsPerEm: number;
-    let ascent: number;
-    let descent: number;
-    let glyphCount: number;
+    let parsed: ParsedFontFile;
     try {
-      font = fontkit.create(bytes) as FontkitFont;
-      if ('fonts' in (font as object)) {
-        throw fail('FONT_ASSET_UNSUPPORTED');
-      }
-      ({ unitsPerEm, ascent, descent } = font);
-      glyphCount = font.numGlyphs;
+      parsed = parseFontFile(bytes);
     } catch (error) {
-      if (error instanceof ContentStudioDesignRenderError) {
-        throw error;
-      }
-      throw fail('FONT_ASSET_INVALID');
+      throw fail((error as ContentStudioDesignRenderError).code);
     }
-    if (
-      !Number.isFinite(unitsPerEm) ||
-      unitsPerEm <= 0 ||
-      !Number.isSafeInteger(glyphCount) ||
-      glyphCount <= 0
-    ) {
-      throw fail('FONT_ASSET_INVALID');
-    }
+    const { font, unitsPerEm, ascent, descent, glyphCount } = parsed;
 
     // shaping with fontkit's default features (kerning and ligatures
     // included), mapped to the layout engine's generic glyphs

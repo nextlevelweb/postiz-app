@@ -19,6 +19,7 @@ import { organizationId } from '@gitroom/nestjs-libraries/temporal/temporal.sear
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import { MediaProcessorJob } from '@gitroom/nestjs-libraries/upload/media.processor.interface';
 import { extname } from 'path';
+import { Readable } from 'stream';
 import { randomBytes } from 'crypto';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import { ssrfSafeDispatcher } from '@gitroom/nestjs-libraries/dtos/webhooks/ssrf.safe.dispatcher';
@@ -104,6 +105,24 @@ export class MediaService {
 
   getMediaByIdForOrganization(org: string, id: string) {
     return this._mediaRepository.getMediaByIdForOrganization(org, id);
+  }
+
+  // Stores bytes the server generated, of a type the caller produced and
+  // checked itself, the way an upload is stored, as a new Media of the
+  // organization
+  async saveGeneratedFile(
+    org: string,
+    body: Buffer,
+    mimetype: string,
+    ext: string,
+    originalName: string
+  ) {
+    const uploaded = await this.storage.uploadStream(
+      Readable.from([body]),
+      mimetype,
+      ext
+    );
+    return this.saveFile(org, uploaded.filename, uploaded.path, originalName);
   }
 
   async generateImage(

@@ -9,9 +9,12 @@ import {
   Put,
   Query,
   Res,
+  UploadedFile,
+  UseInterceptors,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
 import { Organization, User } from '@prisma/client';
@@ -29,6 +32,11 @@ import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/p
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.service';
 import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
+import {
+  ContentStudioRenderFontService,
+  RENDER_FONT_FILE_MAX_BYTES,
+} from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
+import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -93,6 +101,10 @@ import {
   ListContentStudioDesignsDto,
   UpdateContentStudioDesignDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design.dto';
+import {
+  RenderContentStudioDesignDto,
+  UploadContentStudioRenderFontDto,
+} from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-render.dto';
 
 // The global pipe neither strips nor rejects unknown fields; here any field
 // the DTO does not declare (organizationId, createdById, ...) is a 400
@@ -101,6 +113,19 @@ const contentStudioValidationPipe = new ValidationPipe({
   whitelist: true,
   forbidNonWhitelisted: true,
 });
+
+// A render font upload: one `file` part held in memory (never written to a
+// temporary or upload folder, never through the Media upload engine) and the
+// three tuple fields. One byte over the renderer's limit still reaches the
+// service, which refuses it with its own code; multer stops anything larger
+const renderFontUploadOptions = {
+  limits: {
+    fileSize: RENDER_FONT_FILE_MAX_BYTES + 1,
+    files: 1,
+    fields: 3,
+    parts: 4,
+  },
+};
 
 @ApiTags('Content Studio')
 @Controller('/content-studio')
@@ -118,7 +143,9 @@ export class ContentStudioController {
     private _contentStudioSourceService: ContentStudioSourceService,
     private _contentStudioSourceIngestionService: ContentStudioSourceIngestionService,
     private _contentStudioBrandKitService: ContentStudioBrandKitService,
-    private _contentStudioDesignService: ContentStudioDesignService
+    private _contentStudioDesignService: ContentStudioDesignService,
+    private _contentStudioRenderFontService: ContentStudioRenderFontService,
+    private _contentStudioDesignRenderService: ContentStudioDesignRenderService
   ) {}
 
   @Get('/projects')
@@ -818,8 +845,9 @@ export class ContentStudioController {
 
   // Designs: named design projects whose documents are immutable revisions.
   // Every member may read, create, rename, revise, archive and restore them.
-  // The organization and the user come from the request only. No route
-  // renders, previews, exports, generates or deletes
+  // The organization and the user come from the request only. One route
+  // renders one page of one exact revision; none previews, exports,
+  // generates or deletes
   @Get('/designs')
   listDesigns(
     @GetOrgFromRequest() org: Organization,
@@ -918,6 +946,80 @@ export class ContentStudioController {
     @Param('id') id: string
   ) {
     return this._contentStudioDesignService.restoreDesign(org.id, id);
+  }
+
+  // Renders one page of exactly the revision asked for (never the latest) to
+  // a PNG Media of the organization. Any member may render
+  @Post('/designs/:id/render')
+  @HttpCode(200)
+  renderDesign(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Body() body: RenderContentStudioDesignDto
+  ) {
+    return this._contentStudioDesignRenderService.renderPage({
+      organizationId: org.id,
+      userId: user.id,
+      designId: id,
+      revisionId: body.revisionId,
+      pageId: body.pageId,
+    });
+  }
+
+  // Render fonts: the exact font file each family, weight and style of a
+  // design is drawn with. Any member lists them (no file, hash or storage
+  // detail); only ADMIN and SUPERADMIN upload, disable and enable (checked by
+  // the service from the request's own membership). Files go to private
+  // storage, never to Media; no route downloads or deletes one
+  @Get('/render-fonts')
+  listRenderFonts(@GetOrgFromRequest() org: Organization) {
+    return this._contentStudioRenderFontService.listFonts(org.id);
+  }
+
+  @Post('/render-fonts/upload')
+  @UseInterceptors(FileInterceptor('file', renderFontUploadOptions))
+  uploadRenderFont(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Body() body: UploadContentStudioRenderFontDto
+  ) {
+    return this._contentStudioRenderFontService.uploadFont(
+      { organization: org, user },
+      {
+        family: body.family,
+        weight: body.weight,
+        style: body.style,
+        file,
+      }
+    );
+  }
+
+  @Post('/render-fonts/:id/disable')
+  @HttpCode(200)
+  disableRenderFont(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioRenderFontService.disableFont(
+      { organization: org, user },
+      id
+    );
+  }
+
+  @Post('/render-fonts/:id/enable')
+  @HttpCode(200)
+  enableRenderFont(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioRenderFontService.enableFont(
+      { organization: org, user },
+      id
+    );
   }
 
   // Audience Profiles: editorial context about who content is for, never ad

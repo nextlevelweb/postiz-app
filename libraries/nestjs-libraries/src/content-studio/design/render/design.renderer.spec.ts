@@ -2069,14 +2069,19 @@ describe('design renderer: boundaries', () => {
     ).toEqual(['data:image/png;base64,']);
   });
 
-  it('adds no API route, provider or frontend use', () => {
+  // P4-05 adds the one render route, through its render service; the
+  // controller, module and design service still never import the renderer
+  it('adds no API route, provider or frontend use of its own', () => {
     const controller = read(
       path.join(
         ROOT_DIR,
         'apps/backend/src/api/routes/content-studio.controller.ts'
       )
     );
-    for (const route of ['/render', '/preview', '/export']) {
+    expect(
+      controller.match(/@(Get|Post|Put|Patch|Delete)\('[^']*\/render'\)/g)
+    ).toEqual(["@Post('/designs/:id/render')"]);
+    for (const route of ['/preview', '/export']) {
       expect(controller).not.toContain(route);
     }
     for (const file of [

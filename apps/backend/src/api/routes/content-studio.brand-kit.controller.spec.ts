@@ -27,6 +27,8 @@ import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/p
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.service';
 import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
+import { ContentStudioRenderFontService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
+import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
 import {
   ListContentStudioBrandKitRevisionsDto,
   SaveContentStudioBrandKitRevisionDto,
@@ -81,7 +83,9 @@ const setup = () => {
     {} as ContentStudioSourceService,
     {} as ContentStudioSourceIngestionService,
     brandKit as unknown as ContentStudioBrandKitService,
-    {} as ContentStudioDesignService
+    {} as ContentStudioDesignService,
+    {} as ContentStudioRenderFontService,
+    {} as ContentStudioDesignRenderService
   );
   return { brandKit, controller, result };
 };

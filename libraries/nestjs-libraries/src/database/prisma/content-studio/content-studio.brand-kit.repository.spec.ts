@@ -551,6 +551,8 @@ describe('ContentStudioBrandKit schema', () => {
       organization: 'Organization',
       brandKit: 'ContentStudioBrandKit',
       createdBy: 'User',
+      // P4-05: the renders that used this exact revision point to it
+      designRenders: 'ContentStudioDesignRender[]',
     });
   });
 

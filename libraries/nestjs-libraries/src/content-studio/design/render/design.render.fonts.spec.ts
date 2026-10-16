@@ -7,6 +7,7 @@ import type { ContentStudioDesignLayoutTextItem } from '@gitroom/nestjs-librarie
 import {
   contentStudioDesignGlyphClusters,
   contentStudioDesignRenderFonts,
+  validateContentStudioRenderFontBytes,
 } from '@gitroom/nestjs-libraries/content-studio/design/render/design.render.fonts';
 import {
   ContentStudioDesignRenderError,
@@ -618,6 +619,92 @@ describe('design render fonts: glyph paths', () => {
       expect(typeof registry.font(item.fontKey).glyphPath(glyph.id)).toBe(
         'string'
       );
+    }
+  });
+});
+
+// P4-05: the same file rules, for checking an upload before it is stored
+describe('validateContentStudioRenderFontBytes', () => {
+  const codeOf = (bytes: unknown) => {
+    try {
+      validateContentStudioRenderFontBytes(bytes as Uint8Array);
+    } catch (error) {
+      expect(error).toBeInstanceOf(ContentStudioDesignRenderError);
+      expect((error as Error).message).not.toContain('Geist');
+      return (error as ContentStudioDesignRenderError).code;
+    }
+    return null;
+  };
+  const tagged = (tag: string) => {
+    const bytes = Buffer.from(GEIST);
+    bytes.write(tag, 0, 'latin1');
+    return bytes;
+  };
+
+  it('VF1 names a TrueType font ttf and leaves its bytes alone', () => {
+    const copy = Buffer.from(GEIST);
+    expect(validateContentStudioRenderFontBytes(copy)).toEqual({
+      format: 'ttf',
+    });
+    expect(copy.equals(GEIST)).toBe(true);
+    expect(
+      validateContentStudioRenderFontBytes(new Uint8Array(GEIST)).format
+    ).toBe('ttf');
+  });
+
+  it('VF2 names an OpenType CFF (OTTO) font otf', () => {
+    // Geist's tables under the OTTO version tag: what fontkit opens as OTF
+    expect(validateContentStudioRenderFontBytes(tagged('OTTO')).format).toBe(
+      'otf'
+    );
+    expect(validateContentStudioRenderFontBytes(tagged('true')).format).toBe(
+      'ttf'
+    );
+  });
+
+  it('VF3 refuses collections and wrapped fonts as unsupported', () => {
+    for (const tag of ['ttcf', 'wOFF', 'wOF2']) {
+      expect(codeOf(tagged(tag))).toBe('FONT_ASSET_UNSUPPORTED');
+    }
+  });
+
+  it('VF4 refuses an empty, oversized, non-font or damaged file as invalid', () => {
+    expect(codeOf(Buffer.alloc(0))).toBe('FONT_ASSET_INVALID');
+    expect(codeOf(Buffer.alloc(DESIGN_RENDER_FONT_MAX_BYTES + 1))).toBe(
+      'FONT_ASSET_INVALID'
+    );
+    expect(codeOf(Buffer.from('\x89PNG\r\n\x1a\n'))).toBe('FONT_ASSET_INVALID');
+    expect(codeOf(Buffer.concat([Buffer.from('OTTO'), Buffer.alloc(40)]))).toBe(
+      'FONT_ASSET_INVALID'
+    );
+    expect(codeOf(GEIST.subarray(0, 64))).toBe('FONT_ASSET_INVALID');
+    expect(codeOf('not bytes')).toBe('FONT_ASSET_INVALID');
+    expect(codeOf(Array.from(GEIST.subarray(0, 8)))).toBe('FONT_ASSET_INVALID');
+  });
+
+  it('VF5 applies exactly the rules a render applies', () => {
+    for (const bytes of [
+      GEIST,
+      tagged('OTTO'),
+      tagged('ttcf'),
+      tagged('wOF2'),
+      GEIST.subarray(0, 64),
+      Buffer.from('junk'),
+    ]) {
+      const fonts = contentStudioDesignRenderFonts({
+        resolveFont: () => ({
+          key: 'k',
+          bytes,
+          sha256: designRenderSha256(bytes),
+        }),
+      });
+      let renderCode: string | null = null;
+      try {
+        fonts.provider.resolveFont(SPEC);
+      } catch (error) {
+        renderCode = (error as ContentStudioDesignRenderError).code;
+      }
+      expect(codeOf(bytes)).toBe(renderCode);
     }
   });
 });

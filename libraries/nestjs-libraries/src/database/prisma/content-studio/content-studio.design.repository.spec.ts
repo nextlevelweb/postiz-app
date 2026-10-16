@@ -589,6 +589,8 @@ describe('ContentStudioDesignProject schema', () => {
       organization: 'Organization',
       createdBy: 'User',
       revisions: 'ContentStudioDesignRevision[]',
+      // P4-05: renders of the design point to it
+      renders: 'ContentStudioDesignRender[]',
     });
     expect(fields('ContentStudioDesignRevision')).toEqual({
       id: 'String',
@@ -603,6 +605,8 @@ describe('ContentStudioDesignProject schema', () => {
       organization: 'Organization',
       designProject: 'ContentStudioDesignProject',
       createdBy: 'User',
+      // P4-05: renders of this exact revision point to it
+      renders: 'ContentStudioDesignRender[]',
     });
   });
 

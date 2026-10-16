@@ -76,6 +76,11 @@ import { ContentStudioBrandKitRepository } from '@gitroom/nestjs-libraries/datab
 import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.service';
 import { ContentStudioDesignRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.repository';
 import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
+import { ContentStudioRenderFontRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.repository';
+import { ContentStudioRenderFontService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
+import { ContentStudioDesignRenderRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.repository';
+import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
+import { ContentStudioRenderMediaBridge } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-media.bridge';
 
 @Global()
 @Module({
@@ -161,6 +166,11 @@ import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/p
     ContentStudioBrandKitService,
     ContentStudioDesignRepository,
     ContentStudioDesignService,
+    ContentStudioRenderFontRepository,
+    ContentStudioRenderFontService,
+    ContentStudioDesignRenderRepository,
+    ContentStudioDesignRenderService,
+    ContentStudioRenderMediaBridge,
   ],
   get exports() {
     return this.providers;

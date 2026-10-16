@@ -66,6 +66,9 @@ model Organization {
   contentStudioBrandKitRevisions         ContentStudioBrandKitRevision[]
   contentStudioDesignProjects            ContentStudioDesignProject[]
   contentStudioDesignRevisions           ContentStudioDesignRevision[]
+  contentStudioRenderFontAssets          ContentStudioRenderFontAsset[]
+  contentStudioRenderFontMappings        ContentStudioRenderFontMapping[]
+  contentStudioDesignRenders             ContentStudioDesignRender[]
 
   @@index([apiKey])
   @@index([streakSince])
@@ -158,6 +161,9 @@ model User {
   contentStudioBrandKitRevisions         ContentStudioBrandKitRevision[]         @relation("ContentStudioBrandKitRevisionCreatedBy")
   contentStudioDesignProjects            ContentStudioDesignProject[]            @relation("ContentStudioDesignProjectCreatedBy")
   contentStudioDesignRevisions           ContentStudioDesignRevision[]           @relation("ContentStudioDesignRevisionCreatedBy")
+  contentStudioRenderFontAssets          ContentStudioRenderFontAsset[]          @relation("ContentStudioRenderFontAssetCreatedBy")
+  contentStudioRenderFontMappings        ContentStudioRenderFontMapping[]        @relation("ContentStudioRenderFontMappingCreatedBy")
+  contentStudioDesignRenders             ContentStudioDesignRender[]             @relation("ContentStudioDesignRenderCreatedBy")
 
   @@unique([email, providerName])
   @@index([lastReadNotifications])
@@ -2304,7 +2310,7 @@ model ContentStudioBrandKit {
 }
 
 model ContentStudioBrandKitRevision {
-  id             String                @id @default(uuid())
+  id             String                      @id @default(uuid())
   organizationId String
   brandKitId     String
   revisionNumber Int
@@ -2312,10 +2318,11 @@ model ContentStudioBrandKitRevision {
   content        String
   contentHash    String
   createdById    String
-  createdAt      DateTime              @default(now())
-  organization   Organization          @relation(fields: [organizationId], references: [id])
-  brandKit       ContentStudioBrandKit @relation(fields: [brandKitId, organizationId], references: [id, organizationId])
-  createdBy      User                  @relation("ContentStudioBrandKitRevisionCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime                    @default(now())
+  organization   Organization                @relation(fields: [organizationId], references: [id])
+  brandKit       ContentStudioBrandKit       @relation(fields: [brandKitId, organizationId], references: [id, organizationId])
+  createdBy      User                        @relation("ContentStudioBrandKitRevisionCreatedBy", fields: [createdById], references: [id])
+  designRenders  ContentStudioDesignRender[]
 
   @@unique([brandKitId, revisionNumber])
   @@unique([id, organizationId])
@@ -2338,6 +2345,7 @@ model ContentStudioDesignProject {
   organization         Organization                  @relation(fields: [organizationId], references: [id])
   createdBy            User                          @relation("ContentStudioDesignProjectCreatedBy", fields: [createdById], references: [id])
   revisions            ContentStudioDesignRevision[]
+  renders              ContentStudioDesignRender[]
 
   @@unique([id, organizationId])
   @@index([organizationId, archivedAt])
@@ -2345,7 +2353,7 @@ model ContentStudioDesignProject {
 }
 
 model ContentStudioDesignRevision {
-  id              String                     @id @default(uuid())
+  id              String                      @id @default(uuid())
   organizationId  String
   designProjectId String
   revisionNumber  Int
@@ -2353,13 +2361,110 @@ model ContentStudioDesignRevision {
   content         String
   contentHash     String
   createdById     String
-  createdAt       DateTime                   @default(now())
-  organization    Organization               @relation(fields: [organizationId], references: [id])
-  designProject   ContentStudioDesignProject @relation(fields: [designProjectId, organizationId], references: [id, organizationId])
-  createdBy       User                       @relation("ContentStudioDesignRevisionCreatedBy", fields: [createdById], references: [id])
+  createdAt       DateTime                    @default(now())
+  organization    Organization                @relation(fields: [organizationId], references: [id])
+  designProject   ContentStudioDesignProject  @relation(fields: [designProjectId, organizationId], references: [id, organizationId])
+  createdBy       User                        @relation("ContentStudioDesignRevisionCreatedBy", fields: [createdById], references: [id])
+  renders         ContentStudioDesignRender[]
 
   @@unique([designProjectId, revisionNumber])
   @@unique([id, organizationId])
   @@index([organizationId])
+  @@index([createdById])
+}
+
+// One render font file as uploaded: the exact bytes of a single TrueType or
+// OpenType font, kept in private storage (never Media, never a public URL)
+// under storageKey, a key the server generated from the organization and the
+// asset id. sha256 is the SHA-256 of exactly those bytes. Immutable: only
+// ever created, never updated or deleted. A replacement is a new asset
+model ContentStudioRenderFontAsset {
+  id             String                           @id @default(uuid())
+  organizationId String
+  storageKey     String
+  sha256         String
+  byteSize       Int
+  format         String
+  createdById    String
+  createdAt      DateTime                         @default(now())
+  organization   Organization                     @relation(fields: [organizationId], references: [id])
+  createdBy      User                             @relation("ContentStudioRenderFontAssetCreatedBy", fields: [createdById], references: [id])
+  mappings       ContentStudioRenderFontMapping[]
+
+  @@unique([id, organizationId])
+  @@unique([organizationId, storageKey])
+  @@index([organizationId, createdAt])
+  @@index([createdById])
+}
+
+// The current font of an organization for one exact family, weight and
+// style (as a design names it: trimmed, case kept). The mapping moves to a
+// new asset on every upload and can be disabled; renders copy what they used
+// into their asset snapshot, so they never depend on it later
+model ContentStudioRenderFontMapping {
+  id             String                       @id @default(uuid())
+  organizationId String
+  family         String
+  weight         Int
+  style          String
+  fontAssetId    String
+  disabledAt     DateTime?
+  createdById    String
+  createdAt      DateTime                     @default(now())
+  updatedAt      DateTime                     @updatedAt
+  organization   Organization                 @relation(fields: [organizationId], references: [id])
+  fontAsset      ContentStudioRenderFontAsset @relation(fields: [fontAssetId, organizationId], references: [id, organizationId])
+  createdBy      User                         @relation("ContentStudioRenderFontMappingCreatedBy", fields: [createdById], references: [id])
+
+  @@unique([id, organizationId])
+  @@unique([organizationId, family, weight, style])
+  @@index([fontAssetId, organizationId])
+  @@index([createdById])
+}
+
+// One render of one page of one exact design revision, with the exact
+// Brand Kit revision it used (all four fields, or none) and, once completed,
+// the canonical JSON asset snapshot (fonts and images by id and SHA-256) with
+// its hash and the rendered PNG as a Media of the same organization. status
+// is running, completed or failed; only a running render is ever finalized,
+// once. No design or Brand Kit content, text, bytes, SVG, URL or storage key
+// is stored. Never deleted
+model ContentStudioDesignRender {
+  id                     String                         @id @default(uuid())
+  organizationId         String
+  designProjectId        String
+  designRevisionId       String
+  designRevisionNumber   Int
+  designContentHash      String
+  pageId                 String
+  brandKitId             String?
+  brandKitRevisionId     String?
+  brandKitRevisionNumber Int?
+  brandKitContentHash    String?
+  rendererVersion        String
+  layoutVersion          String
+  status                 String
+  assetSnapshot          String?
+  assetSnapshotHash      String?
+  renderedMediaId        String?
+  renderedSha256         String?
+  width                  Int?
+  height                 Int?
+  mimeType               String?
+  errorCode              String?
+  createdById            String
+  createdAt              DateTime                       @default(now())
+  completedAt            DateTime?
+  organization           Organization                   @relation(fields: [organizationId], references: [id])
+  designProject          ContentStudioDesignProject     @relation(fields: [designProjectId, organizationId], references: [id, organizationId])
+  designRevision         ContentStudioDesignRevision    @relation(fields: [designRevisionId, organizationId], references: [id, organizationId])
+  brandKitRevision       ContentStudioBrandKitRevision? @relation(fields: [brandKitRevisionId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
+  createdBy              User                           @relation("ContentStudioDesignRenderCreatedBy", fields: [createdById], references: [id])
+
+  @@unique([id, organizationId])
+  @@index([organizationId, createdAt])
+  @@index([designProjectId, createdAt])
+  @@index([designRevisionId])
+  @@index([brandKitRevisionId, organizationId])
   @@index([createdById])
 }

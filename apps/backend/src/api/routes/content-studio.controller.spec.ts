@@ -25,6 +25,8 @@ import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/p
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.service';
 import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
+import { ContentStudioRenderFontService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
+import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -96,7 +98,9 @@ const setup = () => {
     {} as ContentStudioSourceService,
     {} as ContentStudioSourceIngestionService,
     {} as ContentStudioBrandKitService,
-    {} as ContentStudioDesignService
+    {} as ContentStudioDesignService,
+    {} as ContentStudioRenderFontService,
+    {} as ContentStudioDesignRenderService
   );
   return { service, handoffs, controller, result };
 };
@@ -281,7 +285,7 @@ describe('ContentStudioController wiring', () => {
     expect(types('listRevisions')[2]).toBe(ListContentPackageRevisionsDto);
   });
 
-  it('exposes exactly the project, package, draft, revision, handoff, AI connection, profile, AI writing, source, Brand Kit and design routes', () => {
+  it('exposes exactly the project, package, draft, revision, handoff, AI connection, profile, AI writing, source, Brand Kit, design, design render and render font routes', () => {
     expect(Reflect.getMetadata(PATH_METADATA, ContentStudioController)).toBe(
       '/content-studio'
     );
@@ -325,6 +329,7 @@ describe('ContentStudioController wiring', () => {
       'GET /packages/:id/revisions',
       'GET /packages/:id/revisions/:revisionId',
       'GET /projects',
+      'GET /render-fonts',
       'GET /sources',
       'GET /sources/:id',
       'GET /sources/:id/versions',
@@ -353,6 +358,7 @@ describe('ContentStudioController wiring', () => {
       'POST /brand-kit/revisions',
       'POST /designs',
       'POST /designs/:id/archive',
+      'POST /designs/:id/render',
       'POST /designs/:id/restore',
       'POST /designs/:id/revisions',
       'POST /editorial-policy/revisions',
@@ -371,6 +377,9 @@ describe('ContentStudioController wiring', () => {
       'POST /projects',
       'POST /projects/:id/archive',
       'POST /projects/:id/restore',
+      'POST /render-fonts/:id/disable',
+      'POST /render-fonts/:id/enable',
+      'POST /render-fonts/upload',
       'POST /sources',
       'POST /sources/:id/archive',
       'POST /sources/:id/refresh',
@@ -492,6 +501,8 @@ describe('ContentStudioController handoffs', () => {
       ContentStudioSourceIngestionService,
       ContentStudioBrandKitService,
       ContentStudioDesignService,
+      ContentStudioRenderFontService,
+      ContentStudioDesignRenderService,
     ]);
   });
 });

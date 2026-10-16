@@ -27,6 +27,8 @@ import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/p
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.service';
 import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
+import { ContentStudioRenderFontService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
+import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
 import {
   CreateContentStudioDesignDto,
   CreateContentStudioDesignRevisionDto,
@@ -100,7 +102,9 @@ const setup = () => {
     {} as ContentStudioSourceService,
     {} as ContentStudioSourceIngestionService,
     {} as ContentStudioBrandKitService,
-    designs as unknown as ContentStudioDesignService
+    designs as unknown as ContentStudioDesignService,
+    {} as ContentStudioRenderFontService,
+    {} as ContentStudioDesignRenderService
   );
   return { designs, controller, result };
 };
@@ -125,7 +129,8 @@ const route = (name: string) =>
   } ${Reflect.getMetadata(PATH_METADATA, handler(name))}`;
 
 describe('ContentStudioController design routes', () => {
-  it('DPC1 declares exactly these nine routes, with 200 for archive and restore', () => {
+  // P4-05 adds the one render route; the other nine are the P4-02 routes
+  it('DPC1 declares exactly these ten routes, with 200 for archive, restore and render', () => {
     const names = Object.getOwnPropertyNames(
       ContentStudioController.prototype
     ).filter((name) => /Designs?\b|Design[A-Z]/.test(name));
@@ -137,10 +142,11 @@ describe('ContentStudioController design routes', () => {
       'PATCH /designs/:id',
       'POST /designs',
       'POST /designs/:id/archive',
+      'POST /designs/:id/render',
       'POST /designs/:id/restore',
       'POST /designs/:id/revisions',
     ]);
-    for (const name of ['archiveDesign', 'restoreDesign']) {
+    for (const name of ['archiveDesign', 'restoreDesign', 'renderDesign']) {
       expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler(name))).toBe(200);
     }
     expect(
@@ -148,13 +154,18 @@ describe('ContentStudioController design routes', () => {
     ).toBeUndefined();
   });
 
-  it('DPC11/DPC12 has no delete, render, preview, export, duplicate, template, generate, AI or Media route for designs', () => {
+  // The one render route (P4-05) is the only exception
+  it('DPC11/DPC12 has no delete, preview, export, duplicate, template, generate, AI or Media route for designs, and one render route', () => {
     const routes = Object.getOwnPropertyNames(ContentStudioController.prototype)
       .filter((name) => name !== 'constructor')
       .map(route);
+    expect(routes.filter((r) => /design.*render/i.test(r))).toEqual([
+      'POST /designs/:id/render',
+    ]);
     expect(
       routes.filter(
         (r) =>
+          r !== 'POST /designs/:id/render' &&
           /design/i.test(r) &&
           (/^(DELETE|PUT) /.test(r) ||
             /render|preview|export|duplicate|copy|clone|template|generate|ai\b|media|upload|image|font|layout|thumbnail/i.test(
@@ -262,9 +273,10 @@ describe('ContentStudioController design routes', () => {
       'utf8'
     );
     expect(text).not.toMatch(/CheckPolicies|Sections\.|@Delete\(/);
+    // the P4-02 routes, up to the P4-05 render route
     const block = text.slice(
       text.indexOf("@Get('/designs')"),
-      text.indexOf('// Audience Profiles')
+      text.indexOf('// Renders one page of exactly the revision')
     );
     expect(block).toContain('restoreDesign');
     expect(block).not.toMatch(
