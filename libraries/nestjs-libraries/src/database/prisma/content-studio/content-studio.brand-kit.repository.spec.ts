@@ -553,6 +553,8 @@ describe('ContentStudioBrandKit schema', () => {
       createdBy: 'User',
       // P4-05: the renders that used this exact revision point to it
       designRenders: 'ContentStudioDesignRender[]',
+      // P4-06: render-all batches that used this exact revision
+      designRenderBatches: 'ContentStudioDesignRenderBatch[]',
     });
   });
 

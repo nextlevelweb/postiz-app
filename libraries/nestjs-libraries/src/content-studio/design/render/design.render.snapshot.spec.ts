@@ -10,6 +10,9 @@ import { ContentStudioDesignFontSpec } from '@gitroom/nestjs-libraries/content-s
 import { ContentStudioDesignRenderError } from '@gitroom/nestjs-libraries/content-studio/design/render/design.render.types';
 import {
   collectContentStudioDesignRenderFontRequests,
+  collectContentStudioDesignRenderImageRequests,
+  CONTENT_STUDIO_RENDER_BATCH_ASSET_MAX_BYTES,
+  contentStudioRenderBatchAssetBudget,
   CONTENT_STUDIO_LAYOUT_VERSION,
   CONTENT_STUDIO_RENDERER_VERSION,
   ContentStudioRenderAssetSnapshotError,
@@ -646,5 +649,118 @@ describe('render font dependency collector', () => {
       expect(collect(document, false)).toEqual(layoutRequests(document, false));
       expect(collect(document, false)).toHaveLength(2);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Image dependency collector and batch budget (P4-06)
+// ---------------------------------------------------------------------------
+
+const imageOf = (
+  id: string,
+  mediaId: string,
+  sha256: string,
+  extra: Plain = {}
+) => ({ ...photo(id), imageRef: { type: 'media', mediaId, sha256 }, ...extra });
+
+// What the layout engine itself asks its image provider for, in order
+function layoutImageRequests(document: ReturnType<typeof design>) {
+  const requests: Array<{ mediaId: string; sha256: string }> = [];
+  layoutContentStudioDesign({
+    document,
+    brandKit: null,
+    fonts: {
+      resolveFont: () => {
+        throw new Error('no text here');
+      },
+    },
+    images: {
+      getImageMetadata(image) {
+        requests.push({ mediaId: image.mediaId, sha256: image.sha256 });
+        return { width: 10, height: 10 };
+      },
+    },
+  });
+  return requests;
+}
+
+describe('render image dependency collector', () => {
+  it('64/MI1/MI3 visible images of every page, each exact reference once, in layout order (parity)', () => {
+    const document = design([
+      page('p1', [
+        imageOf('a1', 'A', SHA_A),
+        imageOf('b1', 'B', SHA_A, { visible: false }),
+      ]),
+      page('p2', [
+        imageOf('a2', 'A', SHA_A),
+        imageOf('c1', 'C', SHA_B),
+        shape('s1'),
+      ]),
+    ]);
+    expect(collectContentStudioDesignRenderImageRequests(document)).toEqual([
+      { mediaId: 'A', sha256: SHA_A },
+      { mediaId: 'C', sha256: SHA_B },
+    ]);
+    expect(collectContentStudioDesignRenderImageRequests(document)).toEqual(
+      layoutImageRequests(document)
+    );
+  });
+
+  it('65 the same Media id with another hash is another image', () => {
+    const document = design([
+      page('p1', [imageOf('a1', 'A', SHA_A), imageOf('a2', 'A', SHA_B)]),
+    ]);
+    expect(collectContentStudioDesignRenderImageRequests(document)).toEqual([
+      { mediaId: 'A', sha256: SHA_A },
+      { mediaId: 'A', sha256: SHA_B },
+    ]);
+    expect(collectContentStudioDesignRenderImageRequests(document)).toEqual(
+      layoutImageRequests(document)
+    );
+  });
+
+  it('a design without visible images needs none, and returns plain references', () => {
+    expect(
+      collectContentStudioDesignRenderImageRequests(
+        design([
+          page('p1', [
+            shape('s1'),
+            imageOf('a1', 'A', SHA_A, { visible: false }),
+          ]),
+        ])
+      )
+    ).toEqual([]);
+    const [ref] = collectContentStudioDesignRenderImageRequests(
+      design([page('p1', [imageOf('a1', 'A', SHA_A)])])
+    );
+    expect(Object.keys(ref).sort()).toEqual(['mediaId', 'sha256']);
+  });
+});
+
+describe('render batch asset budget', () => {
+  it('104 is 256 MiB', () => {
+    expect(CONTENT_STUDIO_RENDER_BATCH_ASSET_MAX_BYTES).toBe(268_435_456);
+  });
+
+  it('BCAP1/BCAP2 allows exactly the limit and refuses one byte more', () => {
+    const exact = contentStudioRenderBatchAssetBudget();
+    expect(exact.add('font:a', 200_000_000)).toBe(true);
+    expect(exact.add('image:b', 68_435_456)).toBe(true);
+    expect(exact.total()).toBe(CONTENT_STUDIO_RENDER_BATCH_ASSET_MAX_BYTES);
+    expect(exact.add('image:c', 1)).toBe(false);
+    const over = contentStudioRenderBatchAssetBudget();
+    expect(over.add('x', CONTENT_STUDIO_RENDER_BATCH_ASSET_MAX_BYTES + 1)).toBe(
+      false
+    );
+  });
+
+  it('BCAP3/BCAP4 counts each asset once', () => {
+    const budget = contentStudioRenderBatchAssetBudget(100);
+    expect(budget.add('image:["A","a"]', 60)).toBe(true);
+    expect(budget.add('image:["A","a"]', 60)).toBe(true);
+    expect(budget.add('font:asset-1', 40)).toBe(true);
+    expect(budget.add('font:asset-1', 40)).toBe(true);
+    expect(budget.total()).toBe(100);
+    expect(budget.add('image:["A","b"]', 1)).toBe(false);
   });
 });

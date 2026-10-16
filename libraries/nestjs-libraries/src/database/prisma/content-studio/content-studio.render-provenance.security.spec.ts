@@ -177,7 +177,7 @@ describe('P4-05 render provenance trust boundaries', () => {
     );
     const render = dto.slice(
       dto.indexOf('export class RenderContentStudioDesignDto'),
-      dto.indexOf('// The multipart fields')
+      dto.indexOf('// Every page of exactly this revision')
     );
     expect(
       render.match(/^\s+(\w+): \w+;$/gm)?.map((line) => line.trim())

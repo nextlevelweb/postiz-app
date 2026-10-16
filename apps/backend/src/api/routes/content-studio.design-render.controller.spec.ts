@@ -34,6 +34,7 @@ import {
 } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
 import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
 import {
+  RenderAllContentStudioDesignDto,
   RenderContentStudioDesignDto,
   UploadContentStudioRenderFontDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-render.dto';
@@ -71,6 +72,7 @@ const setup = () => {
   };
   const renders = {
     renderPage: jest.fn().mockResolvedValue(result),
+    renderAllPages: jest.fn().mockResolvedValue(result),
   };
   const controller = new ContentStudioController(
     {} as ContentStudioService,
@@ -113,7 +115,8 @@ const withExtras = <T extends object>(dto: T) =>
   });
 
 describe('ContentStudioController design render and render font routes', () => {
-  it('declares exactly the five P4-05 routes', () => {
+  // the five P4-05 routes and the P4-06 render-all route
+  it('declares exactly the five P4-05 routes and the P4-06 render-all route', () => {
     expect(
       [
         'renderDesign',
@@ -121,6 +124,7 @@ describe('ContentStudioController design render and render font routes', () => {
         'uploadRenderFont',
         'disableRenderFont',
         'enableRenderFont',
+        'renderAllDesignPages',
       ].map(route)
     ).toEqual([
       'POST /designs/:id/render',
@@ -128,6 +132,7 @@ describe('ContentStudioController design render and render font routes', () => {
       'POST /render-fonts/upload',
       'POST /render-fonts/:id/disable',
       'POST /render-fonts/:id/enable',
+      'POST /designs/:id/render-all',
     ]);
     expect(
       allRoutes()
@@ -136,12 +141,14 @@ describe('ContentStudioController design render and render font routes', () => {
     ).toEqual([
       'GET /render-fonts',
       'POST /designs/:id/render',
+      'POST /designs/:id/render-all',
       'POST /render-fonts/:id/disable',
       'POST /render-fonts/:id/enable',
       'POST /render-fonts/upload',
     ]);
     for (const name of [
       'renderDesign',
+      'renderAllDesignPages',
       'disableRenderFont',
       'enableRenderFont',
     ]) {
@@ -412,6 +419,99 @@ describe('Render font upload DTO validation', () => {
       { unknown: MARKER },
     ]) {
       await rejected(UploadContentStudioRenderFontDto, { ...valid, ...extra });
+    }
+  });
+});
+
+describe('ContentStudioController render-all (P4-06)', () => {
+  it('118/RENDER-AUTH renders every page for any member with the request organization and user and the revision only', async () => {
+    for (const role of ['USER', 'ADMIN', 'SUPERADMIN']) {
+      const { controller, renders, result } = setup();
+      const body = withExtras(new RenderAllContentStudioDesignDto());
+      body.revisionId = REVISION;
+      Object.assign(body, { pageIds: ['p9'], pages: [], format: 'zip' });
+      await expect(
+        controller.renderAllDesignPages(org(role), USER, DESIGN, body)
+      ).resolves.toBe(result);
+      expect(renders.renderAllPages).toHaveBeenCalledWith({
+        organizationId: 'org-a',
+        userId: 'user-1',
+        designId: DESIGN,
+        revisionId: REVISION,
+      });
+      expect(renders.renderPage).not.toHaveBeenCalled();
+    }
+  });
+
+  it('156 answers 200 with the strict body DTO', () => {
+    expect(
+      Reflect.getMetadata(HTTP_CODE_METADATA, handler('renderAllDesignPages'))
+    ).toBe(200);
+    expect(
+      Reflect.getMetadata(
+        'design:paramtypes',
+        ContentStudioController.prototype,
+        'renderAllDesignPages'
+      )[3]
+    ).toBe(RenderAllContentStudioDesignDto);
+  });
+
+  it('120 adds no export, preview, batch, carousel, pdf, zip, retry, resume or render read route', () => {
+    expect(
+      allRoutes().filter((r) =>
+        /export|preview|batch|carousel|pdf|zip|retry|resume|renders\/|^GET .*render(?!-fonts)/i.test(
+          r
+        )
+      )
+    ).toEqual([]);
+  });
+});
+
+describe('Render-all DTO validation', () => {
+  it('accepts exactly a revision id', async () => {
+    const body = await run(RenderAllContentStudioDesignDto, {
+      revisionId: REVISION,
+    });
+    expect(body).toBeInstanceOf(RenderAllContentStudioDesignDto);
+    expect({ ...body }).toEqual({ revisionId: REVISION });
+  });
+
+  it('refuses a missing or malformed revision id (no latest revision)', async () => {
+    for (const revisionId of [
+      undefined,
+      '',
+      'latest',
+      'ABCDEF66-6666-4666-8666-666666666666',
+      7,
+    ]) {
+      await rejected(RenderAllContentStudioDesignDto, { revisionId });
+    }
+  });
+
+  it('M25/M26/21 refuses pages, order, options, assets and identities', async () => {
+    for (const extra of [
+      { organizationId: 'org-b' },
+      { userId: 'user-b' },
+      { pageIds: ['cover'] },
+      { pages: [0, 1] },
+      { pageId: 'cover' },
+      { order: 'desc' },
+      { format: 'pdf' },
+      { quality: 90 },
+      { width: 100 },
+      { height: 100 },
+      { concurrency: 4 },
+      { retry: true },
+      { assets: [] },
+      { mediaIds: ['m1'] },
+      { fonts: [] },
+      { brandKit: null },
+      { output: 'zip' },
+    ]) {
+      await rejected(RenderAllContentStudioDesignDto, {
+        revisionId: REVISION,
+        ...extra,
+      });
     }
   });
 });

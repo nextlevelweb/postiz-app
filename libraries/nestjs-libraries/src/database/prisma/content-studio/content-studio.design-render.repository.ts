@@ -8,6 +8,8 @@ const RENDER_DETAIL = {
   designRevisionNumber: true,
   designContentHash: true,
   pageId: true,
+  batchId: true,
+  batchPageIndex: true,
   brandKitId: true,
   brandKitRevisionId: true,
   brandKitRevisionNumber: true,
@@ -40,6 +42,7 @@ export interface ContentStudioDesignRenderBrandProvenance {
 // snapshot and rendered Media together) or failed (an error code only). The
 // finalizing update only matches a running render of the organization, so a
 // render is never finalized twice and a finalized one never changes again.
+// A page of a render-all batch also names the batch and its page index.
 // Every query filters on organizationId itself; nothing is deleted
 @Injectable()
 export class ContentStudioDesignRenderRepository {
@@ -57,6 +60,9 @@ export class ContentStudioDesignRenderRepository {
     brand: ContentStudioDesignRenderBrandProvenance | null;
     rendererVersion: string;
     layoutVersion: string;
+    // a page of a render-all batch: the batch and the page's index in the
+    // design; a single-page render has neither
+    batch?: { batchId: string; batchPageIndex: number } | null;
   }) {
     return this._render.model.contentStudioDesignRender.create({
       data: {
@@ -74,6 +80,8 @@ export class ContentStudioDesignRenderRepository {
         brandKitContentHash: input.brand?.brandKitContentHash ?? null,
         rendererVersion: input.rendererVersion,
         layoutVersion: input.layoutVersion,
+        batchId: input.batch?.batchId ?? null,
+        batchPageIndex: input.batch?.batchPageIndex ?? null,
         status: 'running',
       },
       select: { id: true, createdAt: true },

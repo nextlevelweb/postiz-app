@@ -130,7 +130,8 @@ const route = (name: string) =>
 
 describe('ContentStudioController design routes', () => {
   // P4-05 adds the one render route; the other nine are the P4-02 routes
-  it('DPC1 declares exactly these ten routes, with 200 for archive, restore and render', () => {
+  // P4-06 adds render-all: eleven routes
+  it('DPC1 declares exactly these eleven routes, with 200 for archive, restore, render and render-all', () => {
     const names = Object.getOwnPropertyNames(
       ContentStudioController.prototype
     ).filter((name) => /Designs?\b|Design[A-Z]/.test(name));
@@ -143,10 +144,16 @@ describe('ContentStudioController design routes', () => {
       'POST /designs',
       'POST /designs/:id/archive',
       'POST /designs/:id/render',
+      'POST /designs/:id/render-all',
       'POST /designs/:id/restore',
       'POST /designs/:id/revisions',
     ]);
-    for (const name of ['archiveDesign', 'restoreDesign', 'renderDesign']) {
+    for (const name of [
+      'archiveDesign',
+      'restoreDesign',
+      'renderDesign',
+      'renderAllDesignPages',
+    ]) {
       expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler(name))).toBe(200);
     }
     expect(
@@ -154,18 +161,21 @@ describe('ContentStudioController design routes', () => {
     ).toBeUndefined();
   });
 
-  // The one render route (P4-05) is the only exception
-  it('DPC11/DPC12 has no delete, preview, export, duplicate, template, generate, AI or Media route for designs, and one render route', () => {
+  // The render route (P4-05) and the render-all route (P4-06) are the only
+  // exceptions
+  it('DPC11/DPC12 has no delete, preview, export, duplicate, template, generate, AI or Media route for designs, and the two render routes', () => {
     const routes = Object.getOwnPropertyNames(ContentStudioController.prototype)
       .filter((name) => name !== 'constructor')
       .map(route);
-    expect(routes.filter((r) => /design.*render/i.test(r))).toEqual([
+    expect(routes.filter((r) => /design.*render/i.test(r)).sort()).toEqual([
       'POST /designs/:id/render',
+      'POST /designs/:id/render-all',
     ]);
     expect(
       routes.filter(
         (r) =>
           r !== 'POST /designs/:id/render' &&
+          r !== 'POST /designs/:id/render-all' &&
           /design/i.test(r) &&
           (/^(DELETE|PUT) /.test(r) ||
             /render|preview|export|duplicate|copy|clone|template|generate|ai\b|media|upload|image|font|layout|thumbnail/i.test(

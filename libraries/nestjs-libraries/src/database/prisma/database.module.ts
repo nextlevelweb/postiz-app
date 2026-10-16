@@ -80,6 +80,7 @@ import { ContentStudioRenderFontRepository } from '@gitroom/nestjs-libraries/dat
 import { ContentStudioRenderFontService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
 import { ContentStudioDesignRenderRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.repository';
 import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
+import { ContentStudioDesignRenderBatchRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render-batch.repository';
 import { ContentStudioRenderMediaBridge } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-media.bridge';
 
 @Global()
@@ -170,6 +171,7 @@ import { ContentStudioRenderMediaBridge } from '@gitroom/nestjs-libraries/databa
     ContentStudioRenderFontService,
     ContentStudioDesignRenderRepository,
     ContentStudioDesignRenderService,
+    ContentStudioDesignRenderBatchRepository,
     ContentStudioRenderMediaBridge,
   ],
   get exports() {

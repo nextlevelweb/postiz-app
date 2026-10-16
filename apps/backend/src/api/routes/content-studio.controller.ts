@@ -102,6 +102,7 @@ import {
   UpdateContentStudioDesignDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design.dto';
 import {
+  RenderAllContentStudioDesignDto,
   RenderContentStudioDesignDto,
   UploadContentStudioRenderFontDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-render.dto';
@@ -846,8 +847,8 @@ export class ContentStudioController {
   // Designs: named design projects whose documents are immutable revisions.
   // Every member may read, create, rename, revise, archive and restore them.
   // The organization and the user come from the request only. One route
-  // renders one page of one exact revision; none previews, exports,
-  // generates or deletes
+  // renders one page of one exact revision and one renders all its pages;
+  // none previews, exports, generates or deletes
   @Get('/designs')
   listDesigns(
     @GetOrgFromRequest() org: Organization,
@@ -964,6 +965,25 @@ export class ContentStudioController {
       designId: id,
       revisionId: body.revisionId,
       pageId: body.pageId,
+    });
+  }
+
+  // Renders every page of exactly the revision asked for, in the design's
+  // order, to one PNG Media each. Any member may render; the server, not the
+  // request, decides the pages and their order
+  @Post('/designs/:id/render-all')
+  @HttpCode(200)
+  renderAllDesignPages(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Body() body: RenderAllContentStudioDesignDto
+  ) {
+    return this._contentStudioDesignRenderService.renderAllPages({
+      organizationId: org.id,
+      userId: user.id,
+      designId: id,
+      revisionId: body.revisionId,
     });
   }
 

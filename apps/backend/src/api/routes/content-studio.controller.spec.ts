@@ -359,6 +359,7 @@ describe('ContentStudioController wiring', () => {
       'POST /designs',
       'POST /designs/:id/archive',
       'POST /designs/:id/render',
+      'POST /designs/:id/render-all',
       'POST /designs/:id/restore',
       'POST /designs/:id/revisions',
       'POST /editorial-policy/revisions',

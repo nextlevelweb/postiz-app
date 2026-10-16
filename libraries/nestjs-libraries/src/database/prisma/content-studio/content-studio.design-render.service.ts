@@ -7,6 +7,7 @@ import {
   ContentStudioDesignRenderBrandProvenance,
   ContentStudioDesignRenderRepository,
 } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.repository';
+import { ContentStudioDesignRenderBatchRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render-batch.repository';
 import { ContentStudioRenderMediaBridge } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-media.bridge';
 import { renderFontStorageUnavailable } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
 import { ContentStudioBrandKitContentV1 } from '@gitroom/nestjs-libraries/content-studio/brand/brand.kit';
@@ -25,14 +26,17 @@ import {
   ContentStudioDesignRenderError,
   ContentStudioDesignRenderResult,
   ContentStudioRenderFontAsset,
+  ContentStudioRenderImageAsset,
   DESIGN_RENDER_IMAGE_MAX_BYTES,
   designRenderSha256,
 } from '@gitroom/nestjs-libraries/content-studio/design/render/design.render.types';
 import {
   collectContentStudioDesignRenderFontRequests,
+  collectContentStudioDesignRenderImageRequests,
   CONTENT_STUDIO_LAYOUT_VERSION,
   CONTENT_STUDIO_RENDERER_VERSION,
   ContentStudioRenderAssetSnapshotFont,
+  contentStudioRenderBatchAssetBudget,
   storedContentStudioRenderAssetSnapshot,
 } from '@gitroom/nestjs-libraries/content-studio/design/render/design.render.snapshot';
 import { ContentStudioPrivateFontStorageError } from '@gitroom/nestjs-libraries/upload/content-studio.private-font.storage';
@@ -104,6 +108,14 @@ const storageFailed = () =>
     },
     500
   );
+const batchTooLarge = () =>
+  new HttpException(
+    {
+      msg: 'The design uses too much source media to render at once.',
+      code: 'CS_DESIGN_RENDER_BATCH_TOO_LARGE',
+    },
+    413
+  );
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -115,7 +127,8 @@ type RenderFailureCode =
   | 'FONT_ASSET_READ_FAILED'
   | 'SNAPSHOT_INTEGRITY_ERROR'
   | 'STORAGE_FAILED'
-  | 'FINALIZATION_FAILED';
+  | 'FINALIZATION_FAILED'
+  | 'BATCH_ASSET_TOO_LARGE';
 
 class RenderFailure extends Error {
   constructor(readonly code: RenderFailureCode) {
@@ -139,6 +152,8 @@ const failureResponse = (code: RenderFailureCode) => {
       return renderFontStorageUnavailable();
     case 'STORAGE_FAILED':
       return storageFailed();
+    case 'BATCH_ASSET_TOO_LARGE':
+      return batchTooLarge();
     default:
       return renderFailed();
   }
@@ -154,6 +169,29 @@ const imageLookup = (image: { mediaId: string; sha256: string }) =>
 interface PreloadedFont {
   asset: ContentStudioRenderFontAsset;
   snapshot: ContentStudioRenderAssetSnapshotFont;
+}
+
+// Where a page render gets its image bytes: read from Media on demand (one
+// page) or from what a batch loaded up front (every page)
+type RenderImageSource = (image: {
+  mediaId: string;
+  sha256: string;
+}) => Promise<ContentStudioRenderImageAsset | null>;
+
+type DesignBrand = {
+  content: ContentStudioBrandKitContentV1;
+  provenance: ContentStudioDesignRenderBrandProvenance;
+} | null;
+
+// One completed page render
+interface CompletedPage {
+  id: string;
+  pageId: string;
+  createdAt: Date;
+  completedAt: Date;
+  result: ContentStudioDesignRenderResult;
+  assetSnapshotHash: string;
+  renderedMediaId: string;
 }
 
 // Renders one page of one exact, explicitly chosen design revision to a PNG
@@ -178,7 +216,18 @@ interface PreloadedFont {
 //    in one update.
 // A failure in 3-6 fails the render with a code and is never retried. When
 // the PNG is stored but the render cannot be completed, that Media stays
-// unreferenced. No transaction spans storage, the renderer or Media
+// unreferenced. No transaction spans storage, the renderer or Media.
+//
+// renderAllPages renders every page of the revision as one batch, in the
+// design's page order, against one frozen set of inputs: after the same
+// preflight it records a running batch, then loads every font and every
+// visible image of the whole design once (fonts first, then images, each in
+// first-use order; at most 256 MiB of source bytes in all). Each page is then
+// a render of its own (steps 2 and 4-6, with those preloaded fonts and
+// images; nothing is read again), one after the other. The first failure
+// stops the batch and fails it; pages already rendered keep their render and
+// Media (nothing is cleaned up, retried or resumed). A failure while loading
+// fails the batch before any page exists
 @Injectable()
 export class ContentStudioDesignRenderService {
   private _fontStorage =
@@ -189,6 +238,7 @@ export class ContentStudioDesignRenderService {
     private _contentStudioBrandKitRepository: ContentStudioBrandKitRepository,
     private _contentStudioRenderFontRepository: ContentStudioRenderFontRepository,
     private _contentStudioDesignRenderRepository: ContentStudioDesignRenderRepository,
+    private _contentStudioDesignRenderBatchRepository: ContentStudioDesignRenderBatchRepository,
     private _contentStudioRenderMediaBridge: ContentStudioRenderMediaBridge
   ) {}
 
@@ -208,30 +258,216 @@ export class ContentStudioDesignRenderService {
       throw pageInvalid();
     }
     const brand = await this.brandRevision(organizationId, document);
-    let fontRequests: ContentStudioDesignFontSpec[];
-    try {
-      fontRequests = collectContentStudioDesignRenderFontRequests(
-        document,
-        brand?.content ?? null
-      );
-    } catch {
-      throw brandIntegrityError();
-    }
+    const fontRequests = this.fontRequests(document, brand);
 
-    const renderId = randomUUID();
-    const running =
-      await this._contentStudioDesignRenderRepository.createRunningRender({
-        id: renderId,
+    let page: CompletedPage;
+    try {
+      page = await this.renderOnePage({
+        organizationId,
+        userId: input.userId,
+        project,
+        revision,
+        document,
+        brand,
+        pageId: input.pageId,
+        batch: null,
+        assets: async () => ({
+          fonts: await this.preloadFonts(organizationId, fontRequests),
+          images: (image) => this.readImage(organizationId, image),
+        }),
+      });
+    } catch (err) {
+      throw failureResponse(
+        err instanceof RenderFailure ? err.code : 'RENDER_FAILED'
+      );
+    }
+    return {
+      id: page.id,
+      designProjectId: project.id,
+      designRevisionId: revision.id,
+      designRevisionNumber: revision.revisionNumber,
+      pageId: page.pageId,
+      status: 'completed' as const,
+      width: page.result.width,
+      height: page.result.height,
+      mimeType: page.result.mimeType,
+      renderedMediaId: page.renderedMediaId,
+      renderedSha256: page.result.sha256,
+      assetSnapshotHash: page.assetSnapshotHash,
+      createdAt: page.createdAt,
+      completedAt: page.completedAt,
+    };
+  }
+
+  // Every page of exactly the revision asked for, in the design's order. The
+  // response lists each page's render and Media in that order; a failure
+  // answers with the failing page's fixed error and keeps the batch, and the
+  // pages before it, for audit
+  async renderAllPages(input: {
+    organizationId: string;
+    userId: string;
+    designId: string;
+    revisionId: string;
+  }) {
+    const { organizationId } = input;
+    const { project, revision, document } = await this.designRevision(input);
+    const brand = await this.brandRevision(organizationId, document);
+    const fontRequests = this.fontRequests(document, brand);
+    const imageRequests =
+      collectContentStudioDesignRenderImageRequests(document);
+
+    const batchId = randomUUID();
+    const batch =
+      await this._contentStudioDesignRenderBatchRepository.createRunningBatch({
+        id: batchId,
         organizationId,
         createdById: input.userId,
         designProjectId: project.id,
         designRevisionId: revision.id,
         designRevisionNumber: revision.revisionNumber,
         designContentHash: revision.contentHash,
-        pageId: input.pageId,
         brand: brand?.provenance ?? null,
         rendererVersion: CONTENT_STUDIO_RENDERER_VERSION,
         layoutVersion: CONTENT_STUDIO_LAYOUT_VERSION,
+        pageCount: document.pages.length,
+      });
+
+    const pages: CompletedPage[] = [];
+    try {
+      // one frozen set of inputs for every page
+      const budget = contentStudioRenderBatchAssetBudget();
+      const fonts = await this.preloadFonts(
+        organizationId,
+        fontRequests,
+        (font, bytes) => {
+          if (!budget.add(`font:${font.id}`, bytes.length)) {
+            throw new RenderFailure('BATCH_ASSET_TOO_LARGE');
+          }
+        }
+      );
+      const images = await this.preloadImages(
+        organizationId,
+        imageRequests,
+        (image, bytes) => {
+          if (!budget.add(`image:${imageLookup(image)}`, bytes.length)) {
+            throw new RenderFailure('BATCH_ASSET_TOO_LARGE');
+          }
+        }
+      );
+      for (const [index, page] of document.pages.entries()) {
+        pages.push(
+          await this.renderOnePage({
+            organizationId,
+            userId: input.userId,
+            project,
+            revision,
+            document,
+            brand,
+            pageId: page.id,
+            batch: { batchId, batchPageIndex: index },
+            assets: async () => ({ fonts, images }),
+          })
+        );
+      }
+    } catch (err) {
+      const code = err instanceof RenderFailure ? err.code : 'RENDER_FAILED';
+      await this.failBatch(organizationId, batchId, code);
+      throw failureResponse(code);
+    }
+
+    // completed only with every page completed, in order
+    const completedAt = new Date();
+    let count = 0;
+    if (pages.length === document.pages.length) {
+      try {
+        ({ count } =
+          await this._contentStudioDesignRenderBatchRepository.completeBatch({
+            organizationId,
+            id: batchId,
+            completedAt,
+          }));
+      } catch {
+        count = 0;
+      }
+    }
+    if (count !== 1) {
+      // nothing is rendered or stored again
+      await this.failBatch(organizationId, batchId, 'FINALIZATION_FAILED');
+      throw renderFailed();
+    }
+    return {
+      id: batchId,
+      designProjectId: project.id,
+      designRevisionId: revision.id,
+      designRevisionNumber: revision.revisionNumber,
+      status: 'completed' as const,
+      pageCount: document.pages.length,
+      outputs: pages.map((page, pageIndex) => ({
+        renderId: page.id,
+        pageId: page.pageId,
+        pageIndex,
+        width: page.result.width,
+        height: page.result.height,
+        mimeType: page.result.mimeType,
+        renderedMediaId: page.renderedMediaId,
+        renderedSha256: page.result.sha256,
+        assetSnapshotHash: page.assetSnapshotHash,
+      })),
+      createdAt: batch.createdAt,
+      completedAt,
+    };
+  }
+
+  // The fonts the layout will ask for, or the Brand Kit revision is not what
+  // the design needs
+  private fontRequests(
+    document: ContentStudioDesignDocumentV1,
+    brand: DesignBrand
+  ) {
+    try {
+      return collectContentStudioDesignRenderFontRequests(
+        document,
+        brand?.content ?? null
+      );
+    } catch {
+      throw brandIntegrityError();
+    }
+  }
+
+  // One page as one render: a running render with the exact provenance (and
+  // its batch and page index, for a batch), then its assets, the renderer,
+  // the snapshot and the PNG, then one completing update. Throws
+  // RenderFailure after marking the render failed; never retries
+  private async renderOnePage(input: {
+    organizationId: string;
+    userId: string;
+    project: { id: string };
+    revision: { id: string; revisionNumber: number; contentHash: string };
+    document: ContentStudioDesignDocumentV1;
+    brand: DesignBrand;
+    pageId: string;
+    batch: { batchId: string; batchPageIndex: number } | null;
+    assets: () => Promise<{
+      fonts: Map<string, PreloadedFont>;
+      images: RenderImageSource;
+    }>;
+  }): Promise<CompletedPage> {
+    const { organizationId } = input;
+    const renderId = randomUUID();
+    const running =
+      await this._contentStudioDesignRenderRepository.createRunningRender({
+        id: renderId,
+        organizationId,
+        createdById: input.userId,
+        designProjectId: input.project.id,
+        designRevisionId: input.revision.id,
+        designRevisionNumber: input.revision.revisionNumber,
+        designContentHash: input.revision.contentHash,
+        pageId: input.pageId,
+        brand: input.brand?.provenance ?? null,
+        rendererVersion: CONTENT_STUDIO_RENDERER_VERSION,
+        layoutVersion: CONTENT_STUDIO_LAYOUT_VERSION,
+        batch: input.batch,
       });
 
     let completed: {
@@ -241,18 +477,20 @@ export class ContentStudioDesignRenderService {
       renderedMediaId: string;
     };
     try {
+      const assets = await input.assets();
       completed = await this.execute({
         organizationId,
         renderId,
-        document,
-        brand,
+        document: input.document,
+        brand: input.brand,
         pageId: input.pageId,
-        fontRequests,
+        fonts: assets.fonts,
+        images: assets.images,
       });
     } catch (err) {
       const code = err instanceof RenderFailure ? err.code : 'RENDER_FAILED';
       await this.fail(organizationId, renderId, code);
-      throw failureResponse(code);
+      throw new RenderFailure(code);
     }
 
     const completedAt = new Date();
@@ -277,23 +515,16 @@ export class ContentStudioDesignRenderService {
     if (count !== 1) {
       // nothing is rendered or stored again
       await this.fail(organizationId, renderId, 'FINALIZATION_FAILED');
-      throw renderFailed();
+      throw new RenderFailure('FINALIZATION_FAILED');
     }
     return {
       id: renderId,
-      designProjectId: project.id,
-      designRevisionId: revision.id,
-      designRevisionNumber: revision.revisionNumber,
       pageId: input.pageId,
-      status: 'completed' as const,
-      width: completed.result.width,
-      height: completed.result.height,
-      mimeType: completed.result.mimeType,
-      renderedMediaId: completed.renderedMediaId,
-      renderedSha256: completed.result.sha256,
-      assetSnapshotHash: completed.assetSnapshotHash,
       createdAt: running.createdAt,
       completedAt,
+      result: completed.result,
+      assetSnapshotHash: completed.assetSnapshotHash,
+      renderedMediaId: completed.renderedMediaId,
     };
   }
 
@@ -301,14 +532,12 @@ export class ContentStudioDesignRenderService {
     organizationId: string;
     renderId: string;
     document: ContentStudioDesignDocumentV1;
-    brand: {
-      content: ContentStudioBrandKitContentV1;
-    } | null;
+    brand: DesignBrand;
     pageId: string;
-    fontRequests: ContentStudioDesignFontSpec[];
+    fonts: Map<string, PreloadedFont>;
+    images: RenderImageSource;
   }) {
-    const { organizationId, document } = input;
-    const fonts = await this.preloadFonts(organizationId, input.fontRequests);
+    const { organizationId, document, fonts } = input;
     const byKey = new Map(
       Array.from(fonts.values()).map((font) => [font.asset.key, font])
     );
@@ -331,18 +560,11 @@ export class ContentStudioDesignRenderService {
         },
         images: {
           resolveImage: async (image) => {
-            const bytes =
-              await this._contentStudioRenderMediaBridge.readMediaBytesForOrganization(
-                organizationId,
-                image.mediaId,
-                DESIGN_RENDER_IMAGE_MAX_BYTES
-              );
-            if (!bytes) {
-              return null;
+            const asset = await input.images(image);
+            if (asset) {
+              images.set(imageLookup(image), asset.sha256);
             }
-            const sha256 = designRenderSha256(bytes);
-            images.set(imageLookup(image), sha256);
-            return { bytes, sha256 };
+            return asset;
           },
         },
       });
@@ -411,10 +633,12 @@ export class ContentStudioDesignRenderService {
   // One after the other, in the order the layout asks, so the first failure
   // is always the same one. A font without an enabled mapping is left out
   // (the renderer reports it where the layout needs it); a mapped font must
-  // be readable and exactly its asset's bytes
+  // be readable and exactly its asset's bytes. A batch counts each loaded
+  // asset (loaded may throw to stop)
   private async preloadFonts(
     organizationId: string,
-    requests: ContentStudioDesignFontSpec[]
+    requests: ContentStudioDesignFontSpec[],
+    loaded?: (asset: { id: string }, bytes: Buffer) => void
   ) {
     const fonts = new Map<string, PreloadedFont>();
     for (const request of requests) {
@@ -450,6 +674,7 @@ export class ContentStudioDesignRenderService {
       ) {
         throw new RenderFailure('FONT_ASSET_INTEGRITY_ERROR');
       }
+      loaded?.(asset, bytes);
       fonts.set(fontRequest(request), {
         asset: {
           // one key per mapping and asset: a later file of the same mapping
@@ -469,6 +694,72 @@ export class ContentStudioDesignRenderService {
       });
     }
     return fonts;
+  }
+
+  // One image of the organization, read from its stored Media, with the
+  // SHA-256 of exactly those bytes (the renderer compares it with the
+  // design's)
+  private async readImage(
+    organizationId: string,
+    image: { mediaId: string; sha256: string }
+  ): Promise<ContentStudioRenderImageAsset | null> {
+    const bytes =
+      await this._contentStudioRenderMediaBridge.readMediaBytesForOrganization(
+        organizationId,
+        image.mediaId,
+        DESIGN_RENDER_IMAGE_MAX_BYTES
+      );
+    if (!bytes) {
+      return null;
+    }
+    return { bytes, sha256: designRenderSha256(bytes) };
+  }
+
+  // Every image of a batch, one after the other in first-use order, each
+  // read once and checked against the design's SHA-256 before any page is
+  // rendered. The pages then get copies of exactly these bytes; Media is not
+  // read again. Formats are left to the renderer
+  private async preloadImages(
+    organizationId: string,
+    requests: Array<{ mediaId: string; sha256: string }>,
+    loaded: (image: { mediaId: string; sha256: string }, bytes: Buffer) => void
+  ): Promise<RenderImageSource> {
+    const images = new Map<string, Buffer>();
+    for (const request of requests) {
+      const asset = await this.readImage(organizationId, request);
+      if (!asset) {
+        throw new RenderFailure('IMAGE_ASSET_UNAVAILABLE');
+      }
+      if (asset.sha256 !== request.sha256) {
+        throw new RenderFailure('IMAGE_ASSET_INTEGRITY_ERROR');
+      }
+      loaded(request, asset.bytes as Buffer);
+      images.set(imageLookup(request), Buffer.from(asset.bytes));
+    }
+    return async (image) => {
+      const bytes = images.get(imageLookup(image));
+      return bytes
+        ? { bytes: Buffer.from(bytes), sha256: designRenderSha256(bytes) }
+        : null;
+    };
+  }
+
+  // Best effort, like fail: the response already says the batch failed
+  private async failBatch(
+    organizationId: string,
+    id: string,
+    errorCode: RenderFailureCode
+  ) {
+    try {
+      await this._contentStudioDesignRenderBatchRepository.failBatch({
+        organizationId,
+        id,
+        errorCode,
+        completedAt: new Date(),
+      });
+    } catch {
+      // the response already says the render failed
+    }
   }
 
   // Best effort: when the render cannot be marked failed either, it stays
@@ -539,10 +830,7 @@ export class ContentStudioDesignRenderService {
   private async brandRevision(
     organizationId: string,
     document: ContentStudioDesignDocumentV1
-  ): Promise<{
-    content: ContentStudioBrandKitContentV1;
-    provenance: ContentStudioDesignRenderBrandProvenance;
-  } | null> {
+  ): Promise<DesignBrand> {
     const reference = document.brandKit;
     if (!reference) {
       return null;

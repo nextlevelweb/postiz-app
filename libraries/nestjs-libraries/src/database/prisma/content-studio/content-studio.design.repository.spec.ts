@@ -591,6 +591,8 @@ describe('ContentStudioDesignProject schema', () => {
       revisions: 'ContentStudioDesignRevision[]',
       // P4-05: renders of the design point to it
       renders: 'ContentStudioDesignRender[]',
+      // P4-06: render-all batches of the design point to it
+      renderBatches: 'ContentStudioDesignRenderBatch[]',
     });
     expect(fields('ContentStudioDesignRevision')).toEqual({
       id: 'String',
@@ -607,6 +609,8 @@ describe('ContentStudioDesignProject schema', () => {
       createdBy: 'User',
       // P4-05: renders of this exact revision point to it
       renders: 'ContentStudioDesignRender[]',
+      // P4-06: render-all batches of this exact revision point to it
+      renderBatches: 'ContentStudioDesignRenderBatch[]',
     });
   });
 

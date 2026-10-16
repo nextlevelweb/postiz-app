@@ -235,3 +235,56 @@ export function collectContentStudioDesignRenderFontRequests(
   }
   return Array.from(requests.values());
 }
+
+// The images a render of this design asks its image resolver for, each
+// exact Media id and SHA-256 once, in the order the layout engine meets them:
+// every visible image layer of every page, page by page and layer by layer.
+// Hidden layers ask for nothing; the same Media id with another SHA-256 is
+// another image. Dependency collection only (no layout): it lets a render of
+// every page load each image once, before the first page
+export function collectContentStudioDesignRenderImageRequests(
+  document: ContentStudioDesignDocumentV1
+): Array<{ mediaId: string; sha256: string }> {
+  const requests = new Map<string, { mediaId: string; sha256: string }>();
+  for (const page of document.pages) {
+    for (const layer of page.layers) {
+      if (layer.type !== 'image' || !layer.visible) {
+        continue;
+      }
+      const request = JSON.stringify([
+        layer.imageRef.mediaId,
+        layer.imageRef.sha256,
+      ]);
+      if (!requests.has(request)) {
+        requests.set(request, {
+          mediaId: layer.imageRef.mediaId,
+          sha256: layer.imageRef.sha256,
+        });
+      }
+    }
+  }
+  return Array.from(requests.values());
+}
+
+// What a render of every page may hold in memory at once: the original
+// bytes of every font and image it loads up front, 256 MiB in all
+export const CONTENT_STUDIO_RENDER_BATCH_ASSET_MAX_BYTES = 268_435_456;
+
+// Counts each asset once, by its identity (a font asset id, a Media id with
+// its SHA-256): add() answers false as soon as the total is over the limit
+export function contentStudioRenderBatchAssetBudget(
+  max = CONTENT_STUDIO_RENDER_BATCH_ASSET_MAX_BYTES
+) {
+  const counted = new Set<string>();
+  let total = 0;
+  return {
+    add(asset: string, byteSize: number) {
+      if (!counted.has(asset)) {
+        counted.add(asset);
+        total += byteSize;
+      }
+      return total <= max;
+    },
+    total: () => total,
+  };
+}

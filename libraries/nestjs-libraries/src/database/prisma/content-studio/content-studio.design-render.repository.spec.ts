@@ -116,6 +116,9 @@ describe('ContentStudioDesignRenderRepository', () => {
       ...BRAND,
       rendererVersion: 'content-studio-renderer-v1',
       layoutVersion: 'content-studio-layout-v1',
+      // a single-page render belongs to no batch (P4-06)
+      batchId: null,
+      batchPageIndex: null,
       status: 'running',
       assetSnapshot: null,
       assetSnapshotHash: null,
@@ -127,6 +130,36 @@ describe('ContentStudioDesignRenderRepository', () => {
       errorCode: null,
       createdAt: NOW,
       completedAt: null,
+    });
+  });
+
+  it('109/BRB14 a page of a batch stores the batch and its page index', async () => {
+    const { repository, rows } = setup();
+    await repository.createRunningRender({
+      id: RENDER,
+      organizationId: ORG,
+      createdById: USER,
+      designProjectId: '88888888-8888-4888-8888-888888888888',
+      designRevisionId: '99999999-9999-4999-8999-999999999999',
+      designRevisionNumber: 2,
+      designContentHash: 'd'.repeat(64),
+      pageId: 'cover',
+      brand: null,
+      rendererVersion: 'content-studio-renderer-v1',
+      layoutVersion: 'content-studio-layout-v1',
+      batch: {
+        batchId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        batchPageIndex: 0,
+      },
+    });
+    expect(rows[0]).toMatchObject({
+      batchId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      batchPageIndex: 0,
+    });
+    const read = await repository.getRenderForOrganization(ORG, RENDER);
+    expect(read).toMatchObject({
+      batchId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      batchPageIndex: 0,
     });
   });
 
@@ -303,11 +336,15 @@ describe('ContentStudioDesignRenderRepository', () => {
       errorCode: 'String?',
       createdById: 'String',
       createdAt: 'DateTime',
+      // P4-06: the batch and the page's index in the design
+      batchId: 'String?',
+      batchPageIndex: 'Int?',
       completedAt: 'DateTime?',
       organization: 'Organization',
       designProject: 'ContentStudioDesignProject',
       designRevision: 'ContentStudioDesignRevision',
       brandKitRevision: 'ContentStudioBrandKitRevision?',
+      batch: 'ContentStudioDesignRenderBatch?',
       createdBy: 'User',
     });
     expect(block).toMatch(
@@ -320,6 +357,11 @@ describe('ContentStudioDesignRenderRepository', () => {
       /brandKitRevision\s+ContentStudioBrandKitRevision\?\s+@relation\(fields: \[brandKitRevisionId, organizationId\], references: \[id, organizationId\], onDelete: Restrict, onUpdate: Restrict\)/
     );
     expect(block).toMatch(/@@unique\(\[id, organizationId\]\)/);
+    // P4-06: a page points to a batch of its own organization, once per index
+    expect(block).toMatch(
+      /batch\s+ContentStudioDesignRenderBatch\?\s+@relation\(fields: \[batchId, organizationId\], references: \[id, organizationId\], onDelete: Restrict, onUpdate: Restrict\)/
+    );
+    expect(block).toMatch(/@@unique\(\[batchId, batchPageIndex\]\)/);
     expect(block).not.toMatch(
       /updatedAt|content\s|svg|png\s|bytes|url|storageKey|text/i
     );

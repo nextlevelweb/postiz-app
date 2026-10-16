@@ -28,6 +28,15 @@ export class RenderContentStudioDesignDto {
   pageId: string;
 }
 
+// Every page of exactly this revision, in the design's order: no page list
+// or order, no latest revision, no organization, creator, assets or render
+// options. The server reads every page itself
+export class RenderAllContentStudioDesignDto {
+  @IsString()
+  @Matches(UUID)
+  revisionId: string;
+}
+
 // The multipart fields beside the `file` part: the exact family, weight and
 // style the file is the font for. No organization, creator, hash, storage
 // key, path, URL or file name: the server derives what it stores from the

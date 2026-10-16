@@ -13,11 +13,13 @@ import {
   designRenderSha256,
 } from '@gitroom/nestjs-libraries/content-studio/design/render/design.render.types';
 import { parseVerifiedContentStudioRenderAssetSnapshot } from '@gitroom/nestjs-libraries/content-studio/design/render/design.render.snapshot';
+import * as snapshotModule from '@gitroom/nestjs-libraries/content-studio/design/render/design.render.snapshot';
 import { MediaService } from '@gitroom/nestjs-libraries/database/prisma/media/media.service';
 import { ContentStudioDesignRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.repository';
 import { ContentStudioBrandKitRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.repository';
 import { ContentStudioRenderFontRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.repository';
 import { ContentStudioDesignRenderRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.repository';
+import { ContentStudioDesignRenderBatchRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render-batch.repository';
 import { ContentStudioRenderMediaBridge } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-media.bridge';
 import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
 import {
@@ -178,6 +180,8 @@ beforeAll(async () => {
 });
 
 const sha = (bytes: Buffer) => designRenderSha256(bytes);
+// the renderer itself, taken before any test spies on it
+const REAL_RENDER = rendererModule.renderContentStudioDesignPage;
 
 interface World {
   projects: Row[];
@@ -191,6 +195,7 @@ interface World {
   stored: Map<string, Buffer>;
   renders: Row[];
   savedMedia: Row[];
+  batches: Row[];
 }
 
 const setup = (options: { fontStorage?: 'ok' | 'unavailable' } = {}) => {
@@ -206,8 +211,11 @@ const setup = (options: { fontStorage?: 'ok' | 'unavailable' } = {}) => {
     stored: new Map(),
     renders: [],
     savedMedia: [],
+    batches: [],
   };
   const calls: string[] = [];
+  // what happened, in order, across every fake (used by the batch tests)
+  const events: string[] = [];
   const pick = (row: Row | undefined, keys: string[]) =>
     row ? Object.fromEntries(keys.map((key) => [key, row[key]])) : null;
 
@@ -391,11 +399,13 @@ const setup = (options: { fontStorage?: 'ok' | 'unavailable' } = {}) => {
   };
   const renders = {
     createRunningRender: jest.fn(async (input: Row) => {
+      events.push(`render.create ${input.pageId}`);
       const row = { ...input, status: 'running', createdAt: new Date() };
       world.renders.push(row);
       return { id: input.id, createdAt: row.createdAt };
     }),
     completeRender: jest.fn(async (input: Row) => {
+      events.push(`render.complete`);
       const row = world.renders.find(
         (r) =>
           r.id === input.id &&
@@ -409,12 +419,46 @@ const setup = (options: { fontStorage?: 'ok' | 'unavailable' } = {}) => {
       return { count: 1 };
     }),
     failRender: jest.fn(async (input: Row) => {
+      events.push(`render.fail ${input.errorCode}`);
       const row = world.renders.find(
         (r) =>
           r.id === input.id &&
           r.organizationId === input.organizationId &&
           r.status === 'running'
       );
+      if (!row) {
+        return { count: 0 };
+      }
+      Object.assign(row, input, { status: 'failed' });
+      return { count: 1 };
+    }),
+  };
+  const batchRow = (input: Row) =>
+    world.batches.find(
+      (b) =>
+        b.id === input.id &&
+        b.organizationId === input.organizationId &&
+        b.status === 'running'
+    );
+  const batches = {
+    createRunningBatch: jest.fn(async (input: Row) => {
+      events.push('batch.create');
+      const row = { ...input, status: 'running', createdAt: new Date() };
+      world.batches.push(row);
+      return { id: input.id, createdAt: row.createdAt };
+    }),
+    completeBatch: jest.fn(async (input: Row) => {
+      events.push('batch.complete');
+      const row = batchRow(input);
+      if (!row) {
+        return { count: 0 };
+      }
+      Object.assign(row, input, { status: 'completed', errorCode: null });
+      return { count: 1 };
+    }),
+    failBatch: jest.fn(async (input: Row) => {
+      events.push(`batch.fail ${input.errorCode}`);
+      const row = batchRow(input);
       if (!row) {
         return { count: 0 };
       }
@@ -441,6 +485,7 @@ const setup = (options: { fontStorage?: 'ok' | 'unavailable' } = {}) => {
     readFontAsset: jest.fn(
       async (input: { organizationId: string; storageKey: string }) => {
         calls.push(`font ${input.storageKey}`);
+        events.push('font.read');
         if (options.fontStorage === 'unavailable') {
           throw new ContentStudioPrivateFontStorageError('UNAVAILABLE');
         }
@@ -459,6 +504,7 @@ const setup = (options: { fontStorage?: 'ok' | 'unavailable' } = {}) => {
   const reader: IStoredMediaReader = {
     readStoredMediaBytes: jest.fn(async (location: string) => {
       calls.push(`media ${location}`);
+      events.push(`media.read ${location.split('/').pop()}`);
       const bytes = world.stored.get(location);
       if (!bytes) {
         throw new Error(MARKER);
@@ -480,6 +526,8 @@ const setup = (options: { fontStorage?: 'ok' | 'unavailable' } = {}) => {
         ['id', 'name', 'path', 'thumbnail', 'alt', 'status', 'organizationId']
       )
     ),
+    // never used by renders: nothing is cleaned up
+    deleteMedia: jest.fn(),
     saveGeneratedFile: jest.fn(
       async (
         org: string,
@@ -488,6 +536,7 @@ const setup = (options: { fontStorage?: 'ok' | 'unavailable' } = {}) => {
         ext: string,
         originalName: string
       ) => {
+        events.push('media.save');
         const row = {
           id: `out-${world.savedMedia.length + 1}`,
           org,
@@ -510,6 +559,10 @@ const setup = (options: { fontStorage?: 'ok' | 'unavailable' } = {}) => {
   // one spy per test: a second setup in the same test starts counting again
   const render = jest.spyOn(rendererModule, 'renderContentStudioDesignPage');
   render.mockClear();
+  render.mockImplementation(async (input) => {
+    events.push(`renderer ${input.pageId}`);
+    return REAL_RENDER(input);
+  });
   const bridge = new ContentStudioRenderMediaBridge(
     mediaService as unknown as MediaService
   );
@@ -518,6 +571,7 @@ const setup = (options: { fontStorage?: 'ok' | 'unavailable' } = {}) => {
     brands as unknown as ContentStudioBrandKitRepository,
     fonts as unknown as ContentStudioRenderFontRepository,
     renders as unknown as ContentStudioDesignRenderRepository,
+    batches as unknown as ContentStudioDesignRenderBatchRepository,
     bridge
   );
   const fontService = new ContentStudioRenderFontService(
@@ -611,9 +665,20 @@ const setup = (options: { fontStorage?: 'ok' | 'unavailable' } = {}) => {
       pageId: 'p1',
       ...extra,
     } as never);
+  const runAll = (extra: Row = {}) =>
+    service.renderAllPages({
+      organizationId: ORG,
+      userId: USER,
+      designId: PROJECT,
+      revisionId: REV_1,
+      ...extra,
+    } as never);
   return {
     world,
     calls,
+    events,
+    batches,
+    runAll,
     service,
     designs,
     brands,
@@ -1644,5 +1709,907 @@ describe('ContentStudioDesignRenderService failures', () => {
     });
     await failure(s.run());
     expect(s.renders.createRunningRender).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Render every page (P4-06)
+// ---------------------------------------------------------------------------
+
+const REAL_BUDGET = snapshotModule.contentStudioRenderBatchAssetBudget;
+const SECOND = {
+  type: 'family',
+  family: 'Second Family',
+  weight: 400,
+  style: 'normal',
+};
+const BRAND_HEADING = { type: 'brand', tokenId: 'heading' };
+
+// page p1: Brand Kit text + red; p2: another family + blue; p3: a shape + red
+const representative = async (s: Setup) => {
+  s.addKit();
+  const geist = await s.addFont('Geist', GEIST);
+  const second = await s.addFont('Second Family', GEIST_B);
+  s.addMedia('red', RED);
+  s.addMedia('blue', BLUE);
+  s.addDesign(
+    document(
+      [
+        page('p1', [
+          text('t1', 'Hi', { font: BRAND_HEADING }),
+          image('i1', 'red', sha(RED)),
+        ]),
+        page('p2', [
+          text('t2', 'Yo', { font: SECOND }),
+          image('i2', 'blue', sha(BLUE)),
+        ]),
+        page('p3', [shape('s1'), image('i3', 'red', sha(RED))]),
+      ],
+      KIT_REF
+    )
+  );
+  return { geist, second };
+};
+
+const snapshotOf = (row: Row) =>
+  parseVerifiedContentStudioRenderAssetSnapshot(row as never);
+const childrenOf = (s: Setup) =>
+  s.world.renders.filter((r) => (r.batch as Row | null)?.batchId);
+
+describe('ContentStudioDesignRenderService.renderAllPages preflight', () => {
+  it('MP1/MP2 a missing or foreign design is a plain 404, with no batch', async () => {
+    const s = setup();
+    s.addDesign(textDesign(), { organizationId: OTHER_ORG });
+    for (const designId of ['nope', PROJECT, OTHER_PROJECT]) {
+      expect((await failure(s.runAll({ designId }))).code).toBe('CS_NOT_FOUND');
+    }
+    expect(s.world.batches).toEqual([]);
+    nothingStarted(s);
+  });
+
+  it('MP3/MP4/MP5 a missing, other or corrupted revision starts nothing', async () => {
+    const s = setup();
+    s.addDesign(textDesign());
+    s.addDesign(textDesign(), {
+      projectId: OTHER_PROJECT,
+      revisionId: FOREIGN_REV,
+    });
+    for (const revisionId of ['latest', REV_2, FOREIGN_REV]) {
+      expect((await failure(s.runAll({ revisionId }))).code).toBe(
+        'CS_DESIGN_REVISION_NOT_FOUND'
+      );
+    }
+    s.world.revisions[0].contentHash = 'f'.repeat(64);
+    expect((await failure(s.runAll())).code).toBe('CS_DESIGN_INTEGRITY_ERROR');
+    expect(s.world.batches).toEqual([]);
+    nothingStarted(s);
+  });
+
+  it('MP9 a missing or corrupted Brand Kit revision starts nothing', async () => {
+    for (const prepare of [
+      () => undefined,
+      (s: Setup) => {
+        s.addKit();
+        s.world.kitRevisions[0].content = '{}';
+      },
+    ]) {
+      const s = setup();
+      prepare(s);
+      s.addDesign(document([page('p1', [shape('s1')])], KIT_REF));
+      expect((await failure(s.runAll())).code).toBe(
+        'CS_DESIGN_RENDER_BRAND_INTEGRITY_ERROR'
+      );
+      expect(s.world.batches).toEqual([]);
+      nothingStarted(s);
+    }
+  });
+
+  it('MP6/MP7/MP10 renders an archived design and an older revision, and a one-page design is a batch too', async () => {
+    const s = setup();
+    s.addDesign(document([page('p1', [shape('s1')])]), {
+      archivedAt: new Date(),
+      latest: 2,
+    });
+    s.addDesign(document([page('p1', []), page('p2', [])]), {
+      revisionId: REV_2,
+      revisionNumber: 2,
+    });
+    const result = await s.runAll();
+    expect(result).toMatchObject({
+      status: 'completed',
+      designRevisionId: REV_1,
+      designRevisionNumber: 1,
+      pageCount: 1,
+    });
+    expect(result.outputs).toHaveLength(1);
+    expect(s.world.batches).toHaveLength(1);
+    expect(s.designs.getRevisionByNumber).not.toHaveBeenCalled();
+  });
+});
+
+describe('ContentStudioDesignRenderService.renderAllPages success', () => {
+  it('163/MS1-MS9/MS12/MS13 the representative design: one frozen input set, pages in order, one render and Media each', async () => {
+    const s = setup();
+    const { geist, second } = await representative(s);
+    s.events.length = 0;
+    const result = await s.runAll();
+    expect(s.events).toEqual([
+      'batch.create',
+      'font.read',
+      'font.read',
+      'media.read red.png',
+      'media.read blue.png',
+      'render.create p1',
+      'renderer p1',
+      'media.save',
+      'render.complete',
+      'render.create p2',
+      'renderer p2',
+      'media.save',
+      'render.complete',
+      'render.create p3',
+      'renderer p3',
+      'media.save',
+      'render.complete',
+      'batch.complete',
+    ]);
+    expect(s.render).toHaveBeenCalledTimes(3);
+    expect(s.render.mock.calls.map((c) => c[0].pageId)).toEqual([
+      'p1',
+      'p2',
+      'p3',
+    ]);
+    const children = childrenOf(s);
+    expect(children.map((c) => [c.pageId, c.batch, c.status])).toEqual([
+      ['p1', { batchId: result.id, batchPageIndex: 0 }, 'completed'],
+      ['p2', { batchId: result.id, batchPageIndex: 1 }, 'completed'],
+      ['p3', { batchId: result.id, batchPageIndex: 2 }, 'completed'],
+    ]);
+    expect(result.outputs.map((o) => [o.pageId, o.pageIndex])).toEqual([
+      ['p1', 0],
+      ['p2', 1],
+      ['p3', 2],
+    ]);
+    expect(result.outputs.map((o) => o.renderedMediaId)).toEqual(
+      s.world.savedMedia.map((m) => m.id)
+    );
+    expect(result.outputs.map((o) => o.renderId)).toEqual(
+      children.map((c) => c.id)
+    );
+    for (const [index, output] of result.outputs.entries()) {
+      expect(output.renderedSha256).toBe(
+        sha(s.world.savedMedia[index].body as Buffer)
+      );
+      expect(output.assetSnapshotHash).toBe(children[index].assetSnapshotHash);
+    }
+    const [assetA, assetB] = s.world.assets;
+    expect(children.map((c) => snapshotOf(c))).toEqual([
+      {
+        schemaVersion: 1,
+        fonts: [
+          {
+            mappingId: geist.id,
+            fontAssetId: assetA.id,
+            family: 'Geist',
+            weight: 400,
+            style: 'normal',
+            sha256: sha(GEIST),
+          },
+        ],
+        images: [{ mediaId: 'red', sha256: sha(RED) }],
+      },
+      {
+        schemaVersion: 1,
+        fonts: [
+          {
+            mappingId: second.id,
+            fontAssetId: assetB.id,
+            family: 'Second Family',
+            weight: 400,
+            style: 'normal',
+            sha256: sha(GEIST_B),
+          },
+        ],
+        images: [{ mediaId: 'blue', sha256: sha(BLUE) }],
+      },
+      {
+        schemaVersion: 1,
+        fonts: [],
+        images: [{ mediaId: 'red', sha256: sha(RED) }],
+      },
+    ]);
+    expect(s.world.batches[0]).toMatchObject({
+      id: result.id,
+      organizationId: ORG,
+      createdById: USER,
+      designProjectId: PROJECT,
+      designRevisionId: REV_1,
+      designRevisionNumber: 1,
+      pageCount: 3,
+      status: 'completed',
+      errorCode: null,
+      rendererVersion: 'content-studio-renderer-v1',
+      layoutVersion: 'content-studio-layout-v1',
+      brand: {
+        brandKitId: KIT,
+        brandKitRevisionId: KIT_REV_3,
+        brandKitRevisionNumber: 3,
+        brandKitContentHash: KIT_REF.contentHash,
+      },
+    });
+    expect(children.every((c) => c.createdById === USER)).toBe(true);
+    expect(s.world.savedMedia.every((m) => m.org === ORG)).toBe(true);
+  });
+
+  it('MS14/MS15/56/57 every page gets the same exact revision and Brand Kit revision, read once', async () => {
+    const s = setup();
+    await representative(s);
+    await s.runAll();
+    const inputs = s.render.mock.calls.map((c) => c[0]);
+    for (const input of inputs) {
+      expect(input.document).toEqual(inputs[0].document);
+      expect(input.brandKit).toEqual({ ref: KIT_REF, content: KIT_V3 });
+    }
+    expect(s.designs.getRevisionForProject).toHaveBeenCalledTimes(1);
+    expect(s.brands.getRevisionForBrandKit).toHaveBeenCalledTimes(1);
+    expect(s.designs.getRevisionByNumber).not.toHaveBeenCalled();
+    expect(s.brands.getRevisionByNumber).not.toHaveBeenCalled();
+  });
+
+  it('MS10 answers ordered page outputs only: no snapshot body, assets, storage or URL', async () => {
+    const s = setup();
+    await representative(s);
+    const result = await s.runAll();
+    expect(Object.keys(result).sort()).toEqual([
+      'completedAt',
+      'createdAt',
+      'designProjectId',
+      'designRevisionId',
+      'designRevisionNumber',
+      'id',
+      'outputs',
+      'pageCount',
+      'status',
+    ]);
+    expect(Object.keys(result.outputs[0]).sort()).toEqual([
+      'assetSnapshotHash',
+      'height',
+      'mimeType',
+      'pageId',
+      'pageIndex',
+      'renderId',
+      'renderedMediaId',
+      'renderedSha256',
+      'width',
+    ]);
+    expect(JSON.stringify(result)).not.toMatch(
+      /fonts\/|https?:|Geist|"red"|"blue"|uploads|storage|snapshot"/
+    );
+    expect(result.outputs.every((o) => o.mimeType === 'image/png')).toBe(true);
+  });
+
+  it('MS1/8/82 keeps the page order of the design, not page id or creation order', async () => {
+    const s = setup();
+    s.addDesign(
+      document([
+        page('zeta', [shape('s1')]),
+        page('alpha', [shape('s2')]),
+        page('mid', [shape('s3')]),
+      ])
+    );
+    const result = await s.runAll();
+    expect(result.outputs.map((o) => [o.pageId, o.pageIndex])).toEqual([
+      ['zeta', 0],
+      ['alpha', 1],
+      ['mid', 2],
+    ]);
+    expect(
+      childrenOf(s).map((c) => [c.pageId, (c.batch as Row).batchPageIndex])
+    ).toEqual([
+      ['zeta', 0],
+      ['alpha', 1],
+      ['mid', 2],
+    ]);
+    expect(result.outputs.map((o) => o.renderedMediaId)).toEqual([
+      'out-1',
+      'out-2',
+      'out-3',
+    ]);
+    expect(s.world.batches[0].pageCount).toBe(3);
+  });
+
+  it('130 keeps each page its own size', async () => {
+    const s = setup();
+    s.addDesign(
+      document([
+        page('p1', [shape('s1')]),
+        page('p2', [shape('s2')], { width: 64, height: 96 }),
+      ])
+    );
+    const result = await s.runAll();
+    expect(result.outputs.map((o) => [o.width, o.height])).toEqual([
+      [120, 80],
+      [64, 96],
+    ]);
+  });
+
+  it('117/40/39 the same request twice is two batches, two sets of renders and Media', async () => {
+    const s = setup();
+    s.addDesign(document([page('p1', [shape('s1')]), page('p2', [])]));
+    const a = await s.runAll();
+    const b = await s.runAll();
+    expect(a.id).not.toBe(b.id);
+    expect(s.world.batches).toHaveLength(2);
+    expect(childrenOf(s)).toHaveLength(4);
+    expect(new Set(s.world.savedMedia.map((m) => m.id)).size).toBe(4);
+    expect(a.outputs.map((o) => o.renderedSha256)).toEqual(
+      b.outputs.map((o) => o.renderedSha256)
+    );
+  });
+});
+
+describe('ContentStudioDesignRenderService.renderAllPages font freeze', () => {
+  it('MF1/MF2/MF9 collects once and loads every needed font once, before the first page', async () => {
+    const collect = jest.spyOn(
+      snapshotModule,
+      'collectContentStudioDesignRenderFontRequests'
+    );
+    const s = setup();
+    await s.addFont('Geist');
+    s.addDesign(
+      document([
+        page('p1', [shape('s1')]),
+        page('p2', [text('t1', 'a')]),
+        page('p3', [text('t2', 'b')]),
+      ])
+    );
+    s.events.length = 0;
+    await s.runAll();
+    expect(collect).toHaveBeenCalledTimes(1);
+    expect(s.fonts.getActiveMappingBySpec).toHaveBeenCalledTimes(1);
+    expect(s.fontStorage.readFontAsset).toHaveBeenCalledTimes(1);
+    expect(s.events.indexOf('font.read')).toBeLessThan(
+      s.events.indexOf('render.create p1')
+    );
+  });
+
+  it('MF3/MF5/MF6/164/M6/M7 a mapping replaced during the batch changes no page; the next batch uses the new asset', async () => {
+    const s = setup();
+    const mapping = await s.addFont('Geist', GEIST);
+    s.addDesign(
+      document([page('p1', [text('t1', 'a')]), page('p2', [text('t2', 'b')])])
+    );
+    s.render.mockImplementationOnce(async (input) => {
+      await s.addFont('Geist', GEIST_B);
+      return REAL_RENDER(input);
+    });
+    await s.runAll();
+    const [assetA, assetB] = s.world.assets;
+    expect(s.world.mappings[0].fontAssetId).toBe(assetB.id);
+    expect(childrenOf(s).map((c) => snapshotOf(c).fonts)).toEqual([
+      [
+        expect.objectContaining({
+          mappingId: mapping.id,
+          fontAssetId: assetA.id,
+          sha256: sha(GEIST),
+        }),
+      ],
+      [
+        expect.objectContaining({
+          mappingId: mapping.id,
+          fontAssetId: assetA.id,
+          sha256: sha(GEIST),
+        }),
+      ],
+    ]);
+    expect(s.fontStorage.readFontAsset).toHaveBeenCalledTimes(1);
+    s.world.renders = [];
+    await s.runAll();
+    expect(
+      childrenOf(s).map((c) => snapshotOf(c).fonts[0].fontAssetId)
+    ).toEqual([assetB.id, assetB.id]);
+  });
+
+  it('MF4 a mapping disabled during the batch stops no page', async () => {
+    const s = setup();
+    await s.addFont('Geist');
+    s.addDesign(
+      document([page('p1', [text('t1', 'a')]), page('p2', [text('t2', 'b')])])
+    );
+    s.render.mockImplementationOnce(async (input) => {
+      s.world.mappings[0].disabledAt = new Date();
+      return REAL_RENDER(input);
+    });
+    expect((await s.runAll()).status).toBe('completed');
+  });
+
+  it('MF7/MF8 never loads an unused or hidden font', async () => {
+    const s = setup();
+    await s.addFont('Geist');
+    await s.addFont('Unused');
+    await s.addFont('Hidden Family');
+    s.addDesign(
+      document([
+        page('p1', [text('t1', 'a')]),
+        page('p2', [
+          text('t2', 'b', {
+            visible: false,
+            font: {
+              type: 'family',
+              family: 'Hidden Family',
+              weight: 400,
+              style: 'normal',
+            },
+          }),
+        ]),
+      ])
+    );
+    await s.runAll();
+    expect(
+      s.fonts.getActiveMappingBySpec.mock.calls.map((c) => (c[1] as Row).family)
+    ).toEqual(['Geist']);
+  });
+
+  it('29 visible text without private font storage fails the batch with 503 before any page', async () => {
+    const s = setup({ fontStorage: 'unavailable' });
+    s.world.assets.push({
+      id: 'c1111111-1111-4111-8111-111111111111',
+      organizationId: ORG,
+      storageKey: `fonts/${ORG}/c1111111-1111-4111-8111-111111111111.ttf`,
+      sha256: sha(GEIST),
+      byteSize: GEIST.length,
+      format: 'ttf',
+    });
+    s.world.mappings.push({
+      id: 'd1111111-1111-4111-8111-111111111111',
+      organizationId: ORG,
+      family: 'Geist',
+      weight: 400,
+      style: 'normal',
+      fontAssetId: 'c1111111-1111-4111-8111-111111111111',
+      disabledAt: null,
+    });
+    s.addMedia('red', RED);
+    s.addDesign(
+      document([
+        page('p1', [shape('s1')]),
+        page('p2', [text('t1', 'a'), image('i1', 'red', sha(RED))]),
+      ])
+    );
+    expect(await failure(s.runAll())).toEqual({
+      status: 503,
+      msg: 'Private render font storage is not configured.',
+      code: 'CS_RENDER_FONT_STORAGE_UNAVAILABLE',
+    });
+    expect(s.world.batches[0]).toMatchObject({
+      status: 'failed',
+      errorCode: 'FONT_STORAGE_UNAVAILABLE',
+      pageCount: 2,
+    });
+    expect(s.world.renders).toEqual([]);
+    expect(s.world.savedMedia).toEqual([]);
+    expect(s.reader.readStoredMediaBytes).not.toHaveBeenCalled();
+  });
+
+  it('30 a design without visible text needs no private font storage', async () => {
+    const s = setup({ fontStorage: 'unavailable' });
+    s.addMedia('red', RED);
+    s.addDesign(
+      document([
+        page('p1', [image('i1', 'red', sha(RED))]),
+        page('p2', [shape('s1')]),
+      ])
+    );
+    expect((await s.runAll()).status).toBe('completed');
+    expect(s.fontStorage.readFontAsset).not.toHaveBeenCalled();
+  });
+
+  it('145 the first failing font stops loading before any image is read', async () => {
+    const s = setup();
+    await s.addFont('Geist');
+    s.world.objects.clear();
+    s.addMedia('red', RED);
+    s.addDesign(
+      document([
+        page('p1', [image('i1', 'red', sha(RED))]),
+        page('p2', [text('t1', 'a')]),
+      ])
+    );
+    expect((await failure(s.runAll())).code).toBe(
+      'CS_DESIGN_RENDER_ASSET_INTEGRITY_ERROR'
+    );
+    expect(s.reader.readStoredMediaBytes).not.toHaveBeenCalled();
+    expect(s.world.batches[0]).toMatchObject({
+      status: 'failed',
+      errorCode: 'FONT_ASSET_INTEGRITY_ERROR',
+    });
+    expect(s.world.renders).toEqual([]);
+  });
+});
+
+describe('ContentStudioDesignRenderService.renderAllPages image freeze', () => {
+  it('MI1/MI2/MI3/MI9 reads every visible image of the design once, in page and layer order, before the first page', async () => {
+    const s = setup();
+    s.addMedia('red', RED);
+    s.addMedia('blue', BLUE);
+    s.addDesign(
+      document([
+        page('p1', [
+          image('i1', 'blue', sha(BLUE)),
+          image('i2', 'red', sha(RED)),
+        ]),
+        page('p2', [
+          image('i3', 'red', sha(RED)),
+          image('i4', 'gone', sha(RED), { visible: false }),
+        ]),
+      ])
+    );
+    s.events.length = 0;
+    await s.runAll();
+    expect(s.events.slice(0, 3)).toEqual([
+      'batch.create',
+      'media.read blue.png',
+      'media.read red.png',
+    ]);
+    expect(s.reader.readStoredMediaBytes).toHaveBeenCalledTimes(2);
+    expect(
+      s.mediaService.getMediaByIdForOrganization.mock.calls.map((c) => c[1])
+    ).toEqual(['blue', 'red']);
+  });
+
+  it('MI4/MI7/62 a missing or foreign image on a later page fails the batch before any page or Media', async () => {
+    for (const prepare of [
+      () => undefined,
+      (s: Setup) => {
+        s.addMedia('photo', BLUE);
+        s.world.media[0].organizationId = OTHER_ORG;
+      },
+    ]) {
+      const s = setup();
+      prepare(s);
+      s.addDesign(
+        document([
+          page('p1', [shape('s1')]),
+          page('p2', [image('i1', 'photo', sha(BLUE))]),
+        ])
+      );
+      expect((await failure(s.runAll())).code).toBe(
+        'CS_DESIGN_RENDER_ASSET_UNAVAILABLE'
+      );
+      expect(s.world.batches[0]).toMatchObject({
+        status: 'failed',
+        errorCode: 'IMAGE_ASSET_UNAVAILABLE',
+      });
+      expect(s.world.renders).toEqual([]);
+      expect(s.render).not.toHaveBeenCalled();
+      expect(s.world.savedMedia).toEqual([]);
+    }
+  });
+
+  it('MI6/MI8/148 stored bytes that are not the design hash, or another hash for the same Media, fail before any page', async () => {
+    const s = setup();
+    s.addMedia('photo', RED);
+    s.addDesign(
+      document([
+        page('p1', [image('i1', 'photo', sha(RED))]),
+        page('p2', [image('i2', 'photo', sha(BLUE))]),
+      ])
+    );
+    const error = await failure(s.runAll());
+    expect(error.code).toBe('CS_DESIGN_RENDER_ASSET_INTEGRITY_ERROR');
+    expect(JSON.stringify(error)).not.toMatch(/[0-9a-f]{64}|photo/);
+    expect(s.reader.readStoredMediaBytes).toHaveBeenCalledTimes(2);
+    expect(s.world.batches[0]).toMatchObject({
+      status: 'failed',
+      errorCode: 'IMAGE_ASSET_INTEGRITY_ERROR',
+    });
+    expect(s.world.renders).toEqual([]);
+  });
+
+  it('MI5/165/M8 an image changed or deleted during the batch changes no page: the loaded bytes are used', async () => {
+    const s = setup();
+    s.addMedia('red', RED);
+    s.addDesign(
+      document([
+        page('p1', [image('i1', 'red', sha(RED))]),
+        page('p2', [image('i2', 'red', sha(RED))]),
+      ])
+    );
+    s.render.mockImplementationOnce(async (input) => {
+      s.world.stored.clear();
+      s.world.media = [];
+      return REAL_RENDER(input);
+    });
+    const result = await s.runAll();
+    expect(result.outputs).toHaveLength(2);
+    expect(s.reader.readStoredMediaBytes).toHaveBeenCalledTimes(1);
+    expect(childrenOf(s).map((c) => snapshotOf(c).images)).toEqual([
+      [{ mediaId: 'red', sha256: sha(RED) }],
+      [{ mediaId: 'red', sha256: sha(RED) }],
+    ]);
+  });
+
+  it('100 each page gets its own copy of the loaded bytes', async () => {
+    const s = setup();
+    s.addMedia('red', RED);
+    s.addDesign(
+      document([
+        page('p1', [image('i1', 'red', sha(RED))]),
+        page('p2', [image('i2', 'red', sha(RED))]),
+      ])
+    );
+    const seen: Uint8Array[] = [];
+    s.render.mockImplementation(async (input) => {
+      const asset = await input.images.resolveImage({
+        mediaId: 'red',
+        sha256: sha(RED),
+      });
+      seen.push(asset!.bytes);
+      (asset!.bytes as Buffer).fill(0);
+      return REAL_RENDER(input);
+    });
+    expect((await s.runAll()).status).toBe('completed');
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).not.toBe(seen[1]);
+  });
+});
+
+describe('ContentStudioDesignRenderService.renderAllPages asset budget', () => {
+  const withBudget = (max: number) =>
+    jest
+      .spyOn(snapshotModule, 'contentStudioRenderBatchAssetBudget')
+      .mockImplementation(() => REAL_BUDGET(max));
+
+  it('BCAP5/102/106 more source bytes than the budget fail the batch with 413 before any page', async () => {
+    const s = setup();
+    withBudget(RED.length + BLUE.length - 1);
+    s.addMedia('red', RED);
+    s.addMedia('blue', BLUE);
+    s.addDesign(
+      document([
+        page('p1', [image('i1', 'red', sha(RED))]),
+        page('p2', [image('i2', 'blue', sha(BLUE))]),
+      ])
+    );
+    expect(await failure(s.runAll())).toEqual({
+      status: 413,
+      msg: 'The design uses too much source media to render at once.',
+      code: 'CS_DESIGN_RENDER_BATCH_TOO_LARGE',
+    });
+    expect(s.world.batches[0]).toMatchObject({
+      status: 'failed',
+      errorCode: 'BATCH_ASSET_TOO_LARGE',
+    });
+    expect(s.world.renders).toEqual([]);
+    expect(s.render).not.toHaveBeenCalled();
+    expect(s.world.savedMedia).toEqual([]);
+  });
+
+  it('BCAP1/BCAP3 exactly the budget renders, with an image used twice counted once', async () => {
+    const s = setup();
+    withBudget(RED.length + BLUE.length);
+    s.addMedia('red', RED);
+    s.addMedia('blue', BLUE);
+    s.addDesign(
+      document([
+        page('p1', [
+          image('i1', 'red', sha(RED)),
+          image('i2', 'blue', sha(BLUE)),
+        ]),
+        page('p2', [image('i3', 'red', sha(RED))]),
+      ])
+    );
+    expect((await s.runAll()).status).toBe('completed');
+  });
+
+  it('BCAP4 one font asset used by two tuples counts once', async () => {
+    const s = setup();
+    withBudget(GEIST.length);
+    await s.addFont('Geist');
+    const asset = s.world.assets[0];
+    s.world.mappings.push({
+      id: 'e1111111-1111-4111-8111-111111111111',
+      organizationId: ORG,
+      family: 'Alias',
+      weight: 400,
+      style: 'normal',
+      fontAssetId: asset.id,
+      disabledAt: null,
+    });
+    s.addDesign(
+      document([
+        page('p1', [text('t1', 'a')]),
+        page('p2', [
+          text('t2', 'b', {
+            font: {
+              type: 'family',
+              family: 'Alias',
+              weight: 400,
+              style: 'normal',
+            },
+          }),
+        ]),
+      ])
+    );
+    expect((await s.runAll()).status).toBe('completed');
+    expect(s.fontStorage.readFontAsset).toHaveBeenCalledTimes(2);
+  });
+
+  it('105 a single-page render has no batch budget', async () => {
+    const budget = jest.spyOn(
+      snapshotModule,
+      'contentStudioRenderBatchAssetBudget'
+    );
+    const s = setup();
+    s.addMedia('red', RED);
+    s.addDesign(document([page('p1', [image('i1', 'red', sha(RED))])]));
+    await s.run();
+    expect(budget).not.toHaveBeenCalled();
+    expect(s.batches.createRunningBatch).not.toHaveBeenCalled();
+  });
+});
+
+describe('ContentStudioDesignRenderService.renderAllPages failures', () => {
+  const threePages = (s: Setup) =>
+    s.addDesign(
+      document([
+        page('p1', [shape('s1')]),
+        page('p2', [shape('s2')]),
+        page('p3', [shape('s3')]),
+      ])
+    );
+
+  it('MF-A1 a first-page failure fails that render and the batch, and renders nothing more', async () => {
+    const s = setup();
+    threePages(s);
+    s.render.mockRejectedValueOnce(
+      new ContentStudioDesignRenderError('RENDER_FAILED')
+    );
+    expect((await failure(s.runAll())).code).toBe('CS_DESIGN_RENDER_FAILED');
+    expect(childrenOf(s).map((c) => [c.pageId, c.status, c.errorCode])).toEqual(
+      [['p1', 'failed', 'RENDER_FAILED']]
+    );
+    expect(s.render).toHaveBeenCalledTimes(1);
+    expect(s.world.batches[0]).toMatchObject({
+      status: 'failed',
+      errorCode: 'RENDER_FAILED',
+      pageCount: 3,
+    });
+  });
+
+  it('MF-A2/116/M33 a later page failure keeps earlier pages and their Media, and creates no later page', async () => {
+    const s = setup();
+    threePages(s);
+    s.render
+      .mockImplementationOnce(async (input) => REAL_RENDER(input))
+      .mockRejectedValueOnce(
+        new ContentStudioDesignRenderError('IMAGE_ASSET_INVALID')
+      );
+    expect((await failure(s.runAll())).code).toBe('CS_DESIGN_RENDER_FAILED');
+    const children = childrenOf(s);
+    expect(
+      children.map((c) => [c.pageId, c.status, (c.batch as Row).batchPageIndex])
+    ).toEqual([
+      ['p1', 'completed', 0],
+      ['p2', 'failed', 1],
+    ]);
+    expect(children[0].renderedMediaId).toBe('out-1');
+    expect(children[1].renderedMediaId).toBeUndefined();
+    expect(s.world.savedMedia).toHaveLength(1);
+    expect(s.render).toHaveBeenCalledTimes(2);
+    expect(s.world.batches[0]).toMatchObject({
+      status: 'failed',
+      errorCode: 'IMAGE_ASSET_INVALID',
+      pageCount: 3,
+    });
+    expect(s.mediaService.deleteMedia).not.toHaveBeenCalled();
+    expect(s.renders.failRender).toHaveBeenCalledTimes(1);
+  });
+
+  it('MF-A3/84 a Media storage failure on a later page stops the batch the same way', async () => {
+    const s = setup();
+    threePages(s);
+    s.mediaService.saveGeneratedFile
+      .mockImplementationOnce(async () => ({ id: 'out-first' }))
+      .mockRejectedValueOnce(new Error(MARKER));
+    expect(await failure(s.runAll())).toEqual({
+      status: 500,
+      msg: 'The rendered design could not be stored.',
+      code: 'CS_DESIGN_RENDER_STORAGE_FAILED',
+    });
+    expect(
+      childrenOf(s).map((c) => [c.pageId, c.status, c.errorCode ?? null])
+    ).toEqual([
+      ['p1', 'completed', null],
+      ['p2', 'failed', 'STORAGE_FAILED'],
+    ]);
+    expect(s.mediaService.saveGeneratedFile).toHaveBeenCalledTimes(2);
+    expect(s.world.batches[0]).toMatchObject({
+      status: 'failed',
+      errorCode: 'STORAGE_FAILED',
+    });
+  });
+
+  it('MF-A4/37 a page that cannot be completed stops the batch without rendering or storing again', async () => {
+    const s = setup();
+    threePages(s);
+    s.renders.completeRender.mockResolvedValueOnce({ count: 0 });
+    expect((await failure(s.runAll())).code).toBe('CS_DESIGN_RENDER_FAILED');
+    expect(s.render).toHaveBeenCalledTimes(1);
+    expect(s.mediaService.saveGeneratedFile).toHaveBeenCalledTimes(1);
+    expect(childrenOf(s).map((c) => [c.pageId, c.status, c.errorCode])).toEqual(
+      [['p1', 'failed', 'FINALIZATION_FAILED']]
+    );
+    expect(s.world.batches[0]).toMatchObject({
+      status: 'failed',
+      errorCode: 'FINALIZATION_FAILED',
+    });
+  });
+
+  it('MF-A5/38 a batch that cannot be completed renders and stores nothing again', async () => {
+    for (const fail of [
+      (s: Setup) =>
+        s.batches.completeBatch.mockRejectedValueOnce(new Error(MARKER)),
+      (s: Setup) => s.batches.completeBatch.mockResolvedValueOnce({ count: 0 }),
+    ]) {
+      const s = setup();
+      threePages(s);
+      fail(s);
+      expect(await failure(s.runAll())).toEqual({
+        status: 500,
+        msg: 'The design could not be rendered.',
+        code: 'CS_DESIGN_RENDER_FAILED',
+      });
+      expect(s.render).toHaveBeenCalledTimes(3);
+      expect(s.mediaService.saveGeneratedFile).toHaveBeenCalledTimes(3);
+      expect(childrenOf(s).every((c) => c.status === 'completed')).toBe(true);
+      expect(s.batches.failBatch).toHaveBeenCalledWith(
+        expect.objectContaining({ errorCode: 'FINALIZATION_FAILED' })
+      );
+      expect(s.world.batches[0].status).toBe('failed');
+    }
+  });
+
+  it('MF-A6/MF-A7/152 stores a code only and answers without the page, Media or message', async () => {
+    const s = setup();
+    threePages(s);
+    s.render
+      .mockImplementationOnce(async (input) => REAL_RENDER(input))
+      .mockRejectedValueOnce(new Error(MARKER));
+    const error = await failure(s.runAll());
+    expect(error).toEqual({
+      status: 500,
+      msg: 'The design could not be rendered.',
+      code: 'CS_DESIGN_RENDER_FAILED',
+    });
+    expect(JSON.stringify(error)).not.toMatch(/p2|out-1|MARKER/);
+    expect(s.world.batches[0].errorCode).toBe('RENDER_FAILED');
+    expect(JSON.stringify(s.world.batches)).not.toContain(MARKER);
+    expect(JSON.stringify(s.world.renders)).not.toContain(MARKER);
+  });
+
+  it('keeps the response when even marking the batch failed fails', async () => {
+    const s = setup();
+    threePages(s);
+    s.render.mockRejectedValueOnce(
+      new ContentStudioDesignRenderError('RENDER_FAILED')
+    );
+    s.batches.failBatch.mockRejectedValueOnce(new Error(MARKER));
+    expect((await failure(s.runAll())).code).toBe('CS_DESIGN_RENDER_FAILED');
+    expect(s.world.batches[0].status).toBe('running');
+  });
+
+  it('MF-A8 logs nothing', async () => {
+    const spies = (['log', 'warn', 'error', 'info', 'debug'] as const).map(
+      (level) => jest.spyOn(console, level).mockImplementation(() => undefined)
+    );
+    const s = setup();
+    threePages(s);
+    await s.runAll();
+    s.render.mockRejectedValueOnce(new Error(MARKER));
+    await failure(s.runAll());
+    for (const spy of spies) {
+      expect(spy).not.toHaveBeenCalled();
+    }
   });
 });

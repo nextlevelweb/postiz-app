@@ -69,6 +69,7 @@ model Organization {
   contentStudioRenderFontAssets          ContentStudioRenderFontAsset[]
   contentStudioRenderFontMappings        ContentStudioRenderFontMapping[]
   contentStudioDesignRenders             ContentStudioDesignRender[]
+  contentStudioDesignRenderBatches       ContentStudioDesignRenderBatch[]
 
   @@index([apiKey])
   @@index([streakSince])
@@ -164,6 +165,7 @@ model User {
   contentStudioRenderFontAssets          ContentStudioRenderFontAsset[]          @relation("ContentStudioRenderFontAssetCreatedBy")
   contentStudioRenderFontMappings        ContentStudioRenderFontMapping[]        @relation("ContentStudioRenderFontMappingCreatedBy")
   contentStudioDesignRenders             ContentStudioDesignRender[]             @relation("ContentStudioDesignRenderCreatedBy")
+  contentStudioDesignRenderBatches       ContentStudioDesignRenderBatch[]        @relation("ContentStudioDesignRenderBatchCreatedBy")
 
   @@unique([email, providerName])
   @@index([lastReadNotifications])
@@ -2310,19 +2312,20 @@ model ContentStudioBrandKit {
 }
 
 model ContentStudioBrandKitRevision {
-  id             String                      @id @default(uuid())
-  organizationId String
-  brandKitId     String
-  revisionNumber Int
-  schemaVersion  Int
-  content        String
-  contentHash    String
-  createdById    String
-  createdAt      DateTime                    @default(now())
-  organization   Organization                @relation(fields: [organizationId], references: [id])
-  brandKit       ContentStudioBrandKit       @relation(fields: [brandKitId, organizationId], references: [id, organizationId])
-  createdBy      User                        @relation("ContentStudioBrandKitRevisionCreatedBy", fields: [createdById], references: [id])
-  designRenders  ContentStudioDesignRender[]
+  id                  String                           @id @default(uuid())
+  organizationId      String
+  brandKitId          String
+  revisionNumber      Int
+  schemaVersion       Int
+  content             String
+  contentHash         String
+  createdById         String
+  createdAt           DateTime                         @default(now())
+  organization        Organization                     @relation(fields: [organizationId], references: [id])
+  brandKit            ContentStudioBrandKit            @relation(fields: [brandKitId, organizationId], references: [id, organizationId])
+  createdBy           User                             @relation("ContentStudioBrandKitRevisionCreatedBy", fields: [createdById], references: [id])
+  designRenders       ContentStudioDesignRender[]
+  designRenderBatches ContentStudioDesignRenderBatch[]
 
   @@unique([brandKitId, revisionNumber])
   @@unique([id, organizationId])
@@ -2334,18 +2337,19 @@ model ContentStudioBrandKitRevision {
 // immutable revisions; the project row holds only its name, archive state and
 // the number of the latest revision
 model ContentStudioDesignProject {
-  id                   String                        @id @default(uuid())
+  id                   String                           @id @default(uuid())
   organizationId       String
   name                 String
   latestRevisionNumber Int
   archivedAt           DateTime?
   createdById          String
-  createdAt            DateTime                      @default(now())
-  updatedAt            DateTime                      @updatedAt
-  organization         Organization                  @relation(fields: [organizationId], references: [id])
-  createdBy            User                          @relation("ContentStudioDesignProjectCreatedBy", fields: [createdById], references: [id])
+  createdAt            DateTime                         @default(now())
+  updatedAt            DateTime                         @updatedAt
+  organization         Organization                     @relation(fields: [organizationId], references: [id])
+  createdBy            User                             @relation("ContentStudioDesignProjectCreatedBy", fields: [createdById], references: [id])
   revisions            ContentStudioDesignRevision[]
   renders              ContentStudioDesignRender[]
+  renderBatches        ContentStudioDesignRenderBatch[]
 
   @@unique([id, organizationId])
   @@index([organizationId, archivedAt])
@@ -2353,7 +2357,7 @@ model ContentStudioDesignProject {
 }
 
 model ContentStudioDesignRevision {
-  id              String                      @id @default(uuid())
+  id              String                           @id @default(uuid())
   organizationId  String
   designProjectId String
   revisionNumber  Int
@@ -2361,11 +2365,12 @@ model ContentStudioDesignRevision {
   content         String
   contentHash     String
   createdById     String
-  createdAt       DateTime                    @default(now())
-  organization    Organization                @relation(fields: [organizationId], references: [id])
-  designProject   ContentStudioDesignProject  @relation(fields: [designProjectId, organizationId], references: [id, organizationId])
-  createdBy       User                        @relation("ContentStudioDesignRevisionCreatedBy", fields: [createdById], references: [id])
+  createdAt       DateTime                         @default(now())
+  organization    Organization                     @relation(fields: [organizationId], references: [id])
+  designProject   ContentStudioDesignProject       @relation(fields: [designProjectId, organizationId], references: [id, organizationId])
+  createdBy       User                             @relation("ContentStudioDesignRevisionCreatedBy", fields: [createdById], references: [id])
   renders         ContentStudioDesignRender[]
+  renderBatches   ContentStudioDesignRenderBatch[]
 
   @@unique([designProjectId, revisionNumber])
   @@unique([id, organizationId])
@@ -2428,9 +2433,10 @@ model ContentStudioRenderFontMapping {
 // its hash and the rendered PNG as a Media of the same organization. status
 // is running, completed or failed; only a running render is ever finalized,
 // once. No design or Brand Kit content, text, bytes, SVG, URL or storage key
-// is stored. Never deleted
+// is stored. A page of a render-all batch names the batch and its page index
+// in the design (both, or neither for a single-page render). Never deleted
 model ContentStudioDesignRender {
-  id                     String                         @id @default(uuid())
+  id                     String                          @id @default(uuid())
   organizationId         String
   designProjectId        String
   designRevisionId       String
@@ -2452,6 +2458,52 @@ model ContentStudioDesignRender {
   height                 Int?
   mimeType               String?
   errorCode              String?
+  batchId                String?
+  batchPageIndex         Int?
+  createdById            String
+  createdAt              DateTime                        @default(now())
+  completedAt            DateTime?
+  organization           Organization                    @relation(fields: [organizationId], references: [id])
+  designProject          ContentStudioDesignProject      @relation(fields: [designProjectId, organizationId], references: [id, organizationId])
+  designRevision         ContentStudioDesignRevision     @relation(fields: [designRevisionId, organizationId], references: [id, organizationId])
+  brandKitRevision       ContentStudioBrandKitRevision?  @relation(fields: [brandKitRevisionId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
+  batch                  ContentStudioDesignRenderBatch? @relation(fields: [batchId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
+  createdBy              User                            @relation("ContentStudioDesignRenderCreatedBy", fields: [createdById], references: [id])
+
+  @@unique([id, organizationId])
+  @@unique([batchId, batchPageIndex])
+  @@index([organizationId, createdAt])
+  @@index([designProjectId, createdAt])
+  @@index([designRevisionId])
+  @@index([brandKitRevisionId, organizationId])
+  @@index([batchId, organizationId])
+  @@index([createdById])
+}
+
+// One request to render every page of one exact design revision, in the
+// design's page order: the exact design and Brand Kit revision (all four
+// Brand Kit fields, or none), the contract versions and the page count.
+// Each page is a render of its own (batchId, batchPageIndex = its index in
+// the design), with its own asset snapshot and PNG; the batch copies none of
+// them. status is running, completed (every page completed) or failed (the
+// first failed page stopped it; earlier pages keep their output). Only a
+// running batch is ever finalized, once. Never deleted
+model ContentStudioDesignRenderBatch {
+  id                     String                         @id @default(uuid())
+  organizationId         String
+  designProjectId        String
+  designRevisionId       String
+  designRevisionNumber   Int
+  designContentHash      String
+  brandKitId             String?
+  brandKitRevisionId     String?
+  brandKitRevisionNumber Int?
+  brandKitContentHash    String?
+  rendererVersion        String
+  layoutVersion          String
+  pageCount              Int
+  status                 String
+  errorCode              String?
   createdById            String
   createdAt              DateTime                       @default(now())
   completedAt            DateTime?
@@ -2459,7 +2511,8 @@ model ContentStudioDesignRender {
   designProject          ContentStudioDesignProject     @relation(fields: [designProjectId, organizationId], references: [id, organizationId])
   designRevision         ContentStudioDesignRevision    @relation(fields: [designRevisionId, organizationId], references: [id, organizationId])
   brandKitRevision       ContentStudioBrandKitRevision? @relation(fields: [brandKitRevisionId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
-  createdBy              User                           @relation("ContentStudioDesignRenderCreatedBy", fields: [createdById], references: [id])
+  createdBy              User                           @relation("ContentStudioDesignRenderBatchCreatedBy", fields: [createdById], references: [id])
+  renders                ContentStudioDesignRender[]
 
   @@unique([id, organizationId])
   @@index([organizationId, createdAt])
