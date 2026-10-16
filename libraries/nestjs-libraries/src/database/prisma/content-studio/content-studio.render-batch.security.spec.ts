@@ -118,21 +118,30 @@ describe('P4-06 render-all trust boundaries', () => {
     );
   });
 
-  it('P406-9 the frontend does not call render-all yet', () => {
+  it('P406-9 the frontend calls render-all from the Creative Studio API only, with the revision id only', () => {
     const walk = (dir: string): string[] =>
       fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) {
           return entry.name === 'node_modules' ? [] : walk(full);
         }
-        return /\.tsx?$/.test(entry.name) ? [full] : [];
+        return /\.tsx?$/.test(entry.name) && !/\.spec\.tsx?$/.test(entry.name)
+          ? [full]
+          : [];
       });
     const frontend = walk(path.join(REPO_ROOT, 'apps/frontend/src'));
+    const API =
+      'apps/frontend/src/components/content-studio/content-studio.designs.api.ts';
     expect(
-      frontend.filter((file) =>
-        /render-all|renderAllPages/.test(fs.readFileSync(file, 'utf8'))
-      )
-    ).toEqual([]);
+      frontend
+        .filter((file) =>
+          /render-all|renderAllPages/.test(fs.readFileSync(file, 'utf8'))
+        )
+        .map((file) => path.relative(REPO_ROOT, file).split(path.sep).join('/'))
+    ).toEqual([API]);
+    expect(code(API)).toMatch(
+      /`\$\{designPath\(id\)\}\/render-all`,\s*\{\s*method: 'POST',\s*body: JSON\.stringify\(\{ revisionId \}\),\s*\}/
+    );
   });
 
   it('P406-10/92 no ZIP, PDF, GIF, video, Fabric, browser or AI on the render-all path', () => {

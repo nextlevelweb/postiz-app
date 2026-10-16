@@ -733,36 +733,58 @@ describe('design layout: Brand Kit', () => {
     );
   });
 
-  it('LB9 verifies the content against the content hash', () => {
-    const changed = {
+  it('LB9 refuses content that is not a valid Brand Kit v1', () => {
+    for (const content of [
+      // content that is not plain data
+      { ...KIT, extra: () => 1 },
+      // a field Brand Kit v1 does not have
+      { ...KIT, current: true },
+      // a token that is not a token
+      { ...KIT, colors: [{ id: 'paper', value: 'red' }] },
+      { ...KIT, schemaVersion: 2 },
+      null,
+      'kit',
+      undefined,
+    ]) {
+      expectLayoutError(
+        () => run(branded([]), { brandKit: { ref: REF, content } }),
+        'BRAND_CONTEXT_MISMATCH'
+      );
+    }
+  });
+
+  it('BS4/BS5/BS6 still refuses another reference, a missing context and a missing token without hashing', () => {
+    expectLayoutError(
+      () =>
+        run(branded([]), {
+          brandKit: { ref: { ...REF, contentHash: SHA_B }, content: KIT },
+        }),
+      'BRAND_CONTEXT_MISMATCH'
+    );
+    expectLayoutError(() => run(branded([])), 'BRAND_CONTEXT_MISSING');
+    expectLayoutError(
+      () =>
+        run(branded([rectangle('r', { fill: brand('missing') })]), {
+          brandKit: CONTEXT,
+        }),
+      'BRAND_TOKEN_MISSING'
+    );
+  });
+
+  it('LB9 leaves the stored-bytes check to the caller: the engine hashes nothing', () => {
+    // The caller proves the content is the revision's (the server with
+    // parseVerifiedContentStudioBrandKitRevision before it renders); the
+    // engine only resolves tokens from the exact reference and valid content
+    const changed = parseContentStudioBrandKitContent({
       ...KIT,
       colors: KIT.colors.map((token) =>
         token.id === 'paper' ? { ...token, value: '#ffffff' } : token
       ),
-    };
-    expectLayoutError(
-      () => run(branded([]), { brandKit: { ref: REF, content: changed } }),
-      'BRAND_CONTEXT_MISMATCH'
-    );
-    // reordered tokens are another revision as well
-    expectLayoutError(
-      () =>
-        run(branded([]), {
-          brandKit: {
-            ref: REF,
-            content: { ...KIT, colors: [...KIT.colors].reverse() },
-          },
-        }),
-      'BRAND_CONTEXT_MISMATCH'
-    );
-    // content that cannot be hashed at all
-    expectLayoutError(
-      () =>
-        run(branded([]), {
-          brandKit: { ref: REF, content: { ...KIT, extra: () => 1 } },
-        }),
-      'BRAND_CONTEXT_MISMATCH'
-    );
+    });
+    const output = run(branded([]), {
+      brandKit: { ref: REF, content: changed },
+    });
+    expect(output.pages[0].background.color).toBe('#ffffff');
   });
 
   it('LB10 fails on a missing color token, without a fallback color', () => {
@@ -867,7 +889,7 @@ describe('design layout: Brand Kit', () => {
     ]);
   });
 
-  it('LB14 uses only the given revision: newer content is refused and no token id remains', () => {
+  it('LB14 uses only the given revision: a newer reference is refused and no token id remains', () => {
     const newer = parseContentStudioBrandKitContent({
       ...KIT,
       colors: [
@@ -875,10 +897,6 @@ describe('design layout: Brand Kit', () => {
         { id: 'extra', name: 'Extra', value: '#000000', role: 'custom' },
       ],
     });
-    expectLayoutError(
-      () => run(branded([]), { brandKit: { ref: REF, content: newer } }),
-      'BRAND_CONTEXT_MISMATCH'
-    );
     const newerRef = {
       ...REF,
       revisionNumber: 4,
@@ -917,7 +935,7 @@ describe('design layout: Brand Kit', () => {
     expect(output.pages[0].items).toEqual([]);
   });
 
-  it('reads tokens from its own verified copy of the content', () => {
+  it('reads tokens from its own parsed copy of the content', () => {
     const content = JSON.parse(JSON.stringify(KIT));
     const fonts = {
       resolveFont: (font: ContentStudioDesignFontSpec) => {
@@ -2576,7 +2594,6 @@ describe('design layout: boundaries', () => {
   it('imports only the design, Brand Kit and layout modules', () => {
     const allowed = [
       '@gitroom/nestjs-libraries/content-studio/brand/brand.kit',
-      '@gitroom/nestjs-libraries/content-studio/brand/brand.kit.revision',
       '@gitroom/nestjs-libraries/content-studio/design/design.document',
       '@gitroom/nestjs-libraries/content-studio/design/layout/design.layout.types',
       '@gitroom/nestjs-libraries/content-studio/design/layout/design.layout.text',

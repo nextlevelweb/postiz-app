@@ -128,6 +128,16 @@ export const ContentStudioHome: FC = () => {
             {t('content_studio_sources', 'Sources')}
           </Link>
           <Link
+            href="/content-studio/designs"
+            title={t(
+              'content_studio_creative_studio_hint',
+              'Create and render reusable visual designs.'
+            )}
+            className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
+          >
+            {t('content_studio_creative_studio', 'Creative Studio')}
+          </Link>
+          <Link
             href="/content-studio/intelligence"
             className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
           >

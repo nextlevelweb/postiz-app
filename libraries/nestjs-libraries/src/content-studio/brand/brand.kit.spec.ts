@@ -999,7 +999,7 @@ describe('Brand Kit P4-01 scope boundary', () => {
     }
   });
 
-  it('75 the frontend has no Brand Kit yet', () => {
+  it('75 the frontend reads one exact Brand Kit revision for Creative Studio, and never the current kit or a write', () => {
     const walk = (dir: string): string[] =>
       fs
         .readdirSync(path.join(ROOT, dir), { withFileTypes: true })
@@ -1011,12 +1011,33 @@ describe('Brand Kit P4-01 scope boundary', () => {
     const frontend = [
       ...walk('apps/frontend/src/components/content-studio'),
       ...walk('apps/frontend/src/app/(app)/(site)/content-studio'),
-    ].filter((file) => /\.tsx?$/.test(file));
+    ].filter((file) => /\.tsx?$/.test(file) && !/\.spec\.tsx?$/.test(file));
     expect(frontend.length).toBeGreaterThan(10);
+    const CS = 'apps/frontend/src/components/content-studio';
+    expect(
+      frontend
+        .filter((file) => /brand-kit|brandKit|BrandKit/.test(code(file)))
+        .sort()
+    ).toEqual([
+      `${CS}/content-studio.design.preview.tsx`,
+      `${CS}/content-studio.design.workspace.tsx`,
+      `${CS}/content-studio.designs.api.ts`,
+    ]);
+    const routes = frontend.flatMap((file) =>
+      Array.from(
+        code(file).matchAll(/['`](\/content-studio\/brand-kit[^'`]*)['`]/g),
+        (m) => m[1]
+      )
+    );
+    expect(routes).toEqual([
+      '/content-studio/brand-kit/revisions/${encodeURIComponent(revisionId)}',
+    ]);
     for (const file of frontend) {
       expect([file, code(file)]).not.toEqual([
         file,
-        expect.stringMatching(/brand-kit|brandKit|BrandKit/),
+        expect.stringMatching(
+          /brand\.kit\.revision|storedContentStudioBrandKitContent/
+        ),
       ]);
     }
   });

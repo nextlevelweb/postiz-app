@@ -1450,7 +1450,7 @@ describe('Design Document P4-02 persistence boundary', () => {
     ).toEqual(['brandKitId', 'contentHash', 'revisionId', 'revisionNumber']);
   });
 
-  it('110 the frontend has no designs yet', () => {
+  it('110 designs reach the frontend only through Creative Studio, which reads and never saves a revision', () => {
     const walk = (dir: string): string[] =>
       fs
         .readdirSync(path.join(ROOT, dir), { withFileTypes: true })
@@ -1462,12 +1462,33 @@ describe('Design Document P4-02 persistence boundary', () => {
     const frontend = [
       ...walk('apps/frontend/src/components/content-studio'),
       ...walk('apps/frontend/src/app/(app)/(site)/content-studio'),
-    ].filter((file) => /\.tsx?$/.test(file));
+    ].filter((file) => /\.tsx?$/.test(file) && !/\.spec\.tsx?$/.test(file));
     expect(frontend.length).toBeGreaterThan(10);
-    for (const file of frontend) {
+    const CS = 'apps/frontend/src/components/content-studio';
+    expect(
+      frontend
+        .filter((file) =>
+          /\/designs\b|DesignDocument|designProject/.test(code(file))
+        )
+        .sort()
+    ).toEqual([
+      `${CS}/content-studio.design.workspace.tsx`,
+      `${CS}/content-studio.designs.api.ts`,
+      `${CS}/content-studio.designs.tsx`,
+      // the link to Creative Studio only
+      `${CS}/content-studio.home.tsx`,
+    ]);
+    // Creative Studio reads designs; nothing there saves a revision
+    const creativeStudio = frontend.filter((f) =>
+      /content-studio\.designs?[.a-z]*\.tsx?$|\/designs\//.test(f)
+    );
+    expect(creativeStudio).toHaveLength(6);
+    for (const file of creativeStudio) {
       expect([file, code(file)]).not.toEqual([
         file,
-        expect.stringMatching(/\/designs\b|DesignDocument|designProject/),
+        expect.stringMatching(
+          /baseRevisionNumber|\/revisions['`],\s*\{|design\.document\.revision|design\/layout|design\/render/
+        ),
       ]);
     }
   });

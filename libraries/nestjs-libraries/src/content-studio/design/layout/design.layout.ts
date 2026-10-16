@@ -1,5 +1,7 @@
-import type { ContentStudioBrandKitContentV1 } from '@gitroom/nestjs-libraries/content-studio/brand/brand.kit';
-import { storedContentStudioBrandKitContent } from '@gitroom/nestjs-libraries/content-studio/brand/brand.kit.revision';
+import {
+  ContentStudioBrandKitContentV1,
+  parseContentStudioBrandKitContent,
+} from '@gitroom/nestjs-libraries/content-studio/brand/brand.kit';
 import {
   ContentStudioDesignBrandKitRef,
   ContentStudioDesignColorValue,
@@ -53,10 +55,15 @@ const BRAND_REF_KEYS: Array<keyof ContentStudioDesignBrandKitRef> = [
 const fail = (code: ContentStudioDesignLayoutError['code']) =>
   new ContentStudioDesignLayoutError(code);
 
-// The Brand Kit content to resolve tokens from, proven to be the revision
-// the document names: the reference is the document's exactly, and the
-// content hashes, the way a revision stores it, to its content hash. The
-// tokens are read from that canonical copy, never from the caller's object
+// The Brand Kit content to resolve tokens from, for the revision the
+// document names: the reference is the document's exactly (kit, revision,
+// number and content hash) and the content is a valid Brand Kit v1. The
+// tokens are read from the parsed copy, never from the caller's object.
+// Whether the content is the stored revision's (its bytes against that
+// hash) is proven by whoever read it from storage, before the layout: the
+// server reads it with parseVerifiedContentStudioBrandKitRevision, a browser
+// gets it from that server. The engine hashes nothing, so it needs no Node
+// module and runs in a browser as well
 function brandContent(
   ref: ContentStudioDesignBrandKitRef | null,
   context: unknown
@@ -84,18 +91,13 @@ function brandContent(
   ) {
     throw fail('BRAND_CONTEXT_MISMATCH');
   }
-  let stored: { content: string; contentHash: string } | null;
   try {
-    stored = storedContentStudioBrandKitContent(
-      (context as { content: ContentStudioBrandKitContentV1 }).content
+    return parseContentStudioBrandKitContent(
+      (context as { content?: unknown }).content
     );
   } catch {
-    stored = null;
-  }
-  if (!stored || stored.contentHash !== ref.contentHash) {
     throw fail('BRAND_CONTEXT_MISMATCH');
   }
-  return JSON.parse(stored.content) as ContentStudioBrandKitContentV1;
 }
 
 // Each font is resolved once per layout, by family, weight and style. A font

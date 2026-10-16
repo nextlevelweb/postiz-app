@@ -906,6 +906,39 @@ describe('ContentStudioDesignRenderService preflight', () => {
     );
     nothingStarted(s);
   });
+
+  it('BS8/117 the stored Brand Kit bytes are verified before the renderer: the layout no longer hashes them', async () => {
+    // a valid kit in canonical form, but not the bytes the revision's hash
+    // (and the design's reference) names: only the stored-revision check
+    // tells, and it runs before anything starts
+    for (const render of ['run', 'runAll'] as const) {
+      const s = setup();
+      s.addKit();
+      s.world.kitRevisions[0].content =
+        storedContentStudioBrandKitContent(KIT_V7).content;
+      s.addDesign(document([page('p1', [shape('s1')])], KIT_REF));
+      expect(await failure(s[render]())).toEqual({
+        status: 500,
+        msg: 'Stored Brand Kit data could not be read safely.',
+        code: 'CS_DESIGN_RENDER_BRAND_INTEGRITY_ERROR',
+      });
+      expect(s.world.batches).toEqual([]);
+      nothingStarted(s);
+    }
+  });
+
+  it('BS8 the service reads the Brand Kit revision through the stored-revision check only', () => {
+    const source = fs.readFileSync(
+      path.join(__dirname, 'content-studio.design-render.service.ts'),
+      'utf8'
+    );
+    expect(
+      source.match(/parseVerifiedContentStudioBrandKitRevision\(revision\)/g)
+    ).toHaveLength(1);
+    expect(source).not.toMatch(
+      /parseContentStudioBrandKitContent|JSON\.parse\(revision\.content/
+    );
+  });
 });
 
 describe('ContentStudioDesignRenderService fonts', () => {
