@@ -58,6 +58,8 @@ import {
   useConfirmDiscard,
   useContentStudioDesignEditor,
 } from '@gitroom/frontend/components/content-studio/content-studio.design.editing';
+import { updateContentStudioDesignLayer } from '@gitroom/frontend/components/content-studio/content-studio.design.editor';
+import { ContentStudioDesignCanvas } from '@gitroom/frontend/components/content-studio/content-studio.design.canvas';
 
 // The Creative Studio workspace of one design: its pages and layers, a live
 // structural preview, an inspector, the revision history, and server renders
@@ -903,13 +905,38 @@ const DesignRevisionView: FC<{
           </section>
         </div>
         <div className="flex flex-col gap-[16px] min-w-0">
-          <ContentStudioDesignPreview
-            page={page}
-            pageLabel={label}
-            brand={brand.content}
-            selectedLayerId={layer?.id ?? null}
-            onSelectLayer={setLayerId}
-          />
+          {edit ? (
+            // the draft's page with direct editing: a finished gesture is
+            // one layer update, of its box only
+            <ContentStudioDesignCanvas
+              page={page}
+              pageLabel={label}
+              brand={brand.content}
+              selectedLayerId={layer?.id ?? null}
+              interactive={!edit.editor.saving}
+              onSelectLayer={setLayerId}
+              onLayerGeometryCommit={(layerId, box) =>
+                edit.editor.apply((latest) => ({
+                  document: updateContentStudioDesignLayer(latest, layerId, {
+                    x: box.x,
+                    y: box.y,
+                    width: box.width,
+                    height: box.height,
+                    rotation: box.rotation,
+                  }),
+                }))
+              }
+              onTransformingChange={edit.editor.setInteracting}
+            />
+          ) : (
+            <ContentStudioDesignPreview
+              page={page}
+              pageLabel={label}
+              brand={brand.content}
+              selectedLayerId={layer?.id ?? null}
+              onSelectLayer={setLayerId}
+            />
+          )}
           {render.result && <DesignRenderResult result={render.result} />}
         </div>
         <div className="flex flex-col gap-[16px] min-w-0">

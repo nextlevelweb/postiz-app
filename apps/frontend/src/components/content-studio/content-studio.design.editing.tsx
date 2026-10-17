@@ -171,6 +171,14 @@ export const useContentStudioDesignEditor = (designId: string) => {
   const [saving, setSaving] = useState(false);
   // a save lost to another revision: no save until the latest is loaded
   const [conflict, setConflict] = useState(false);
+  // a canvas gesture in progress: its change is not in the draft yet, so
+  // nothing undoes, redoes or saves until it ends
+  const interactingRef = useRef(false);
+  const [interacting, setInteractingState] = useState(false);
+  const setInteracting = useCallback((active: boolean) => {
+    interactingRef.current = active;
+    setInteractingState(active);
+  }, []);
 
   const commit = useCallback((next: EditorState | null) => {
     latest.current = next;
@@ -229,7 +237,7 @@ export const useContentStudioDesignEditor = (designId: string) => {
 
   const undo = useCallback(() => {
     const current = latest.current;
-    if (current && !savingRef.current) {
+    if (current && !savingRef.current && !interactingRef.current) {
       commit({
         ...current,
         history: undoContentStudioDesignHistory(current.history),
@@ -238,7 +246,7 @@ export const useContentStudioDesignEditor = (designId: string) => {
   }, [commit]);
   const redo = useCallback(() => {
     const current = latest.current;
-    if (current && !savingRef.current) {
+    if (current && !savingRef.current && !interactingRef.current) {
       commit({
         ...current,
         history: redoContentStudioDesignHistory(current.history),
@@ -262,7 +270,7 @@ export const useContentStudioDesignEditor = (designId: string) => {
   // the edit started from
   const save = useCallback(async () => {
     const current = latest.current;
-    if (!current || savingRef.current || conflict) {
+    if (!current || savingRef.current || interactingRef.current || conflict) {
       return;
     }
     let content: ContentStudioDesignDocumentV1;
@@ -348,6 +356,8 @@ export const useContentStudioDesignEditor = (designId: string) => {
     canRedo: !!state?.history.future.length,
     saving,
     conflict,
+    interacting,
+    setInteracting,
     begin,
     apply,
     undo,
@@ -1207,6 +1217,8 @@ export const DesignEditorToolbar: FC<{
     !!document.brandKit &&
     (!brandReady || !!missing.colors.length || !!missing.typography.length);
   const busy = editor.saving;
+  // a canvas gesture in progress is finished before anything else
+  const held = busy || editor.interacting;
   const add = (kind: 'text' | 'rectangle' | 'ellipse') => {
     const layerId = editor.apply((latest) => {
       const added = addContentStudioDesignLayer(latest, page.id, kind);
@@ -1288,7 +1300,7 @@ export const DesignEditorToolbar: FC<{
         <Button
           loading={busy}
           disabled={
-            busy ||
+            held ||
             !editor.dirty ||
             editor.conflict ||
             brandBlocked ||
@@ -1298,19 +1310,19 @@ export const DesignEditorToolbar: FC<{
         >
           {t('save', 'Save')}
         </Button>
-        <Button secondary disabled={busy} onClick={onCancel}>
+        <Button secondary disabled={held} onClick={onCancel}>
           {t('cancel', 'Cancel')}
         </Button>
         <Button
           secondary
-          disabled={busy || !editor.canUndo}
+          disabled={held || !editor.canUndo}
           onClick={editor.undo}
         >
           {t('content_studio_design_undo', 'Undo')}
         </Button>
         <Button
           secondary
-          disabled={busy || !editor.canRedo}
+          disabled={held || !editor.canRedo}
           onClick={editor.redo}
         >
           {t('content_studio_design_redo', 'Redo')}

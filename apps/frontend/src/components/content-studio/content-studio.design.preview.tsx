@@ -212,9 +212,69 @@ const useFrameWidth = () => {
   return { frame, width: width > 0 ? width : PREVIEW_DEFAULT_WIDTH };
 };
 
-// The page at its own size in design units, scaled as a whole to fit: every
-// layer keeps plain design-unit pixels. Hidden layers are not drawn, layers
-// at opacity 0 are (invisibly), and nothing outside the page shows
+// The page at its own size in design units, placed by a transform of the
+// whole page: every layer keeps plain design-unit pixels. Hidden layers are
+// not drawn, layers at opacity 0 are (invisibly), and nothing outside the
+// page shows. Layers are chosen by clicking only when onSelectLayer is given
+export const ContentStudioDesignPreviewPage: FC<{
+  page: ContentStudioDesignPage;
+  brand: ContentStudioBrandKitContentV1 | null;
+  placement: CSSProperties;
+  selectedLayerId?: string | null;
+  onSelectLayer?: (id: string | null) => void;
+}> = ({ page, brand, placement, selectedLayerId, onSelectLayer }) => {
+  const background = resolveDesignPreviewColor(page.background.color, brand);
+  return (
+    <div
+      data-preview="page"
+      data-unresolved={background ? undefined : 'color'}
+      className={clsx(!background && UNRESOLVED)}
+      onClick={onSelectLayer ? () => onSelectLayer(null) : undefined}
+      style={{
+        position: 'absolute',
+        left: 0,
+        top: 0,
+        width: page.width,
+        height: page.height,
+        overflow: 'hidden',
+        ...placement,
+        transformOrigin: 'top left',
+        ...(background ? { backgroundColor: background } : {}),
+      }}
+    >
+      {page.layers
+        .filter((layer) => layer.visible)
+        .map((layer) => (
+          <LayerPreview
+            key={layer.id}
+            layer={layer}
+            brand={brand}
+            selected={!!onSelectLayer && layer.id === selectedLayerId}
+            onSelect={onSelectLayer}
+          />
+        ))}
+    </div>
+  );
+};
+
+export const DesignLivePreviewHeader: FC = () => {
+  const t = useT();
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-[8px] text-[12px] text-textItemBlur">
+      <span className="font-[600] text-textColor">
+        {t('content_studio_design_live_preview', 'Live preview')}
+      </span>
+      <span>
+        {t(
+          'content_studio_design_live_preview_hint',
+          'Final typography and image rendering may differ. Use Render page for the authoritative output.'
+        )}
+      </span>
+    </div>
+  );
+};
+
+// The read-only preview: the page scaled as a whole to fit its frame
 export const ContentStudioDesignPreview: FC<{
   page: ContentStudioDesignPage;
   pageLabel: string;
@@ -225,21 +285,10 @@ export const ContentStudioDesignPreview: FC<{
   const t = useT();
   const { frame, width } = useFrameWidth();
   const scale = Math.min(width / page.width, PREVIEW_MAX_HEIGHT / page.height);
-  const background = resolveDesignPreviewColor(page.background.color, brand);
 
   return (
     <div className="flex flex-col gap-[8px] min-w-0">
-      <div className="flex flex-wrap items-baseline gap-x-[8px] text-[12px] text-textItemBlur">
-        <span className="font-[600] text-textColor">
-          {t('content_studio_design_live_preview', 'Live preview')}
-        </span>
-        <span>
-          {t(
-            'content_studio_design_live_preview_hint',
-            'Final typography and image rendering may differ. Use Render page for the authoritative output.'
-          )}
-        </span>
-      </div>
+      <DesignLivePreviewHeader />
       <div ref={frame} className="w-full flex justify-center min-w-0">
         <div
           data-preview="frame"
@@ -251,35 +300,13 @@ export const ContentStudioDesignPreview: FC<{
           className="relative overflow-hidden border border-newTableBorder"
           style={{ width: page.width * scale, height: page.height * scale }}
         >
-          <div
-            data-preview="page"
-            data-unresolved={background ? undefined : 'color'}
-            className={clsx(!background && UNRESOLVED)}
-            onClick={onSelectLayer ? () => onSelectLayer(null) : undefined}
-            style={{
-              position: 'absolute',
-              left: 0,
-              top: 0,
-              width: page.width,
-              height: page.height,
-              overflow: 'hidden',
-              transform: `scale(${scale})`,
-              transformOrigin: 'top left',
-              ...(background ? { backgroundColor: background } : {}),
-            }}
-          >
-            {page.layers
-              .filter((layer) => layer.visible)
-              .map((layer) => (
-                <LayerPreview
-                  key={layer.id}
-                  layer={layer}
-                  brand={brand}
-                  selected={layer.id === selectedLayerId}
-                  onSelect={onSelectLayer}
-                />
-              ))}
-          </div>
+          <ContentStudioDesignPreviewPage
+            page={page}
+            brand={brand}
+            placement={{ transform: `scale(${scale})` }}
+            selectedLayerId={selectedLayerId}
+            onSelectLayer={onSelectLayer}
+          />
         </div>
       </div>
     </div>

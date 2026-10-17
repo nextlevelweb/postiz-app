@@ -106,6 +106,16 @@ jest.mock('@gitroom/react/translation/get.transation.service.client', () => ({
   useT: () => (key: string, fallback?: string) => fallback ?? key,
 }));
 
+// Direct canvas editing (P4-09) has its own spec: here the Fabric adapter is
+// an inert stand-in, so jsdom never needs a real canvas
+jest.mock('./content-studio.design.fabric', () => ({
+  createContentStudioDesignFabric: () => ({
+    sync: () => undefined,
+    setView: () => undefined,
+    dispose: () => undefined,
+  }),
+}));
+
 const {
   ContentStudioDesignWorkspace,
 } = require('./content-studio.design.workspace');
@@ -132,6 +142,7 @@ const gets = (prefix: string) =>
   calls().filter((c) => c.method === 'GET' && c.url.startsWith(prefix));
 const writes = () => calls().filter((c) => c.method !== 'GET');
 const toasts = () => mockToast.mock.calls.map(([text]) => text as string);
+// the longer UI tests (P4-09: edit mode also mounts the canvas)
 const LOOP_TIMEOUT = 60_000;
 
 const flush = () =>
@@ -767,24 +778,28 @@ describe('Creative Studio editing: edit mode', () => {
     expect(isOff(button('Render page'))).toBe(false);
   });
 
-  it('EM4/EM5/EM6/EM7 editing works on a copy, with Save, Cancel, Undo and Redo; render and rename wait', async () => {
-    const before = JSON.stringify(latest(SIMPLE).content);
-    await edit();
-    for (const name of ['Save', 'Cancel', 'Undo', 'Redo']) {
-      expect(button(name, toolbar())).toBeTruthy();
-    }
-    expect(isOff(button('Save', toolbar()))).toBe(true);
-    expect(isOff(button('Undo', toolbar()))).toBe(true);
-    expect(isOff(button('Render page'))).toBe(true);
-    expect(isOff(button('Render all pages'))).toBe(true);
-    expect(
-      screen.getByText('Save or cancel your changes before rendering.')
-    ).toBeTruthy();
-    expect(isOff(button('Rename Simple'))).toBe(true);
-    await click(button('Add rectangle'));
-    expect(JSON.stringify(latest(SIMPLE).content)).toBe(before);
-    expect(layerNames()).toHaveLength(4);
-  });
+  it(
+    'EM4/EM5/EM6/EM7 editing works on a copy, with Save, Cancel, Undo and Redo; render and rename wait',
+    async () => {
+      const before = JSON.stringify(latest(SIMPLE).content);
+      await edit();
+      for (const name of ['Save', 'Cancel', 'Undo', 'Redo']) {
+        expect(button(name, toolbar())).toBeTruthy();
+      }
+      expect(isOff(button('Save', toolbar()))).toBe(true);
+      expect(isOff(button('Undo', toolbar()))).toBe(true);
+      expect(isOff(button('Render page'))).toBe(true);
+      expect(isOff(button('Render all pages'))).toBe(true);
+      expect(
+        screen.getByText('Save or cancel your changes before rendering.')
+      ).toBeTruthy();
+      expect(isOff(button('Rename Simple'))).toBe(true);
+      await click(button('Add rectangle'));
+      expect(JSON.stringify(latest(SIMPLE).content)).toBe(before);
+      expect(layerNames()).toHaveLength(4);
+    },
+    LOOP_TIMEOUT
+  );
 
   it('EM8/EM9/M11 editing sends nothing until Save', async () => {
     await edit();
@@ -937,39 +952,43 @@ describe('Creative Studio editing: save', () => {
     expect(toasts()).toEqual(['Design saved as Revision 2.']);
   });
 
-  it('SV-UI10/SV-UI11/115/M9/M10 a conflict keeps the draft and blocks saving, without retrying', async () => {
-    await edit();
-    await click(button('Add text'));
-    // another tab saved revision 2 meanwhile
-    SIMPLE.revisions = [...SIMPLE.revisions, revision(2, PLAIN())];
-    await save();
-    expect(saves()).toHaveLength(1);
-    expect(
-      screen.getByText('This design changed while you were editing.')
-    ).toBeTruthy();
-    expect(
-      screen.getByText(
-        'Reload the latest revision before saving. Your unsaved changes are still open in this browser.'
-      )
-    ).toBeTruthy();
-    expect(layerNames()).toHaveLength(4);
-    expect(isOff(button('Save', toolbar()))).toBe(true);
-    await click(button('Keep editing'));
-    expect(
-      screen.queryByText('This design changed while you were editing.')
-    ).toBeNull();
-    expect(
-      screen.getByText(
-        'Saving is blocked until you reload the latest revision.'
-      )
-    ).toBeTruthy();
-    await click(button('Add rectangle'));
-    expect(isOff(button('Save', toolbar()))).toBe(true);
-    fireEvent.click(button('Save', toolbar()));
-    await flush();
-    expect(saves()).toHaveLength(1);
-    expect(toasts()).toEqual([]);
-  });
+  it(
+    'SV-UI10/SV-UI11/115/M9/M10 a conflict keeps the draft and blocks saving, without retrying',
+    async () => {
+      await edit();
+      await click(button('Add text'));
+      // another tab saved revision 2 meanwhile
+      SIMPLE.revisions = [...SIMPLE.revisions, revision(2, PLAIN())];
+      await save();
+      expect(saves()).toHaveLength(1);
+      expect(
+        screen.getByText('This design changed while you were editing.')
+      ).toBeTruthy();
+      expect(
+        screen.getByText(
+          'Reload the latest revision before saving. Your unsaved changes are still open in this browser.'
+        )
+      ).toBeTruthy();
+      expect(layerNames()).toHaveLength(4);
+      expect(isOff(button('Save', toolbar()))).toBe(true);
+      await click(button('Keep editing'));
+      expect(
+        screen.queryByText('This design changed while you were editing.')
+      ).toBeNull();
+      expect(
+        screen.getByText(
+          'Saving is blocked until you reload the latest revision.'
+        )
+      ).toBeTruthy();
+      await click(button('Add rectangle'));
+      expect(isOff(button('Save', toolbar()))).toBe(true);
+      fireEvent.click(button('Save', toolbar()));
+      await flush();
+      expect(saves()).toHaveLength(1);
+      expect(toasts()).toEqual([]);
+    },
+    LOOP_TIMEOUT
+  );
 
   it('SV-UI12/16 Reload latest asks, then drops the draft and shows the newest revision', async () => {
     await edit();
@@ -1119,53 +1138,61 @@ describe('Creative Studio editing: undo and redo', () => {
 
 // ============================================================================
 describe('Creative Studio editing: pages', () => {
-  it('PE1/PE2/PE3/PE5 add, duplicate, delete and move pages, selecting the result', async () => {
-    await edit();
-    await click(button('Add page'));
-    expect(pageNames()).toEqual(['Page 1One', 'Page 2Two', 'Page 3']);
-    expect(
-      within(screen.getByRole('list', { name: 'Pages' }))
-        .getAllByRole('button')[2]
-        .getAttribute('aria-pressed')
-    ).toBe('true');
-    // the new page has the size of the page it was added from
-    expect(previewPage().style.width).toBe('1080px');
-    await selectPage(/Page 1/);
-    await click(button('Duplicate page'));
-    expect(pageNames()).toEqual([
-      'Page 1One',
-      'Page 2One',
-      'Page 3Two',
-      'Page 4',
-    ]);
-    expect(layerNames()).toEqual(['▣Photo', 'TTitle', '▭Box']);
-    await click(button('Move page down'));
-    expect(pageNames()).toEqual([
-      'Page 1One',
-      'Page 2Two',
-      'Page 3One',
-      'Page 4',
-    ]);
-    await click(button('Move page up'));
-    await click(button('Move page up'));
-    expect(pageNames()).toEqual([
-      'Page 1One',
-      'Page 2One',
-      'Page 3Two',
-      'Page 4',
-    ]);
-    expect(isOff(button('Move page up'))).toBe(true);
-    await click(button('Delete page'));
-    expect(pageNames()).toEqual(['Page 1One', 'Page 2Two', 'Page 3']);
-    await save();
-    const content = lastSaved();
-    expect(content.pages.map((p: Plain) => p.name)).toEqual(['One', 'Two', '']);
-    expect(content.pages[2]).toMatchObject({
-      width: 1080,
-      height: 1080,
-      layers: [],
-    });
-  });
+  it(
+    'PE1/PE2/PE3/PE5 add, duplicate, delete and move pages, selecting the result',
+    async () => {
+      await edit();
+      await click(button('Add page'));
+      expect(pageNames()).toEqual(['Page 1One', 'Page 2Two', 'Page 3']);
+      expect(
+        within(screen.getByRole('list', { name: 'Pages' }))
+          .getAllByRole('button')[2]
+          .getAttribute('aria-pressed')
+      ).toBe('true');
+      // the new page has the size of the page it was added from
+      expect(previewPage().style.width).toBe('1080px');
+      await selectPage(/Page 1/);
+      await click(button('Duplicate page'));
+      expect(pageNames()).toEqual([
+        'Page 1One',
+        'Page 2One',
+        'Page 3Two',
+        'Page 4',
+      ]);
+      expect(layerNames()).toEqual(['▣Photo', 'TTitle', '▭Box']);
+      await click(button('Move page down'));
+      expect(pageNames()).toEqual([
+        'Page 1One',
+        'Page 2Two',
+        'Page 3One',
+        'Page 4',
+      ]);
+      await click(button('Move page up'));
+      await click(button('Move page up'));
+      expect(pageNames()).toEqual([
+        'Page 1One',
+        'Page 2One',
+        'Page 3Two',
+        'Page 4',
+      ]);
+      expect(isOff(button('Move page up'))).toBe(true);
+      await click(button('Delete page'));
+      expect(pageNames()).toEqual(['Page 1One', 'Page 2Two', 'Page 3']);
+      await save();
+      const content = lastSaved();
+      expect(content.pages.map((p: Plain) => p.name)).toEqual([
+        'One',
+        'Two',
+        '',
+      ]);
+      expect(content.pages[2]).toMatchObject({
+        width: 1080,
+        height: 1080,
+        layers: [],
+      });
+    },
+    LOOP_TIMEOUT
+  );
 
   it('PE4/M14 the last page cannot be deleted', async () => {
     SIMPLE.revisions[0].content.pages = [SIMPLE.revisions[0].content.pages[0]];
@@ -1216,36 +1243,42 @@ describe('Creative Studio editing: pages', () => {
 
 // ============================================================================
 describe('Creative Studio editing: layers', () => {
-  it('LE1/LE2/LE3/LE4 adds text, rectangles and ellipses in front, each selected', async () => {
-    await edit();
-    await click(button('Add text'));
-    expect(screen.getByRole('heading', { name: 'Layer · Text' })).toBeTruthy();
-    await click(button('Add rectangle'));
-    expect(
-      screen.getByRole('heading', { name: 'Layer · Rectangle' })
-    ).toBeTruthy();
-    await click(button('Add ellipse'));
-    expect(
-      screen.getByRole('heading', { name: 'Layer · Ellipse' })
-    ).toBeTruthy();
-    expect(layerNames().slice(0, 3)).toEqual([
-      '◯Ellipse',
-      '▭Rectangle',
-      'TText',
-    ]);
-    // an ellipse never offers a corner radius
-    expect(screen.queryByLabelText('Corner radius')).toBeNull();
-    await save();
-    const layers = lastSaved().pages[0].layers;
-    expect(
-      layers.slice(3).map((l: Plain) => [l.type, l.shape ?? null])
-    ).toEqual([
-      ['text', null],
-      ['shape', 'rectangle'],
-      ['shape', 'ellipse'],
-    ]);
-    expect(layers[5].cornerRadius).toBe(0);
-  });
+  it(
+    'LE1/LE2/LE3/LE4 adds text, rectangles and ellipses in front, each selected',
+    async () => {
+      await edit();
+      await click(button('Add text'));
+      expect(
+        screen.getByRole('heading', { name: 'Layer · Text' })
+      ).toBeTruthy();
+      await click(button('Add rectangle'));
+      expect(
+        screen.getByRole('heading', { name: 'Layer · Rectangle' })
+      ).toBeTruthy();
+      await click(button('Add ellipse'));
+      expect(
+        screen.getByRole('heading', { name: 'Layer · Ellipse' })
+      ).toBeTruthy();
+      expect(layerNames().slice(0, 3)).toEqual([
+        '◯Ellipse',
+        '▭Rectangle',
+        'TText',
+      ]);
+      // an ellipse never offers a corner radius
+      expect(screen.queryByLabelText('Corner radius')).toBeNull();
+      await save();
+      const layers = lastSaved().pages[0].layers;
+      expect(
+        layers.slice(3).map((l: Plain) => [l.type, l.shape ?? null])
+      ).toEqual([
+        ['text', null],
+        ['shape', 'rectangle'],
+        ['shape', 'ellipse'],
+      ]);
+      expect(layers[5].cornerRadius).toBe(0);
+    },
+    LOOP_TIMEOUT
+  );
 
   it('LE5/LE6/LE7/LE8/LE9/M19/M20 geometry, opacity, rotation, visibility and name; invalid numbers never enter the draft', async () => {
     await edit();
@@ -1366,32 +1399,38 @@ describe('Creative Studio editing: layers', () => {
     });
   });
 
-  it('LE18/LE19/LE20 delete, duplicate and z-order act on the document order', async () => {
-    await edit();
-    await selectLayer(/Box/);
-    expect(isOff(button('Send backward'))).toBe(true);
-    expect(isOff(button('Send to back'))).toBe(true);
-    await click(button('Bring forward'));
-    expect(layerNames()).toEqual(['▣Photo', '▭Box', 'TTitle']);
-    await click(button('Bring to front'));
-    expect(layerNames()).toEqual(['▭Box', '▣Photo', 'TTitle']);
-    expect(isOff(button('Bring forward'))).toBe(true);
-    await click(button('Send to back'));
-    expect(layerNames()).toEqual(['▣Photo', 'TTitle', '▭Box']);
-    await click(button('Duplicate layer'));
-    expect(layerNames()).toEqual(['▣Photo', 'TTitle', '▭Box', '▭Box']);
-    await click(button('Delete layer'));
-    await selectLayer(/Title/);
-    await click(button('Delete layer'));
-    await save();
-    expect(lastSaved().pages[0].layers.map((l: Plain) => l.id)).toEqual([
-      'box',
-      'photo',
-    ]);
-  });
+  it(
+    'LE18/LE19/LE20 delete, duplicate and z-order act on the document order',
+    async () => {
+      await edit();
+      await selectLayer(/Box/);
+      expect(isOff(button('Send backward'))).toBe(true);
+      expect(isOff(button('Send to back'))).toBe(true);
+      await click(button('Bring forward'));
+      expect(layerNames()).toEqual(['▣Photo', '▭Box', 'TTitle']);
+      await click(button('Bring to front'));
+      expect(layerNames()).toEqual(['▭Box', '▣Photo', 'TTitle']);
+      expect(isOff(button('Bring forward'))).toBe(true);
+      await click(button('Send to back'));
+      expect(layerNames()).toEqual(['▣Photo', 'TTitle', '▭Box']);
+      await click(button('Duplicate layer'));
+      expect(layerNames()).toEqual(['▣Photo', 'TTitle', '▭Box', '▭Box']);
+      await click(button('Delete layer'));
+      await selectLayer(/Title/);
+      await click(button('Delete layer'));
+      await save();
+      expect(lastSaved().pages[0].layers.map((l: Plain) => l.id)).toEqual([
+        'box',
+        'photo',
+      ]);
+    },
+    LOOP_TIMEOUT
+  );
 
+  // P4-09: while editing, layers are chosen on the canvas instead (see
+  // content-studio.design.canvas.spec); the read-only preview keeps this
   it('127/128 clicking a preview layer selects it; the page clears the choice', async () => {
-    await edit();
+    await renderWorkspace(SIMPLE.id);
     await click(previewLayer('box') as HTMLElement);
     expect(screen.getByRole('heading', { name: 'Layer · Box' })).toBeTruthy();
     expect((previewLayer('box') as HTMLElement).className).toContain(
@@ -1729,12 +1768,9 @@ describe('Creative Studio editing: boundaries', () => {
     expect(editor).not.toMatch(
       /selected|locked|zoom|viewport|thumbnail|expanded/i
     );
-    const pkg = JSON.parse(
-      readFileSync(join(dir, '../../../../../package.json'), 'utf8')
-    );
-    expect(
-      Object.keys({ ...pkg.dependencies, ...pkg.devDependencies })
-    ).not.toEqual(expect.arrayContaining(['fabric']));
+    // P4-09 adds Fabric as the browser interaction layer, imported by its
+    // adapter only (content-studio.design.canvas.spec P409-1); none of these
+    // files imports it
   });
 
   it('P408-4/P408-5/M32 no browser storage, autosave timer or unload persistence', () => {

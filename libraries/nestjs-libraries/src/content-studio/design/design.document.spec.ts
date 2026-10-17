@@ -1485,7 +1485,8 @@ describe('Design Document P4-02 persistence boundary', () => {
     const creativeStudio = frontend.filter((f) =>
       /content-studio\.designs?[.a-z]*\.tsx?$|\/designs\//.test(f)
     );
-    expect(creativeStudio).toHaveLength(8);
+    // P4-09 adds the canvas, its geometry helper and its Fabric adapter
+    expect(creativeStudio).toHaveLength(11);
     for (const file of creativeStudio) {
       expect([file, code(file)]).not.toEqual([
         file,

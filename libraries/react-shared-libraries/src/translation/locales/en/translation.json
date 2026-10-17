@@ -1415,5 +1415,15 @@
   "content_studio_design_bring_to_front": "Bring to front",
   "content_studio_design_send_to_back": "Send to back",
   "content_studio_design_duplicate_layer": "Duplicate layer",
-  "content_studio_design_delete_layer": "Delete layer"
+  "content_studio_design_delete_layer": "Delete layer",
+  "content_studio_design_canvas_out_of_limits": "That transformation is outside the design limits.",
+  "content_studio_design_canvas_update_failed": "The layer could not be updated.",
+  "content_studio_design_canvas_view": "Canvas view",
+  "content_studio_design_zoom_out": "Zoom out",
+  "content_studio_design_zoom": "Zoom",
+  "content_studio_design_zoom_in": "Zoom in",
+  "content_studio_design_zoom_fit": "Fit",
+  "content_studio_design_canvas_region": "Design canvas",
+  "content_studio_design_canvas_unavailable": "Direct canvas editing is unavailable. Use the inspector to edit layers.",
+  "content_studio_design_canvas_hint": "Drag a layer to move it; use its handles to resize or rotate it. Hold Alt to move without snapping. Hold Space and drag, or drag with the middle mouse button, to pan."
 }

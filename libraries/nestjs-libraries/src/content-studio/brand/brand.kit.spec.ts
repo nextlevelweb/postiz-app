@@ -1021,6 +1021,8 @@ describe('Brand Kit P4-01 scope boundary', () => {
         .filter((file) => /brand-kit|brandKit|BrandKit/.test(code(file)))
         .sort()
     ).toEqual([
+      // P4-09: the canvas is handed the resolved Brand Kit content to draw
+      `${CS}/content-studio.design.canvas.tsx`,
       `${CS}/content-studio.design.editing.tsx`,
       `${CS}/content-studio.design.editor.ts`,
       `${CS}/content-studio.design.preview.tsx`,
