@@ -675,9 +675,10 @@ const layerButtons = () =>
   within(screen.getByRole('list', { name: 'Layers' }))
     .getAllByRole('button')
     .map((b) => b.textContent);
+// P4-10: a page card is named "Select page N · name" and shows a thumbnail
 const pageButton = (name: RegExp) =>
   within(screen.getByRole('list', { name: 'Pages' })).getByRole('button', {
-    name,
+    name: new RegExp(name.source, 'i'),
   });
 const selectLayer = async (label: string) =>
   click(
@@ -1236,7 +1237,9 @@ describe('Creative Studio: workspace', () => {
     const pages = within(
       screen.getByRole('list', { name: 'Pages' })
     ).getAllByRole('button');
-    expect(pages.map((b) => b.textContent)).toEqual([
+    expect(
+      pages.map((b) => b.querySelector('[data-page-label]')?.textContent)
+    ).toEqual([
       'Page 1Intro',
       'Page 2',
       `Page 3CTA <img src=x onerror=alert(3)> ${HTML_MARKER}`,

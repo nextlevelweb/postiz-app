@@ -527,7 +527,8 @@ const selectLayer = async (id: string) =>
 const selectPage = async (name: RegExp) =>
   click(
     within(screen.getByRole('list', { name: 'Pages' })).getByRole('button', {
-      name,
+      // P4-10: a page card is named "Select page N · name"
+      name: new RegExp(name.source, 'i'),
     })
   );
 const canvases = () => mockFabric.canvases;

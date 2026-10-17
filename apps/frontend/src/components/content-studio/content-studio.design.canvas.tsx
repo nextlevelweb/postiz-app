@@ -18,6 +18,7 @@ import {
   ContentStudioDesignPreviewPage,
   DesignLivePreviewHeader,
 } from '@gitroom/frontend/components/content-studio/content-studio.design.preview';
+import { isDesignEditorShortcutTarget } from '@gitroom/frontend/components/content-studio/content-studio.design.editing';
 import {
   ContentStudioDesignCanvasBox,
   ContentStudioDesignCanvasSize,
@@ -120,6 +121,9 @@ export const ContentStudioDesignCanvas: FC<{
     box: ContentStudioDesignCanvasBox
   ) => void;
   onTransformingChange: (active: boolean) => void;
+  // snapping while moving, and whether its guide lines show
+  snapEnabled: boolean;
+  guidesEnabled: boolean;
 }> = ({
   page,
   pageLabel,
@@ -129,6 +133,8 @@ export const ContentStudioDesignCanvas: FC<{
   onSelectLayer,
   onLayerGeometryCommit,
   onTransformingChange,
+  snapEnabled,
+  guidesEnabled,
 }) => {
   const t = useT();
   const toaster = useToaster();
@@ -156,6 +162,9 @@ export const ContentStudioDesignCanvas: FC<{
     onSelectLayer,
     onLayerGeometryCommit,
     onTransformingChange,
+    snapEnabled,
+    guidesEnabled,
+    size,
     t,
     toaster,
   };
@@ -206,7 +215,8 @@ export const ContentStudioDesignCanvas: FC<{
           onTransformStart: () => latest.current.onTransformingChange(true),
           onMoving: (id, center, freely) => {
             const current = latest.current;
-            if (freely) {
+            // Alt moves freely; so does every move with snapping off
+            if (freely || !current.snapEnabled) {
               setGuides(NO_GUIDES);
               return null;
             }
@@ -220,10 +230,14 @@ export const ContentStudioDesignCanvas: FC<{
               contentStudioDesignCanvasSnapTargets(current.page, id),
               contentStudioDesignCanvasSnapThreshold(current.view.zoom)
             );
-            setGuides({
-              vertical: snapped.verticalGuide,
-              horizontal: snapped.horizontalGuide,
-            });
+            setGuides(
+              current.guidesEnabled
+                ? {
+                    vertical: snapped.verticalGuide,
+                    horizontal: snapped.horizontalGuide,
+                  }
+                : NO_GUIDES
+            );
             return {
               left: snapped.x + center.width / 2,
               top: snapped.y + center.height / 2,
@@ -399,6 +413,50 @@ export const ContentStudioDesignCanvas: FC<{
       zoomContentStudioDesignCanvasView(current, zoom, size)
     );
   };
+  const fit = () => {
+    setFitted(true);
+    setView(fitContentStudioDesignCanvasView(page, size));
+  };
+
+  // Ctrl/Cmd with 0, + or -: Fit and zoom, only for a key pressed in the
+  // editor (never in a field, a dialog or elsewhere in the app); the
+  // browser's own zoom stays everywhere else
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const current = latest.current;
+      if (
+        !(event.metaKey || event.ctrlKey) ||
+        event.altKey ||
+        !current.interactive ||
+        !isDesignEditorShortcutTarget(event.target)
+      ) {
+        return;
+      }
+      const step =
+        event.key === '+' || event.key === '='
+          ? 1
+          : event.key === '-' || event.key === '_'
+          ? -1
+          : 0;
+      if (event.key === '0') {
+        event.preventDefault();
+        setFitted(true);
+        setView(fitContentStudioDesignCanvasView(current.page, current.size));
+      } else if (step) {
+        event.preventDefault();
+        setFitted(false);
+        setView((view) =>
+          zoomContentStudioDesignCanvasView(
+            view,
+            stepContentStudioDesignCanvasZoom(view.zoom, step),
+            current.size
+          )
+        );
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const vertical =
     guides.vertical === null
@@ -445,13 +503,7 @@ export const ContentStudioDesignCanvas: FC<{
         >
           {t('content_studio_design_zoom_in', 'Zoom in')}
         </Button>
-        <Button
-          secondary
-          onClick={() => {
-            setFitted(true);
-            setView(fitContentStudioDesignCanvasView(page, size));
-          }}
-        >
+        <Button secondary aria-pressed={fitted} onClick={fit}>
           {t('content_studio_design_zoom_fit', 'Fit')}
         </Button>
       </div>
@@ -479,7 +531,7 @@ export const ContentStudioDesignCanvas: FC<{
           data-canvas="interaction"
           className="absolute inset-0"
         />
-        {vertical !== null && (
+        {guidesEnabled && vertical !== null && (
           <div
             data-guide="vertical"
             aria-hidden="true"
@@ -487,7 +539,7 @@ export const ContentStudioDesignCanvas: FC<{
             style={{ left: vertical }}
           />
         )}
-        {horizontal !== null && (
+        {guidesEnabled && horizontal !== null && (
           <div
             data-guide="horizontal"
             aria-hidden="true"

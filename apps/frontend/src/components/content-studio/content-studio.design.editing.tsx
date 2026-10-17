@@ -52,9 +52,13 @@ import {
   addContentStudioDesignImageLayer,
   addContentStudioDesignLayer,
   addContentStudioDesignPage,
+  alignContentStudioDesignLayers,
+  alignContentStudioDesignLayerToPage,
+  amendContentStudioDesignHistory,
   applyContentStudioDesignHistory,
   areContentStudioDesignDocumentsEqual,
   cloneContentStudioDesignDocument,
+  ContentStudioDesignAlignEdge,
   ContentStudioDesignEditorError,
   ContentStudioDesignEditorHistory,
   ContentStudioDesignLayerMove,
@@ -64,6 +68,7 @@ import {
   contentStudioDesignTextLength,
   deleteContentStudioDesignLayer,
   deleteContentStudioDesignPage,
+  distributeContentStudioDesignLayers,
   duplicateContentStudioDesignLayer,
   duplicateContentStudioDesignPage,
   missingContentStudioDesignBrandTokens,
@@ -104,6 +109,9 @@ import {
 
 type Translate = (key: string, fallback: string) => string;
 
+// repeated nudges this close together are one undo step
+export const DESIGN_EDITOR_RUN_MS = 300;
+
 interface EditorState {
   designId: string;
   base: {
@@ -143,6 +151,11 @@ export const designEditorErrorMessage = (t: Translate, error: unknown) => {
         'content_studio_design_edit_brand_missing',
         'This Brand Kit revision does not contain all tokens used by the design.'
       );
+    case 'OUT_OF_LIMITS':
+      return t(
+        'content_studio_design_align_out_of_limits',
+        'That alignment is outside the design limits.'
+      );
     default:
       return t(
         'content_studio_design_edit_failed',
@@ -152,12 +165,22 @@ export const designEditorErrorMessage = (t: Translate, error: unknown) => {
 };
 
 // Typing in a field keeps the field's own undo
-const isTextTarget = (target: EventTarget | null) =>
+export const isDesignEditorTextTarget = (target: EventTarget | null) =>
   target instanceof HTMLElement &&
   (target.tagName === 'INPUT' ||
     target.tagName === 'TEXTAREA' ||
     target.tagName === 'SELECT' ||
     target.isContentEditable);
+
+// Editor shortcuts belong to the editor: a key pressed on the page itself
+// or inside the editor (marked data-design-editor), never in a field or
+// in a dialog, which are elsewhere in the page
+export const isDesignEditorShortcutTarget = (target: EventTarget | null) =>
+  !isDesignEditorTextTarget(target) &&
+  (!(target instanceof Element) ||
+    target === target.ownerDocument.body ||
+    target === target.ownerDocument.documentElement ||
+    !!target.closest('[data-design-editor]'));
 
 // The edit of one design: entered explicitly from the current revision of an
 // active design, left by Save, Cancel or a confirmed discard
@@ -204,13 +227,21 @@ export const useContentStudioDesignEditor = (designId: string) => {
     [designId, commit]
   );
 
-  // One edit as one undo step. A refused edit leaves the draft as it was
+  // the last edit that may be continued as the same undo step
+  const run = useRef<{ key: string; at: number; present: unknown } | null>(
+    null
+  );
+
+  // One edit as one undo step. A refused edit leaves the draft as it was.
+  // Edits of the same run (a key such as one layer nudged one way) that
+  // follow each other within 300 ms, with nothing in between, are one step
   const apply = useCallback(
     <T,>(
       operation: (document: ContentStudioDesignDocumentV1) => {
         document: ContentStudioDesignDocumentV1;
         result?: T;
-      }
+      },
+      runKey?: string
     ): T | undefined => {
       const current = latest.current;
       if (!current || savingRef.current) {
@@ -223,13 +254,22 @@ export const useContentStudioDesignEditor = (designId: string) => {
         toaster.show(designEditorErrorMessage(t, err), 'warning');
         return undefined;
       }
-      commit({
-        ...current,
-        history: applyContentStudioDesignHistory(
-          current.history,
-          outcome.document
-        ),
-      });
+      const now = Date.now();
+      const previous = run.current;
+      const continues =
+        !!runKey &&
+        previous?.key === runKey &&
+        previous.present === current.history.present &&
+        now - previous.at <= DESIGN_EDITOR_RUN_MS;
+      const history = (
+        continues
+          ? amendContentStudioDesignHistory
+          : applyContentStudioDesignHistory
+      )(current.history, outcome.document);
+      run.current = runKey
+        ? { key: runKey, at: now, present: history.present }
+        : null;
+      commit({ ...current, history });
       return outcome.result;
     },
     [commit, toaster, t]
@@ -331,7 +371,10 @@ export const useContentStudioDesignEditor = (designId: string) => {
       return;
     }
     const onKey = (event: globalThis.KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || isTextTarget(event.target)) {
+      if (
+        !(event.metaKey || event.ctrlKey) ||
+        isDesignEditorTextTarget(event.target)
+      ) {
         return;
       }
       const key = event.key.toLowerCase();
@@ -1183,6 +1226,11 @@ export const DesignEditorToolbar: FC<{
   setLayerId: (id: string | null) => void;
   onCancel: () => void;
   onReloadLatest: () => void;
+  // canvas settings of this visit only: snapping and its guides
+  snap: boolean;
+  guides: boolean;
+  onSnapChange: (on: boolean) => void;
+  onGuidesChange: (on: boolean) => void;
 }> = ({
   editor,
   document,
@@ -1194,6 +1242,10 @@ export const DesignEditorToolbar: FC<{
   setLayerId,
   onCancel,
   onReloadLatest,
+  snap,
+  guides,
+  onSnapChange,
+  onGuidesChange,
 }) => {
   const t = useT();
   const modals = useModals();
@@ -1327,6 +1379,26 @@ export const DesignEditorToolbar: FC<{
         >
           {t('content_studio_design_redo', 'Redo')}
         </Button>
+        <label className="flex items-center gap-[6px] text-[13px]">
+          <input
+            type="checkbox"
+            role="switch"
+            aria-checked={snap}
+            checked={snap}
+            onChange={(e) => onSnapChange(e.target.checked)}
+          />
+          {t('content_studio_design_snap', 'Snap')}
+        </label>
+        <label className="flex items-center gap-[6px] text-[13px]">
+          <input
+            type="checkbox"
+            role="switch"
+            aria-checked={guides}
+            checked={guides}
+            onChange={(e) => onGuidesChange(e.target.checked)}
+          />
+          {t('content_studio_design_guides', 'Guides')}
+        </label>
       </div>
       <div className="flex flex-wrap gap-[8px] items-center">
         <Button
@@ -1484,6 +1556,19 @@ const OVERFLOW_OPTIONS = (t: Translate) => [
     label: t('content_studio_design_overflow_shrink', 'Shrink to fit'),
   },
 ];
+// where the image is held when it is cropped (fit cover)
+const FOCAL_PRESETS = (t: Translate) => [
+  { label: t('content_studio_design_focal_center', 'Center'), x: 0.5, y: 0.5 },
+  { label: t('content_studio_design_focal_top', 'Top'), x: 0.5, y: 0 },
+  { label: t('content_studio_design_focal_bottom', 'Bottom'), x: 0.5, y: 1 },
+  { label: t('content_studio_design_focal_left', 'Left'), x: 0, y: 0.5 },
+  { label: t('content_studio_design_focal_right', 'Right'), x: 1, y: 0.5 },
+];
+
+// a small command button, for rows of related commands
+const COMMAND =
+  'px-[8px] h-[28px] rounded-[6px] border border-newTableBorder text-[12px] disabled:opacity-50';
+
 const FIT_OPTIONS = (t: Translate) => [
   { value: 'cover', label: t('content_studio_design_fit_cover', 'Cover') },
   {
@@ -1780,6 +1865,32 @@ export const DesignEditableInspector: FC<{
               }
             />
           </div>
+          <div
+            role="group"
+            aria-label={t(
+              'content_studio_design_focal_presets',
+              'Focal point presets'
+            )}
+            className="flex flex-wrap gap-[6px]"
+          >
+            {FOCAL_PRESETS(t).map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                disabled={disabled}
+                aria-label={`${t(
+                  'content_studio_design_focal_point',
+                  'Focal point'
+                )} ${preset.label}`}
+                className={COMMAND}
+                onClick={() =>
+                  update({ focalPoint: { x: preset.x, y: preset.y } })
+                }
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
           <Button secondary disabled={disabled} onClick={replaceImage}>
             {t('content_studio_design_replace_image', 'Replace image')}
           </Button>
@@ -1850,6 +1961,220 @@ export const DesignEditableInspector: FC<{
         >
           {t('content_studio_design_delete_layer', 'Delete layer')}
         </Button>
+      </div>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Arranging: alignment, distribution and the editor's own layer clipboard
+// ---------------------------------------------------------------------------
+
+const ALIGN_TO_PAGE = (t: Translate) =>
+  [
+    ['left', t('content_studio_design_align_page_left', 'Align to page left')],
+    [
+      'centerX',
+      t(
+        'content_studio_design_align_page_center_x',
+        'Align to page horizontal center'
+      ),
+    ],
+    [
+      'right',
+      t('content_studio_design_align_page_right', 'Align to page right'),
+    ],
+    ['top', t('content_studio_design_align_page_top', 'Align to page top')],
+    [
+      'centerY',
+      t(
+        'content_studio_design_align_page_center_y',
+        'Align to page vertical center'
+      ),
+    ],
+    [
+      'bottom',
+      t('content_studio_design_align_page_bottom', 'Align to page bottom'),
+    ],
+  ] as Array<[ContentStudioDesignAlignEdge, string]>;
+
+const ALIGN_SELECTION = (t: Translate) =>
+  [
+    [
+      'left',
+      t('content_studio_design_align_selection_left', 'Align selection left'),
+    ],
+    [
+      'centerX',
+      t(
+        'content_studio_design_align_selection_center_x',
+        'Align selection horizontal centers'
+      ),
+    ],
+    [
+      'right',
+      t('content_studio_design_align_selection_right', 'Align selection right'),
+    ],
+    [
+      'top',
+      t('content_studio_design_align_selection_top', 'Align selection top'),
+    ],
+    [
+      'centerY',
+      t(
+        'content_studio_design_align_selection_center_y',
+        'Align selection vertical centers'
+      ),
+    ],
+    [
+      'bottom',
+      t(
+        'content_studio_design_align_selection_bottom',
+        'Align selection bottom'
+      ),
+    ],
+  ] as Array<[ContentStudioDesignAlignEdge, string]>;
+
+// the short text of an alignment button; its full name is its label
+const EDGE_TEXT = (
+  t: Translate
+): Record<ContentStudioDesignAlignEdge, string> => ({
+  left: t('content_studio_design_align_left', 'Left'),
+  centerX: t('content_studio_design_align_center', 'Center'),
+  right: t('content_studio_design_align_right', 'Right'),
+  top: t('content_studio_design_align_top', 'Top'),
+  centerY: t('content_studio_design_align_middle', 'Middle'),
+  bottom: t('content_studio_design_align_bottom', 'Bottom'),
+});
+
+// The commands for the chosen layers of the page: one layer lines up with
+// the page, two or more with the box around them, three or more can be
+// distributed; each command is one undo step for every layer it moves. Copy
+// takes one layer into this workspace's own clipboard (never the system
+// one); Paste puts it on this page under a new id
+export const DesignArrangePanel: FC<{
+  editor: ContentStudioDesignEditor;
+  layerIds: string[];
+  canCopy: boolean;
+  canPaste: boolean;
+  onCopy: () => void;
+  onPaste: () => void;
+}> = ({ editor, layerIds, canCopy, canPaste, onCopy, onPaste }) => {
+  const t = useT();
+  const disabled = editor.saving || editor.interacting;
+  const text = EDGE_TEXT(t);
+  const group = (
+    label: string,
+    commands: Array<[ContentStudioDesignAlignEdge, string]>,
+    run: (edge: ContentStudioDesignAlignEdge) => void
+  ) => (
+    <div role="group" aria-label={label} className="flex flex-col gap-[4px]">
+      <span className="text-[12px] text-textItemBlur">{label}</span>
+      <div className="flex flex-wrap gap-[4px]">
+        {commands.map(([edge, name]) => (
+          <button
+            key={edge}
+            type="button"
+            aria-label={name}
+            title={name}
+            disabled={disabled}
+            className={COMMAND}
+            onClick={() => run(edge)}
+          >
+            {text[edge]}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col gap-[10px]">
+      {layerIds.length === 1 &&
+        group(
+          t('content_studio_design_align_to_page', 'Align to page'),
+          ALIGN_TO_PAGE(t),
+          (edge) =>
+            editor.apply((latest) => ({
+              document: alignContentStudioDesignLayerToPage(
+                latest,
+                layerIds[0],
+                edge
+              ),
+            }))
+        )}
+      {layerIds.length > 1 &&
+        group(
+          t('content_studio_design_align_selection', 'Align selection'),
+          ALIGN_SELECTION(t),
+          (edge) =>
+            editor.apply((latest) => ({
+              document: alignContentStudioDesignLayers(latest, layerIds, edge),
+            }))
+        )}
+      {layerIds.length > 2 && (
+        <div
+          role="group"
+          aria-label={t('content_studio_design_distribute', 'Distribute')}
+          className="flex flex-wrap gap-[4px]"
+        >
+          <button
+            type="button"
+            disabled={disabled}
+            className={COMMAND}
+            onClick={() =>
+              editor.apply((latest) => ({
+                document: distributeContentStudioDesignLayers(
+                  latest,
+                  layerIds,
+                  'horizontal'
+                ),
+              }))
+            }
+          >
+            {t(
+              'content_studio_design_distribute_horizontal',
+              'Distribute horizontally'
+            )}
+          </button>
+          <button
+            type="button"
+            disabled={disabled}
+            className={COMMAND}
+            onClick={() =>
+              editor.apply((latest) => ({
+                document: distributeContentStudioDesignLayers(
+                  latest,
+                  layerIds,
+                  'vertical'
+                ),
+              }))
+            }
+          >
+            {t(
+              'content_studio_design_distribute_vertical',
+              'Distribute vertically'
+            )}
+          </button>
+        </div>
+      )}
+      <div className="flex flex-wrap gap-[4px]">
+        <button
+          type="button"
+          disabled={disabled || !canCopy}
+          className={COMMAND}
+          onClick={onCopy}
+        >
+          {t('content_studio_design_copy_layer', 'Copy layer')}
+        </button>
+        <button
+          type="button"
+          disabled={disabled || !canPaste}
+          className={COMMAND}
+          onClick={onPaste}
+        >
+          {t('content_studio_design_paste_layer', 'Paste layer')}
+        </button>
       </div>
     </div>
   );

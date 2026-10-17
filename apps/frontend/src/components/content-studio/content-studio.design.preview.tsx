@@ -83,10 +83,12 @@ const UNRESOLVED = 'outline-dashed outline-[2px] outline-textItemBlur';
 // the selected layer: an outline only, nothing to drag
 const SELECTED = 'outline outline-[4px] outline-[var(--brand-primary,#612ad5)]';
 
-// Choosing a layer by clicking it in the preview; the page clears the choice
+// Choosing a layer by clicking it in the preview; the page clears the choice.
+// A page thumbnail draws the same elements without their data-layer marks
 interface LayerSelection {
   selected: boolean;
   onSelect?: (id: string | null) => void;
+  marked: boolean;
 }
 const selectable = (id: string, selection: LayerSelection) =>
   selection.onSelect
@@ -108,7 +110,7 @@ const TextPreview: FC<
   const font = resolveDesignPreviewFont(layer.font, brand);
   return (
     <div
-      data-layer={layer.id}
+      data-layer={selection.marked ? layer.id : undefined}
       data-unresolved={
         [!color && 'color', !font && 'font'].filter(Boolean).join(' ') ||
         undefined
@@ -159,7 +161,7 @@ const LayerPreview: FC<
     const fill = resolveDesignPreviewColor(layer.fill, brand);
     return (
       <div
-        data-layer={layer.id}
+        data-layer={selection.marked ? layer.id : undefined}
         data-unresolved={fill ? undefined : 'color'}
         className={clsx(!fill && UNRESOLVED, selection.selected && SELECTED)}
         {...selectable(layer.id, selection)}
@@ -175,7 +177,7 @@ const LayerPreview: FC<
   // the image itself is drawn by the server render, from the verified bytes
   return (
     <div
-      data-layer={layer.id}
+      data-layer={selection.marked ? layer.id : undefined}
       className={clsx(
         'flex items-center justify-center border-dashed border-[2px] border-textItemBlur bg-newTableBorder/40 text-textItemBlur overflow-hidden',
         selection.selected && SELECTED
@@ -222,11 +224,20 @@ export const ContentStudioDesignPreviewPage: FC<{
   placement: CSSProperties;
   selectedLayerId?: string | null;
   onSelectLayer?: (id: string | null) => void;
-}> = ({ page, brand, placement, selectedLayerId, onSelectLayer }) => {
+  // a page thumbnail: the same drawing, without the page and layer marks
+  thumbnail?: boolean;
+}> = ({
+  page,
+  brand,
+  placement,
+  selectedLayerId,
+  onSelectLayer,
+  thumbnail,
+}) => {
   const background = resolveDesignPreviewColor(page.background.color, brand);
   return (
     <div
-      data-preview="page"
+      data-preview={thumbnail ? 'thumbnail' : 'page'}
       data-unresolved={background ? undefined : 'color'}
       className={clsx(!background && UNRESOLVED)}
       onClick={onSelectLayer ? () => onSelectLayer(null) : undefined}
@@ -251,8 +262,40 @@ export const ContentStudioDesignPreviewPage: FC<{
             brand={brand}
             selected={!!onSelectLayer && layer.id === selectedLayerId}
             onSelect={onSelectLayer}
+            marked={!thumbnail}
           />
         ))}
+    </div>
+  );
+};
+
+// the box a page thumbnail fits in
+const THUMBNAIL_WIDTH = 120;
+const THUMBNAIL_HEIGHT = 80;
+
+// A page in the page list: the structural drawing scaled into a small box,
+// with the page's proportions. Nothing in it is interactive, and it asks the
+// server for nothing (images are placeholders)
+export const ContentStudioDesignPageThumbnail: FC<{
+  page: ContentStudioDesignPage;
+  brand: ContentStudioBrandKitContentV1 | null;
+}> = ({ page, brand }) => {
+  const scale = Math.min(
+    THUMBNAIL_WIDTH / page.width,
+    THUMBNAIL_HEIGHT / page.height
+  );
+  return (
+    <div
+      aria-hidden="true"
+      className="relative overflow-hidden border border-newTableBorder pointer-events-none"
+      style={{ width: page.width * scale, height: page.height * scale }}
+    >
+      <ContentStudioDesignPreviewPage
+        page={page}
+        brand={brand}
+        placement={{ transform: `scale(${scale})` }}
+        thumbnail
+      />
     </div>
   );
 };

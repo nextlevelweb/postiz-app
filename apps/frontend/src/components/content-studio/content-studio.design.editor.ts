@@ -34,7 +34,8 @@ export type ContentStudioDesignEditorErrorCode =
   | 'LAST_PAGE'
   | 'ID_EXHAUSTED'
   | 'BRAND_TOKENS_IN_USE'
-  | 'BRAND_TOKENS_MISSING';
+  | 'BRAND_TOKENS_MISSING'
+  | 'OUT_OF_LIMITS';
 
 // A code only: the UI shows its own fixed text for it
 export class ContentStudioDesignEditorError extends Error {
@@ -500,6 +501,10 @@ export const deleteContentStudioDesignLayer = (
   );
 };
 
+// A copy is moved by 20 units where that stays within the coordinate limits
+const copyOffset = (value: number) =>
+  value + 20 <= DESIGN_COORDINATE_MAX ? value + 20 : value;
+
 // An exact copy right in front of the original, under a new id, moved by 20
 // units where that stays within the coordinate limits
 export const duplicateContentStudioDesignLayer = (
@@ -510,13 +515,11 @@ export const duplicateContentStudioDesignLayer = (
   if (!contentStudioDesignEditorLimits(document, page.id).canAddLayer) {
     throw fail('LAYER_LIMIT');
   }
-  const offset = (value: number) =>
-    value + 20 <= DESIGN_COORDINATE_MAX ? value + 20 : value;
   const copy = {
     ...(JSON.parse(JSON.stringify(layer)) as ContentStudioDesignLayer),
     id: uniqueId(newContentStudioDesignLayerId, layerIds(document)),
-    x: offset(layer.x),
-    y: offset(layer.y),
+    x: copyOffset(layer.x),
+    y: copyOffset(layer.y),
   };
   const layers = [...page.layers];
   layers.splice(layerIndex + 1, 0, copy);
@@ -580,6 +583,243 @@ export const moveContentStudioDesignLayer = (
       break;
   }
   return withLayers(document, pageIndex, layers);
+};
+
+// ---------------------------------------------------------------------------
+// Arranging, copying and nudging layers
+// ---------------------------------------------------------------------------
+
+export type ContentStudioDesignAlignEdge =
+  | 'left'
+  | 'centerX'
+  | 'right'
+  | 'top'
+  | 'centerY'
+  | 'bottom';
+export type ContentStudioDesignDistributeAxis = 'horizontal' | 'vertical';
+
+// -0 is stored as 0
+const plain = (value: number) => (value === 0 ? 0 : value);
+
+// Several different layers of one page, in the page's order. Any id that is
+// missing, repeated or on another page refuses the whole operation
+const layersOfOnePage = (
+  document: ContentStudioDesignDocumentV1,
+  layerIds: string[]
+) => {
+  if (!layerIds.length || new Set(layerIds).size !== layerIds.length) {
+    throw fail('NOT_FOUND');
+  }
+  const { pageIndex, page } = findLayer(document, layerIds[0]);
+  const wanted = new Set(layerIds);
+  const layers = page.layers.filter((layer) => wanted.has(layer.id));
+  if (layers.length !== layerIds.length) {
+    throw fail('NOT_FOUND');
+  }
+  return { pageIndex, page, layers };
+};
+
+// New top left corners for some layers of one page, all in one new
+// document or none: a corner outside the coordinate limits refuses it all.
+// Size, rotation and everything else stay
+const placeLayers = (
+  document: ContentStudioDesignDocumentV1,
+  pageIndex: number,
+  page: ContentStudioDesignPage,
+  corners: Map<string, { x: number; y: number }>
+) => {
+  for (const { x, y } of Array.from(corners.values())) {
+    if (
+      !Number.isFinite(x) ||
+      !Number.isFinite(y) ||
+      Math.abs(x) > DESIGN_COORDINATE_MAX ||
+      Math.abs(y) > DESIGN_COORDINATE_MAX
+    ) {
+      throw fail('OUT_OF_LIMITS');
+    }
+  }
+  return withLayers(
+    document,
+    pageIndex,
+    page.layers.map((layer) => {
+      const corner = corners.get(layer.id);
+      return corner
+        ? { ...layer, x: plain(corner.x), y: plain(corner.y) }
+        : layer;
+    })
+  );
+};
+
+interface Bounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+// Where a layer's stored, unrotated box goes to line up with an edge or
+// center of the bounds; the other axis stays
+const aligned = (
+  layer: ContentStudioDesignLayer,
+  edge: ContentStudioDesignAlignEdge,
+  bounds: Bounds
+) => {
+  switch (edge) {
+    case 'left':
+      return { x: bounds.left, y: layer.y };
+    case 'centerX':
+      return {
+        x: (bounds.left + bounds.right) / 2 - layer.width / 2,
+        y: layer.y,
+      };
+    case 'right':
+      return { x: bounds.right - layer.width, y: layer.y };
+    case 'top':
+      return { x: layer.x, y: bounds.top };
+    case 'centerY':
+      return {
+        x: layer.x,
+        y: (bounds.top + bounds.bottom) / 2 - layer.height / 2,
+      };
+    case 'bottom':
+      return { x: layer.x, y: bounds.bottom - layer.height };
+  }
+};
+
+// One layer lined up with an edge or the center of its page
+export const alignContentStudioDesignLayerToPage = (
+  document: ContentStudioDesignDocumentV1,
+  layerId: string,
+  edge: ContentStudioDesignAlignEdge
+) => {
+  const { pageIndex, page, layers } = layersOfOnePage(document, [layerId]);
+  const bounds = { left: 0, top: 0, right: page.width, bottom: page.height };
+  return placeLayers(
+    document,
+    pageIndex,
+    page,
+    new Map([[layerId, aligned(layers[0], edge, bounds)]])
+  );
+};
+
+// Two or more layers of one page lined up with an edge or the center of
+// the box around all of them (never with one of them), in one step.
+// Hidden layers count like the others: this is the stored geometry
+export const alignContentStudioDesignLayers = (
+  document: ContentStudioDesignDocumentV1,
+  layerIds: string[],
+  edge: ContentStudioDesignAlignEdge
+) => {
+  const { pageIndex, page, layers } = layersOfOnePage(document, layerIds);
+  if (layers.length < 2) {
+    throw fail('NOT_FOUND');
+  }
+  const bounds = {
+    left: Math.min(...layers.map((layer) => layer.x)),
+    top: Math.min(...layers.map((layer) => layer.y)),
+    right: Math.max(...layers.map((layer) => layer.x + layer.width)),
+    bottom: Math.max(...layers.map((layer) => layer.y + layer.height)),
+  };
+  return placeLayers(
+    document,
+    pageIndex,
+    page,
+    new Map(layers.map((layer) => [layer.id, aligned(layer, edge, bounds)]))
+  );
+};
+
+// Three or more layers of one page spaced with equal gaps between their
+// boxes: in order of their left (top) edge, ties by id; the first and the
+// last stay, the others follow each other at the same gap, which may be
+// negative (they overlap). One step
+export const distributeContentStudioDesignLayers = (
+  document: ContentStudioDesignDocumentV1,
+  layerIds: string[],
+  axis: ContentStudioDesignDistributeAxis
+) => {
+  const { pageIndex, page, layers } = layersOfOnePage(document, layerIds);
+  if (layers.length < 3) {
+    throw fail('NOT_FOUND');
+  }
+  const start = (layer: ContentStudioDesignLayer) =>
+    axis === 'horizontal' ? layer.x : layer.y;
+  const size = (layer: ContentStudioDesignLayer) =>
+    axis === 'horizontal' ? layer.width : layer.height;
+  const order = [...layers].sort(
+    (a, b) => start(a) - start(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  );
+  const first = order[0];
+  const last = order[order.length - 1];
+  const sizes = order.reduce((total, layer) => total + size(layer), 0);
+  const gap =
+    (start(last) + size(last) - start(first) - sizes) / (order.length - 1);
+  const corners = new Map<string, { x: number; y: number }>();
+  let next = start(first);
+  order.forEach((layer, index) => {
+    // the first and the last keep their exact place
+    const at = index === 0 || index === order.length - 1 ? start(layer) : next;
+    corners.set(
+      layer.id,
+      axis === 'horizontal' ? { x: at, y: layer.y } : { x: layer.x, y: at }
+    );
+    next = at + size(layer) + gap;
+  });
+  return placeLayers(document, pageIndex, page, corners);
+};
+
+// A layer as the editor's clipboard keeps it: an exact plain copy of
+// everything but its id (an image keeps its Media id and SHA-256)
+type WithoutId<T> = T extends unknown ? Omit<T, 'id'> : never;
+export type ContentStudioDesignLayerCopy = WithoutId<ContentStudioDesignLayer>;
+
+export const copyContentStudioDesignLayer = (
+  document: ContentStudioDesignDocumentV1,
+  layerId: string
+): ContentStudioDesignLayerCopy => {
+  const { layer } = findLayer(document, layerId);
+  const { id, ...copy } = JSON.parse(
+    JSON.stringify(layer)
+  ) as ContentStudioDesignLayer;
+  return copy as ContentStudioDesignLayerCopy;
+};
+
+// A copied layer in front of the others on a page, under a new id, moved
+// by 20 units where that stays within the coordinate limits
+export const pasteContentStudioDesignLayer = (
+  document: ContentStudioDesignDocumentV1,
+  pageId: string,
+  copy: ContentStudioDesignLayerCopy
+) =>
+  appendLayer(document, pageId, (_page, id) => {
+    const layer = JSON.parse(
+      JSON.stringify(copy)
+    ) as ContentStudioDesignLayerCopy;
+    return {
+      id,
+      ...layer,
+      x: copyOffset(layer.x),
+      y: copyOffset(layer.y),
+    } as ContentStudioDesignLayer;
+  });
+
+// A layer moved by exact design units; a move past the coordinate limits
+// changes nothing
+export const nudgeContentStudioDesignLayer = (
+  document: ContentStudioDesignDocumentV1,
+  layerId: string,
+  dx: number,
+  dy: number
+) => {
+  const { pageIndex, page, layer } = findLayer(document, layerId);
+  const x = layer.x + dx;
+  const y = layer.y + dy;
+  if (
+    Math.abs(x) > DESIGN_COORDINATE_MAX ||
+    Math.abs(y) > DESIGN_COORDINATE_MAX
+  ) {
+    return document;
+  }
+  return placeLayers(document, pageIndex, page, new Map([[layerId, { x, y }]]));
 };
 
 // ---------------------------------------------------------------------------
@@ -665,6 +905,25 @@ export const applyContentStudioDesignHistory = (
   }
   return {
     past: [...history.past, history.present].slice(-DESIGN_EDITOR_HISTORY_MAX),
+    present: cloneContentStudioDesignDocument(next),
+    future: [],
+  };
+};
+
+// A change folded into the last step instead of becoming a new one (a run
+// of nudges is one undo step). Without a step to fold into it is a new one
+export const amendContentStudioDesignHistory = (
+  history: ContentStudioDesignEditorHistory,
+  next: ContentStudioDesignDocumentV1
+): ContentStudioDesignEditorHistory => {
+  if (!history.past.length) {
+    return applyContentStudioDesignHistory(history, next);
+  }
+  if (areContentStudioDesignDocumentsEqual(history.present, next)) {
+    return history;
+  }
+  return {
+    past: history.past,
     present: cloneContentStudioDesignDocument(next),
     future: [],
   };

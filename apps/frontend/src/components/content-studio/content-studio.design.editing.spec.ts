@@ -703,24 +703,28 @@ const toolbar = () => screen.getByRole('toolbar', { name: 'Design editor' });
 const isOff = (element: HTMLElement) =>
   (element as HTMLButtonElement).disabled ||
   element.className.includes('opacity-50');
+// P4-10: layer rows have quick actions beside them, and a page card is
+// named "Select page N · name" and shows a thumbnail
 const layerNames = () =>
   within(screen.getByRole('list', { name: 'Layers' }))
     .queryAllByRole('button')
+    .filter((b) => b.hasAttribute('data-layer-row'))
     .map((b) => b.textContent);
 const pageNames = () =>
   within(screen.getByRole('list', { name: 'Pages' }))
     .getAllByRole('button')
-    .map((b) => b.textContent);
+    .map((b) => b.querySelector('[data-page-label]')?.textContent);
 const selectLayer = async (name: RegExp) =>
   click(
     within(screen.getByRole('list', { name: 'Layers' })).getByRole('button', {
-      name,
+      // the row, not its quick actions ("Hide layer …", "Duplicate layer …")
+      name: new RegExp(`^${name.source}`),
     })
   );
 const selectPage = async (name: RegExp) =>
   click(
     within(screen.getByRole('list', { name: 'Pages' })).getByRole('button', {
-      name,
+      name: new RegExp(name.source, 'i'),
     })
   );
 const previewLayer = (id: string) =>

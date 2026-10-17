@@ -1,6 +1,15 @@
 'use client';
 
-import { FC, ReactNode, useCallback, useMemo, useRef, useState } from 'react';
+import {
+  FC,
+  MouseEvent,
+  ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import clsx from 'clsx';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -46,19 +55,30 @@ import {
   useDesignCommands,
 } from '@gitroom/frontend/components/content-studio/content-studio.designs';
 import {
+  ContentStudioDesignPageThumbnail,
   ContentStudioDesignPreview,
   resolveDesignPreviewColor,
   resolveDesignPreviewFont,
 } from '@gitroom/frontend/components/content-studio/content-studio.design.preview';
 import {
   ContentStudioDesignEditor,
+  DesignArrangePanel,
   DesignBrandKitPicker,
   DesignEditableInspector,
   DesignEditorToolbar,
+  isDesignEditorShortcutTarget,
   useConfirmDiscard,
   useContentStudioDesignEditor,
 } from '@gitroom/frontend/components/content-studio/content-studio.design.editing';
-import { updateContentStudioDesignLayer } from '@gitroom/frontend/components/content-studio/content-studio.design.editor';
+import {
+  ContentStudioDesignLayerCopy,
+  contentStudioDesignEditorLimits,
+  copyContentStudioDesignLayer,
+  duplicateContentStudioDesignLayer,
+  nudgeContentStudioDesignLayer,
+  pasteContentStudioDesignLayer,
+  updateContentStudioDesignLayer,
+} from '@gitroom/frontend/components/content-studio/content-studio.design.editor';
 import { ContentStudioDesignCanvas } from '@gitroom/frontend/components/content-studio/content-studio.design.canvas';
 
 // The Creative Studio workspace of one design: its pages and layers, a live
@@ -467,12 +487,22 @@ const DesignInspector: FC<{
 };
 
 // The layers of the page, front-most first, as editors list them. A copy is
-// reversed: the document's order (first is at the back) is never changed
+// reversed: the document's order (first is at the back) is never changed.
+// While editing, Ctrl/Cmd-click adds a layer to (or takes it from) the
+// layers chosen for a command, and each row has quick actions to show or
+// hide the layer and to duplicate it
 const DesignLayerList: FC<{
   page: ContentStudioDesignPage;
   selected: string | null;
+  chosen: string[];
   onSelect: (id: string | null) => void;
-}> = ({ page, selected, onSelect }) => {
+  onToggle?: (id: string) => void;
+  actions?: {
+    disabled: boolean;
+    onVisibility: (layer: ContentStudioDesignLayer) => void;
+    onDuplicate: (layer: ContentStudioDesignLayer) => void;
+  };
+}> = ({ page, selected, chosen, onSelect, onToggle, actions }) => {
   const t = useT();
   if (!page.layers.length) {
     return (
@@ -481,6 +511,13 @@ const DesignLayerList: FC<{
       </div>
     );
   }
+  const choose = (event: MouseEvent, id: string) => {
+    if (onToggle && (event.metaKey || event.ctrlKey)) {
+      onToggle(id);
+      return;
+    }
+    onSelect(selected === id && chosen.length <= 1 ? null : id);
+  };
   return (
     <ul
       aria-label={t('content_studio_design_layers', 'Layers')}
@@ -491,36 +528,90 @@ const DesignLayerList: FC<{
           layer.type === 'shape'
             ? LAYER_ICON[layer.shape]
             : LAYER_ICON[layer.type];
+        const name = layer.name || designLayerTypeLabel(t, layer);
+        const primary = selected === layer.id;
+        const secondary = !primary && chosen.includes(layer.id);
         return (
-          <li key={layer.id}>
+          <li key={layer.id} className="flex items-center gap-[4px]">
             <button
               type="button"
-              aria-pressed={selected === layer.id}
-              onClick={() => onSelect(selected === layer.id ? null : layer.id)}
+              data-layer-row=""
+              data-selection={
+                primary ? 'primary' : secondary ? 'secondary' : undefined
+              }
+              aria-pressed={primary || secondary}
+              onClick={(event) => choose(event, layer.id)}
               className={clsx(
-                'w-full flex items-center gap-[8px] text-start px-[8px] py-[6px] rounded-[6px] border',
-                selected === layer.id
+                'flex-1 min-w-0 flex items-center gap-[8px] text-start px-[8px] py-[6px] rounded-[6px] border',
+                primary
                   ? 'border-textColor/60 bg-boxFocused'
+                  : secondary
+                  ? 'border-dashed border-textColor/60 bg-boxFocused'
                   : 'border-newTableBorder'
               )}
             >
               <span aria-hidden="true" className="w-[16px] text-center">
                 {icon}
               </span>
-              <span className="flex-1 min-w-0 truncate">
-                {layer.name || designLayerTypeLabel(t, layer)}
-              </span>
+              <span className="flex-1 min-w-0 truncate">{name}</span>
               {!layer.visible && (
                 <span className="text-[11px] text-textItemBlur">
                   {t('content_studio_design_hidden', 'Hidden')}
                 </span>
               )}
             </button>
+            {!!actions && (
+              <>
+                <button
+                  type="button"
+                  disabled={actions.disabled}
+                  aria-label={`${
+                    layer.visible
+                      ? t('content_studio_design_hide_layer', 'Hide layer')
+                      : t('content_studio_design_show_layer', 'Show layer')
+                  } ${name}`}
+                  title={
+                    layer.visible
+                      ? t('content_studio_design_hide_layer', 'Hide layer')
+                      : t('content_studio_design_show_layer', 'Show layer')
+                  }
+                  className="w-[24px] h-[24px] rounded-[6px] border border-newTableBorder text-[12px] disabled:opacity-50"
+                  onClick={() => actions.onVisibility(layer)}
+                >
+                  <span aria-hidden="true">{layer.visible ? '◉' : '○'}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={actions.disabled}
+                  aria-label={`${t(
+                    'content_studio_design_duplicate_layer',
+                    'Duplicate layer'
+                  )} ${name}`}
+                  title={t(
+                    'content_studio_design_duplicate_layer',
+                    'Duplicate layer'
+                  )}
+                  className="w-[24px] h-[24px] rounded-[6px] border border-newTableBorder text-[12px] disabled:opacity-50"
+                  onClick={() => actions.onDuplicate(layer)}
+                >
+                  <span aria-hidden="true">⧉</span>
+                </button>
+              </>
+            )}
           </li>
         );
       })}
     </ul>
   );
+};
+
+// keyboard nudges: an arrow moves the one chosen layer by 1 design unit,
+// with Shift by 10
+const ARROWS: Record<string, [number, number]> = {
+  ArrowLeft: [-1, 0],
+  ArrowRight: [1, 0],
+  ArrowUp: [0, -1],
+  ArrowDown: [0, 1],
 };
 
 // The URL the Media API gave for a Media, when it is a web or app path
@@ -772,6 +863,9 @@ const DesignRevisionView: FC<{
     editor: ContentStudioDesignEditor;
     onCancel: () => void;
     onReloadLatest: () => void;
+    // the workspace's own layer clipboard: in memory, for this visit only
+    clipboard: ContentStudioDesignLayerCopy | null;
+    setClipboard: (copy: ContentStudioDesignLayerCopy) => void;
   } | null;
 }> = ({
   revision,
@@ -785,9 +879,21 @@ const DesignRevisionView: FC<{
 }) => {
   const t = useT();
   const modals = useModals();
+  const toaster = useToaster();
   const brand = useDesignBrand(document.brandKit);
   const brandReady = !document.brandKit || brand.status === 'ready';
-  const [layerId, setLayerId] = useState<string | null>(null);
+  // The selection is UI state of this view only, never part of the
+  // document: one primary layer (inspector, canvas handles) and, while
+  // editing, more layers of the same page chosen for a command
+  const [layerId, setPrimaryId] = useState<string | null>(null);
+  const [chosenIds, setChosenIds] = useState<string[]>([]);
+  const setLayerId = useCallback((id: string | null) => {
+    setPrimaryId(id);
+    setChosenIds(id ? [id] : []);
+  }, []);
+  // canvas settings of this visit: on until the view is opened again
+  const [snap, setSnap] = useState(true);
+  const [guides, setGuides] = useState(true);
   // the page chosen before, while this revision still has it; else the first
   const index = Math.max(
     document.pages.findIndex((page) => page.id === pageId),
@@ -796,9 +902,150 @@ const DesignRevisionView: FC<{
   const page = document.pages[index];
   const layer = page.layers.find((entry) => entry.id === layerId) ?? null;
   const label = pageLabel(t, index + 1, page.name);
+  // the chosen layers that are still on this page, the primary among them
+  const chosen = layer
+    ? Array.from(new Set([...chosenIds, layer.id])).filter((id) =>
+        page.layers.some((entry) => entry.id === id)
+      )
+    : [];
+  // the last one chosen is the primary; taking out the primary makes the
+  // last one left the primary
+  const toggleLayer = (id: string) => {
+    if (!chosen.includes(id)) {
+      setChosenIds([...chosen, id]);
+      setPrimaryId(id);
+      return;
+    }
+    const rest = chosen.filter((entry) => entry !== id);
+    setChosenIds(rest);
+    setPrimaryId(
+      id === layer?.id ? rest[rest.length - 1] ?? null : layer?.id ?? null
+    );
+  };
+  // the one layer a single-layer command acts on
+  const single = edit && layer && chosen.length === 1 ? layer : null;
+
+  const duplicateLayer = (id: string) => {
+    const copy = edit?.editor.apply((latest) => {
+      const duplicated = duplicateContentStudioDesignLayer(latest, id);
+      return { document: duplicated.document, result: duplicated.layerId };
+    });
+    if (copy) {
+      setLayerId(copy);
+    }
+  };
+  const copyLayer = () => {
+    if (!edit || !single) {
+      return false;
+    }
+    edit.setClipboard(copyContentStudioDesignLayer(document, single.id));
+    toaster.show(
+      t('content_studio_design_layer_copied', 'Layer copied.'),
+      'success'
+    );
+    return true;
+  };
+  const pasteLayer = () => {
+    const copy = edit?.clipboard;
+    if (!edit || !copy) {
+      return false;
+    }
+    // all or nothing: a full page or design takes no paste
+    if (!contentStudioDesignEditorLimits(document, page.id).canAddLayer) {
+      toaster.show(
+        t(
+          'content_studio_design_paste_limit',
+          'This design has reached its layer limit.'
+        ),
+        'warning'
+      );
+      return true;
+    }
+    const pasted = edit.editor.apply((latest) => {
+      const added = pasteContentStudioDesignLayer(latest, page.id, copy);
+      return { document: added.document, result: added.layerId };
+    });
+    if (pasted) {
+      setLayerId(pasted);
+    }
+    return true;
+  };
+
+  // Editor keys while editing: arrows nudge the one chosen layer (a run of
+  // presses one way is one undo step), Ctrl/Cmd+D duplicates it, C copies
+  // it and V pastes the copy on this page. Never in a field, a dialog or
+  // outside the editor, never while saving or during a canvas gesture; a
+  // key the editor does not use keeps its browser meaning
+  const keys = useRef({ single, duplicateLayer, copyLayer, pasteLayer, edit });
+  keys.current = { single, duplicateLayer, copyLayer, pasteLayer, edit };
+  const editing = !!edit;
+  useEffect(() => {
+    if (!editing) {
+      return;
+    }
+    const onKey = (event: KeyboardEvent) => {
+      const current = keys.current;
+      if (
+        !current.edit ||
+        current.edit.editor.saving ||
+        current.edit.editor.interacting ||
+        !isDesignEditorShortcutTarget(event.target)
+      ) {
+        return;
+      }
+      const modifier = event.metaKey || event.ctrlKey;
+      const arrow = ARROWS[event.key];
+      if (arrow && !modifier && !event.altKey) {
+        // a button keeps its own keys, but for the layer rows
+        const target = event.target instanceof Element ? event.target : null;
+        if (
+          !current.single ||
+          (target?.closest('button') && !target.closest('[data-layer-row]'))
+        ) {
+          return;
+        }
+        const step = event.shiftKey ? 10 : 1;
+        const id = current.single.id;
+        event.preventDefault();
+        current.edit.editor.apply(
+          (latest) => ({
+            document: nudgeContentStudioDesignLayer(
+              latest,
+              id,
+              arrow[0] * step,
+              arrow[1] * step
+            ),
+          }),
+          `nudge:${id}:${event.key}:${step}`
+        );
+        return;
+      }
+      if (!modifier || event.altKey || event.shiftKey) {
+        return;
+      }
+      const key = event.key.toLowerCase();
+      let handled = false;
+      if (key === 'd' && current.single) {
+        current.duplicateLayer(current.single.id);
+        handled = true;
+      } else if (key === 'c' && !window.getSelection()?.toString()) {
+        handled = current.copyLayer();
+      } else if (key === 'v') {
+        handled = current.pasteLayer();
+      }
+      if (handled) {
+        event.preventDefault();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [editing]);
 
   return (
-    <div className="flex flex-col gap-[16px] min-w-0">
+    <div
+      className="flex flex-col gap-[16px] min-w-0"
+      data-design-editor={edit ? '' : undefined}
+    >
       <div className="flex flex-wrap gap-[8px] items-center">
         {canEdit && !edit && (
           <Button secondary disabled={!brandReady} onClick={onBeginEdit}>
@@ -849,6 +1096,10 @@ const DesignRevisionView: FC<{
           setLayerId={setLayerId}
           onCancel={edit.onCancel}
           onReloadLatest={edit.onReloadLatest}
+          snap={snap}
+          guides={guides}
+          onSnapChange={setSnap}
+          onGuidesChange={setGuides}
         />
       )}
       <div className="grid grid-cols-[200px_minmax(0,1fr)_280px] tablet:grid-cols-1 gap-[16px] min-w-0">
@@ -866,25 +1117,35 @@ const DesignRevisionView: FC<{
                   <button
                     type="button"
                     aria-pressed={position === index}
+                    aria-label={`${t(
+                      'content_studio_design_select_page',
+                      'Select page'
+                    )} ${position + 1}${entry.name ? ` · ${entry.name}` : ''}`}
                     onClick={() => {
                       setPageId(entry.id);
                       setLayerId(null);
                     }}
                     className={clsx(
-                      'w-full flex flex-col text-start px-[8px] py-[6px] rounded-[6px] border',
+                      'w-full flex flex-col gap-[6px] text-start px-[8px] py-[6px] rounded-[6px] border',
                       position === index
                         ? 'border-textColor/60 bg-boxFocused'
                         : 'border-newTableBorder'
                     )}
                   >
-                    <span>
-                      {t('content_studio_design_page', 'Page')} {position + 1}
-                    </span>
-                    {!!entry.name && (
-                      <span className="text-[12px] text-textItemBlur truncate">
-                        {entry.name}
+                    <ContentStudioDesignPageThumbnail
+                      page={entry}
+                      brand={brand.content}
+                    />
+                    <span data-page-label="" className="flex flex-col min-w-0">
+                      <span>
+                        {t('content_studio_design_page', 'Page')} {position + 1}
                       </span>
-                    )}
+                      {!!entry.name && (
+                        <span className="text-[12px] text-textItemBlur truncate">
+                          {entry.name}
+                        </span>
+                      )}
+                    </span>
                   </button>
                 </li>
               ))}
@@ -900,7 +1161,26 @@ const DesignRevisionView: FC<{
             <DesignLayerList
               page={page}
               selected={layer?.id ?? null}
+              chosen={chosen}
               onSelect={setLayerId}
+              onToggle={edit ? toggleLayer : undefined}
+              actions={
+                edit
+                  ? {
+                      disabled: edit.editor.saving || edit.editor.interacting,
+                      // the selection stays as it is
+                      onVisibility: (entry) =>
+                        edit.editor.apply((latest) => ({
+                          document: updateContentStudioDesignLayer(
+                            latest,
+                            entry.id,
+                            { visible: !entry.visible }
+                          ),
+                        })),
+                      onDuplicate: (entry) => duplicateLayer(entry.id),
+                    }
+                  : undefined
+              }
             />
           </section>
         </div>
@@ -927,6 +1207,8 @@ const DesignRevisionView: FC<{
                 }))
               }
               onTransformingChange={edit.editor.setInteracting}
+              snapEnabled={snap}
+              guidesEnabled={guides}
             />
           ) : (
             <ContentStudioDesignPreview
@@ -942,21 +1224,39 @@ const DesignRevisionView: FC<{
         <div className="flex flex-col gap-[16px] min-w-0">
           <section className="flex flex-col gap-[8px]">
             <h2 className="font-[600]">
-              {layer
+              {chosen.length > 1
+                ? `${chosen.length} ${t(
+                    'content_studio_design_layers_selected',
+                    'layers selected'
+                  )}`
+                : layer
                 ? `${t('content_studio_design_layer', 'Layer')} · ${
                     layer.name || designLayerTypeLabel(t, layer)
                   }`
                 : label}
             </h2>
-            {edit ? (
-              <DesignEditableInspector
+            {edit && (
+              <DesignArrangePanel
                 editor={edit.editor}
-                document={document}
-                page={page}
-                layer={layer}
-                brand={brand.content}
-                setLayerId={setLayerId}
+                layerIds={chosen}
+                canCopy={!!single}
+                canPaste={!!edit.clipboard}
+                onCopy={copyLayer}
+                onPaste={pasteLayer}
               />
+            )}
+            {edit ? (
+              // several layers: commands only, no field editing
+              chosen.length <= 1 && (
+                <DesignEditableInspector
+                  editor={edit.editor}
+                  document={document}
+                  page={page}
+                  layer={layer}
+                  brand={brand.content}
+                  setLayerId={setLayerId}
+                />
+              )
             ) : (
               <DesignInspector
                 page={page}
@@ -1047,6 +1347,9 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
   const commands = useDesignCommands();
   const render = useDesignRender(designId);
   const editor = useContentStudioDesignEditor(designId);
+  // a copied layer, in memory only: gone when this workspace is left
+  const [clipboard, setClipboard] =
+    useState<ContentStudioDesignLayerCopy | null>(null);
   const confirmDiscard = useConfirmDiscard();
   const router = useRouter();
 
@@ -1121,6 +1424,8 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
   const edit = editing
     ? {
         editor,
+        clipboard,
+        setClipboard,
         onCancel: () => {
           void leaveEdit();
         },
