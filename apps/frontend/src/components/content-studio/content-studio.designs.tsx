@@ -285,19 +285,24 @@ export const useDesignCommands = () => {
   return { busy, archive, restore, rename };
 };
 
-// Rename and Archive for an active design, Restore for an archived one
+// Rename and Archive for an active design, Restore for an archived one.
+// While a design is edited its name stays as it is, and archiving first asks
+// to give up the edit
 export const DesignLifecycleActions: FC<{
   design: ContentStudioDesignSummary;
   busy?: DesignTask;
   commands: ReturnType<typeof useDesignCommands>;
-}> = ({ design, busy, commands }) => {
+  renameDisabled?: boolean;
+  disabled?: boolean;
+  beforeArchive?: () => Promise<boolean>;
+}> = ({ design, busy, commands, renameDisabled, disabled, beforeArchive }) => {
   const t = useT();
   if (design.archivedAt) {
     return (
       <Button
         secondary
         loading={busy === 'restore'}
-        disabled={!!busy}
+        disabled={!!busy || disabled}
         aria-label={`${t('content_studio_restore', 'Restore')} ${design.name}`}
         onClick={() => commands.restore(design)}
       >
@@ -309,7 +314,7 @@ export const DesignLifecycleActions: FC<{
     <>
       <Button
         secondary
-        disabled={!!busy}
+        disabled={!!busy || disabled || renameDisabled}
         aria-label={`${t('content_studio_rename', 'Rename')} ${design.name}`}
         onClick={() => commands.rename(design)}
       >
@@ -318,9 +323,13 @@ export const DesignLifecycleActions: FC<{
       <Button
         secondary
         loading={busy === 'archive'}
-        disabled={!!busy}
+        disabled={!!busy || disabled}
         aria-label={`${t('content_studio_archive', 'Archive')} ${design.name}`}
-        onClick={() => commands.archive(design)}
+        onClick={async () => {
+          if (!beforeArchive || (await beforeArchive())) {
+            await commands.archive(design);
+          }
+        }}
       >
         {t('content_studio_archive', 'Archive')}
       </Button>

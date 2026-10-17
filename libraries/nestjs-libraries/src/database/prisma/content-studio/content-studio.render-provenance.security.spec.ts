@@ -85,7 +85,9 @@ describe('P4-05 render provenance trust boundaries', () => {
     expect(users(/\.writeFontAsset\(/)).toEqual([
       `${CS}/content-studio.render-font.service.ts`,
     ]);
+    // P4-08: the design reference service reads Media bytes through it too
     expect(users(/ContentStudioRenderMediaBridge\b/)).toEqual([
+      `${CS}/content-studio.design-reference.service.ts`,
       `${CS}/content-studio.design-render.service.ts`,
       `${CS}/content-studio.render-media.bridge.ts`,
       `${LIB}/database/prisma/database.module.ts`,

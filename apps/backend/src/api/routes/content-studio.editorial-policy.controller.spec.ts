@@ -29,6 +29,7 @@ import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database
 import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
 import { ContentStudioRenderFontService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
 import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
+import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
 import {
   CreateContentStudioEditorialPolicyRevisionDto,
   ListContentStudioEditorialPolicyRevisionsDto,
@@ -87,7 +88,8 @@ const setup = () => {
     {} as ContentStudioBrandKitService,
     {} as ContentStudioDesignService,
     {} as ContentStudioRenderFontService,
-    {} as ContentStudioDesignRenderService
+    {} as ContentStudioDesignRenderService,
+    {} as ContentStudioDesignReferenceService
   );
   return { policy, controller, result };
 };

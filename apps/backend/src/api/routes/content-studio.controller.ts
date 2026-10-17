@@ -37,6 +37,7 @@ import {
   RENDER_FONT_FILE_MAX_BYTES,
 } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
 import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
+import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -146,7 +147,8 @@ export class ContentStudioController {
     private _contentStudioBrandKitService: ContentStudioBrandKitService,
     private _contentStudioDesignService: ContentStudioDesignService,
     private _contentStudioRenderFontService: ContentStudioRenderFontService,
-    private _contentStudioDesignRenderService: ContentStudioDesignRenderService
+    private _contentStudioDesignRenderService: ContentStudioDesignRenderService,
+    private _contentStudioDesignReferenceService: ContentStudioDesignReferenceService
   ) {}
 
   @Get('/projects')
@@ -844,6 +846,20 @@ export class ContentStudioController {
     });
   }
 
+  // The exact reference a design stores for one verified revision of the
+  // organization's kit: its kit and revision ids, number and content hash
+  // only. Read-only, for building a Design Document reference
+  @Get('/brand-kit/revisions/:revisionId/design-ref')
+  getBrandKitDesignReference(
+    @GetOrgFromRequest() org: Organization,
+    @Param('revisionId') revisionId: string
+  ) {
+    return this._contentStudioDesignReferenceService.getBrandKitReference(
+      org.id,
+      revisionId
+    );
+  }
+
   // Designs: named design projects whose documents are immutable revisions.
   // Every member may read, create, rename, revise, archive and restore them.
   // The organization and the user come from the request only. One route
@@ -985,6 +1001,20 @@ export class ContentStudioController {
       designId: id,
       revisionId: body.revisionId,
     });
+  }
+
+  // The image reference a design stores for one ready Media of the
+  // organization: its id and the SHA-256 of its stored bytes, hashed by the
+  // server. No URL, path or file leaves, and nothing changes
+  @Get('/media/:id/design-ref')
+  getMediaDesignReference(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioDesignReferenceService.getMediaReference(
+      org.id,
+      id
+    );
   }
 
   // Render fonts: the exact font file each family, weight and style of a

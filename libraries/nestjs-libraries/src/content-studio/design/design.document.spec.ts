@@ -1450,7 +1450,9 @@ describe('Design Document P4-02 persistence boundary', () => {
     ).toEqual(['brandKitId', 'contentHash', 'revisionId', 'revisionNumber']);
   });
 
-  it('110 designs reach the frontend only through Creative Studio, which reads and never saves a revision', () => {
+  // P4-08: Creative Studio saves an edited document as the next revision,
+  // through its API helper only
+  it('110 designs reach the frontend only through Creative Studio, which saves revisions through its API helper only', () => {
     const walk = (dir: string): string[] =>
       fs
         .readdirSync(path.join(ROOT, dir), { withFileTypes: true })
@@ -1472,24 +1474,36 @@ describe('Design Document P4-02 persistence boundary', () => {
         )
         .sort()
     ).toEqual([
+      `${CS}/content-studio.design.editing.tsx`,
+      `${CS}/content-studio.design.editor.ts`,
       `${CS}/content-studio.design.workspace.tsx`,
       `${CS}/content-studio.designs.api.ts`,
       `${CS}/content-studio.designs.tsx`,
       // the link to Creative Studio only
       `${CS}/content-studio.home.tsx`,
     ]);
-    // Creative Studio reads designs; nothing there saves a revision
     const creativeStudio = frontend.filter((f) =>
       /content-studio\.designs?[.a-z]*\.tsx?$|\/designs\//.test(f)
     );
-    expect(creativeStudio).toHaveLength(6);
+    expect(creativeStudio).toHaveLength(8);
     for (const file of creativeStudio) {
       expect([file, code(file)]).not.toEqual([
         file,
         expect.stringMatching(
-          /baseRevisionNumber|\/revisions['`],\s*\{|design\.document\.revision|design\/layout|design\/render/
+          /design\.document\.revision|design\/layout|design\/render/
         ),
       ]);
     }
+    // the one design revision write: the API helper, over the base revision
+    expect(
+      frontend
+        .filter((file) =>
+          /designPath\(id\)\}\/revisions`,\s*\{/.test(code(file))
+        )
+        .sort()
+    ).toEqual([`${CS}/content-studio.designs.api.ts`]);
+    expect(code(`${CS}/content-studio.designs.api.ts`)).toContain(
+      'JSON.stringify({ baseRevisionNumber, content })'
+    );
   });
 });

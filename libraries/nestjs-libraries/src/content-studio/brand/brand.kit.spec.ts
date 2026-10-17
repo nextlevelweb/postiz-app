@@ -999,7 +999,9 @@ describe('Brand Kit P4-01 scope boundary', () => {
     }
   });
 
-  it('75 the frontend reads one exact Brand Kit revision for Creative Studio, and never the current kit or a write', () => {
+  // P4-08: the design editor lists the revisions to pin one exactly, and
+  // asks the server for that revision's reference; still no write
+  it('75 the frontend reads Brand Kit revisions for Creative Studio only, and never writes', () => {
     const walk = (dir: string): string[] =>
       fs
         .readdirSync(path.join(ROOT, dir), { withFileTypes: true })
@@ -1019,6 +1021,8 @@ describe('Brand Kit P4-01 scope boundary', () => {
         .filter((file) => /brand-kit|brandKit|BrandKit/.test(code(file)))
         .sort()
     ).toEqual([
+      `${CS}/content-studio.design.editing.tsx`,
+      `${CS}/content-studio.design.editor.ts`,
       `${CS}/content-studio.design.preview.tsx`,
       `${CS}/content-studio.design.workspace.tsx`,
       `${CS}/content-studio.designs.api.ts`,
@@ -1029,9 +1033,15 @@ describe('Brand Kit P4-01 scope boundary', () => {
         (m) => m[1]
       )
     );
-    expect(routes).toEqual([
+    expect(routes.sort()).toEqual([
+      '/content-studio/brand-kit',
       '/content-studio/brand-kit/revisions/${encodeURIComponent(revisionId)}',
     ]);
+    expect(
+      frontend.filter((file) =>
+        /brand-kit[^'`]*['`],\s*\{\s*method/.test(code(file))
+      )
+    ).toEqual([]);
     for (const file of frontend) {
       expect([file, code(file)]).not.toEqual([
         file,

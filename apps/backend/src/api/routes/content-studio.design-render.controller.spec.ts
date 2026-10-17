@@ -33,6 +33,7 @@ import {
   RENDER_FONT_FILE_MAX_BYTES,
 } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
 import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
+import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
 import {
   RenderAllContentStudioDesignDto,
   RenderContentStudioDesignDto,
@@ -88,7 +89,8 @@ const setup = () => {
     {} as ContentStudioBrandKitService,
     {} as ContentStudioDesignService,
     fonts as unknown as ContentStudioRenderFontService,
-    renders as unknown as ContentStudioDesignRenderService
+    renders as unknown as ContentStudioDesignRenderService,
+    {} as ContentStudioDesignReferenceService
   );
   return { controller, fonts, renders, result };
 };
@@ -157,12 +159,18 @@ describe('ContentStudioController design render and render font routes', () => {
   });
 
   it('M33 has no preview, export, batch, replay, carousel, font download, delete or Media read route', () => {
+    // P4-08: the Media design reference returns an id and a hash, no bytes
+    expect(allRoutes().filter((r) => r.startsWith('GET /media/'))).toEqual([
+      'GET /media/:id/design-ref',
+    ]);
     expect(
-      allRoutes().filter((r) =>
-        /preview|export|batch|replay|carousel|thumbnail|download|renders|\/media|font.*\/(file|bytes)|^DELETE /i.test(
-          r
+      allRoutes()
+        .filter((r) => r !== 'GET /media/:id/design-ref')
+        .filter((r) =>
+          /preview|export|batch|replay|carousel|thumbnail|download|renders|\/media|font.*\/(file|bytes)|^DELETE /i.test(
+            r
+          )
         )
-      )
     ).toEqual([]);
     expect(
       allRoutes().filter((r) => r.startsWith('GET /render-fonts'))

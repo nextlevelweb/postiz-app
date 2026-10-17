@@ -4,20 +4,26 @@ import { useCallback, useMemo } from 'react';
 import useSWR, { useSWRConfig } from 'swr';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import type { ContentStudioBrandKitContentV1 } from '@gitroom/nestjs-libraries/content-studio/brand/brand.kit';
-import type { ContentStudioDesignDocumentV1 } from '@gitroom/nestjs-libraries/content-studio/design/design.document';
+import type {
+  ContentStudioDesignBrandKitRef,
+  ContentStudioDesignDocumentV1,
+} from '@gitroom/nestjs-libraries/content-studio/design/design.document';
 import {
   ContentStudioRequestError,
   request,
   swrOptions,
 } from '@gitroom/frontend/components/content-studio/content-studio.api';
+import { newContentStudioDesignPageId } from '@gitroom/frontend/components/content-studio/content-studio.design.editor';
 
 // Designs of the organization: named design projects whose Design Document
 // v1 revisions are immutable. The browser reads designs and their revisions,
 // creates a design with its first document, renames, archives and restores
-// it, and asks the server to render one page or all pages of one exact
-// revision. It never saves a revision (there is no editor yet), never sends an
-// organization, user, hash, asset or URL, and never builds a URL from a Media
-// id: a rendered Media is looked up through the Media API
+// it, saves an edited document as a new revision over the revision it started
+// from, and asks the server to render one page or all pages of one exact
+// saved revision. It never sends an organization, user or asset, never makes
+// a hash itself (image and Brand Kit references come from the server), and
+// never builds a URL from a Media id: a rendered Media is looked up through
+// the Media API
 
 export interface ContentStudioDesignSummary {
   id: string;
@@ -103,6 +109,43 @@ export interface ContentStudioDesignBatchRender {
   completedAt: string;
 }
 
+// What the server answers for saving a revision: a new revision, or the
+// base revision when the content is the same
+export interface ContentStudioDesignSaveResult {
+  created: boolean;
+  revision: ContentStudioDesignRevisionDetail;
+}
+
+// The image reference the server made for one ready Media: its id and the
+// SHA-256 of its stored bytes
+export interface ContentStudioDesignMediaRef {
+  mediaId: string;
+  sha256: string;
+}
+
+export interface ContentStudioBrandKitSummary {
+  latestRevisionNumber: number;
+  currentRevision: ContentStudioBrandKitRevisionDetail | null;
+}
+
+export interface ContentStudioBrandKitRevisionList {
+  pages: number;
+  results: Array<Omit<ContentStudioBrandKitRevisionDetail, 'content'>>;
+}
+
+// One page of the organization's Media library, as the Media API lists it
+export interface ContentStudioMediaLibraryPage {
+  pages: number;
+  results: Array<{
+    id: string;
+    name: string | null;
+    originalName: string | null;
+    path: string;
+    thumbnail: string | null;
+    alt: string | null;
+  }>;
+}
+
 // What the Media API answers for one Media of the organization
 export interface ContentStudioRenderedMedia {
   id: string;
@@ -125,17 +168,7 @@ export const DESIGN_CANVAS_PRESETS = [
 export type ContentStudioDesignCanvasPreset =
   (typeof DESIGN_CANVAS_PRESETS)[number];
 
-// A page id is a stable name, never a position: a letter first, then at most
-// 31 letters, digits, _ or - (p_ and 20 hex characters here)
-const randomHex = () => {
-  if (typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID().replace(/-/g, '').slice(0, 20);
-  }
-  return Array.from(crypto.getRandomValues(new Uint8Array(10)), (byte) =>
-    byte.toString(16).padStart(2, '0')
-  ).join('');
-};
-export const newContentStudioDesignPageId = () => `p_${randomHex()}`;
+export { newContentStudioDesignPageId };
 
 // The first document of a new design: one empty white page of the preset's
 // size and no Brand Kit (choosing an exact Brand Kit revision is a later,
@@ -174,6 +207,16 @@ const brandKitRevisionPath = (revisionId: string) =>
   `/content-studio/brand-kit/revisions/${encodeURIComponent(revisionId)}`;
 const mediaStatusPath = (id: string) =>
   `/media/${encodeURIComponent(id)}/status`;
+const BRAND_KIT_PATH = '/content-studio/brand-kit';
+const brandKitRevisionsPath = (page: number) =>
+  `${BRAND_KIT_PATH}/revisions?page=${page}`;
+const mediaLibraryPath = (page: number, search: string) => {
+  const params = new URLSearchParams({ page: String(page) });
+  if (search.trim()) {
+    params.set('search', search.trim());
+  }
+  return `/media?${params.toString()}`;
+};
 
 // One summary page: no document is loaded per design
 export const useContentStudioDesigns = (archived: boolean, page: number) => {
@@ -234,6 +277,44 @@ export const useContentStudioBrandKitRevision = (revisionId: string | null) => {
     ...swrOptions,
     revalidateIfStale: false,
   });
+};
+
+// The organization's Brand Kit and its revisions, for choosing the exact
+// revision a design is pinned to. Loaded only while that choice is open
+export const useContentStudioBrandKit = (open: boolean) => {
+  const fetch = useFetch();
+  const load = useCallback(
+    (path: string) => request<ContentStudioBrandKitSummary>(fetch, path),
+    [fetch]
+  );
+  return useSWR(open ? BRAND_KIT_PATH : null, load, swrOptions);
+};
+
+export const useContentStudioBrandKitRevisions = (
+  open: boolean,
+  page: number
+) => {
+  const fetch = useFetch();
+  const load = useCallback(
+    (path: string) => request<ContentStudioBrandKitRevisionList>(fetch, path),
+    [fetch]
+  );
+  return useSWR(open ? brandKitRevisionsPath(page) : null, load, swrOptions);
+};
+
+// One page of the existing Media library, with its own search; nothing is
+// hashed or uploaded from here
+export const useContentStudioMediaLibrary = (
+  open: boolean,
+  page: number,
+  search: string
+) => {
+  const fetch = useFetch();
+  const load = useCallback(
+    (path: string) => request<ContentStudioMediaLibraryPage>(fetch, path),
+    [fetch]
+  );
+  return useSWR(open ? mediaLibraryPath(page, search) : null, load, swrOptions);
 };
 
 // A rendered PNG through the Media API of the organization, by its id
@@ -313,6 +394,43 @@ export const useContentStudioDesignActions = () => {
             body: JSON.stringify({ revisionId, pageId }),
           }
         ),
+      // the edited document as the next revision, over the revision the edit
+      // started from (never the latest one): a stale base is a conflict.
+      // The lists, the design and its history reload before it returns
+      saveDesignRevision: async (
+        id: string,
+        baseRevisionNumber: number,
+        content: ContentStudioDesignDocumentV1
+      ) => {
+        const saved = await request<ContentStudioDesignSaveResult>(
+          fetch,
+          `${designPath(id)}/revisions`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ baseRevisionNumber, content }),
+          }
+        );
+        await refresh(id);
+        return saved;
+      },
+      // the server reads the Media's stored bytes and hashes them
+      getMediaDesignRef: (mediaId: string) =>
+        request<ContentStudioDesignMediaRef>(
+          fetch,
+          `/content-studio/media/${encodeURIComponent(mediaId)}/design-ref`
+        ),
+      // the exact reference of one verified Brand Kit revision, and that
+      // revision's content (the existing revision route)
+      getBrandKitDesignRef: (revisionId: string) =>
+        request<ContentStudioDesignBrandKitRef>(
+          fetch,
+          `${brandKitRevisionPath(revisionId)}/design-ref`
+        ),
+      getBrandKitRevision: (revisionId: string) =>
+        request<ContentStudioBrandKitRevisionDetail>(
+          fetch,
+          brandKitRevisionPath(revisionId)
+        ),
       // the server decides the pages and their order
       renderAllDesignPages: (id: string, revisionId: string) =>
         request<ContentStudioDesignBatchRender>(
@@ -375,6 +493,87 @@ export const designErrorMessage = (
             'content_studio_design_update_error',
             'Something went wrong while updating the design.'
           );
+  }
+};
+
+// Why saving the edited document failed. A conflict has its own notice
+export const designSaveErrorMessage = (t: Translate, error: unknown) => {
+  switch (designErrorCode(error)) {
+    case 'CS_DESIGN_ARCHIVED':
+      return t(
+        'content_studio_design_error_archived',
+        'This design is archived.'
+      );
+    case 'CS_DESIGN_BRAND_REFERENCE_NOT_FOUND':
+      return t(
+        'content_studio_design_save_brand_missing',
+        'The selected Brand Kit revision is no longer available.'
+      );
+    case 'CS_DESIGN_BRAND_REFERENCE_INVALID':
+      return t(
+        'content_studio_design_save_brand_invalid',
+        'The Brand Kit reference in this design is invalid.'
+      );
+    case 'CS_DESIGN_BRAND_REFERENCE_INTEGRITY_ERROR':
+    case 'CS_BRAND_KIT_INTEGRITY_ERROR':
+      return t(
+        'content_studio_design_brand_integrity',
+        'Stored Brand Kit data could not be read safely.'
+      );
+    case 'CS_DESIGN_INTEGRITY_ERROR':
+      return t(
+        'content_studio_design_error_integrity',
+        'Stored design data could not be read safely.'
+      );
+    case 'CS_DESIGN_TOO_LARGE':
+      return t(
+        'content_studio_design_save_too_large',
+        'This design is too large to save.'
+      );
+    case 'CS_DESIGN_INVALID':
+    case 'CS_INVALID_REQUEST':
+      return t(
+        'content_studio_design_save_invalid',
+        'The design contains invalid values. Fix them before saving.'
+      );
+    case 'CS_NOT_FOUND':
+      return t('content_studio_design_not_found', 'Design not found.');
+    default:
+      return t(
+        'content_studio_design_save_error',
+        'Something went wrong while saving the design.'
+      );
+  }
+};
+
+// Why a Media item or a Brand Kit revision could not be used in a design
+export const designReferenceErrorMessage = (t: Translate, error: unknown) => {
+  switch (designErrorCode(error)) {
+    case 'CS_NOT_FOUND':
+      return t(
+        'content_studio_design_ref_not_found',
+        'This item is no longer available.'
+      );
+    case 'CS_DESIGN_MEDIA_UNAVAILABLE':
+      return t(
+        'content_studio_design_media_unavailable',
+        'This media item cannot be used in a design.'
+      );
+    case 'CS_DESIGN_MEDIA_READ_FAILED':
+      return t(
+        'content_studio_design_media_read_failed',
+        'The media item could not be read safely.'
+      );
+    case 'CS_BRAND_KIT_INTEGRITY_ERROR':
+      return t(
+        'content_studio_design_brand_integrity',
+        'Stored Brand Kit data could not be read safely.'
+      );
+    default:
+      return t(
+        'content_studio_design_ref_error',
+        'Something went wrong. Try again.'
+      );
   }
 };
 

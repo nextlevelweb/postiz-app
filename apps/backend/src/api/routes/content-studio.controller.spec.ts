@@ -27,6 +27,7 @@ import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database
 import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
 import { ContentStudioRenderFontService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
 import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
+import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -100,7 +101,8 @@ const setup = () => {
     {} as ContentStudioBrandKitService,
     {} as ContentStudioDesignService,
     {} as ContentStudioRenderFontService,
-    {} as ContentStudioDesignRenderService
+    {} as ContentStudioDesignRenderService,
+    {} as ContentStudioDesignReferenceService
   );
   return { service, handoffs, controller, result };
 };
@@ -312,6 +314,7 @@ describe('ContentStudioController wiring', () => {
       'GET /brand-kit',
       'GET /brand-kit/revisions',
       'GET /brand-kit/revisions/:revisionId',
+      'GET /brand-kit/revisions/:revisionId/design-ref',
       'GET /designs',
       'GET /designs/:id',
       'GET /designs/:id/revisions',
@@ -324,6 +327,7 @@ describe('ContentStudioController wiring', () => {
       'GET /expertise-profiles/:id/revisions',
       'GET /expertise-profiles/:id/revisions/:revisionId',
       'GET /handoffs/:handoffId',
+      'GET /media/:id/design-ref',
       'GET /packages',
       'GET /packages/:id',
       'GET /packages/:id/revisions',
@@ -504,6 +508,7 @@ describe('ContentStudioController handoffs', () => {
       ContentStudioDesignService,
       ContentStudioRenderFontService,
       ContentStudioDesignRenderService,
+      ContentStudioDesignReferenceService,
     ]);
   });
 });
@@ -635,6 +640,7 @@ describe('ContentStudioController revisions', () => {
       'GET /audience-profiles/:id/revisions/:revisionId',
       'GET /brand-kit/revisions',
       'GET /brand-kit/revisions/:revisionId',
+      'GET /brand-kit/revisions/:revisionId/design-ref',
       'GET /designs/:id/revisions',
       'GET /designs/:id/revisions/:revisionId',
       'GET /editorial-policy/revisions',

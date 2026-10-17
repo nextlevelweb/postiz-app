@@ -2204,6 +2204,8 @@ describe('Creative Studio: frontend boundaries', () => {
     'content-studio.designs.tsx',
     'content-studio.design.workspace.tsx',
     'content-studio.design.preview.tsx',
+    'content-studio.design.editor.ts',
+    'content-studio.design.editing.tsx',
   ];
   const ROUTES = ['page.tsx', '[id]/page.tsx'];
   // code only: comments may name what the code must not do
@@ -2278,7 +2280,9 @@ describe('Creative Studio: frontend boundaries', () => {
     }
   });
 
-  it('120/130/86 requests only the design, exact Brand Kit revision and Media status routes; never a revision save or font upload', () => {
+  // P4-08 adds the revision save, the two server-made design references,
+  // the Brand Kit revision list and one page of the Media library
+  it('120/86/P408-6/P408-10/P408-12 requests only the design, Brand Kit, design reference and Media routes, with exact bodies; never a font route', () => {
     const api = code(
       readFileSync(join(dir, 'content-studio.designs.api.ts'), 'utf8')
     );
@@ -2291,6 +2295,9 @@ describe('Creative Studio: frontend boundaries', () => {
         '/content-studio/designs',
         '/content-studio/brand-kit/revisions/${encodeURIComponent(revisionId)}',
         '/media/${encodeURIComponent(id)}/status',
+        '/content-studio/brand-kit',
+        '/media?${params.toString()}',
+        '/content-studio/media/${encodeURIComponent(mediaId)}/design-ref',
       ].sort()
     );
     expect(api.match(/method: '(\w+)'/g)).toEqual([
@@ -2300,29 +2307,30 @@ describe('Creative Studio: frontend boundaries', () => {
       "method: 'POST'",
       "method: 'POST'",
       "method: 'POST'",
+      "method: 'POST'",
     ]);
     expect(api).toMatch(/`\$\{designPath\(id\)\}\/render`/);
     expect(api).toMatch(/`\$\{designPath\(id\)\}\/render-all`/);
+    expect(api).toMatch(/`\$\{designPath\(id\)\}\/revisions`/);
+    expect(api).toMatch(
+      /`\$\{brandKitRevisionPath\(revisionId\)\}\/design-ref`/
+    );
     for (const [file, text] of sources) {
       expect([file, code(text)]).not.toEqual([
         file,
         expect.stringMatching(
-          /render-fonts|\/revisions['`],\s*\{|baseRevisionNumber|'DELETE'|organizationId|userId|mediaIds|fontBytes/
+          /render-fonts|'DELETE'|organizationId|userId|mediaIds|fontBytes|upload/i
         ),
       ]);
     }
-    // every request body there is
+    // every request body there is (the editor's JSON copies are not requests)
     expect(
-      sources.flatMap(([, text]) =>
-        Array.from(
-          code(text).matchAll(/JSON\.stringify\(([^)]*)\)/g),
-          (m) => m[1]
-        )
-      )
+      Array.from(api.matchAll(/JSON\.stringify\(([^)]*)\)/g), (m) => m[1])
     ).toEqual([
       '{ name, content }',
       '{ name }',
       '{ revisionId, pageId }',
+      '{ baseRevisionNumber, content }',
       '{ revisionId }',
     ]);
   });

@@ -80,11 +80,30 @@ const boxStyle = (layer: ContentStudioDesignLayer): CSSProperties => ({
 // A token the preview could not resolve shows as a neutral dashed outline,
 // never as a guessed color or font
 const UNRESOLVED = 'outline-dashed outline-[2px] outline-textItemBlur';
+// the selected layer: an outline only, nothing to drag
+const SELECTED = 'outline outline-[4px] outline-[var(--brand-primary,#612ad5)]';
 
-const TextPreview: FC<{
-  layer: ContentStudioDesignTextLayer;
-  brand: ContentStudioBrandKitContentV1 | null;
-}> = ({ layer, brand }) => {
+// Choosing a layer by clicking it in the preview; the page clears the choice
+interface LayerSelection {
+  selected: boolean;
+  onSelect?: (id: string | null) => void;
+}
+const selectable = (id: string, selection: LayerSelection) =>
+  selection.onSelect
+    ? {
+        onClick: (event: { stopPropagation: () => void }) => {
+          event.stopPropagation();
+          selection.onSelect?.(id);
+        },
+      }
+    : {};
+
+const TextPreview: FC<
+  {
+    layer: ContentStudioDesignTextLayer;
+    brand: ContentStudioBrandKitContentV1 | null;
+  } & LayerSelection
+> = ({ layer, brand, ...selection }) => {
   const color = resolveDesignPreviewColor(layer.color, brand);
   const font = resolveDesignPreviewFont(layer.font, brand);
   return (
@@ -94,7 +113,11 @@ const TextPreview: FC<{
         [!color && 'color', !font && 'font'].filter(Boolean).join(' ') ||
         undefined
       }
-      className={clsx((!color || !font) && UNRESOLVED)}
+      className={clsx(
+        (!color || !font) && UNRESOLVED,
+        selection.selected && SELECTED
+      )}
+      {...selectable(layer.id, selection)}
       style={{
         ...boxStyle(layer),
         display: 'flex',
@@ -122,13 +145,15 @@ const TextPreview: FC<{
   );
 };
 
-const LayerPreview: FC<{
-  layer: ContentStudioDesignLayer;
-  brand: ContentStudioBrandKitContentV1 | null;
-}> = ({ layer, brand }) => {
+const LayerPreview: FC<
+  {
+    layer: ContentStudioDesignLayer;
+    brand: ContentStudioBrandKitContentV1 | null;
+  } & LayerSelection
+> = ({ layer, brand, ...selection }) => {
   const t = useT();
   if (layer.type === 'text') {
-    return <TextPreview layer={layer} brand={brand} />;
+    return <TextPreview layer={layer} brand={brand} {...selection} />;
   }
   if (layer.type === 'shape') {
     const fill = resolveDesignPreviewColor(layer.fill, brand);
@@ -136,7 +161,8 @@ const LayerPreview: FC<{
       <div
         data-layer={layer.id}
         data-unresolved={fill ? undefined : 'color'}
-        className={clsx(!fill && UNRESOLVED)}
+        className={clsx(!fill && UNRESOLVED, selection.selected && SELECTED)}
+        {...selectable(layer.id, selection)}
         style={{
           ...boxStyle(layer),
           ...(fill ? { backgroundColor: fill } : {}),
@@ -150,7 +176,11 @@ const LayerPreview: FC<{
   return (
     <div
       data-layer={layer.id}
-      className="flex items-center justify-center border-dashed border-[2px] border-textItemBlur bg-newTableBorder/40 text-textItemBlur overflow-hidden"
+      className={clsx(
+        'flex items-center justify-center border-dashed border-[2px] border-textItemBlur bg-newTableBorder/40 text-textItemBlur overflow-hidden',
+        selection.selected && SELECTED
+      )}
+      {...selectable(layer.id, selection)}
       style={boxStyle(layer)}
     >
       <span className="text-[32px]">
@@ -189,7 +219,9 @@ export const ContentStudioDesignPreview: FC<{
   page: ContentStudioDesignPage;
   pageLabel: string;
   brand: ContentStudioBrandKitContentV1 | null;
-}> = ({ page, pageLabel, brand }) => {
+  selectedLayerId?: string | null;
+  onSelectLayer?: (id: string | null) => void;
+}> = ({ page, pageLabel, brand, selectedLayerId, onSelectLayer }) => {
   const t = useT();
   const { frame, width } = useFrameWidth();
   const scale = Math.min(width / page.width, PREVIEW_MAX_HEIGHT / page.height);
@@ -223,6 +255,7 @@ export const ContentStudioDesignPreview: FC<{
             data-preview="page"
             data-unresolved={background ? undefined : 'color'}
             className={clsx(!background && UNRESOLVED)}
+            onClick={onSelectLayer ? () => onSelectLayer(null) : undefined}
             style={{
               position: 'absolute',
               left: 0,
@@ -238,7 +271,13 @@ export const ContentStudioDesignPreview: FC<{
             {page.layers
               .filter((layer) => layer.visible)
               .map((layer) => (
-                <LayerPreview key={layer.id} layer={layer} brand={brand} />
+                <LayerPreview
+                  key={layer.id}
+                  layer={layer}
+                  brand={brand}
+                  selected={layer.id === selectedLayerId}
+                  onSelect={onSelectLayer}
+                />
               ))}
           </div>
         </div>

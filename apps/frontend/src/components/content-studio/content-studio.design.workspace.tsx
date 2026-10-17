@@ -3,10 +3,13 @@
 import { FC, ReactNode, useCallback, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Button } from '@gitroom/react/form/button';
 import { useToaster } from '@gitroom/react/toaster/toaster';
+import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
+import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import { ContentStudioPager } from '@gitroom/frontend/components/content-studio/content-studio.package.list';
 import { formatDate } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
 import {
@@ -47,13 +50,22 @@ import {
   resolveDesignPreviewColor,
   resolveDesignPreviewFont,
 } from '@gitroom/frontend/components/content-studio/content-studio.design.preview';
+import {
+  ContentStudioDesignEditor,
+  DesignBrandKitPicker,
+  DesignEditableInspector,
+  DesignEditorToolbar,
+  useConfirmDiscard,
+  useContentStudioDesignEditor,
+} from '@gitroom/frontend/components/content-studio/content-studio.design.editing';
 
 // The Creative Studio workspace of one design: its pages and layers, a live
-// structural preview, a read-only inspector, the revision history, and
-// server renders of one page or all pages. Every revision is read-only here,
-// the current one included: nothing in this workspace saves a revision. A
+// structural preview, an inspector, the revision history, and server renders
+// of one page or all pages of a saved revision. Revisions are read-only; the
+// current revision of an active design can be edited as a draft (see
+// content-studio.design.editing) that is saved as the next revision. A
 // historical revision is shown and rendered exactly as it was stored; nothing
-// restores it. Documents are checked again with the Design Document v1
+// restores or edits it. Documents are checked again with the Design Document v1
 // parser before they are shown, and the Brand Kit revision a document names
 // is loaded by its exact id and must match the reference before its tokens
 // are used
@@ -665,7 +677,16 @@ const DesignHistory: FC<{
   page: number;
   setPage: (page: number) => void;
   onView: (revision: ContentStudioDesignRevisionSummary) => void;
-}> = ({ history, latestRevisionNumber, shownId, page, setPage, onView }) => {
+  disabled?: boolean;
+}> = ({
+  history,
+  latestRevisionNumber,
+  shownId,
+  page,
+  setPage,
+  onView,
+  disabled,
+}) => {
   const t = useT();
   if (history.error) {
     return (
@@ -707,7 +728,7 @@ const DesignHistory: FC<{
               </div>
               <Button
                 secondary
-                disabled={revision.id === shownId}
+                disabled={revision.id === shownId || disabled}
                 aria-label={`${t(
                   'content_studio_view_source',
                   'View'
@@ -734,16 +755,36 @@ const DesignHistory: FC<{
 };
 
 // Pages, preview, layers and inspector of one parsed revision, with the
-// render actions for exactly that revision
+// render actions for exactly that revision. While the current revision is
+// edited, the same view shows the draft with the editing controls, and
+// nothing is rendered: renders are of saved revisions only
 const DesignRevisionView: FC<{
   revision: ShownRevision;
   document: ContentStudioDesignDocumentV1;
   pageId: string | null;
   setPageId: (id: string) => void;
   render: ReturnType<typeof useDesignRender>;
-}> = ({ revision, document, pageId, setPageId, render }) => {
+  canEdit: boolean;
+  onBeginEdit: () => void;
+  edit: {
+    editor: ContentStudioDesignEditor;
+    onCancel: () => void;
+    onReloadLatest: () => void;
+  } | null;
+}> = ({
+  revision,
+  document,
+  pageId,
+  setPageId,
+  render,
+  canEdit,
+  onBeginEdit,
+  edit,
+}) => {
   const t = useT();
+  const modals = useModals();
   const brand = useDesignBrand(document.brandKit);
+  const brandReady = !document.brandKit || brand.status === 'ready';
   const [layerId, setLayerId] = useState<string | null>(null);
   // the page chosen before, while this revision still has it; else the first
   const index = Math.max(
@@ -756,10 +797,15 @@ const DesignRevisionView: FC<{
 
   return (
     <div className="flex flex-col gap-[16px] min-w-0">
-      <div className="flex flex-wrap gap-[8px]">
+      <div className="flex flex-wrap gap-[8px] items-center">
+        {canEdit && !edit && (
+          <Button secondary disabled={!brandReady} onClick={onBeginEdit}>
+            {t('content_studio_design_edit', 'Edit design')}
+          </Button>
+        )}
         <Button
           loading={render.rendering === 'page'}
-          disabled={!!render.rendering}
+          disabled={!!render.rendering || !!edit}
           onClick={() => render.renderPage(revision, page, index)}
         >
           {t('content_studio_design_render_page', 'Render page')}
@@ -767,12 +813,42 @@ const DesignRevisionView: FC<{
         <Button
           secondary
           loading={render.rendering === 'all'}
-          disabled={!!render.rendering}
+          disabled={!!render.rendering || !!edit}
           onClick={() => render.renderAll(revision, document)}
         >
           {t('content_studio_design_render_all', 'Render all pages')}
         </Button>
+        {!!edit && (
+          <span className="text-[12px] text-textItemBlur">
+            {t(
+              'content_studio_design_render_saved_only',
+              'Save or cancel your changes before rendering.'
+            )}
+          </span>
+        )}
+        {canEdit && !edit && brand.status === 'error' && (
+          <span className="text-[12px] text-textItemBlur">
+            {t(
+              'content_studio_design_edit_brand_required',
+              'The pinned Brand Kit revision must be available before this design can be edited.'
+            )}
+          </span>
+        )}
       </div>
+      {!!edit && (
+        <DesignEditorToolbar
+          editor={edit.editor}
+          document={document}
+          page={page}
+          pageIndex={index}
+          brandReady={brandReady}
+          brand={brand.content}
+          setPageId={setPageId}
+          setLayerId={setLayerId}
+          onCancel={edit.onCancel}
+          onReloadLatest={edit.onReloadLatest}
+        />
+      )}
       <div className="grid grid-cols-[200px_minmax(0,1fr)_280px] tablet:grid-cols-1 gap-[16px] min-w-0">
         <div className="flex flex-col gap-[16px] min-w-0">
           <section className="flex flex-col gap-[8px]">
@@ -831,6 +907,8 @@ const DesignRevisionView: FC<{
             page={page}
             pageLabel={label}
             brand={brand.content}
+            selectedLayerId={layer?.id ?? null}
+            onSelectLayer={setLayerId}
           />
           {render.result && <DesignRenderResult result={render.result} />}
         </div>
@@ -843,7 +921,22 @@ const DesignRevisionView: FC<{
                   }`
                 : label}
             </h2>
-            <DesignInspector page={page} layer={layer} brand={brand.content} />
+            {edit ? (
+              <DesignEditableInspector
+                editor={edit.editor}
+                document={document}
+                page={page}
+                layer={layer}
+                brand={brand.content}
+                setLayerId={setLayerId}
+              />
+            ) : (
+              <DesignInspector
+                page={page}
+                layer={layer}
+                brand={brand.content}
+              />
+            )}
           </section>
           <section className="flex flex-col gap-[8px]">
             <h2 className="font-[600]">
@@ -853,6 +946,34 @@ const DesignRevisionView: FC<{
               reference={document.brandKit}
               brand={brand}
             />
+            {!!edit && (
+              <div>
+                <Button
+                  secondary
+                  disabled={edit.editor.saving}
+                  onClick={() =>
+                    modals.openModal({
+                      title: t(
+                        'content_studio_design_change_brand',
+                        'Change Brand Kit revision'
+                      ),
+                      children: (close: () => void) => (
+                        <DesignBrandKitPicker
+                          document={document}
+                          close={close}
+                          apply={edit.editor.apply}
+                        />
+                      ),
+                    })
+                  }
+                >
+                  {t(
+                    'content_studio_design_change_brand',
+                    'Change Brand Kit revision'
+                  )}
+                </Button>
+              </div>
+            )}
           </section>
         </div>
       </div>
@@ -898,6 +1019,9 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
   const [pageId, setPageId] = useState<string | null>(null);
   const commands = useDesignCommands();
   const render = useDesignRender(designId);
+  const editor = useContentStudioDesignEditor(designId);
+  const confirmDiscard = useConfirmDiscard();
+  const router = useRouter();
 
   const currentRevision = detail.data?.currentRevision;
   const currentDocument = useMemo(
@@ -952,6 +1076,49 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
       };
   const busy = commands.busy[design.id];
   const openedCode = designErrorCode(opened.error);
+  // only the current revision of an active design is ever edited
+  const editing = !!editor.document && !shown.historical && !design.archivedAt;
+  const shownCurrent =
+    editing && editor.document ? editor.document : currentDocument;
+  // leaving the edit for anything that replaces the draft asks first
+  const leaveEdit = async () => {
+    if (!editor.state) {
+      return true;
+    }
+    if (editor.saving || !(await confirmDiscard(editor.dirty))) {
+      return false;
+    }
+    editor.discard();
+    return true;
+  };
+  const edit = editing
+    ? {
+        editor,
+        onCancel: () => {
+          void leaveEdit();
+        },
+        onReloadLatest: async () => {
+          if (
+            !(await deleteDialog(
+              t(
+                'content_studio_design_reload_hint',
+                'Your unsaved changes will be discarded.'
+              ),
+              t('content_studio_reload_latest', 'Reload latest'),
+              t(
+                'content_studio_design_reload_title',
+                'Reload latest revision?'
+              ),
+              t('cancel', 'Cancel')
+            ))
+          ) {
+            return;
+          }
+          editor.discard();
+          await Promise.all([detail.mutate(), history.mutate()]);
+        },
+      }
+    : null;
 
   return (
     <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col gap-[20px] min-w-0">
@@ -960,6 +1127,15 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
           <Link
             href={DESIGN_LIBRARY_PATH}
             className="text-[13px] text-textItemBlur hover:underline"
+            onClick={async (event) => {
+              if (!editor.state) {
+                return;
+              }
+              event.preventDefault();
+              if (await leaveEdit()) {
+                router.push(DESIGN_LIBRARY_PATH);
+              }
+            }}
           >
             {t('content_studio_creative_studio', 'Creative Studio')}
           </Link>
@@ -983,6 +1159,9 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
             design={design}
             busy={busy}
             commands={commands}
+            disabled={editor.saving}
+            renameDisabled={editing}
+            beforeArchive={leaveEdit}
           />
         </div>
       </div>
@@ -1008,6 +1187,13 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
             {t('content_studio_design_back_to_current', 'Back to current')}
           </Button>
         </div>
+      ) : editing ? (
+        <div role="status" className="text-[13px]">
+          {t(
+            'content_studio_design_editing',
+            'Editing the current revision. Unsaved changes stay in this browser tab until you save.'
+          )}
+        </div>
       ) : (
         <div className="text-[13px] text-textItemBlur">
           {t(
@@ -1021,10 +1207,13 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
         <DesignRevisionView
           key={shown.id}
           revision={shown}
-          document={currentDocument}
+          document={shownCurrent}
           pageId={pageId}
           setPageId={setPageId}
           render={render}
+          canEdit={!design.archivedAt}
+          onBeginEdit={() => editor.begin(currentRevision, currentDocument)}
+          edit={edit}
         />
       ) : opened.error ? (
         <div role="alert">
@@ -1060,6 +1249,9 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
           pageId={pageId}
           setPageId={setPageId}
           render={render}
+          canEdit={false}
+          onBeginEdit={() => undefined}
+          edit={null}
         />
       )}
 
@@ -1073,13 +1265,17 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
           shownId={shown.id}
           page={historyPage}
           setPage={setHistoryPage}
-          onView={(revision) =>
+          disabled={editor.saving}
+          onView={async (revision) => {
+            if (!(await leaveEdit())) {
+              return;
+            }
             setViewing(
               revision.id === currentRevision.id
                 ? null
                 : { id: revision.id, revisionNumber: revision.revisionNumber }
-            )
-          }
+            );
+          }}
         />
       </section>
     </div>

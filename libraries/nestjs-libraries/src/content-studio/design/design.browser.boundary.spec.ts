@@ -178,6 +178,7 @@ describe('design modules: browser-safe boundary', () => {
     expect(users(/parseVerifiedContentStudioBrandKitRevision\(/)).toEqual([
       'libraries/nestjs-libraries/src/content-studio/brand/brand.kit.revision.ts',
       'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.brand-kit.service.ts',
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.design-reference.service.ts',
       'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.design-render.service.ts',
       'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.design.service.ts',
     ]);

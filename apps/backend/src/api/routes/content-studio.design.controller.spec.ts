@@ -29,6 +29,7 @@ import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database
 import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
 import { ContentStudioRenderFontService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
 import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
+import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
 import {
   CreateContentStudioDesignDto,
   CreateContentStudioDesignRevisionDto,
@@ -104,7 +105,8 @@ const setup = () => {
     {} as ContentStudioBrandKitService,
     designs as unknown as ContentStudioDesignService,
     {} as ContentStudioRenderFontService,
-    {} as ContentStudioDesignRenderService
+    {} as ContentStudioDesignRenderService,
+    {} as ContentStudioDesignReferenceService
   );
   return { designs, controller, result };
 };
@@ -132,9 +134,10 @@ describe('ContentStudioController design routes', () => {
   // P4-05 adds the one render route; the other nine are the P4-02 routes
   // P4-06 adds render-all: eleven routes
   it('DPC1 declares exactly these eleven routes, with 200 for archive, restore, render and render-all', () => {
-    const names = Object.getOwnPropertyNames(
-      ContentStudioController.prototype
-    ).filter((name) => /Designs?\b|Design[A-Z]/.test(name));
+    const names = Object.getOwnPropertyNames(ContentStudioController.prototype)
+      .filter((name) => /Designs?\b|Design[A-Z]/.test(name))
+      // P4-08: the Brand Kit and Media design references live elsewhere
+      .filter((name) => !/DesignReference$/.test(name));
     expect(names.map(route).sort()).toEqual([
       'GET /designs',
       'GET /designs/:id',
@@ -176,6 +179,8 @@ describe('ContentStudioController design routes', () => {
         (r) =>
           r !== 'POST /designs/:id/render' &&
           r !== 'POST /designs/:id/render-all' &&
+          // P4-08: the read-only Media and Brand Kit design references
+          !r.endsWith('/design-ref') &&
           /design/i.test(r) &&
           (/^(DELETE|PUT) /.test(r) ||
             /render|preview|export|duplicate|copy|clone|template|generate|ai\b|media|upload|image|font|layout|thumbnail/i.test(

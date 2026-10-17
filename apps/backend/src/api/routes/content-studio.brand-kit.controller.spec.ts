@@ -29,6 +29,7 @@ import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database
 import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
 import { ContentStudioRenderFontService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
 import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
+import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
 import {
   ListContentStudioBrandKitRevisionsDto,
   SaveContentStudioBrandKitRevisionDto,
@@ -85,7 +86,8 @@ const setup = () => {
     brandKit as unknown as ContentStudioBrandKitService,
     {} as ContentStudioDesignService,
     {} as ContentStudioRenderFontService,
-    {} as ContentStudioDesignRenderService
+    {} as ContentStudioDesignRenderService,
+    {} as ContentStudioDesignReferenceService
   );
   return { brandKit, controller, result };
 };
@@ -104,7 +106,8 @@ const allRoutes = () =>
     .map(route);
 
 describe('ContentStudioController Brand Kit routes', () => {
-  it('BKC1 declares exactly these four routes, none with an id for the kit', () => {
+  // P4-08 adds the read-only design reference of one revision
+  it('BKC1 declares exactly these five routes, none with an id for the kit', () => {
     expect(
       allRoutes()
         .filter((r) => r.includes('/brand-kit'))
@@ -113,6 +116,7 @@ describe('ContentStudioController Brand Kit routes', () => {
       'GET /brand-kit',
       'GET /brand-kit/revisions',
       'GET /brand-kit/revisions/:revisionId',
+      'GET /brand-kit/revisions/:revisionId/design-ref',
       'POST /brand-kit/revisions',
     ]);
     expect(
@@ -125,6 +129,7 @@ describe('ContentStudioController Brand Kit routes', () => {
       allRoutes().filter(
         (r) =>
           /brand/i.test(r) &&
+          r !== 'GET /brand-kit/revisions/:revisionId/design-ref' &&
           (/^(PATCH|PUT|DELETE) /.test(r) ||
             /archive|restore|default|asset|media|font|logo|image|upload|generate|infer|extract|import|analy|website|render|design|ai|:id\b/i.test(
               r.replace('/brand-kit', '')
