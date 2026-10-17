@@ -23,16 +23,24 @@ const REVISION_SUMMARY = {
   createdAt: true,
 } as const;
 
+// the document and the guidance that goes with it
 const REVISION_DETAIL = {
   ...REVISION_SUMMARY,
   content: true,
+  guidanceSchemaVersion: true,
+  guidance: true,
+  guidanceHash: true,
 } as const;
 
-// A revision as the service canonicalized and hashed it
+// A revision as the service canonicalized and hashed it: the document, and
+// its guidance or three nulls
 interface StoredRevision {
   schemaVersion: number;
   content: string;
   contentHash: string;
+  guidanceSchemaVersion: number | null;
+  guidance: string | null;
+  guidanceHash: string | null;
 }
 
 // Design templates of an organization, like its design projects: every query
@@ -123,6 +131,9 @@ export class ContentStudioDesignTemplateRepository {
           schemaVersion: input.revision.schemaVersion,
           content: input.revision.content,
           contentHash: input.revision.contentHash,
+          guidanceSchemaVersion: input.revision.guidanceSchemaVersion,
+          guidance: input.revision.guidance,
+          guidanceHash: input.revision.guidanceHash,
           createdById: input.createdById,
         },
         select: REVISION_SUMMARY,
@@ -174,12 +185,12 @@ export class ContentStudioDesignTemplateRepository {
     });
   }
 
-  // Saves a new design document over the revision the editor started from,
-  // in one transaction, exactly like a design revision: the template must be
-  // live and still at that revision. Content equal to that revision makes no
-  // new one. The update only matches the expected revision number and holds
-  // the template row until commit, so two saves can never take the same
-  // number
+  // Saves a new design document and its guidance over the revision the
+  // editor started from, in one transaction, exactly like a design revision:
+  // the template must be live and still at that revision. A document and
+  // guidance both equal to that revision's make no new one. The update only
+  // matches the expected revision number and holds the template row until
+  // commit, so two saves can never take the same number
   createRevisionWithCompareAndSwap(input: {
     organizationId: string;
     templateId: string;
@@ -222,7 +233,11 @@ export class ContentStudioDesignTemplateRepository {
         },
         select: REVISION_DETAIL,
       });
-      if (current && current.contentHash === input.revision.contentHash) {
+      if (
+        current &&
+        current.contentHash === input.revision.contentHash &&
+        current.guidanceHash === input.revision.guidanceHash
+      ) {
         return { status: 'unchanged' as const, revision: current };
       }
 
@@ -252,6 +267,9 @@ export class ContentStudioDesignTemplateRepository {
           schemaVersion: input.revision.schemaVersion,
           content: input.revision.content,
           contentHash: input.revision.contentHash,
+          guidanceSchemaVersion: input.revision.guidanceSchemaVersion,
+          guidance: input.revision.guidance,
+          guidanceHash: input.revision.guidanceHash,
           createdById: input.createdById,
         },
         select: REVISION_SUMMARY,

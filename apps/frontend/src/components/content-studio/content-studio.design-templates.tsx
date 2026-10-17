@@ -1,6 +1,15 @@
 'use client';
 
-import { FC, FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import {
+  FC,
+  FormEvent,
+  ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import clsx from 'clsx';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -13,21 +22,35 @@ import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
 import { ContentStudioPager } from '@gitroom/frontend/components/content-studio/content-studio.package.list';
 import { useSingleFlight } from '@gitroom/frontend/components/content-studio/content-studio.projects.modal';
-import { parseContentStudioDesignDocument } from '@gitroom/nestjs-libraries/content-studio/design/design.document';
 import {
+  ContentStudioDesignDocumentV1,
+  DESIGN_TEXT_MAX,
+  parseContentStudioDesignDocument,
+} from '@gitroom/nestjs-libraries/content-studio/design/design.document';
+import {
+  ContentStudioDesignTemplateSlot,
+  ContentStudioDesignTemplateValue,
+} from '@gitroom/nestjs-libraries/content-studio/design/design.template.guidance';
+import {
+  ContentStudioDesignMediaRef,
   DESIGN_CANVAS_PRESETS,
   DESIGN_NAME_MAX,
   newContentStudioDesignDocument,
+  useContentStudioBrandKitRevisions,
 } from '@gitroom/frontend/components/content-studio/content-studio.designs.api';
 import {
+  ContentStudioDesignTemplateBrand,
   ContentStudioDesignTemplateCard,
   ContentStudioDesignTemplateChoice,
   ContentStudioOrganizationDesignTemplate,
   DESIGN_TEMPLATE_DESCRIPTION_MAX,
   designTemplateErrorMessage,
+  designTemplateGuidance,
   useContentStudioDesignTemplateActions,
+  useContentStudioDesignTemplateBrands,
   useContentStudioDesignTemplates,
 } from '@gitroom/frontend/components/content-studio/content-studio.design-templates.api';
+import { DesignMediaPicker } from '@gitroom/frontend/components/content-studio/content-studio.design.editing';
 import {
   DESIGN_LIBRARY_PATH,
   designPagePath,
@@ -85,20 +108,196 @@ const DescriptionField: FC<{
   );
 };
 
-// A new design from exactly the chosen template revision: only its name is
-// asked; the server copies the template's document. It opens once it exists
+// The document of a template revision, or null when it does not parse
+const parseTemplateDocument = (content: unknown) => {
+  try {
+    return parseContentStudioDesignDocument(content);
+  } catch {
+    return null;
+  }
+};
+
+// The text of a field's layer in the template document: where its field
+// starts
+const slotLayerText = (
+  document: ContentStudioDesignDocumentV1,
+  slot: ContentStudioDesignTemplateSlot
+) => {
+  const layer = document.pages
+    .find((page) => page.id === slot.pageId)
+    ?.layers.find((entry) => entry.id === slot.layerId);
+  return layer?.type === 'text' ? layer.text : '';
+};
+
+// One field of a guided use: its label, its description and, while it is
+// missing a required value, why; all tied to the control
+const GuidedField: FC<{
+  slot: ContentStudioDesignTemplateSlot;
+  missing: boolean;
+  children: (describedBy: string | undefined) => ReactNode;
+}> = ({ slot, missing, children }) => {
+  const t = useT();
+  const id = `template-field-${slot.id}`;
+  const describedBy =
+    [
+      slot.description ? `${id}-description` : null,
+      missing ? `${id}-error` : null,
+    ]
+      .filter(Boolean)
+      .join(' ') || undefined;
+  return (
+    <div
+      className="flex flex-col gap-[6px] min-w-0"
+      data-template-field={slot.type}
+    >
+      {children(describedBy)}
+      {!!slot.description && (
+        <div id={`${id}-description`} className="text-[12px] text-textItemBlur">
+          {slot.description}
+        </div>
+      )}
+      {missing && (
+        <div id={`${id}-error`} className="text-[12px] text-red-400">
+          {slot.type === 'image'
+            ? t(
+                'content_studio_template_field_image_required',
+                'Choose an image for this required field.'
+              )
+            : t(
+                'content_studio_template_field_text_required',
+                'This field is required.'
+              )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// The organization's Brand Kit revisions, to use one exact revision instead
+// of the template's: nothing follows the latest revision
+const TemplateBrandChoice: FC<{
+  pinnedRevisionId: string;
+  value: string | null;
+  onChange: (revisionId: string) => void;
+}> = ({ pinnedRevisionId, value, onChange }) => {
+  const t = useT();
+  const [page, setPage] = useState(1);
+  const revisions = useContentStudioBrandKitRevisions(true, page);
+  return (
+    <fieldset className="flex flex-col gap-[6px]">
+      <legend className="text-[13px] mb-[4px]">
+        {t(
+          'content_studio_template_brand_revision',
+          'Brand Kit revision for the new design'
+        )}
+      </legend>
+      {revisions.error ? (
+        <div role="alert">
+          {t(
+            'content_studio_design_brand_list_error',
+            'Brand Kit revisions could not be loaded.'
+          )}
+        </div>
+      ) : !revisions.data ? (
+        <LoadingComponent width={40} height={40} />
+      ) : (
+        revisions.data.results.map((revision) => (
+          <label
+            key={revision.id}
+            className="flex items-center gap-[8px] border border-newTableBorder rounded-[8px] px-[12px] py-[8px] cursor-pointer"
+          >
+            <input
+              type="radio"
+              name="template-brand-revision"
+              value={revision.id}
+              checked={value === revision.id}
+              onChange={() => onChange(revision.id)}
+            />
+            <span className="flex-1">
+              {`${t('content_studio_design_revision', 'Revision')} ${
+                revision.revisionNumber
+              }`}
+            </span>
+            {revision.id === pinnedRevisionId && (
+              <span className="text-[11px] px-[8px] rounded-full border border-newTableBorder">
+                {t('content_studio_template_brand_current', 'Template')}
+              </span>
+            )}
+          </label>
+        ))
+      )}
+      {!!revisions.data && revisions.data.pages > 1 && (
+        <ContentStudioPager
+          page={page}
+          pages={revisions.data.pages}
+          setPage={setPage}
+        />
+      )}
+    </fieldset>
+  );
+};
+
+// A new design from exactly the chosen template revision: its name and,
+// when the revision has guidance, its fields in their order. A text field
+// starts with the template's own text; an image field keeps the template's
+// image until another is chosen from Media (referenced by the server); and
+// where the template allows it, another exact Brand Kit revision may be
+// chosen. Only the identities, the name, the values of the revision's own
+// fields and the chosen Brand Kit revision id are sent; the server copies
+// and fills the template's document. It opens once it exists
 export const UseTemplateForm: FC<{
   choice: ContentStudioDesignTemplateChoice;
   defaultName: string;
   close: () => void;
-}> = ({ choice, defaultName, close }) => {
+  content?: unknown;
+  guidance?: unknown;
+}> = ({ choice, defaultName, close, content, guidance: rawGuidance }) => {
   const t = useT();
   const toaster = useToaster();
   const router = useRouter();
+  const modals = useModals();
   const { instantiateTemplate } = useContentStudioDesignTemplateActions();
   const [name, setName] = useState(defaultName);
   const { busy, run } = useSingleFlight();
-  const valid = validText(name, DESIGN_NAME_MAX, true);
+  const document = useMemo(() => parseTemplateDocument(content), [content]);
+  const guidance = useMemo(
+    () =>
+      document
+        ? designTemplateGuidance(document, rawGuidance ?? null)
+        : rawGuidance === null || rawGuidance === undefined
+        ? null
+        : 'invalid',
+    [document, rawGuidance]
+  );
+  const slots = guidance && guidance !== 'invalid' ? guidance.slots : [];
+  const rebinding =
+    !!guidance &&
+    guidance !== 'invalid' &&
+    guidance.brandRebinding &&
+    !!document?.brandKit;
+  const guided = !!slots.length || rebinding;
+  const [texts, setTexts] = useState<Record<string, string>>(() =>
+    document
+      ? Object.fromEntries(
+          slots
+            .filter((slot) => slot.type === 'text')
+            .map((slot) => [slot.id, slotLayerText(document, slot)])
+        )
+      : {}
+  );
+  const [images, setImages] = useState<
+    Record<string, ContentStudioDesignMediaRef>
+  >({});
+  const [rebind, setRebind] = useState(false);
+  const [brandRevisionId, setBrandRevisionId] = useState<string | null>(null);
+  const missing = (slot: ContentStudioDesignTemplateSlot) =>
+    slot.required &&
+    (slot.type === 'text' ? !(texts[slot.id] ?? '').trim() : !images[slot.id]);
+  const valid =
+    validText(name, DESIGN_NAME_MAX, true) &&
+    guidance !== 'invalid' &&
+    !slots.some(missing) &&
+    (!rebind || !!brandRevisionId);
 
   const submit = useCallback(
     async (e: FormEvent) => {
@@ -106,9 +305,33 @@ export const UseTemplateForm: FC<{
       if (!valid) {
         return;
       }
+      // the revision's own fields only, in its order: every text field and
+      // each chosen image
+      const values: Record<string, ContentStudioDesignTemplateValue> = {};
+      for (const slot of slots) {
+        if (slot.type === 'text') {
+          values[slot.id] = texts[slot.id] ?? '';
+        } else if (images[slot.id]) {
+          values[slot.id] = {
+            mediaId: images[slot.id].mediaId,
+            sha256: images[slot.id].sha256,
+          };
+        }
+      }
       await run('use', async () => {
         try {
-          const created = await instantiateTemplate(choice, name.trim());
+          const created = await instantiateTemplate(
+            choice,
+            name.trim(),
+            guided
+              ? {
+                  values,
+                  ...(rebind && brandRevisionId
+                    ? { brandKitRevisionId: brandRevisionId }
+                    : {}),
+                }
+              : undefined
+          );
           toaster.show(
             t('content_studio_design_created', 'Design created.'),
             'success'
@@ -120,8 +343,37 @@ export const UseTemplateForm: FC<{
         }
       });
     },
-    [valid, run, instantiateTemplate, choice, name, toaster, close, router, t]
+    [
+      valid,
+      slots,
+      texts,
+      images,
+      run,
+      instantiateTemplate,
+      choice,
+      name,
+      guided,
+      rebind,
+      brandRevisionId,
+      toaster,
+      close,
+      router,
+      t,
+    ]
   );
+
+  const chooseImage = (slot: ContentStudioDesignTemplateSlot) =>
+    modals.openModal({
+      title: t('content_studio_design_choose_image', 'Choose image'),
+      children: (closePicker: () => void) => (
+        <DesignMediaPicker
+          close={closePicker}
+          onPicked={(ref) =>
+            setImages((current) => ({ ...current, [slot.id]: ref }))
+          }
+        />
+      ),
+    });
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-[16px] min-w-0">
@@ -130,6 +382,174 @@ export const UseTemplateForm: FC<{
         value={name}
         onChange={setName}
       />
+      {guidance === 'invalid' && (
+        <div role="alert">
+          {t(
+            'content_studio_template_error_integrity',
+            'Stored template data could not be read safely.'
+          )}
+        </div>
+      )}
+      {!!slots.length && (
+        <fieldset className="flex flex-col gap-[12px] min-w-0">
+          <legend className="text-[14px] font-[600] mb-[6px]">
+            {t('content_studio_template_fields', 'Template fields')}
+          </legend>
+          {slots.map((slot) => (
+            <GuidedField key={slot.id} slot={slot} missing={missing(slot)}>
+              {(describedBy) =>
+                slot.type === 'text' ? (
+                  <label className="flex flex-col gap-[6px] text-[14px]">
+                    <span>
+                      {slot.label}
+                      {slot.required &&
+                        ` (${t(
+                          'content_studio_template_required',
+                          'required'
+                        )})`}
+                    </span>
+                    {slot.multiline ? (
+                      <textarea
+                        className={FIELD}
+                        value={texts[slot.id] ?? ''}
+                        maxLength={DESIGN_TEXT_MAX}
+                        required={slot.required}
+                        aria-required={slot.required}
+                        aria-invalid={missing(slot)}
+                        aria-describedby={describedBy}
+                        onChange={(e) =>
+                          setTexts((current) => ({
+                            ...current,
+                            [slot.id]: e.target.value,
+                          }))
+                        }
+                      />
+                    ) : (
+                      <input
+                        type="text"
+                        className="bg-newBgColorInner h-[42px] px-[12px] border-newTableBorder border rounded-[8px] text-textColor text-[14px] w-full min-w-0"
+                        value={texts[slot.id] ?? ''}
+                        maxLength={DESIGN_TEXT_MAX}
+                        required={slot.required}
+                        aria-required={slot.required}
+                        aria-invalid={missing(slot)}
+                        aria-describedby={describedBy}
+                        onChange={(e) =>
+                          setTexts((current) => ({
+                            ...current,
+                            [slot.id]: e.target.value,
+                          }))
+                        }
+                      />
+                    )}
+                  </label>
+                ) : (
+                  <div
+                    role="group"
+                    aria-label={slot.label}
+                    aria-describedby={describedBy}
+                    className="flex flex-col gap-[6px] text-[14px]"
+                  >
+                    <span>
+                      {slot.label}
+                      {slot.required &&
+                        ` (${t(
+                          'content_studio_template_required',
+                          'required'
+                        )})`}
+                    </span>
+                    <span className="text-[13px] text-textItemBlur">
+                      {images[slot.id]
+                        ? t(
+                            'content_studio_template_image_chosen',
+                            'A new image is chosen.'
+                          )
+                        : t(
+                            'content_studio_template_image_kept',
+                            'The template image is used.'
+                          )}
+                    </span>
+                    <div className="flex flex-wrap gap-[8px]">
+                      <Button
+                        type="button"
+                        secondary
+                        aria-label={`${t(
+                          'content_studio_design_choose_image',
+                          'Choose image'
+                        )}: ${slot.label}`}
+                        onClick={() => chooseImage(slot)}
+                      >
+                        {t(
+                          'content_studio_design_choose_image',
+                          'Choose image'
+                        )}
+                      </Button>
+                      {!!images[slot.id] && (
+                        <Button
+                          type="button"
+                          secondary
+                          aria-label={`${t(
+                            'content_studio_template_image_reset',
+                            'Use the template image'
+                          )}: ${slot.label}`}
+                          onClick={() =>
+                            setImages((current) => {
+                              const next = { ...current };
+                              delete next[slot.id];
+                              return next;
+                            })
+                          }
+                        >
+                          {t(
+                            'content_studio_template_image_reset',
+                            'Use the template image'
+                          )}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )
+              }
+            </GuidedField>
+          ))}
+        </fieldset>
+      )}
+      {rebinding && !!document?.brandKit && (
+        <div className="flex flex-col gap-[8px]">
+          <label className="flex items-center gap-[8px] text-[14px] cursor-pointer">
+            <input
+              type="checkbox"
+              checked={rebind}
+              onChange={(e) => {
+                setRebind(e.target.checked);
+                setBrandRevisionId(null);
+              }}
+            />
+            {t(
+              'content_studio_template_brand_rebind',
+              'Use another Brand Kit revision'
+            )}
+          </label>
+          <div className="text-[12px] text-textItemBlur">
+            {rebind
+              ? t(
+                  'content_studio_template_brand_rebind_hint',
+                  'The new design is pinned to the revision you choose. It must have every color and type style this template uses, or nothing is created.'
+                )
+              : `${t(
+                  'content_studio_template_brand_kept',
+                  'The new design keeps the template’s Brand Kit revision'
+                )} ${document.brandKit.revisionNumber}.`}
+          </div>
+          {rebind && (
+            <TemplateBrandChoice
+              pinnedRevisionId={document.brandKit.revisionId}
+              value={brandRevisionId}
+              onChange={setBrandRevisionId}
+            />
+          )}
+        </div>
+      )}
       <div className="text-[13px] text-textItemBlur">
         {t(
           'content_studio_template_use_hint',
@@ -486,31 +906,37 @@ export const useTemplateCommands = () => {
 
 // The first page of a template's current document, drawn by the structural
 // preview: shapes, text and image placeholders only. Brand Kit tokens are
-// not resolved here (that would be a request per card), so they show as
-// unresolved, like any token the preview cannot resolve
-const TemplateThumbnail: FC<{ content: unknown }> = ({ content }) => {
-  let page = null;
-  try {
-    page = parseContentStudioDesignDocument(content).pages[0];
-  } catch {
-    page = null;
-  }
-  return page ? (
-    <ContentStudioDesignPageThumbnail page={page} brand={null} />
+// resolved from the exact revision the document names, loaded once for all
+// the cards that name it (P4-12); until it is loaded, or when it cannot be,
+// they show as unresolved, like any token the preview cannot resolve
+const TemplateThumbnail: FC<{
+  document: ContentStudioDesignDocumentV1 | null;
+  brand: ContentStudioDesignTemplateBrand | null;
+}> = ({ document, brand }) =>
+  document ? (
+    <ContentStudioDesignPageThumbnail
+      page={document.pages[0]}
+      brand={brand?.content ?? null}
+    />
   ) : null;
-};
 
 // One template card: a heading and plain actions side by side (never a
 // control inside another)
 const TemplateCard: FC<{
   template: ContentStudioDesignTemplateCard;
+  document: ContentStudioDesignDocumentV1 | null;
+  brand: ContentStudioDesignTemplateBrand | null;
   busy?: TemplateTask;
   commands: ReturnType<typeof useTemplateCommands>;
-}> = ({ template, busy, commands }) => {
+}> = ({ template, document, brand, busy, commands }) => {
   const t = useT();
   const modals = useModals();
   const system = template.source === 'system';
   const archived = !system && !!template.archivedAt;
+  const guidance = document
+    ? designTemplateGuidance(document, template.currentRevision.guidance)
+    : null;
+  const fields = guidance && guidance !== 'invalid' ? guidance.slots.length : 0;
   const use = () =>
     modals.openModal({
       title: t('content_studio_use_template', 'Use template'),
@@ -531,6 +957,8 @@ const TemplateCard: FC<{
           }
           defaultName={template.name}
           close={close}
+          content={template.currentRevision.content}
+          guidance={template.currentRevision.guidance}
         />
       ),
     });
@@ -539,7 +967,7 @@ const TemplateCard: FC<{
       data-template={template.source}
       className="flex flex-col gap-[10px] p-[16px] border border-newTableBorder rounded-[8px] min-w-0"
     >
-      <TemplateThumbnail content={template.currentRevision.content} />
+      <TemplateThumbnail document={document} brand={brand} />
       <div className="flex flex-col gap-[4px] min-w-0">
         <h3 className="text-[16px] font-[600] break-words">{template.name}</h3>
         <div className="flex flex-wrap gap-x-[12px] gap-y-[4px] text-[12px] text-textItemBlur">
@@ -557,6 +985,22 @@ const TemplateCard: FC<{
             {t('content_studio_design_revision', 'Revision')}{' '}
             {template.latestRevisionNumber}
           </span>
+          {!!fields && (
+            <span>
+              {fields}{' '}
+              {fields === 1
+                ? t('content_studio_template_field_count_one', 'field')
+                : t('content_studio_template_field_count', 'fields')}
+            </span>
+          )}
+          {brand?.status === 'error' && (
+            <span>
+              {t(
+                'content_studio_template_brand_unavailable',
+                'Brand Kit revision unavailable'
+              )}
+            </span>
+          )}
         </div>
         {!!template.description && (
           <div className="text-[13px] break-words">{template.description}</div>
@@ -647,7 +1091,8 @@ const GRID =
 
 // Templates: the built-in ones and the organization's, active or archived.
 // Each card shows the first page of the current document, drawn by the
-// structural preview; nothing is rendered or fetched per card
+// structural preview; nothing is rendered or fetched per card (the exact
+// Brand Kit revisions the documents name are loaded once per revision)
 export const ContentStudioDesignTemplates: FC = () => {
   const t = useT();
   const modals = useModals();
@@ -655,6 +1100,30 @@ export const ContentStudioDesignTemplates: FC = () => {
   const [page, setPage] = useState(1);
   const list = useContentStudioDesignTemplates(archived, page);
   const commands = useTemplateCommands();
+  // every card's document parsed once; its Brand Kit revisions loaded once
+  // each, for all the cards that name them
+  const documents = useMemo(
+    () =>
+      new Map(
+        [...(list.data?.system ?? []), ...(list.data?.results ?? [])].map(
+          (template) => [
+            `${template.source}:${template.id}`,
+            parseTemplateDocument(template.currentRevision.content),
+          ]
+        )
+      ),
+    [list.data]
+  );
+  const refs = useMemo(
+    () =>
+      Array.from(documents.values()).map((entry) => entry?.brandKit ?? null),
+    [documents]
+  );
+  const brandOf = useContentStudioDesignTemplateBrands(refs);
+  const cardOf = (template: ContentStudioDesignTemplateCard) => {
+    const document = documents.get(`${template.source}:${template.id}`) ?? null;
+    return { document, brand: brandOf(document?.brandKit ?? null) };
+  };
 
   const pages = list.data?.pages;
   // a page that no longer exists (after archiving, say) moves to the last one
@@ -757,6 +1226,7 @@ export const ContentStudioDesignTemplates: FC = () => {
                   <TemplateCard
                     key={template.id}
                     template={template}
+                    {...cardOf(template)}
                     commands={commands}
                   />
                 ))}
@@ -806,6 +1276,7 @@ export const ContentStudioDesignTemplates: FC = () => {
                   <TemplateCard
                     key={template.id}
                     template={template}
+                    {...cardOf(template)}
                     busy={commands.busy[template.id]}
                     commands={commands}
                   />

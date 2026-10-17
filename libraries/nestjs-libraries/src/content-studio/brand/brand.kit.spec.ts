@@ -1021,6 +1021,12 @@ describe('Brand Kit P4-01 scope boundary', () => {
         .filter((file) => /brand-kit|brandKit|BrandKit/.test(code(file)))
         .sort()
     ).toEqual([
+      // P4-12: template cards resolve tokens from the exact revisions their
+      // documents name (through the same revision route), and a guided use
+      // may name another exact revision; neither writes
+      `${CS}/content-studio.design-template.workspace.tsx`,
+      `${CS}/content-studio.design-templates.api.ts`,
+      `${CS}/content-studio.design-templates.tsx`,
       // P4-09: the canvas is handed the resolved Brand Kit content to draw
       `${CS}/content-studio.design.canvas.tsx`,
       `${CS}/content-studio.design.editing.tsx`,

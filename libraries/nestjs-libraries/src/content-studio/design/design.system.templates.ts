@@ -4,15 +4,25 @@ import {
   parseContentStudioDesignDocument,
 } from '@gitroom/nestjs-libraries/content-studio/design/design.document';
 import { storedContentStudioDesignDocument } from '@gitroom/nestjs-libraries/content-studio/design/design.document.revision';
+import {
+  ContentStudioDesignTemplateGuidanceV1,
+  parseContentStudioDesignTemplateGuidance,
+} from '@gitroom/nestjs-libraries/content-studio/design/design.template.guidance';
+import { storedContentStudioDesignTemplateGuidance } from '@gitroom/nestjs-libraries/content-studio/design/design.template.guidance.revision';
 
 // The built-in design templates: version-controlled data, the same for every
 // organization, never rows of any. Each is a plain Design Document v1 with
 // no Brand Kit reference, no image and no URL: literal colors, shapes and
-// placeholder text only, so it means the same thing everywhere. A built-in
-// template changes only by a new revision number here; the hash is of the
-// canonical document, as for any design revision. Every document is checked
-// by the Design Document v1 parser before it is offered: an invalid one
-// throws, it is never skipped or repaired
+// placeholder text only, so it means the same thing everywhere. Each also
+// has Template Guidance v1 naming its text fields (no image field: an image
+// layer needs real Media, which a built-in cannot have, and no Brand Kit
+// rebinding without a Brand Kit). A built-in template changes only by a new
+// revision number here, for its document or its guidance alike (revision 2
+// added the guidance; the documents are those of revision 1); the hashes are
+// of the canonical document and of the canonical guidance, as for any
+// template revision. Every document and its guidance are checked by their
+// parsers before they are offered: an invalid one throws, it is never
+// skipped or repaired
 
 export const DESIGN_TEMPLATE_DESCRIPTION_MAX = 1000;
 export const DESIGN_SYSTEM_TEMPLATE_ID = /^system:[a-z0-9][a-z0-9-]{0,62}$/;
@@ -23,6 +33,7 @@ interface SystemTemplateDefinition {
   name: string;
   description: string;
   document: unknown;
+  guidance: unknown;
 }
 
 const lit = (value: string) => ({ type: 'literal' as const, value });
@@ -123,30 +134,60 @@ const document = (width: number, height: number) => ({
   pages: [page(width, height)],
 });
 
+// The headline is required and on one line; the supporting text is optional
+const guidance = {
+  schemaVersion: 1,
+  brandRebinding: false,
+  slots: [
+    {
+      id: 'headline',
+      type: 'text',
+      label: 'Headline',
+      description: 'The main message, a few words.',
+      pageId: 'page_1',
+      layerId: 'headline',
+      required: true,
+      multiline: false,
+    },
+    {
+      id: 'body',
+      type: 'text',
+      label: 'Supporting text',
+      pageId: 'page_1',
+      layerId: 'body',
+      required: false,
+      multiline: true,
+    },
+  ],
+};
+
 const DEFINITIONS: SystemTemplateDefinition[] = [
   {
     id: 'system:square-post',
-    revisionNumber: 1,
+    revisionNumber: 2,
     name: 'Square post',
     description:
       'A 1080 × 1080 social post with a headline and a line of text.',
     document: document(1080, 1080),
+    guidance,
   },
   {
     id: 'system:portrait-post',
-    revisionNumber: 1,
+    revisionNumber: 2,
     name: 'Portrait post',
     description:
       'A 1080 × 1350 portrait social post with a headline and a line of text.',
     document: document(1080, 1350),
+    guidance,
   },
   {
     id: 'system:story',
-    revisionNumber: 1,
+    revisionNumber: 2,
     name: 'Story',
     description:
       'A 1080 × 1920 vertical story with a headline and a line of text.',
     document: document(1080, 1920),
+    guidance,
   },
 ];
 
@@ -158,6 +199,8 @@ export interface ContentStudioSystemDesignTemplate {
   schemaVersion: number;
   contentHash: string;
   content: ContentStudioDesignDocumentV1;
+  guidanceHash: string | null;
+  guidance: ContentStudioDesignTemplateGuidanceV1 | null;
 }
 
 // A fixed message only: a built-in template that is not valid Design
@@ -193,8 +236,16 @@ const build = (
     }
     ids.add(definition.id);
     let content: ContentStudioDesignDocumentV1;
+    let guidance: ContentStudioDesignTemplateGuidanceV1 | null;
     try {
       content = parseContentStudioDesignDocument(definition.document);
+      guidance =
+        definition.guidance === null
+          ? null
+          : parseContentStudioDesignTemplateGuidance(
+              definition.guidance,
+              content
+            );
     } catch {
       throw new ContentStudioSystemDesignTemplateError(definition.id);
     }
@@ -210,6 +261,9 @@ const build = (
       schemaVersion: stored.schemaVersion,
       contentHash: stored.contentHash,
       content,
+      guidanceHash:
+        storedContentStudioDesignTemplateGuidance(guidance).guidanceHash,
+      guidance,
     };
   });
 };
@@ -222,6 +276,11 @@ const copy = (template: ContentStudioSystemDesignTemplate) => ({
   content: JSON.parse(
     JSON.stringify(template.content)
   ) as ContentStudioDesignDocumentV1,
+  guidance: template.guidance
+    ? (JSON.parse(
+        JSON.stringify(template.guidance)
+      ) as ContentStudioDesignTemplateGuidanceV1)
+    : null,
 });
 
 export const listContentStudioSystemDesignTemplates = () => all().map(copy);

@@ -856,7 +856,8 @@ export const DesignHistory: FC<{
 // render actions for exactly that revision. While the current revision is
 // edited, the same view shows the draft with the editing controls, and
 // nothing is rendered: renders are of saved revisions only. A design
-// template (P4-11) uses the same view without render actions
+// template (P4-11) uses the same view without render actions, and adds its
+// fields panel (P4-12) below the inspector; a design has no such panel
 export const DesignRevisionView: FC<{
   revision: ShownRevision;
   document: ContentStudioDesignDocumentV1;
@@ -874,6 +875,12 @@ export const DesignRevisionView: FC<{
     clipboard: ContentStudioDesignLayerCopy | null;
     setClipboard: (copy: ContentStudioDesignLayerCopy) => void;
   } | null;
+  aside?: (context: {
+    document: ContentStudioDesignDocumentV1;
+    page: ContentStudioDesignPage;
+    layer: ContentStudioDesignLayer | null;
+    single: boolean;
+  }) => ReactNode;
 }> = ({
   revision,
   document,
@@ -884,6 +891,7 @@ export const DesignRevisionView: FC<{
   canEdit,
   onBeginEdit,
   edit,
+  aside,
 }) => {
   const t = useT();
   const modals = useModals();
@@ -1314,6 +1322,7 @@ export const DesignRevisionView: FC<{
               </div>
             )}
           </section>
+          {aside?.({ document, page, layer, single: chosen.length <= 1 })}
         </div>
       </div>
     </div>

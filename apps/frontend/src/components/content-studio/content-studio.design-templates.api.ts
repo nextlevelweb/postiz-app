@@ -3,12 +3,26 @@
 import { useCallback, useMemo } from 'react';
 import useSWR, { useSWRConfig } from 'swr';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
-import type { ContentStudioDesignDocumentV1 } from '@gitroom/nestjs-libraries/content-studio/design/design.document';
+import type {
+  ContentStudioDesignBrandKitRef,
+  ContentStudioDesignDocumentV1,
+} from '@gitroom/nestjs-libraries/content-studio/design/design.document';
+import {
+  ContentStudioDesignTemplateGuidanceV1,
+  ContentStudioDesignTemplateValue,
+  parseContentStudioDesignTemplateGuidance,
+} from '@gitroom/nestjs-libraries/content-studio/design/design.template.guidance';
+import {
+  ContentStudioBrandKitContentV1,
+  parseContentStudioBrandKitContent,
+} from '@gitroom/nestjs-libraries/content-studio/brand/brand.kit';
 import {
   request,
   swrOptions,
 } from '@gitroom/frontend/components/content-studio/content-studio.api';
 import {
+  brandKitRevisionPath,
+  ContentStudioBrandKitRevisionDetail,
   ContentStudioDesignRevisionDetail,
   ContentStudioDesignRevisionList,
   ContentStudioDesignSaveResult,
@@ -24,13 +38,26 @@ import {
 // and restores the organization's, and asks the server for a new design from
 // one exact template revision, or for a new template from one exact saved
 // design revision: those two send identities, never a document. It never
-// sends an organization or user and never makes a hash
+// sends an organization or user and never makes a hash. A template revision
+// may come with Template Guidance v1 (P4-12): its fields, filled in when the
+// template is used (text, or an image the server referenced), and whether
+// another exact Brand Kit revision may be chosen. The guidance is saved with
+// the document, in the same revision, and never goes into a design
 
 export interface ContentStudioDesignTemplateRevision {
   revisionNumber: number;
   schemaVersion: number;
   contentHash: string;
   content: unknown;
+  guidanceHash: string | null;
+  guidance: unknown;
+}
+
+// An organization template revision with its document and guidance
+export interface ContentStudioDesignTemplateRevisionDetail
+  extends ContentStudioDesignRevisionDetail {
+  guidanceHash: string | null;
+  guidance: unknown;
 }
 
 // A built-in template: an id like "system:story", never archived or changed
@@ -57,7 +84,7 @@ export interface ContentStudioOrganizationDesignTemplate {
 
 export interface ContentStudioOrganizationDesignTemplateDetail
   extends ContentStudioOrganizationDesignTemplate {
-  currentRevision: ContentStudioDesignRevisionDetail;
+  currentRevision: ContentStudioDesignTemplateRevisionDetail;
 }
 
 export type ContentStudioDesignTemplateCard =
@@ -129,7 +156,8 @@ export const useContentStudioDesignTemplateRevision = (
 ) => {
   const fetch = useFetch();
   const load = useCallback(
-    (path: string) => request<ContentStudioDesignRevisionDetail>(fetch, path),
+    (path: string) =>
+      request<ContentStudioDesignTemplateRevisionDetail>(fetch, path),
     [fetch]
   );
   return useSWR(
@@ -143,6 +171,110 @@ export const useContentStudioDesignTemplateRevision = (
 export type ContentStudioDesignTemplateChoice =
   | { source: 'system'; templateId: string; revisionNumber: number }
   | { source: 'organization'; templateId: string; revisionId: string };
+
+// The guidance of a revision for exactly its document: none (null), or
+// 'invalid' when it does not check out, which is never filled in
+export const designTemplateGuidance = (
+  document: ContentStudioDesignDocumentV1,
+  guidance: unknown
+): ContentStudioDesignTemplateGuidanceV1 | null | 'invalid' => {
+  if (guidance === null || guidance === undefined) {
+    return null;
+  }
+  try {
+    return parseContentStudioDesignTemplateGuidance(guidance, document);
+  } catch {
+    return 'invalid';
+  }
+};
+
+// What a guided use adds to the identities: the values of the revision's
+// fields by field id and, only when chosen, the id of another exact Brand
+// Kit revision
+export interface ContentStudioDesignTemplateCustomization {
+  values: Record<string, ContentStudioDesignTemplateValue>;
+  brandKitRevisionId?: string;
+}
+
+export type ContentStudioDesignTemplateBrand =
+  | { status: 'loading' | 'error'; content: null }
+  | { status: 'ready'; content: ContentStudioBrandKitContentV1 };
+
+// The exact Brand Kit revisions the listed template documents name, for
+// their thumbnails: one request per distinct revision (never per card), none
+// without a reference, and never the kit's current revision. A revision that
+// fails to load, or is not exactly the referenced one, is an error for its
+// cards only
+export const useContentStudioDesignTemplateBrands = (
+  refs: Array<ContentStudioDesignBrandKitRef | null>
+) => {
+  const fetch = useFetch();
+  const distinct = useMemo(() => {
+    const byId = new Map<string, ContentStudioDesignBrandKitRef>();
+    for (const ref of refs) {
+      if (ref && !byId.has(ref.revisionId)) {
+        byId.set(ref.revisionId, ref);
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) =>
+      a.revisionId < b.revisionId ? -1 : a.revisionId > b.revisionId ? 1 : 0
+    );
+  }, [refs]);
+  const load = useCallback(async () => {
+    const loaded = await Promise.all(
+      distinct.map(async (ref) => {
+        try {
+          const revision = await request<ContentStudioBrandKitRevisionDetail>(
+            fetch,
+            brandKitRevisionPath(ref.revisionId)
+          );
+          if (revision.id !== ref.revisionId) {
+            return [ref.revisionId, null] as const;
+          }
+          return [
+            ref.revisionId,
+            {
+              revisionNumber: revision.revisionNumber,
+              contentHash: revision.contentHash,
+              content: parseContentStudioBrandKitContent(revision.content),
+            },
+          ] as const;
+        } catch {
+          return [ref.revisionId, null] as const;
+        }
+      })
+    );
+    return new Map(loaded);
+  }, [distinct, fetch]);
+  const key = distinct.length
+    ? `content-studio-template-brands:${distinct
+        .map((ref) => `${ref.revisionId}@${ref.contentHash}`)
+        .join(',')}`
+    : null;
+  const brands = useSWR(key, load, { ...swrOptions, revalidateIfStale: false });
+  return useCallback(
+    (
+      ref: ContentStudioDesignBrandKitRef | null
+    ): ContentStudioDesignTemplateBrand | null => {
+      if (!ref) {
+        return null;
+      }
+      if (!brands.data) {
+        return brands.error
+          ? { status: 'error', content: null }
+          : { status: 'loading', content: null };
+      }
+      // exactly the revision each card names: its number and hash too
+      const revision = brands.data.get(ref.revisionId);
+      return revision &&
+        revision.revisionNumber === ref.revisionNumber &&
+        revision.contentHash === ref.contentHash
+        ? { status: 'ready', content: revision.content }
+        : { status: 'error', content: null };
+    },
+    [brands.data, brands.error]
+  );
+};
 
 // Template writes: one request each, never retried. Writes reload the
 // template lists, the template and its history; using a template or saving
@@ -216,30 +348,41 @@ export const useContentStudioDesignTemplateActions = () => {
         });
         await refresh(id);
       },
-      // the edited document as the next revision, over the revision the edit
-      // started from: a stale base is a conflict
+      // the edited document and its guidance (or null) as the next revision,
+      // over the revision the edit started from: a stale base is a conflict
       saveTemplateRevision: async (
         id: string,
         baseRevisionNumber: number,
-        content: ContentStudioDesignDocumentV1
+        content: ContentStudioDesignDocumentV1,
+        guidance: ContentStudioDesignTemplateGuidanceV1 | null
       ) => {
         const saved = await request<ContentStudioDesignSaveResult>(
           fetch,
           `${designTemplatePath(id)}/revisions`,
           {
             method: 'POST',
-            body: JSON.stringify({ baseRevisionNumber, content }),
+            body: JSON.stringify({ baseRevisionNumber, content, guidance }),
           }
         );
         await refresh(id);
         return saved;
       },
-      // a new design from exactly this template revision: identities and a
-      // name, never a document
+      // a new design from exactly this template revision: identities, a
+      // name and, for a guided use, the field values and the chosen Brand
+      // Kit revision id; never a document
       instantiateTemplate: async (
         choice: ContentStudioDesignTemplateChoice,
-        name: string
+        name: string,
+        customization?: ContentStudioDesignTemplateCustomization
       ) => {
+        const guided = customization
+          ? {
+              values: customization.values,
+              ...(customization.brandKitRevisionId
+                ? { brandKitRevisionId: customization.brandKitRevisionId }
+                : {}),
+            }
+          : {};
         const created = await request<ContentStudioDesignSummary>(
           fetch,
           `${DESIGN_TEMPLATES_PATH}/instantiate`,
@@ -252,12 +395,14 @@ export const useContentStudioDesignTemplateActions = () => {
                     templateId: choice.templateId,
                     revisionNumber: choice.revisionNumber,
                     name,
+                    ...guided,
                   }
                 : {
                     source: 'organization',
                     templateId: choice.templateId,
                     revisionId: choice.revisionId,
                     name,
+                    ...guided,
                   }
             ),
           }
@@ -336,6 +481,49 @@ export const designTemplateErrorMessage = (t: Translate, error: unknown) => {
       return t(
         'content_studio_design_brand_integrity',
         'Stored Brand Kit data could not be read safely.'
+      );
+    case 'CS_DESIGN_TEMPLATE_GUIDANCE_INVALID':
+      return t(
+        'content_studio_template_error_guidance',
+        'The template fields are invalid.'
+      );
+    case 'CS_DESIGN_TEMPLATE_GUIDANCE_STALE':
+      return t(
+        'content_studio_template_error_guidance_stale',
+        'A template field no longer matches a layer of the design.'
+      );
+    case 'CS_DESIGN_TEMPLATE_FIELD_REQUIRED':
+      return t(
+        'content_studio_template_error_field_required',
+        'Fill in every required field.'
+      );
+    case 'CS_DESIGN_TEMPLATE_FIELD_UNKNOWN':
+    case 'CS_DESIGN_TEMPLATE_FIELD_INVALID':
+      return t(
+        'content_studio_template_error_field_unknown',
+        'The template fields changed. Reopen the template and try again.'
+      );
+    case 'CS_DESIGN_TEMPLATE_MEDIA_INVALID':
+    case 'CS_DESIGN_MEDIA_UNAVAILABLE':
+    case 'CS_DESIGN_MEDIA_READ_FAILED':
+      return t(
+        'content_studio_template_error_media',
+        'The selected image cannot be used. Choose it again or pick another one.'
+      );
+    case 'CS_DESIGN_TEMPLATE_BRAND_INCOMPATIBLE':
+      return t(
+        'content_studio_template_error_brand_incompatible',
+        'The selected Brand Kit revision lacks a color or type style this template uses.'
+      );
+    case 'CS_DESIGN_TEMPLATE_BRAND_REBIND_UNSUPPORTED':
+      return t(
+        'content_studio_template_error_brand_rebind',
+        'This template cannot be used with another Brand Kit revision.'
+      );
+    case 'CS_DESIGN_TEMPLATE_REVISION_CONFLICT':
+      return t(
+        'content_studio_template_error_conflict',
+        'The template changed. Reload it and try again.'
       );
     case 'CS_NOT_FOUND':
       return t('content_studio_template_not_found', 'Template not found.');

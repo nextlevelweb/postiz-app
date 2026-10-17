@@ -203,7 +203,7 @@ export const designRevisionsPath = (id: string, page: number) =>
   `${designPath(id)}/revisions?page=${page}`;
 const designRevisionPath = (id: string, revisionId: string) =>
   `${designPath(id)}/revisions/${encodeURIComponent(revisionId)}`;
-const brandKitRevisionPath = (revisionId: string) =>
+export const brandKitRevisionPath = (revisionId: string) =>
   `/content-studio/brand-kit/revisions/${encodeURIComponent(revisionId)}`;
 const mediaStatusPath = (id: string) =>
   `/media/${encodeURIComponent(id)}/status`;

@@ -1046,6 +1046,8 @@ export class ContentStudioController {
       revisionId: body.revisionId,
       revisionNumber: body.revisionNumber,
       name: body.name,
+      values: body.values,
+      brandKitRevisionId: body.brandKitRevisionId,
     });
   }
 
@@ -1082,6 +1084,7 @@ export class ContentStudioController {
       userId: user.id,
       baseRevisionNumber: body.baseRevisionNumber,
       content: body.content,
+      guidance: body.guidance,
     });
   }
 

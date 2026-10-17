@@ -187,7 +187,9 @@ export const isDesignEditorShortcutTarget = (target: EventTarget | null) =>
 // Where a draft is saved: the next revision of the design (the default), or
 // of another owner of Design Document v1 revisions, a design template
 // (P4-11), with its own conflict code and wording. Same rules either way:
-// the parsed draft, once, over the base revision, never retried
+// the parsed draft, once, over the base revision, never retried. A template
+// also saves its guidance with the document (P4-12): the target keeps that
+// draft itself, and says when it has unsaved changes too; a design has none
 export interface ContentStudioDesignEditorTarget {
   save: (
     id: string,
@@ -197,6 +199,7 @@ export interface ContentStudioDesignEditorTarget {
   conflictCode: string;
   savedMessage: (revisionNumber: number) => string;
   errorMessage: (error: unknown) => string;
+  dirty?: boolean;
 }
 
 export const useContentStudioDesignEditor = (
@@ -321,10 +324,11 @@ export const useContentStudioDesignEditor = (
 
   const dirty =
     !!state &&
-    !areContentStudioDesignDocumentsEqual(
+    (!areContentStudioDesignDocumentsEqual(
       state.history.present,
       state.base.document
-    );
+    ) ||
+      !!target?.dirty);
 
   // Explicit and once: the draft as the parser normalizes it, over the base
   // the edit started from

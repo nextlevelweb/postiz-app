@@ -11,6 +11,10 @@ import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/p
 import { ContentStudioBrandKitRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.repository';
 import { ContentStudioDesignTemplateRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.repository';
 import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
+import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
+import { ContentStudioRenderMediaBridge } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-media.bridge';
+import { MediaService } from '@gitroom/nestjs-libraries/database/prisma/media/media.service';
+import { designRenderSha256 } from '@gitroom/nestjs-libraries/content-studio/design/render/design.render.types';
 import { parseContentStudioDesignDocument } from '@gitroom/nestjs-libraries/content-studio/design/design.document';
 import {
   parseVerifiedContentStudioDesignRevision,
@@ -24,6 +28,17 @@ import {
   findContentStudioSystemDesignTemplate,
   listContentStudioSystemDesignTemplates,
 } from '@gitroom/nestjs-libraries/content-studio/design/design.system.templates';
+import { parseContentStudioDesignTemplateGuidance } from '@gitroom/nestjs-libraries/content-studio/design/design.template.guidance';
+import { storedContentStudioDesignTemplateGuidance } from '@gitroom/nestjs-libraries/content-studio/design/design.template.guidance.revision';
+
+// The real MediaService pulls in uploads, Redis and Temporal at import time;
+// only the organization-scoped lookup is used, faked in setup()
+jest.mock(
+  '@gitroom/nestjs-libraries/database/prisma/media/media.service',
+  () => ({
+    MediaService: class MediaService {},
+  })
+);
 
 // Design templates (P4-11) end to end over the real repositories and
 // services. No database: one small in-memory Prisma stands in for every
@@ -31,7 +46,9 @@ import {
 // undefined is no condition), enforces the unique revision numbers, and its
 // transactions put every table back when the callback throws, like a
 // rollback. The Brand Kit repository is a fixture of exact revisions. The
-// PostgreSQL constraints themselves are pinned in the schema section
+// PostgreSQL constraints themselves are pinned in the schema section. Media
+// (P4-12) is two items of ORG and one of OTHER_ORG behind the real design
+// reference service: a fake Media service and render Media bridge
 
 const MARKER = 'DESIGN_TEMPLATE_PRIVATE_MARKER_123';
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -42,6 +59,32 @@ const KIT_REV1 = '8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
 const KIT_REV2 = '9b2c3d4e-5f6a-4b7c-9d8e-0f1a2b3c4d5e';
 const SHA = (seed: string) => seed.repeat(64).slice(0, 64);
 const T0 = new Date('2026-10-15T10:00:00.000Z');
+// Media rows: an organization, an id and the stored bytes. Looked up like
+// Prisma: an undefined organization is no condition
+const MEDIA = [
+  { organizationId: ORG, id: 'media-new', bytes: Buffer.from('new bytes') },
+  { organizationId: ORG, id: 'media-two', bytes: Buffer.from('two bytes') },
+  {
+    organizationId: OTHER_ORG,
+    id: 'media-other',
+    bytes: Buffer.from('other organization bytes'),
+  },
+];
+const findMedia = (organizationId: string | undefined, id: string) =>
+  MEDIA.find(
+    (row) =>
+      row.id === id &&
+      (organizationId === undefined || row.organizationId === organizationId)
+  );
+const mediaRef = (mediaId: string) => ({
+  mediaId,
+  sha256: designRenderSha256(
+    MEDIA.find((row) => row.id === mediaId)?.bytes as Buffer
+  ),
+});
+// the other organization's own Brand Kit and revision
+const OTHER_KIT = '3b241101-e2bb-4255-8caf-4136c566a962';
+const OTHER_KIT_REV = '6ec0bd7f-11c0-43da-975e-2a8ad9ebae0b';
 const REPO_ROOT = path.resolve(__dirname, '../../../../../..');
 const read = (file: string) =>
   fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
@@ -73,6 +116,10 @@ const BRAND_REVISIONS = [
   kitRevision(KIT_REV1, 1, ['primary']),
   kitRevision(KIT_REV2, 2, ['primary', 'accent']),
 ];
+const OTHER_BRAND_REVISION = kitRevision(OTHER_KIT_REV, 1, [
+  'primary',
+  'accent',
+]);
 const kitRef = () => ({
   brandKitId: KIT,
   revisionId: KIT_REV1,
@@ -304,13 +351,33 @@ const setup = () => {
   );
   const brandKits = {
     getBrandKitForOrganization: jest.fn(async (organizationId: string) =>
-      organizationId === ORG ? { id: KIT } : null
+      organizationId === ORG
+        ? { id: KIT }
+        : organizationId === OTHER_ORG
+        ? { id: OTHER_KIT }
+        : null
     ),
+    // like Prisma: an undefined organization or kit is no condition
     getRevisionForBrandKit: jest.fn(
       async (organizationId: string, brandKitId: string, revisionId: string) =>
-        organizationId === ORG && brandKitId === KIT
-          ? BRAND_REVISIONS.find((r) => r.id === revisionId) ?? null
-          : null
+        [
+          ...BRAND_REVISIONS.map((revision) => ({
+            organizationId: ORG,
+            brandKitId: KIT,
+            revision,
+          })),
+          {
+            organizationId: OTHER_ORG,
+            brandKitId: OTHER_KIT,
+            revision: OTHER_BRAND_REVISION,
+          },
+        ].find(
+          (row) =>
+            (organizationId === undefined ||
+              row.organizationId === organizationId) &&
+            (brandKitId === undefined || row.brandKitId === brandKitId) &&
+            row.revision.id === revisionId
+        )?.revision ?? null
     ),
     // never used: a template never follows a later Brand Kit revision
     getCurrentRevision: jest.fn(),
@@ -320,11 +387,39 @@ const setup = () => {
     designRepository,
     brandKits as unknown as ContentStudioBrandKitRepository
   );
+  const media = {
+    getMediaByIdForOrganization: jest.fn(
+      async (organizationId: string, id: string) =>
+        findMedia(organizationId, id) ? { id, status: 'ready' } : null
+    ),
+  };
+  const bridge = {
+    readMediaBytesForOrganization: jest.fn(
+      async (organizationId: string, id: string) =>
+        findMedia(organizationId, id)?.bytes ?? null
+    ),
+  };
+  const references = new ContentStudioDesignReferenceService(
+    media as unknown as MediaService,
+    bridge as unknown as ContentStudioRenderMediaBridge,
+    brandKits as unknown as ContentStudioBrandKitRepository
+  );
   const templates = new ContentStudioDesignTemplateService(
     templateRepository,
-    designs
+    designs,
+    references
   );
-  return { state, calls, client, transaction, designs, templates, brandKits };
+  return {
+    state,
+    calls,
+    client,
+    transaction,
+    designs,
+    templates,
+    brandKits,
+    media,
+    bridge,
+  };
 };
 
 const status = async (run: () => Promise<unknown>) => {
@@ -379,9 +474,9 @@ describe('Built-in design templates', () => {
         t.content.pages[0].height,
       ])
     ).toEqual([
-      ['system:square-post', 1, 1080, 1080],
-      ['system:portrait-post', 1, 1080, 1350],
-      ['system:story', 1, 1080, 1920],
+      ['system:square-post', 2, 1080, 1080],
+      ['system:portrait-post', 2, 1080, 1350],
+      ['system:story', 2, 1080, 1920],
     ]);
     expect(new Set(all.map((t) => t.id)).size).toBe(all.length);
     for (const template of all) {
@@ -419,13 +514,14 @@ describe('Built-in design templates', () => {
     expect(
       listContentStudioSystemDesignTemplates().map((t) => t.contentHash)
     ).toEqual(all.map((t) => t.contentHash));
-    // pinned: a change to a built-in needs a new revision number
+    // pinned: a change to a built-in needs a new revision number. Revision 2
+    // (P4-12) added guidance; the documents are exactly those of revision 1
     expect(
       all.map((t) => `${t.id}@${t.revisionNumber}:${t.contentHash}`)
     ).toEqual([
-      'system:square-post@1:9c2f3553e421c56f85e18cb68ba1b1cad691bed7a52b90b4b2831cbc82933fc4',
-      'system:portrait-post@1:b112da5d4c2d7a168220de0c4db963ae8c49063e1ebb5716c34597ca11dfb8f0',
-      'system:story@1:b41ec7c4877b1a96b7ad4668988347292825571272130a15602856ceea6479f6',
+      'system:square-post@2:9c2f3553e421c56f85e18cb68ba1b1cad691bed7a52b90b4b2831cbc82933fc4',
+      'system:portrait-post@2:b112da5d4c2d7a168220de0c4db963ae8c49063e1ebb5716c34597ca11dfb8f0',
+      'system:story@2:b41ec7c4877b1a96b7ad4668988347292825571272130a15602856ceea6479f6',
     ]);
   });
 
@@ -447,6 +543,7 @@ describe('Built-in design templates', () => {
       name: 'A',
       description: 'A',
       document: all[0].content,
+      guidance: null,
     };
     expect(buildContentStudioSystemDesignTemplates([square])).toHaveLength(1);
     const bad = (definition: Row) => () =>
@@ -596,7 +693,7 @@ describe('Design templates: create, read and metadata', () => {
     expect(list.system[0]).toMatchObject({
       source: 'system',
       archivedAt: null,
-      latestRevisionNumber: 1,
+      latestRevisionNumber: 2,
     });
     expect(list.results).toHaveLength(1);
     expect(list.results[0]).toMatchObject({
@@ -617,6 +714,7 @@ describe('Design templates: create, read and metadata', () => {
         userId: USER,
         baseRevisionNumber: 1,
         content: brandedDocument('v2_'),
+        guidance: null,
       });
     }
     calls.length = 0;
@@ -670,6 +768,7 @@ describe('Design templates: create, read and metadata', () => {
           userId: USER,
           baseRevisionNumber: 1,
           content: brandedDocument(),
+          guidance: null,
         })
       )
     ).toEqual([409, 'CS_DESIGN_TEMPLATE_ARCHIVED']);
@@ -716,6 +815,7 @@ describe('Design templates: immutable revisions and compare-and-swap', () => {
       userId: USER,
       baseRevisionNumber: base,
       content: plainDocument(text),
+      guidance: null,
     });
 
   it('TCAS1/TCAS2/TCAS3/TCAS5/M4/M6/M30 a save over the current revision makes the next one; a stale base is a conflict that changes nothing', async () => {
@@ -788,6 +888,7 @@ describe('Design templates: immutable revisions and compare-and-swap', () => {
       userId: USER,
       baseRevisionNumber: 1,
       content: brandedDocument(),
+      guidance: null,
     });
     expect(same).toMatchObject({
       created: false,
@@ -802,6 +903,7 @@ describe('Design templates: immutable revisions and compare-and-swap', () => {
           userId: USER,
           baseRevisionNumber: 1,
           content: { schemaVersion: 1 },
+          guidance: null,
         })
       )
     ).toEqual([400, 'CS_DESIGN_INVALID']);
@@ -814,6 +916,7 @@ describe('Design templates: immutable revisions and compare-and-swap', () => {
             userId: USER,
             baseRevisionNumber: base,
             content: brandedDocument(),
+            guidance: null,
           })
         )
       ).toEqual([400, 'CS_INVALID_REQUEST']);
@@ -909,6 +1012,7 @@ describe('Design templates: tenant isolation', () => {
           userId: USER,
           baseRevisionNumber: 1,
           content: plainDocument('x'),
+          guidance: null,
         })
       )
     ).toEqual([404, 'CS_NOT_FOUND']);
@@ -1020,6 +1124,7 @@ describe('Design templates: tenant isolation', () => {
           userId: USER,
           baseRevisionNumber: 1,
           content: plainDocument('x'),
+          guidance: null,
         }),
       () =>
         templates.instantiateTemplate({
@@ -1110,6 +1215,7 @@ describe('Design templates: using a template', () => {
       userId: USER,
       baseRevisionNumber: 1,
       content: plainDocument('v2'),
+      guidance: null,
     });
     const design = await templates.instantiateTemplate({
       organizationId: ORG,
@@ -1158,6 +1264,7 @@ describe('Design templates: using a template', () => {
       userId: USER,
       baseRevisionNumber: 1,
       content: plainDocument('edited template'),
+      guidance: null,
     });
     const first = await designs.getRevision({
       organizationId: ORG,
@@ -1183,8 +1290,10 @@ describe('Design templates: using a template', () => {
       source: 'system',
       templateId: 'system:story',
       revisionId: undefined,
-      revisionNumber: 1,
+      revisionNumber: 2,
       name: 'My story',
+      // the headline is a required field: here its own text
+      values: { headline: 'Your headline' },
     });
     const content = (await designs.getDesign(ORG, design.id)).currentRevision
       .content;
@@ -1204,18 +1313,22 @@ describe('Design templates: using a template', () => {
         source: 'system',
         templateId: 'system:story',
         revisionId: undefined,
-        revisionNumber: 1,
+        revisionNumber: 2,
         name: 'x',
+        values: { headline: 'Hello' },
         ...overrides,
       });
     expect(await status(() => use({ templateId: 'system:nope' }))).toEqual([
       404,
       'CS_NOT_FOUND',
     ]);
-    expect(await status(() => use({ revisionNumber: 2 }))).toEqual([
-      404,
-      'CS_NOT_FOUND',
-    ]);
+    // revision 1 was replaced by revision 2: only the current one exists
+    for (const revisionNumber of [1, 3]) {
+      expect(await status(() => use({ revisionNumber }))).toEqual([
+        404,
+        'CS_NOT_FOUND',
+      ]);
+    }
     expect(await status(() => use({ revisionNumber: undefined }))).toEqual([
       404,
       'CS_NOT_FOUND',
@@ -1267,8 +1380,9 @@ describe('Design templates: using a template', () => {
         source: 'system',
         templateId: 'system:square-post',
         revisionId: undefined,
-        revisionNumber: 1,
+        revisionNumber: 2,
         name: 'x',
+        values: { headline: 'Hello' },
       })
     ).rejects.toThrow('write failed');
     expect(state.contentStudioDesignProject).toHaveLength(0);
@@ -1386,6 +1500,860 @@ describe('Design templates: saving a design revision as a template', () => {
 });
 
 // ============================================================================
+// P4-12: guidance on template revisions and guided use
+const TITLE_SLOT = {
+  id: 'title_field',
+  type: 'text',
+  label: 'Title',
+  description: 'The main line',
+  pageId: 'p_one',
+  layerId: 'title',
+  required: true,
+  multiline: true,
+};
+const PHOTO_SLOT = {
+  id: 'photo_field',
+  type: 'image',
+  label: 'Photo',
+  pageId: 'p_one',
+  layerId: 'photo',
+  required: false,
+};
+const GUIDANCE = (slots: Row[] = [TITLE_SLOT, PHOTO_SLOT], rebind = true) => ({
+  schemaVersion: 1,
+  brandRebinding: rebind,
+  slots,
+});
+// a template whose revision 2 is the branded document with guidance
+const guidedTemplate = async (
+  templates: ContentStudioDesignTemplateService,
+  guidance: Row | null = GUIDANCE()
+) => {
+  const created = await createTemplate(templates);
+  const saved = await templates.createRevision({
+    organizationId: ORG,
+    templateId: created.id,
+    userId: USER,
+    baseRevisionNumber: 1,
+    content: brandedDocument(),
+    guidance,
+  });
+  return { created, saved };
+};
+const useGuided = (
+  templates: ContentStudioDesignTemplateService,
+  template: { id: string },
+  revisionId: string,
+  extra: Row = {}
+) =>
+  templates.instantiateTemplate({
+    organizationId: ORG,
+    userId: USER,
+    source: 'organization',
+    templateId: template.id,
+    revisionId,
+    revisionNumber: undefined,
+    name: 'Guided design',
+    ...extra,
+  });
+const keysOf = (value: unknown) => {
+  const keys = new Set<string>();
+  JSON.parse(JSON.stringify(value), (key, entry) => (keys.add(key), entry));
+  return keys;
+};
+
+describe('P4-12 template guidance on revisions', () => {
+  it('TWG4/GR1 a revision stores its document and guidance together, canonical and hashed apart; history keeps each exactly', async () => {
+    const { templates, state } = setup();
+    const { created, saved } = await guidedTemplate(templates);
+    expect(saved.created).toBe(true);
+    const row = state.contentStudioDesignTemplateRevision.find(
+      (entry) => entry.revisionNumber === 2
+    ) as Row;
+    const expected = storedContentStudioDesignTemplateGuidance(
+      parseContentStudioDesignTemplateGuidance(GUIDANCE(), brandedDocument())
+    );
+    expect({
+      guidanceSchemaVersion: row.guidanceSchemaVersion,
+      guidance: row.guidance,
+      guidanceHash: row.guidanceHash,
+    }).toEqual(expected);
+    // the document hash is the document's alone
+    expect(row.contentHash).toBe(
+      storedContentStudioDesignDocument(brandedDocument()).contentHash
+    );
+    expect(saved.revision.guidanceHash).toBe(expected.guidanceHash);
+    const detail = await templates.getTemplate(ORG, created.id);
+    expect(detail.currentRevision.guidance).toEqual(GUIDANCE());
+    expect(detail.currentRevision.guidanceHash).toBe(expected.guidanceHash);
+    // revision 3 drops the photo field; revision 2 keeps it
+    await templates.createRevision({
+      organizationId: ORG,
+      templateId: created.id,
+      userId: USER,
+      baseRevisionNumber: 2,
+      content: brandedDocument(),
+      guidance: GUIDANCE([TITLE_SLOT]),
+    });
+    const two = await templates.getRevision({
+      organizationId: ORG,
+      templateId: created.id,
+      revisionId: saved.revision.id,
+    });
+    expect(two.guidance?.slots.map((slot) => slot.id)).toEqual([
+      'title_field',
+      'photo_field',
+    ]);
+    expect(
+      (await templates.getTemplate(ORG, created.id)).currentRevision.guidance
+        ?.slots
+    ).toHaveLength(1);
+    // the first revision has none
+    const first = await templates.getRevision({
+      organizationId: ORG,
+      templateId: created.id,
+      revisionId: created.currentRevision.id,
+    });
+    expect([first.guidance, first.guidanceHash]).toEqual([null, null]);
+  });
+
+  it('GR2 one compare-and-swap covers both: guidance alone makes a revision, the same pair makes none', async () => {
+    const { templates, state } = setup();
+    const { created } = await guidedTemplate(templates);
+    const save = (base: number, guidance: Row | null) =>
+      templates.createRevision({
+        organizationId: ORG,
+        templateId: created.id,
+        userId: USER,
+        baseRevisionNumber: base,
+        content: brandedDocument(),
+        guidance,
+      });
+    expect((await save(2, GUIDANCE())).created).toBe(false);
+    const changed = await save(2, GUIDANCE([PHOTO_SLOT, TITLE_SLOT]));
+    expect([changed.created, changed.revision.revisionNumber]).toEqual([
+      true,
+      3,
+    ]);
+    expect((await save(3, null)).revision.revisionNumber).toBe(4);
+    // a stale base is a conflict, for guidance as for documents
+    expect(await status(() => save(3, GUIDANCE()))).toEqual([
+      409,
+      'CS_DESIGN_TEMPLATE_REVISION_CONFLICT',
+    ]);
+    expect(state.contentStudioDesignTemplateRevision).toHaveLength(4);
+  });
+
+  it('GR3/TWG8 guidance is required as a key, checked after the document against it; invalid or stale guidance stores nothing', async () => {
+    const { templates, state } = setup();
+    const created = await createTemplate(templates);
+    const save = (guidance: unknown, content: unknown = brandedDocument()) =>
+      status(() =>
+        templates.createRevision({
+          organizationId: ORG,
+          templateId: created.id,
+          userId: USER,
+          baseRevisionNumber: 1,
+          content,
+          guidance,
+        })
+      );
+    expect(await save(undefined)).toEqual([400, 'CS_INVALID_REQUEST']);
+    expect(await save({ ...GUIDANCE(), extra: true })).toEqual([
+      400,
+      'CS_DESIGN_TEMPLATE_GUIDANCE_INVALID',
+    ]);
+    expect(
+      await save(GUIDANCE([{ ...TITLE_SLOT, label: `<b>${MARKER}</b>` }]))
+    ).toEqual([400, 'CS_DESIGN_TEMPLATE_GUIDANCE_INVALID']);
+    // a deleted target layer, a text field on an image, rebinding without a
+    // Brand Kit: stale for this document
+    expect(await save(GUIDANCE([{ ...TITLE_SLOT, layerId: 'gone' }]))).toEqual([
+      400,
+      'CS_DESIGN_TEMPLATE_GUIDANCE_STALE',
+    ]);
+    expect(await save(GUIDANCE([{ ...TITLE_SLOT, layerId: 'photo' }]))).toEqual(
+      [400, 'CS_DESIGN_TEMPLATE_GUIDANCE_STALE']
+    );
+    expect(await save(GUIDANCE([], true), plainDocument('x'))).toEqual([
+      400,
+      'CS_DESIGN_TEMPLATE_GUIDANCE_STALE',
+    ]);
+    // the document is checked first
+    expect(await save({ broken: true }, { schemaVersion: 2 })).toEqual([
+      400,
+      'CS_DESIGN_INVALID',
+    ]);
+    expect(state.contentStudioDesignTemplateRevision).toHaveLength(1);
+  });
+
+  it('GR4 stored guidance that no longer matches its hash, its document or itself is an integrity error everywhere', async () => {
+    const { templates, state } = setup();
+    const { created, saved } = await guidedTemplate(templates);
+    const row = storedRow(
+      state,
+      'contentStudioDesignTemplateRevision',
+      saved.revision.id
+    );
+    const good = { ...row };
+    for (const broken of [
+      { guidanceHash: SHA('0') },
+      { guidance: row.guidance.replace('Title', 'Tit1e') },
+      { guidanceSchemaVersion: null },
+      {
+        guidance: JSON.stringify(
+          GUIDANCE([{ ...TITLE_SLOT, layerId: 'gone' }])
+        ),
+      },
+    ]) {
+      Object.assign(row, good, broken);
+      expect(
+        await status(() => templates.getTemplate(ORG, created.id))
+      ).toEqual([500, 'CS_DESIGN_TEMPLATE_INTEGRITY_ERROR']);
+      expect(
+        await status(() =>
+          useGuided(templates, created, saved.revision.id, {
+            values: { title_field: 'x' },
+          })
+        )
+      ).toEqual([500, 'CS_DESIGN_TEMPLATE_INTEGRITY_ERROR']);
+    }
+    expect(state.contentStudioDesignProject).toHaveLength(0);
+  });
+
+  it('P412-16/M16 new templates and designs saved as templates get no guidance; nothing is inferred', async () => {
+    const { templates, designs, state } = setup();
+    const created = await createTemplate(templates);
+    expect(created.currentRevision).toMatchObject({
+      guidance: null,
+      guidanceHash: null,
+    });
+    const design = await createDesign(designs);
+    const fromDesign = await templates.saveDesignRevisionAsTemplate({
+      organizationId: ORG,
+      userId: USER,
+      designId: design.id,
+      revisionId: design.currentRevision.id,
+      name: 'From design',
+      description: undefined,
+    });
+    expect(fromDesign.currentRevision.guidance).toBeNull();
+    for (const row of state.contentStudioDesignTemplateRevision) {
+      expect([
+        row.guidanceSchemaVersion,
+        row.guidance,
+        row.guidanceHash,
+      ]).toEqual([null, null, null]);
+    }
+  });
+});
+
+describe('P4-12 guided use of a template', () => {
+  it('I1/I3/I4/I5/I6/I7/M16/M17 text values make an ordinary design revision 1 with no guidance, template or field in it', async () => {
+    const { templates, designs, state } = setup();
+    const { created, saved } = await guidedTemplate(templates);
+    const design = await useGuided(templates, created, saved.revision.id, {
+      values: { title_field: '  New title\nline ' },
+    });
+    const stored = await designs.getDesign(ORG, design.id);
+    expect(stored.latestRevisionNumber).toBe(1);
+    const expected = JSON.parse(JSON.stringify(brandedDocument()));
+    expected.pages[0].layers[1].text = '  New title\nline ';
+    expect(stored.currentRevision.content).toEqual(expected);
+    const revision = state.contentStudioDesignRevision[0];
+    expect(revision.content).toBe(
+      storedContentStudioDesignDocument(
+        parseContentStudioDesignDocument(expected)
+      ).content
+    );
+    const keys = [
+      ...keysOf(JSON.parse(revision.content)),
+      ...Object.keys(revision),
+      ...Object.keys(state.contentStudioDesignProject[0]),
+    ];
+    for (const word of [
+      'guidance',
+      'guidanceHash',
+      'slots',
+      'templateId',
+      'source',
+      'values',
+      'brandRebinding',
+    ]) {
+      expect([word, keys.includes(word)]).toEqual([word, false]);
+    }
+    expect(revision.content).not.toMatch(
+      /title_field|photo_field|The main line|system:|templateId|guidance|brandRebinding/i
+    );
+    expect(revision.content).not.toContain(created.id);
+    expect(revision.content).not.toContain(saved.revision.id);
+  });
+
+  it('I2/I15/C3/C4/M8/M10 an image value is the exact reference the server makes for the organization’s Media; crop and geometry stay', async () => {
+    const { templates, designs, media, bridge } = setup();
+    const { created, saved } = await guidedTemplate(templates);
+    const design = await useGuided(templates, created, saved.revision.id, {
+      values: { title_field: 'T', photo_field: mediaRef('media-new') },
+    });
+    const layer = (await designs.getDesign(ORG, design.id)).currentRevision
+      .content.pages[0].layers[2] as Row;
+    expect(layer).toEqual({
+      ...layers()[2],
+      imageRef: { type: 'media', ...mediaRef('media-new') },
+    });
+    expect(layer.focalPoint).toEqual({ x: 0.25, y: 0.75 });
+    expect(media.getMediaByIdForOrganization).toHaveBeenCalledWith(
+      ORG,
+      'media-new'
+    );
+    expect(bridge.readMediaBytesForOrganization).toHaveBeenCalledTimes(1);
+    expect(bridge.readMediaBytesForOrganization.mock.calls[0][0]).toBe(ORG);
+  });
+
+  it('SEC3/M10/M30 another organization’s Media, a missing item or other bytes are refused; nothing is created', async () => {
+    const { templates, state } = setup();
+    const { created, saved } = await guidedTemplate(templates);
+    for (const photo of [
+      mediaRef('media-other'),
+      { mediaId: 'media-gone', sha256: SHA('e') },
+      { mediaId: 'media-new', sha256: mediaRef('media-two').sha256 },
+    ]) {
+      expect(
+        await status(() =>
+          useGuided(templates, created, saved.revision.id, {
+            values: { title_field: 'T', photo_field: photo },
+          })
+        )
+      ).toEqual([400, 'CS_DESIGN_TEMPLATE_MEDIA_INVALID']);
+    }
+    expect(state.contentStudioDesignProject).toHaveLength(0);
+  });
+
+  it('I14/I11/I12/I13 text-only values read no Media at all; a refused value reads nothing either', async () => {
+    const { templates, media, bridge, brandKits } = setup();
+    const { created, saved } = await guidedTemplate(templates);
+    await useGuided(templates, created, saved.revision.id, {
+      values: { title_field: 'T' },
+    });
+    expect(media.getMediaByIdForOrganization).not.toHaveBeenCalled();
+    expect(bridge.readMediaBytesForOrganization).not.toHaveBeenCalled();
+    brandKits.getRevisionForBrandKit.mockClear();
+    expect(
+      await status(() =>
+        useGuided(templates, created, saved.revision.id, {
+          values: { title_field: 'T', nope: mediaRef('media-new') },
+          brandKitRevisionId: KIT_REV2,
+        })
+      )
+    ).toEqual([400, 'CS_DESIGN_TEMPLATE_FIELD_UNKNOWN']);
+    expect(media.getMediaByIdForOrganization).not.toHaveBeenCalled();
+    expect(brandKits.getRevisionForBrandKit).not.toHaveBeenCalled();
+  });
+
+  it('C5/C8/C9/SEC5/SEC7/M7 required, unknown and wrongly typed values fail closed, before any write', async () => {
+    const { templates, state } = setup();
+    const { created, saved } = await guidedTemplate(templates);
+    const use = (values: unknown) =>
+      status(() =>
+        useGuided(templates, created, saved.revision.id, { values })
+      );
+    expect(await use(undefined)).toEqual([
+      400,
+      'CS_DESIGN_TEMPLATE_FIELD_REQUIRED',
+    ]);
+    expect(await use({ title_field: '   ' })).toEqual([
+      400,
+      'CS_DESIGN_TEMPLATE_FIELD_REQUIRED',
+    ]);
+    // a layer id is not a field id: no layer can be reached around the
+    // guidance
+    expect(await use({ title_field: 'T', panel: 'x' })).toEqual([
+      400,
+      'CS_DESIGN_TEMPLATE_FIELD_UNKNOWN',
+    ]);
+    expect(await use({ title_field: 'T', title: 'x' })).toEqual([
+      400,
+      'CS_DESIGN_TEMPLATE_FIELD_UNKNOWN',
+    ]);
+    expect(await use({ title_field: mediaRef('media-new') })).toEqual([
+      400,
+      'CS_DESIGN_TEMPLATE_FIELD_INVALID',
+    ]);
+    expect(await use({ title_field: 'T', photo_field: 'text' })).toEqual([
+      400,
+      'CS_DESIGN_TEMPLATE_FIELD_INVALID',
+    ]);
+    for (const values of [
+      [],
+      'x',
+      {
+        title_field: 'T',
+        photo_field: { ...mediaRef('media-new'), url: 'https://x.test' },
+      },
+      { content: brandedDocument() },
+    ]) {
+      expect(await use(values)).toEqual([400, 'CS_INVALID_REQUEST']);
+    }
+    expect(state.contentStudioDesignProject).toHaveLength(0);
+  });
+
+  it('I8 an older revision is used with exactly its own guidance', async () => {
+    const { templates, designs } = setup();
+    const { created, saved } = await guidedTemplate(templates);
+    await templates.createRevision({
+      organizationId: ORG,
+      templateId: created.id,
+      userId: USER,
+      baseRevisionNumber: 2,
+      content: brandedDocument(),
+      guidance: GUIDANCE([{ ...TITLE_SLOT, id: 'renamed' }]),
+    });
+    // revision 2 still knows title_field, not renamed
+    const design = await useGuided(templates, created, saved.revision.id, {
+      values: { title_field: 'Old field' },
+    });
+    expect(
+      (
+        (await designs.getDesign(ORG, design.id)).currentRevision.content
+          .pages[0].layers[1] as Row
+      ).text
+    ).toBe('Old field');
+    expect(
+      await status(() =>
+        useGuided(templates, created, saved.revision.id, {
+          values: { renamed: 'x' },
+        })
+      )
+    ).toEqual([400, 'CS_DESIGN_TEMPLATE_FIELD_UNKNOWN']);
+  });
+
+  it('I9 an archived template is refused before any value is looked at', async () => {
+    const { templates, media } = setup();
+    const { created, saved } = await guidedTemplate(templates);
+    await templates.archiveTemplate(ORG, created.id);
+    expect(
+      await status(() =>
+        useGuided(templates, created, saved.revision.id, {
+          values: { title_field: 'T', photo_field: mediaRef('media-new') },
+        })
+      )
+    ).toEqual([409, 'CS_DESIGN_TEMPLATE_ARCHIVED']);
+    expect(media.getMediaByIdForOrganization).not.toHaveBeenCalled();
+  });
+
+  it('I10 a built-in template’s fields: headline required, supporting text optional', async () => {
+    const { templates, designs } = setup();
+    const use = (values: unknown) =>
+      templates.instantiateTemplate({
+        organizationId: ORG,
+        userId: USER,
+        source: 'system',
+        templateId: 'system:square-post',
+        revisionId: undefined,
+        revisionNumber: 2,
+        name: 'Built-in',
+        values,
+      });
+    const design = await use({ headline: 'Launch day', body: '' });
+    const content = (await designs.getDesign(ORG, design.id)).currentRevision
+      .content;
+    const template =
+      findContentStudioSystemDesignTemplate('system:square-post');
+    expect(content.pages[0].layers.map((layer) => (layer as Row).text)).toEqual(
+      [undefined, 'Launch day', '']
+    );
+    expect({
+      ...content,
+      pages: [{ ...content.pages[0], layers: [] }],
+    }).toEqual({
+      ...template?.content,
+      pages: [{ ...template?.content.pages[0], layers: [] }],
+    });
+    expect(await status(() => use({ body: 'x' }))).toEqual([
+      400,
+      'CS_DESIGN_TEMPLATE_FIELD_REQUIRED',
+    ]);
+    expect(
+      await status(() =>
+        templates.instantiateTemplate({
+          organizationId: ORG,
+          userId: USER,
+          source: 'system',
+          templateId: 'system:square-post',
+          revisionId: undefined,
+          revisionNumber: 2,
+          name: 'Built-in',
+          values: { headline: 'x' },
+          brandKitRevisionId: KIT_REV1,
+        })
+      )
+    ).toEqual([400, 'CS_DESIGN_TEMPLATE_BRAND_REBIND_UNSUPPORTED']);
+  });
+
+  it('a value the document cannot hold is refused by the document rules', async () => {
+    const { templates } = setup();
+    const { created, saved } = await guidedTemplate(templates);
+    expect(
+      await status(() =>
+        useGuided(templates, created, saved.revision.id, {
+          values: { title_field: 'a\u0000b' },
+        })
+      )
+    ).toEqual([400, 'CS_DESIGN_INVALID']);
+  });
+});
+
+describe('P4-12 explicit Brand Kit rebinding', () => {
+  // the document uses only the "primary" token of revision 1
+  it('BR1 without a chosen revision the exact original reference is kept', async () => {
+    const { templates, designs } = setup();
+    const { created, saved } = await guidedTemplate(templates);
+    const design = await useGuided(templates, created, saved.revision.id, {
+      values: { title_field: 'T' },
+    });
+    expect(
+      (await designs.getDesign(ORG, design.id)).currentRevision.content.brandKit
+    ).toEqual(kitRef());
+  });
+
+  it('BR2/BR6/BR7/BR10/M11/M13 a chosen compatible revision replaces only the reference, exactly that revision', async () => {
+    const { templates, designs, brandKits } = setup();
+    const { created, saved } = await guidedTemplate(templates);
+    brandKits.getRevisionForBrandKit.mockClear();
+    const design = await useGuided(templates, created, saved.revision.id, {
+      values: { title_field: 'T' },
+      brandKitRevisionId: KIT_REV2,
+    });
+    const content = (await designs.getDesign(ORG, design.id)).currentRevision
+      .content;
+    expect(content.brandKit).toEqual({
+      brandKitId: KIT,
+      revisionId: KIT_REV2,
+      revisionNumber: 2,
+      contentHash: BRAND_REVISIONS[1].contentHash,
+    });
+    const expected = JSON.parse(JSON.stringify(brandedDocument()));
+    expected.pages[0].layers[1].text = 'T';
+    expect({ ...content, brandKit: null }).toEqual({
+      ...expected,
+      brandKit: null,
+    });
+    // literals and tokens as they were: nothing mapped or converted
+    expect((content.pages[0].layers[0] as Row).fill).toEqual({
+      type: 'brand',
+      tokenId: 'primary',
+    });
+    expect((content.pages[0].layers[1] as Row).color).toEqual({
+      type: 'literal',
+      value: '#111111',
+    });
+    for (const [, , revisionId] of brandKits.getRevisionForBrandKit.mock
+      .calls) {
+      expect([KIT_REV2]).toContain(revisionId);
+    }
+    expect(brandKits.getCurrentRevision).not.toHaveBeenCalled();
+    expect(brandKits.getLatestRevision).not.toHaveBeenCalled();
+  });
+
+  it('BR4/BR5/M12 a revision lacking any token the document uses rejects the whole use, with no fallback', async () => {
+    const { templates, state } = setup();
+    const created = await createTemplate(templates);
+    // pinned to revision 2 and using its "accent" token
+    const document = JSON.parse(JSON.stringify(brandedDocument()));
+    document.brandKit = {
+      ...kitRef(),
+      revisionId: KIT_REV2,
+      revisionNumber: 2,
+      contentHash: BRAND_REVISIONS[1].contentHash,
+    };
+    document.pages[0].background.color = { type: 'brand', tokenId: 'accent' };
+    const saved = await templates.createRevision({
+      organizationId: ORG,
+      templateId: created.id,
+      userId: USER,
+      baseRevisionNumber: 1,
+      content: document,
+      guidance: GUIDANCE(),
+    });
+    expect(
+      await status(() =>
+        useGuided(templates, created, saved.revision.id, {
+          values: { title_field: 'T' },
+          brandKitRevisionId: KIT_REV1,
+        })
+      )
+    ).toEqual([400, 'CS_DESIGN_TEMPLATE_BRAND_INCOMPATIBLE']);
+    expect(state.contentStudioDesignProject).toHaveLength(0);
+    expect(state.contentStudioDesignRevision).toHaveLength(0);
+  });
+
+  it('BR3/SEC2/M14/M29 another organization’s revision, or an unknown one, is not available', async () => {
+    const { templates, brandKits, state } = setup();
+    const { created, saved } = await guidedTemplate(templates);
+    for (const revisionId of [OTHER_KIT_REV, SHA('f').slice(0, 36), 42]) {
+      expect(
+        await status(() =>
+          useGuided(templates, created, saved.revision.id, {
+            values: { title_field: 'T' },
+            brandKitRevisionId: revisionId,
+          })
+        )
+      ).toEqual(
+        revisionId === 42
+          ? [400, 'CS_INVALID_REQUEST']
+          : [400, 'CS_DESIGN_BRAND_REFERENCE_NOT_FOUND']
+      );
+    }
+    // every lookup was of the caller's own kit
+    for (const [organizationId] of brandKits.getBrandKitForOrganization.mock
+      .calls) {
+      expect(organizationId).toBe(ORG);
+    }
+    for (const [organizationId, brandKitId] of brandKits.getRevisionForBrandKit
+      .mock.calls) {
+      expect([organizationId, brandKitId]).toEqual([ORG, KIT]);
+    }
+    expect(state.contentStudioDesignProject).toHaveLength(0);
+  });
+
+  it('BR8/BR9/M15 rebinding needs guidance allowing it and a document with a Brand Kit', async () => {
+    const { templates, brandKits } = setup();
+    const { created, saved } = await guidedTemplate(
+      templates,
+      GUIDANCE([TITLE_SLOT], false)
+    );
+    brandKits.getRevisionForBrandKit.mockClear();
+    expect(
+      await status(() =>
+        useGuided(templates, created, saved.revision.id, {
+          values: { title_field: 'T' },
+          brandKitRevisionId: KIT_REV2,
+        })
+      )
+    ).toEqual([400, 'CS_DESIGN_TEMPLATE_BRAND_REBIND_UNSUPPORTED']);
+    // no guidance at all
+    const plain = await createTemplate(templates);
+    expect(
+      await status(() =>
+        useGuided(templates, plain, plain.currentRevision.id, {
+          brandKitRevisionId: KIT_REV2,
+        })
+      )
+    ).toEqual([400, 'CS_DESIGN_TEMPLATE_BRAND_REBIND_UNSUPPORTED']);
+    // a document without a Brand Kit cannot even be given such guidance
+    const unbranded = await createTemplate(templates, {
+      content: plainDocument('x'),
+    });
+    expect(
+      await status(() =>
+        useGuided(templates, unbranded, unbranded.currentRevision.id, {
+          brandKitRevisionId: KIT_REV2,
+        })
+      )
+    ).toEqual([400, 'CS_DESIGN_TEMPLATE_BRAND_REBIND_UNSUPPORTED']);
+    expect(brandKits.getRevisionForBrandKit).not.toHaveBeenCalledWith(
+      ORG,
+      KIT,
+      KIT_REV2
+    );
+  });
+});
+
+describe('P4-12 tenant isolation', () => {
+  it('SEC1 another organization’s template and its guidance read as missing and cannot be used', async () => {
+    const { templates } = setup();
+    const { created, saved } = await guidedTemplate(templates);
+    expect(
+      await status(() =>
+        templates.instantiateTemplate({
+          organizationId: OTHER_ORG,
+          userId: USER,
+          source: 'organization',
+          templateId: created.id,
+          revisionId: saved.revision.id,
+          revisionNumber: undefined,
+          name: 'x',
+          values: { title_field: 'T' },
+        })
+      )
+    ).toEqual([404, 'CS_NOT_FOUND']);
+    expect(
+      await status(() =>
+        templates.getRevision({
+          organizationId: OTHER_ORG,
+          templateId: created.id,
+          revisionId: saved.revision.id,
+        })
+      )
+    ).toEqual([404, 'CS_NOT_FOUND']);
+  });
+
+  it('SEC4 a revision id of another template never lends its guidance', async () => {
+    const { templates } = setup();
+    const { saved } = await guidedTemplate(templates);
+    const other = await createTemplate(templates);
+    expect(
+      await status(() =>
+        useGuided(templates, other, saved.revision.id, {
+          values: { title_field: 'T' },
+        })
+      )
+    ).toEqual([404, 'CS_NOT_FOUND']);
+  });
+
+  it('SEC8 a source and identity that do not belong together fail closed', async () => {
+    const { templates } = setup();
+    const { created, saved } = await guidedTemplate(templates);
+    const use = (overrides: Row) =>
+      status(() =>
+        templates.instantiateTemplate({
+          organizationId: ORG,
+          userId: USER,
+          source: 'organization',
+          templateId: created.id,
+          revisionId: saved.revision.id,
+          revisionNumber: undefined,
+          name: 'x',
+          values: { title_field: 'T' },
+          ...overrides,
+        })
+      );
+    expect(await use({ source: 'system' })).toEqual([404, 'CS_NOT_FOUND']);
+    expect(
+      await use({ templateId: 'system:story', revisionNumber: 2 })
+    ).toEqual([404, 'CS_NOT_FOUND']);
+    expect(await use({ source: 'other' })).toEqual([400, 'CS_INVALID_REQUEST']);
+  });
+});
+
+// ============================================================================
+describe('P4-12 source boundaries', () => {
+  const GUIDANCE_FILE =
+    'libraries/nestjs-libraries/src/content-studio/design/design.template.guidance.ts';
+  const GUIDANCE_REVISION =
+    'libraries/nestjs-libraries/src/content-studio/design/design.template.guidance.revision.ts';
+  const SERVICE =
+    'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.design-template.service.ts';
+  const DOCUMENT =
+    'libraries/nestjs-libraries/src/content-studio/design/design.document.ts';
+  const FILES = [
+    GUIDANCE_FILE,
+    GUIDANCE_REVISION,
+    SERVICE,
+    'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.design-template.repository.ts',
+    'libraries/nestjs-libraries/src/content-studio/design/design.system.templates.ts',
+    'libraries/nestjs-libraries/src/dtos/content-studio/content-studio.design-template.dto.ts',
+  ];
+  const schema = read(
+    'libraries/nestjs-libraries/src/database/prisma/schema.prisma'
+  );
+  const model = (name: string) =>
+    schema.match(new RegExp(`model ${name} \\{([\\s\\S]*?)\\n\\}`))?.[1] ?? '';
+
+  it('P412-1/P412-2 Design Document v1 is unchanged: schema version 1, no field, slot, guidance or template key', () => {
+    expect(code(DOCUMENT)).toContain(
+      'export const DESIGN_DOCUMENT_SCHEMA_VERSION = 1;'
+    );
+    expect(code(DOCUMENT)).not.toMatch(
+      /slot|guidance|placeholder|template|\{\{|binding/i
+    );
+    expect(code(DOCUMENT)).not.toMatch(/schemaVersion: z\.literal\(2\)|V2\b/);
+  });
+
+  it('P412-3/P412-4/P412-14 nothing links a design to a template: no guidance, slot, instance or binding columns or tables', () => {
+    for (const name of [
+      'ContentStudioDesignProject',
+      'ContentStudioDesignRevision',
+      'ContentStudioDesignTemplate',
+    ]) {
+      expect([name, model(name)]).not.toEqual([
+        name,
+        expect.stringMatching(
+          name === 'ContentStudioDesignTemplate'
+            ? /guidance|slot|instance|binding/i
+            : /guidance|slot|template|instance|binding/i
+        ),
+      ]);
+    }
+    expect(schema).not.toMatch(
+      /model ContentStudioDesign\w*(Slot|Placeholder|Instance|Link|Binding|Guidance)\b/
+    );
+    const revision = model('ContentStudioDesignTemplateRevision');
+    expect(revision).toMatch(/guidanceSchemaVersion\s+Int\?\n/);
+    expect(revision).toMatch(/guidance\s+String\?\n/);
+    expect(revision).toMatch(/guidanceHash\s+String\?\n/);
+  });
+
+  it('P412-5/P412-10/P412-11/P412-12/P412-13 no Fabric state, render, fetch, AI, marketplace or sharing', () => {
+    for (const file of FILES) {
+      expect([file, code(file)]).not.toEqual([
+        file,
+        expect.stringMatching(
+          /fabric|toJSON\(|toObject\(|loadFromJSON|render|layout|safe\.fetch|safeFetch|\bfetch\(|axios|openai|anthropic|@ai-sdk|ai\.execution|ai\.provider|AIWriting|generate\(|marketplace|public|share/i
+        ),
+      ]);
+    }
+  });
+
+  it('P412-9/M11/M22 no latest or current Brand Kit revision is ever looked up', () => {
+    for (const file of FILES) {
+      expect([file, code(file)]).not.toEqual([
+        file,
+        expect.stringMatching(
+          /BrandKitRepository|getCurrentRevision|getLatestRevision|latestRevisionNumber.*brand|currentBrand|latestBrand/i
+        ),
+      ]);
+    }
+    const service = code(SERVICE);
+    expect(service).toContain(
+      '_contentStudioDesignReferenceService.getBrandKitReference('
+    );
+  });
+
+  it('P412-15 the design revision body is still exactly a base revision number and a document', () => {
+    const dto = code(
+      'libraries/nestjs-libraries/src/dtos/content-studio/content-studio.design.dto.ts'
+    );
+    const body = dto.slice(
+      dto.indexOf('class CreateContentStudioDesignRevisionDto'),
+      dto.indexOf('class ListContentStudioDesignRevisionsDto')
+    );
+    expect(body.match(/^\s+(\w+)\??:/gm)?.map((line) => line.trim())).toEqual([
+      'baseRevisionNumber:',
+      'content:',
+    ]);
+    const designService = code(
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.design.service.ts'
+    );
+    expect(designService).not.toMatch(/guidance|slot|template\.guidance/i);
+  });
+
+  it('P412-16 new templates and designs saved as templates never get inferred guidance', () => {
+    const service = code(SERVICE);
+    const store = service.slice(
+      service.indexOf('private async storeNewTemplate'),
+      service.indexOf('private parseGuidance')
+    );
+    expect(store).toContain('storedContentStudioDesignTemplateGuidance(null)');
+    const saveAs = service.slice(
+      service.indexOf('async saveDesignRevisionAsTemplate'),
+      service.indexOf('async getTemplate')
+    );
+    expect(saveAs).not.toMatch(/guidance|slot/i);
+    expect(code(GUIDANCE_FILE)).not.toMatch(/infer|guess|detect|suggest/i);
+  });
+
+  it('guidance and customization are pure: no database, Node module or network', () => {
+    expect(code(GUIDANCE_FILE)).not.toMatch(
+      /from 'crypto'|from 'fs'|prisma|Injectable|HttpException|process\./
+    );
+    expect(code(GUIDANCE_REVISION)).not.toMatch(
+      /prisma|Injectable|HttpException|process\./
+    );
+  });
+});
+
+// ============================================================================
 describe('Design templates: source boundaries', () => {
   const SERVICE =
     'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.design-template.service.ts';
@@ -1408,15 +2376,30 @@ describe('Design templates: source boundaries', () => {
     }
   });
 
-  it('P411-7/P411-8/M15 using or saving a template renders nothing and reads no Media', () => {
+  it('P411-7/P411-8/M15 using or saving a template renders nothing and reads no Media directly', () => {
     for (const file of FILES) {
       expect([file, code(file)]).not.toEqual([
         file,
         expect.stringMatching(
-          /render|layout|MediaService|RenderMediaBridge|readMedia|design-reference|DesignReference|sharp|fontkit/i
+          /render|layout|MediaService|RenderMediaBridge|readMedia|sharp|fontkit/i
         ),
       ]);
     }
+    // P4-12: an image field is checked only through the design reference
+    // service (the organization's Media, the exact SHA-256); nothing else
+    // here may name it
+    for (const file of FILES.filter((entry) => entry !== SERVICE)) {
+      expect([file, code(file)]).not.toEqual([
+        file,
+        expect.stringMatching(/design-reference|DesignReference/),
+      ]);
+    }
+    expect(
+      code(SERVICE).match(/_contentStudioDesignReferenceService\.(\w+)\(/g)
+    ).toEqual([
+      '_contentStudioDesignReferenceService.getMediaReference(',
+      '_contentStudioDesignReferenceService.getBrandKitReference(',
+    ]);
   });
 
   it('P411-9/M20 saving a design revision as a template takes no document from the request', () => {
@@ -1448,7 +2431,8 @@ describe('Design templates: source boundaries', () => {
 
   it('P411-10 every template document goes through the Design Document v1 checks of the design service', () => {
     const service = code(SERVICE);
-    expect(service.match(/parseDocumentForOrganization\(/g)).toHaveLength(3);
+    // create, save as template, revise, and the Brand Kit rebind check
+    expect(service.match(/parseDocumentForOrganization\(/g)).toHaveLength(4);
     expect(service).toContain('storedContentStudioDesignDocument(');
     expect(service).toContain('parseVerifiedContentStudioDesignRevision(row)');
     expect(service).not.toMatch(/JSON\.stringify|sha256Hex|createHash/);

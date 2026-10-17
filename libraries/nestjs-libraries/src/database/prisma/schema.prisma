@@ -2408,20 +2408,27 @@ model ContentStudioDesignTemplate {
 }
 
 // One immutable revision of a design template: a Design Document v1 in
-// canonical JSON and the SHA-256 of exactly that text, numbered once
+// canonical JSON and the SHA-256 of exactly that text, numbered once, and
+// optionally the Template Guidance v1 for exactly that document (its fields
+// and whether another Brand Kit revision may be used), in canonical JSON
+// with its own SHA-256. The guidance columns are all set or all null (a
+// revision without guidance, like every revision before it existed)
 model ContentStudioDesignTemplateRevision {
-  id             String                      @id @default(uuid())
-  organizationId String
-  templateId     String
-  revisionNumber Int
-  schemaVersion  Int
-  content        String
-  contentHash    String
-  createdById    String
-  createdAt      DateTime                    @default(now())
-  organization   Organization                @relation(fields: [organizationId], references: [id])
-  template       ContentStudioDesignTemplate @relation(fields: [templateId, organizationId], references: [id, organizationId])
-  createdBy      User                        @relation("ContentStudioDesignTemplateRevisionCreatedBy", fields: [createdById], references: [id])
+  id                    String                      @id @default(uuid())
+  organizationId        String
+  templateId            String
+  revisionNumber        Int
+  schemaVersion         Int
+  content               String
+  contentHash           String
+  guidanceSchemaVersion Int?
+  guidance              String?
+  guidanceHash          String?
+  createdById           String
+  createdAt             DateTime                    @default(now())
+  organization          Organization                @relation(fields: [organizationId], references: [id])
+  template              ContentStudioDesignTemplate @relation(fields: [templateId, organizationId], references: [id, organizationId])
+  createdBy             User                        @relation("ContentStudioDesignTemplateRevisionCreatedBy", fields: [createdById], references: [id])
 
   @@unique([templateId, revisionNumber])
   @@unique([id, organizationId])

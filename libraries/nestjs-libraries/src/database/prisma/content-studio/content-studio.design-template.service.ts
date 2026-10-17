@@ -3,7 +3,10 @@ import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { ContentStudioDesignTemplateRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.repository';
 import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
+import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
 import {
+  ContentStudioDesignBrandKitRef,
+  ContentStudioDesignDocumentError,
   ContentStudioDesignDocumentV1,
   DESIGN_PROJECT_NAME_MAX,
 } from '@gitroom/nestjs-libraries/content-studio/design/design.document';
@@ -18,6 +21,19 @@ import {
   findContentStudioSystemDesignTemplate,
   listContentStudioSystemDesignTemplates,
 } from '@gitroom/nestjs-libraries/content-studio/design/design.system.templates';
+import {
+  applyContentStudioDesignTemplateCustomization,
+  ContentStudioDesignTemplateCustomizationError,
+  ContentStudioDesignTemplateGuidanceError,
+  ContentStudioDesignTemplateGuidanceV1,
+  ContentStudioDesignTemplateValue,
+  parseContentStudioDesignTemplateGuidance,
+  parseContentStudioDesignTemplateValues,
+} from '@gitroom/nestjs-libraries/content-studio/design/design.template.guidance';
+import {
+  parseVerifiedContentStudioDesignTemplateGuidance,
+  storedContentStudioDesignTemplateGuidance,
+} from '@gitroom/nestjs-libraries/content-studio/design/design.template.guidance.revision';
 
 // Fixed messages only: never template text, names, ids, zod or Prisma
 // errors. A template of another organization is a plain 404
@@ -53,6 +69,85 @@ const integrityError = () =>
     },
     500
   );
+const guidanceInvalid = () =>
+  new HttpException(
+    {
+      msg: 'The template fields are invalid.',
+      code: 'CS_DESIGN_TEMPLATE_GUIDANCE_INVALID',
+    },
+    400
+  );
+const guidanceStale = () =>
+  new HttpException(
+    {
+      msg: 'A template field no longer matches a layer of the design.',
+      code: 'CS_DESIGN_TEMPLATE_GUIDANCE_STALE',
+    },
+    400
+  );
+const designInvalid = () =>
+  new HttpException(
+    { msg: 'The design document is invalid.', code: 'CS_DESIGN_INVALID' },
+    400
+  );
+const designTooLarge = () =>
+  new HttpException(
+    { msg: 'The design document is too large.', code: 'CS_DESIGN_TOO_LARGE' },
+    413
+  );
+const CUSTOMIZATION_ERRORS: Record<string, [string, string]> = {
+  INVALID: ['The template values are invalid.', 'CS_INVALID_REQUEST'],
+  UNKNOWN_FIELD: [
+    'A value names a field this template does not have.',
+    'CS_DESIGN_TEMPLATE_FIELD_UNKNOWN',
+  ],
+  FIELD_TYPE: [
+    'A value does not fit its template field.',
+    'CS_DESIGN_TEMPLATE_FIELD_INVALID',
+  ],
+  REQUIRED_FIELD: [
+    'A required template field has no value.',
+    'CS_DESIGN_TEMPLATE_FIELD_REQUIRED',
+  ],
+  BRAND_REBIND_UNSUPPORTED: [
+    'This template cannot be used with another Brand Kit revision.',
+    'CS_DESIGN_TEMPLATE_BRAND_REBIND_UNSUPPORTED',
+  ],
+  STALE: [
+    'A template field no longer matches a layer of the design.',
+    'CS_DESIGN_TEMPLATE_GUIDANCE_STALE',
+  ],
+};
+const customizationError = (
+  err: ContentStudioDesignTemplateCustomizationError
+) => {
+  const [msg, code] = CUSTOMIZATION_ERRORS[err.code];
+  return new HttpException({ msg, code }, 400);
+};
+const mediaInvalid = () =>
+  new HttpException(
+    {
+      msg: 'The selected media item cannot be used for this field.',
+      code: 'CS_DESIGN_TEMPLATE_MEDIA_INVALID',
+    },
+    400
+  );
+const brandReferenceNotFound = () =>
+  new HttpException(
+    {
+      msg: 'The selected Brand Kit revision is not available.',
+      code: 'CS_DESIGN_BRAND_REFERENCE_NOT_FOUND',
+    },
+    400
+  );
+const brandIncompatible = () =>
+  new HttpException(
+    {
+      msg: 'The selected Brand Kit revision lacks a color or type style this template uses.',
+      code: 'CS_DESIGN_TEMPLATE_BRAND_INCOMPATIBLE',
+    },
+    400
+  );
 
 // Template and revision ids are Prisma uuid() values; anything else cannot
 // exist (a built-in id is "system:…" and is never a row)
@@ -86,6 +181,25 @@ interface RevisionRow {
   contentHash: string;
   createdAt: Date;
 }
+
+// a stored revision with its document and guidance
+interface RevisionDetailRow extends RevisionRow {
+  content: string;
+  guidanceSchemaVersion: number | null;
+  guidance: string | null;
+  guidanceHash: string | null;
+}
+
+// the fixed code of an HttpException of another Content Studio service
+const errorCode = (err: unknown) => {
+  if (!(err instanceof HttpException)) {
+    return undefined;
+  }
+  const response = err.getResponse();
+  return typeof response === 'object' && response !== null
+    ? (response as { code?: unknown }).code
+    : undefined;
+};
 
 // Built field by field: no organization, creator or stored text leaves
 const templateSummary = (row: TemplateRow) => ({
@@ -121,6 +235,8 @@ const systemSummary = (template: ContentStudioSystemDesignTemplate) => ({
     schemaVersion: template.schemaVersion,
     contentHash: template.contentHash,
     content: template.content,
+    guidanceHash: template.guidanceHash,
+    guidance: template.guidance,
   },
 });
 
@@ -154,14 +270,22 @@ const plainText = (value: unknown, max: number, required: boolean) => {
 // template creates an ordinary design (through the design service) from
 // exactly the revision asked for, its document copied as it is: nothing is
 // relinked, rehashed, renumbered or replaced by a current Brand Kit, and
-// nothing links the design back. A design revision saved as a template is
-// read by the server from the stored revision, never from the request.
-// Nothing here renders, lays out, generates, fetches or looks at Media
+// nothing links the design back. A template revision may also hold
+// Template Guidance v1 for exactly its document (P4-12): fields that the
+// person using it fills (text, or an image of the organization's Media) and
+// whether another exact Brand Kit revision may be used. Those values are
+// written into the copy before the design is created, and the copy is still
+// only Design Document v1. A design revision saved as a template is read by
+// the server from the stored revision, never from the request, and gets no
+// guidance. Nothing here renders, lays out, generates or fetches; Media is
+// only looked at through the design reference service, for the exact image
+// a field is given
 @Injectable()
 export class ContentStudioDesignTemplateService {
   constructor(
     private _contentStudioDesignTemplateRepository: ContentStudioDesignTemplateRepository,
-    private _contentStudioDesignService: ContentStudioDesignService
+    private _contentStudioDesignService: ContentStudioDesignService,
+    private _contentStudioDesignReferenceService: ContentStudioDesignReferenceService
   ) {}
 
   // The built-in templates (not when archived ones are asked for) and one
@@ -344,16 +468,19 @@ export class ContentStudioDesignTemplateService {
     return templateSummary(await this.getRow(organizationId, id));
   }
 
-  // Saves a new document over the revision the editor started from, like a
-  // design revision: a missing, archived or moved-on template is answered
-  // before the Brand Kit is read, and the compare-and-swap decides the rest.
-  // Nothing is retried
+  // Saves a new document and its guidance (or none: null) over the revision
+  // the editor started from, like a design revision: a missing, archived or
+  // moved-on template is answered before the Brand Kit is read, and the
+  // compare-and-swap decides the rest, for both together. The guidance is
+  // checked after the document, against exactly that document. Nothing is
+  // retried
   async createRevision(input: {
     organizationId: string;
     templateId: string;
     userId: string;
     baseRevisionNumber: unknown;
     content: unknown;
+    guidance: unknown;
   }) {
     this.assertId(input.templateId);
     if (
@@ -361,6 +488,9 @@ export class ContentStudioDesignTemplateService {
       (input.baseRevisionNumber as number) < 1 ||
       (input.baseRevisionNumber as number) > INT4_MAX
     ) {
+      throw invalidRequest();
+    }
+    if (input.guidance === undefined) {
       throw invalidRequest();
     }
     const template = await this.getRow(input.organizationId, input.templateId);
@@ -375,7 +505,11 @@ export class ContentStudioDesignTemplateService {
         input.organizationId,
         input.content
       );
-    const stored = storedContentStudioDesignDocument(content);
+    const guidance = this.parseGuidance(input.guidance, content);
+    const stored = {
+      ...storedContentStudioDesignDocument(content),
+      ...storedContentStudioDesignTemplateGuidance(guidance),
+    };
 
     let result;
     try {
@@ -401,7 +535,12 @@ export class ContentStudioDesignTemplateService {
       case 'created':
         return {
           created: true,
-          revision: { ...revisionSummary(result.revision), content },
+          revision: {
+            ...revisionSummary(result.revision),
+            content,
+            guidanceHash: stored.guidanceHash,
+            guidance,
+          },
         };
       case 'unchanged':
         return {
@@ -473,9 +612,17 @@ export class ContentStudioDesignTemplateService {
   // its id and revision number, or one of the organization's own by its
   // template and revision ids (an archived template is not used). The
   // document is copied as it is stored, with its page and layer ids, its
-  // Brand Kit reference and its image references; the design service then
-  // creates the design and its revision 1 together, under the same checks as
-  // any new design
+  // Brand Kit reference and its image references, and then gets the values
+  // given for the revision's fields: every value must name one of its
+  // fields, of the right kind, and every required field needs one (checked
+  // before anything else is read). An image value must be exactly the
+  // reference the server makes now for that Media item of the organization;
+  // another Brand Kit revision, only where the guidance allows it, must be a
+  // revision of the organization's kit holding every token the document
+  // uses, or nothing changes (never the latest revision, never a mapping of
+  // tokens, never part of it). The design service then creates the design
+  // and its revision 1 together, under the same checks as any new design;
+  // the design holds no guidance and nothing of the template
   async instantiateTemplate(input: {
     organizationId: string;
     userId: string;
@@ -484,8 +631,58 @@ export class ContentStudioDesignTemplateService {
     revisionId: unknown;
     revisionNumber: unknown;
     name: unknown;
+    values?: unknown;
+    brandKitRevisionId?: unknown;
   }) {
-    const content = await this.templateDocument(input);
+    const revision = await this.templateRevision(input);
+    let values: Record<string, ContentStudioDesignTemplateValue>;
+    try {
+      values = parseContentStudioDesignTemplateValues(input.values);
+    } catch (err) {
+      if (err instanceof ContentStudioDesignTemplateCustomizationError) {
+        throw customizationError(err);
+      }
+      throw err;
+    }
+    const rebind = input.brandKitRevisionId !== undefined;
+    if (rebind && typeof input.brandKitRevisionId !== 'string') {
+      throw invalidRequest();
+    }
+    // every field checked, with no Media or Brand Kit read yet; a Brand Kit
+    // revision is refused here when the template does not allow one
+    let content = this.customize({
+      document: revision.content,
+      guidance: revision.guidance,
+      values,
+      brandKit:
+        rebind && revision.content.brandKit
+          ? revision.content.brandKit
+          : undefined,
+      rebind,
+    });
+    for (const slot of revision.guidance?.slots ?? []) {
+      const value = values[slot.id];
+      if (slot.type === 'image' && value !== undefined) {
+        await this.assertMediaReference(
+          input.organizationId,
+          value as { mediaId: string; sha256: string }
+        );
+      }
+    }
+    if (rebind) {
+      const brandKit = await this.brandKitReference(
+        input.organizationId,
+        input.brandKitRevisionId as string
+      );
+      content = this.customize({
+        document: revision.content,
+        guidance: revision.guidance,
+        values,
+        brandKit,
+        rebind,
+      });
+      await this.assertBrandCompatible(input.organizationId, content);
+    }
     return this._contentStudioDesignService.createDesign({
       organizationId: input.organizationId,
       userId: input.userId,
@@ -494,13 +691,114 @@ export class ContentStudioDesignTemplateService {
     });
   }
 
-  private async templateDocument(input: {
+  private customize(input: {
+    document: ContentStudioDesignDocumentV1;
+    guidance: ContentStudioDesignTemplateGuidanceV1 | null;
+    values: Record<string, ContentStudioDesignTemplateValue>;
+    brandKit: ContentStudioDesignBrandKitRef | undefined;
+    rebind: boolean;
+  }) {
+    if (input.rebind && !input.brandKit) {
+      // a document without a Brand Kit has nothing to rebind
+      throw customizationError(
+        new ContentStudioDesignTemplateCustomizationError(
+          'BRAND_REBIND_UNSUPPORTED'
+        )
+      );
+    }
+    try {
+      return applyContentStudioDesignTemplateCustomization({
+        document: input.document,
+        guidance: input.guidance,
+        values: input.values,
+        brandKit: input.brandKit,
+      });
+    } catch (err) {
+      if (err instanceof ContentStudioDesignTemplateCustomizationError) {
+        throw customizationError(err);
+      }
+      if (err instanceof ContentStudioDesignDocumentError) {
+        throw err.code === 'TOO_LARGE' ? designTooLarge() : designInvalid();
+      }
+      throw err;
+    }
+  }
+
+  // The image of a field is exactly what the design reference service makes
+  // for that Media item of the organization now: its id and the SHA-256 of
+  // its stored bytes. Another organization's or a missing item, or other
+  // bytes than the browser was given, is refused
+  private async assertMediaReference(
+    organizationId: string,
+    value: { mediaId: string; sha256: string }
+  ) {
+    let reference;
+    try {
+      reference =
+        await this._contentStudioDesignReferenceService.getMediaReference(
+          organizationId,
+          value.mediaId
+        );
+    } catch (err) {
+      if (errorCode(err) === 'CS_NOT_FOUND') {
+        throw mediaInvalid();
+      }
+      throw err;
+    }
+    if (
+      reference.mediaId !== value.mediaId ||
+      reference.sha256 !== value.sha256
+    ) {
+      throw mediaInvalid();
+    }
+  }
+
+  // Exactly the Brand Kit revision asked for, of the organization's kit and
+  // intact, never its latest
+  private async brandKitReference(organizationId: string, revisionId: string) {
+    try {
+      return await this._contentStudioDesignReferenceService.getBrandKitReference(
+        organizationId,
+        revisionId
+      );
+    } catch (err) {
+      if (errorCode(err) === 'CS_NOT_FOUND') {
+        throw brandReferenceNotFound();
+      }
+      throw err;
+    }
+  }
+
+  // All or nothing: the design service refuses a reference whose revision
+  // lacks a token the document uses. The reference was made by the server
+  // from that exact revision, so that is the only way it can be invalid here
+  private async assertBrandCompatible(
+    organizationId: string,
+    content: ContentStudioDesignDocumentV1
+  ) {
+    try {
+      await this._contentStudioDesignService.parseDocumentForOrganization(
+        organizationId,
+        content
+      );
+    } catch (err) {
+      if (errorCode(err) === 'CS_DESIGN_BRAND_REFERENCE_INVALID') {
+        throw brandIncompatible();
+      }
+      throw err;
+    }
+  }
+
+  private async templateRevision(input: {
     organizationId: string;
     source: unknown;
     templateId: unknown;
     revisionId: unknown;
     revisionNumber: unknown;
-  }): Promise<ContentStudioDesignDocumentV1> {
+  }): Promise<{
+    content: ContentStudioDesignDocumentV1;
+    guidance: ContentStudioDesignTemplateGuidanceV1 | null;
+  }> {
     if (input.source === 'system') {
       const template = findContentStudioSystemDesignTemplate(input.templateId);
       if (!template) {
@@ -509,7 +807,7 @@ export class ContentStudioDesignTemplateService {
       if (input.revisionNumber !== template.revisionNumber) {
         throw notFound();
       }
-      return template.content;
+      return { content: template.content, guidance: template.guidance };
     }
     if (input.source !== 'organization') {
       throw invalidRequest();
@@ -534,9 +832,12 @@ export class ContentStudioDesignTemplateService {
     if (!row) {
       throw notFound();
     }
-    return this.revisionDetail(row).content;
+    const detail = this.revisionDetail(row);
+    return { content: detail.content, guidance: detail.guidance };
   }
 
+  // A new template has no guidance: fields are marked by a later revision,
+  // never inferred
   private async storeNewTemplate(input: {
     organizationId: string;
     userId: string;
@@ -544,7 +845,10 @@ export class ContentStudioDesignTemplateService {
     description: string | null;
     content: ContentStudioDesignDocumentV1;
   }) {
-    const stored = storedContentStudioDesignDocument(input.content);
+    const stored = {
+      ...storedContentStudioDesignDocument(input.content),
+      ...storedContentStudioDesignTemplateGuidance(null),
+    };
     const { template, revision } =
       await this._contentStudioDesignTemplateRepository.createTemplateWithFirstRevision(
         {
@@ -562,8 +866,28 @@ export class ContentStudioDesignTemplateService {
       currentRevision: {
         ...revisionSummary(revision),
         content: input.content,
+        guidanceHash: null as string | null,
+        guidance: null as ContentStudioDesignTemplateGuidanceV1 | null,
       },
     };
+  }
+
+  // Template Guidance v1 for exactly this document, or null for none
+  private parseGuidance(
+    input: unknown,
+    content: ContentStudioDesignDocumentV1
+  ): ContentStudioDesignTemplateGuidanceV1 | null {
+    if (input === null) {
+      return null;
+    }
+    try {
+      return parseContentStudioDesignTemplateGuidance(input, content);
+    } catch (err) {
+      if (err instanceof ContentStudioDesignTemplateGuidanceError) {
+        throw err.code === 'STALE' ? guidanceStale() : guidanceInvalid();
+      }
+      throw err;
+    }
   }
 
   // Optional; empty is none
@@ -593,18 +917,26 @@ export class ContentStudioDesignTemplateService {
     return row;
   }
 
-  // A revision must still be exactly what was stored; anything else is
-  // reported, never repaired, and never quoted
-  private revisionDetail(row: RevisionRow & { content: string }) {
+  // A revision must still be exactly what was stored, its document and its
+  // guidance for that document; anything else is reported, never repaired,
+  // and never quoted
+  private revisionDetail(row: RevisionDetailRow) {
     let content;
+    let guidance;
     try {
       content = parseVerifiedContentStudioDesignRevision(row);
+      guidance = parseVerifiedContentStudioDesignTemplateGuidance(row, content);
     } catch (err) {
       if (err instanceof ContentStudioDesignIntegrityError) {
         throw integrityError();
       }
       throw err;
     }
-    return { ...revisionSummary(row), content };
+    return {
+      ...revisionSummary(row),
+      content,
+      guidanceHash: row.guidanceHash,
+      guidance,
+    };
   }
 }

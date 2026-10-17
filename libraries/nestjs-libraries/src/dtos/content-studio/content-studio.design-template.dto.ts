@@ -8,6 +8,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import { Transform, TransformFnParams } from 'class-transformer';
 import { DESIGN_PROJECT_NAME_MAX } from '@gitroom/nestjs-libraries/content-studio/design/design.document';
@@ -68,6 +69,9 @@ export class UpdateContentStudioDesignTemplateDto {
   description?: string;
 }
 
+// The document and its Template Guidance v1, or null for none: always both,
+// so a client that leaves the guidance out never drops it unseen. The
+// service checks the guidance against exactly this document
 export class CreateContentStudioDesignTemplateRevisionDto {
   @IsInt()
   @Min(1)
@@ -76,6 +80,10 @@ export class CreateContentStudioDesignTemplateRevisionDto {
 
   @IsObject()
   content: Record<string, unknown>;
+
+  @ValidateIf((body) => body.guidance !== null)
+  @IsObject()
+  guidance: Record<string, unknown> | null;
 }
 
 export class ListContentStudioDesignTemplateRevisionsDto {
@@ -89,7 +97,11 @@ export class ListContentStudioDesignTemplateRevisionsDto {
 
 // Which exact template revision a new design starts from, and its name: a
 // built-in by its id and revision number, one of the organization's by its
-// template and revision ids. Never a document
+// template and revision ids. Never a document. Optionally the values of the
+// revision's fields by field id (text, or the exact Media reference the
+// server made for an image), checked by the service against that revision's
+// guidance, and the id of another exact Brand Kit revision of the
+// organization's kit where the guidance allows one
 export class InstantiateContentStudioDesignTemplateDto {
   @IsIn(['system', 'organization'])
   source: 'system' | 'organization';
@@ -112,6 +124,15 @@ export class InstantiateContentStudioDesignTemplateDto {
   @IsString()
   @MaxLength(DESIGN_PROJECT_NAME_MAX)
   name: string;
+
+  @IsOptional()
+  @IsObject()
+  values?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(TEMPLATE_ID_MAX)
+  brandKitRevisionId?: string;
 }
 
 // Saving a stored design revision as a new template: the revision comes from

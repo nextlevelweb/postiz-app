@@ -81,6 +81,12 @@ const content = () => ({
   ],
 });
 
+const GUIDANCE = {
+  schemaVersion: 1,
+  brandRebinding: false,
+  slots: [] as unknown[],
+};
+
 const setup = () => {
   const result = { from: 'service' };
   const templates = {
@@ -255,14 +261,17 @@ describe('ContentStudioController design template routes', () => {
       Object.assign(new CreateContentStudioDesignTemplateRevisionDto(), {
         baseRevisionNumber: 4,
         content: doc,
+        guidance: GUIDANCE,
       })
     );
+    // P4-12: the document and its guidance go together
     expect(templates.createRevision).toHaveBeenCalledWith({
       organizationId: 'org-a',
       templateId: ID,
       userId: 'user-1',
       baseRevisionNumber: 4,
       content: doc,
+      guidance: GUIDANCE,
     });
   });
 
@@ -277,9 +286,12 @@ describe('ContentStudioController design template routes', () => {
           templateId: ID,
           revisionId: REVISION,
           name: 'New design',
+          values: { title: 'Hello' },
+          brandKitRevisionId: REVISION,
         })
       )
     );
+    // P4-12: field values and an exact Brand Kit revision id, never a document
     expect(templates.instantiateTemplate).toHaveBeenCalledWith({
       organizationId: 'org-a',
       userId: 'user-1',
@@ -288,6 +300,8 @@ describe('ContentStudioController design template routes', () => {
       revisionId: REVISION,
       revisionNumber: undefined,
       name: 'New design',
+      values: { title: 'Hello' },
+      brandKitRevisionId: REVISION,
     });
     await controller.saveDesignRevisionAsTemplate(
       ORG,
@@ -402,6 +416,33 @@ describe('Design template DTO validation', () => {
       revisionNumber: 1,
       name: 'N',
     });
+    // P4-12: the guidance goes with the document, null for none
+    for (const guidance of [null, GUIDANCE]) {
+      expect({
+        ...(await run(CreateContentStudioDesignTemplateRevisionDto, {
+          baseRevisionNumber: 2,
+          content: content(),
+          guidance,
+        })),
+      }).toEqual({ baseRevisionNumber: 2, content: content(), guidance });
+    }
+    expect({
+      ...(await run(InstantiateContentStudioDesignTemplateDto, {
+        source: 'organization',
+        templateId: ID,
+        revisionId: REVISION,
+        name: 'N',
+        values: { title: 'T', photo: { mediaId: 'm', sha256: 'a'.repeat(64) } },
+        brandKitRevisionId: REVISION,
+      })),
+    }).toEqual({
+      source: 'organization',
+      templateId: ID,
+      revisionId: REVISION,
+      name: 'N',
+      values: { title: 'T', photo: { mediaId: 'm', sha256: 'a'.repeat(64) } },
+      brandKitRevisionId: REVISION,
+    });
     expect({
       ...(await run(SaveContentStudioDesignAsTemplateDto, {
         name: 'S',
@@ -491,6 +532,46 @@ describe('Design template DTO validation', () => {
       },
     ],
     [
+      'P4-12 a revision without its guidance key',
+      CreateContentStudioDesignTemplateRevisionDto,
+      { baseRevisionNumber: 1, content: content() },
+    ],
+    [
+      'P4-12 guidance as text',
+      CreateContentStudioDesignTemplateRevisionDto,
+      { baseRevisionNumber: 1, content: content(), guidance: MARKER },
+    ],
+    [
+      'P4-12 guidance as a list',
+      CreateContentStudioDesignTemplateRevisionDto,
+      { baseRevisionNumber: 1, content: content(), guidance: [] },
+    ],
+    [
+      'P4-12 values as text',
+      InstantiateContentStudioDesignTemplateDto,
+      {
+        source: 'system',
+        templateId: 'system:story',
+        name: 'N',
+        values: MARKER,
+      },
+    ],
+    [
+      'P4-12 values as a list',
+      InstantiateContentStudioDesignTemplateDto,
+      { source: 'system', templateId: 'system:story', name: 'N', values: [] },
+    ],
+    [
+      'P4-12 a Brand Kit revision id as a number',
+      InstantiateContentStudioDesignTemplateDto,
+      {
+        source: 'system',
+        templateId: 'system:story',
+        name: 'N',
+        brandKitRevisionId: 7,
+      },
+    ],
+    [
       'ST3/M21 a document to save as template',
       SaveContentStudioDesignAsTemplateDto,
       { name: 'S', content: content() },
@@ -502,5 +583,26 @@ describe('Design template DTO validation', () => {
     ],
   ])('refuses a body with %s', async (_name, dto, body) => {
     await rejected(dto, body);
+  });
+
+  // P4-12: a guided use carries field values and a Brand Kit revision id,
+  // never a document, Brand Kit content, a URL, render or editor state
+  it.each([
+    'guidance',
+    'document',
+    'brandKit',
+    'brandKitContent',
+    'mediaUrl',
+    'renderOptions',
+    'fabric',
+    'userId',
+  ])('refuses a guided use carrying %s', async (field) => {
+    await rejected(InstantiateContentStudioDesignTemplateDto, {
+      source: 'system',
+      templateId: 'system:story',
+      name: 'N',
+      values: {},
+      [field]: { stolen: MARKER },
+    });
   });
 });
