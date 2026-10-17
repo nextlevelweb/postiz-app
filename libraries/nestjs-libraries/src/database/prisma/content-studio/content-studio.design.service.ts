@@ -386,6 +386,16 @@ export class ContentStudioDesignService {
     return this.revisionDetail(row);
   }
 
+  // A design document as any design of the organization may hold it: valid
+  // Design Document v1 whose Brand Kit reference, if any, is an exact intact
+  // revision of the organization's kit holding every token it uses. The same
+  // checks as creating a design or saving a revision; for design templates
+  async parseDocumentForOrganization(organizationId: string, input: unknown) {
+    const content = this.parseContent(input);
+    await this.checkBrandReferences(organizationId, content);
+    return content;
+  }
+
   // Without a Brand Kit reference no token may be used. With one, it must be
   // exactly a revision of this organization's kit: same kit, revision, number
   // and hash, intact, and holding every token the document uses. Nothing is

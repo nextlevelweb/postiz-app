@@ -34,6 +34,7 @@ import {
 } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
 import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
 import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
+import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
 import {
   RenderAllContentStudioDesignDto,
   RenderContentStudioDesignDto,
@@ -90,7 +91,8 @@ const setup = () => {
     {} as ContentStudioDesignService,
     fonts as unknown as ContentStudioRenderFontService,
     renders as unknown as ContentStudioDesignRenderService,
-    {} as ContentStudioDesignReferenceService
+    {} as ContentStudioDesignReferenceService,
+    {} as ContentStudioDesignTemplateService
   );
   return { controller, fonts, renders, result };
 };

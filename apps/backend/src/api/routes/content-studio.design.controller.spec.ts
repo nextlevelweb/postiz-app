@@ -30,6 +30,7 @@ import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/p
 import { ContentStudioRenderFontService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
 import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
 import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
+import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
 import {
   CreateContentStudioDesignDto,
   CreateContentStudioDesignRevisionDto,
@@ -106,7 +107,8 @@ const setup = () => {
     designs as unknown as ContentStudioDesignService,
     {} as ContentStudioRenderFontService,
     {} as ContentStudioDesignRenderService,
-    {} as ContentStudioDesignReferenceService
+    {} as ContentStudioDesignReferenceService,
+    {} as ContentStudioDesignTemplateService
   );
   return { designs, controller, result };
 };
@@ -136,8 +138,10 @@ describe('ContentStudioController design routes', () => {
   it('DPC1 declares exactly these eleven routes, with 200 for archive, restore, render and render-all', () => {
     const names = Object.getOwnPropertyNames(ContentStudioController.prototype)
       .filter((name) => /Designs?\b|Design[A-Z]/.test(name))
-      // P4-08: the Brand Kit and Media design references live elsewhere
-      .filter((name) => !/DesignReference$/.test(name));
+      // P4-08: the Brand Kit and Media design references live elsewhere;
+      // P4-11: so do the design template routes (template controller spec)
+      .filter((name) => !/DesignReference$/.test(name))
+      .filter((name) => !/Template/.test(name));
     expect(names.map(route).sort()).toEqual([
       'GET /designs',
       'GET /designs/:id',
@@ -181,6 +185,11 @@ describe('ContentStudioController design routes', () => {
           r !== 'POST /designs/:id/render-all' &&
           // P4-08: the read-only Media and Brand Kit design references
           !r.endsWith('/design-ref') &&
+          // P4-11: the design template routes, pinned by the template
+          // controller spec (none renders, previews, exports or generates)
+          !r.startsWith('GET /design-templates') &&
+          !/^(POST|PATCH) \/design-templates/.test(r) &&
+          r !== 'POST /designs/:id/revisions/:revisionId/save-as-template' &&
           /design/i.test(r) &&
           (/^(DELETE|PUT) /.test(r) ||
             /render|preview|export|duplicate|copy|clone|template|generate|ai\b|media|upload|image|font|layout|thumbnail/i.test(

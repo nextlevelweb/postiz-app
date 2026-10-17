@@ -28,6 +28,7 @@ import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/p
 import { ContentStudioRenderFontService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
 import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
 import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
+import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -102,7 +103,8 @@ const setup = () => {
     {} as ContentStudioDesignService,
     {} as ContentStudioRenderFontService,
     {} as ContentStudioDesignRenderService,
-    {} as ContentStudioDesignReferenceService
+    {} as ContentStudioDesignReferenceService,
+    {} as ContentStudioDesignTemplateService
   );
   return { service, handoffs, controller, result };
 };
@@ -315,6 +317,10 @@ describe('ContentStudioController wiring', () => {
       'GET /brand-kit/revisions',
       'GET /brand-kit/revisions/:revisionId',
       'GET /brand-kit/revisions/:revisionId/design-ref',
+      'GET /design-templates',
+      'GET /design-templates/:id',
+      'GET /design-templates/:id/revisions',
+      'GET /design-templates/:id/revisions/:revisionId',
       'GET /designs',
       'GET /designs/:id',
       'GET /designs/:id/revisions',
@@ -344,6 +350,7 @@ describe('ContentStudioController wiring', () => {
       'GET /writing-profiles/:id/revisions/:revisionId',
       'PATCH /ai/connections/:id',
       'PATCH /audience-profiles/:id',
+      'PATCH /design-templates/:id',
       'PATCH /designs/:id',
       'PATCH /expertise-profiles/:id',
       'PATCH /packages/:id',
@@ -360,12 +367,18 @@ describe('ContentStudioController wiring', () => {
       'POST /audience-profiles/:id/restore',
       'POST /audience-profiles/:id/revisions',
       'POST /brand-kit/revisions',
+      'POST /design-templates',
+      'POST /design-templates/:id/archive',
+      'POST /design-templates/:id/restore',
+      'POST /design-templates/:id/revisions',
+      'POST /design-templates/instantiate',
       'POST /designs',
       'POST /designs/:id/archive',
       'POST /designs/:id/render',
       'POST /designs/:id/render-all',
       'POST /designs/:id/restore',
       'POST /designs/:id/revisions',
+      'POST /designs/:id/revisions/:revisionId/save-as-template',
       'POST /editorial-policy/revisions',
       'POST /expertise-profiles',
       'POST /expertise-profiles/:id/archive',
@@ -509,6 +522,7 @@ describe('ContentStudioController handoffs', () => {
       ContentStudioRenderFontService,
       ContentStudioDesignRenderService,
       ContentStudioDesignReferenceService,
+      ContentStudioDesignTemplateService,
     ]);
   });
 });
@@ -630,7 +644,8 @@ describe('ContentStudioController revisions', () => {
       )
       .filter((route) => route.includes('/revisions'))
       .sort();
-    // the only route below a revision creates a handoff from it
+    // the only routes below a revision create a handoff, or a new design
+    // template (P4-11), from it
     expect(
       revisionRoutes.filter((route) => /^(PATCH|PUT|DELETE) /.test(route))
     ).toEqual([]);
@@ -641,6 +656,8 @@ describe('ContentStudioController revisions', () => {
       'GET /brand-kit/revisions',
       'GET /brand-kit/revisions/:revisionId',
       'GET /brand-kit/revisions/:revisionId/design-ref',
+      'GET /design-templates/:id/revisions',
+      'GET /design-templates/:id/revisions/:revisionId',
       'GET /designs/:id/revisions',
       'GET /designs/:id/revisions/:revisionId',
       'GET /editorial-policy/revisions',
@@ -653,7 +670,10 @@ describe('ContentStudioController revisions', () => {
       'GET /writing-profiles/:id/revisions/:revisionId',
       'POST /audience-profiles/:id/revisions',
       'POST /brand-kit/revisions',
+      'POST /design-templates/:id/revisions',
       'POST /designs/:id/revisions',
+      // P4-11: creates a new template from the revision, changes nothing
+      'POST /designs/:id/revisions/:revisionId/save-as-template',
       'POST /editorial-policy/revisions',
       'POST /expertise-profiles/:id/revisions',
       'POST /packages/:id/revisions',

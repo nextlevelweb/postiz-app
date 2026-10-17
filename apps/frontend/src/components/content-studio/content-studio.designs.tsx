@@ -25,6 +25,8 @@ import {
 } from '@gitroom/frontend/components/content-studio/content-studio.designs.api';
 
 export const DESIGN_LIBRARY_PATH = '/content-studio/designs';
+// the template library (P4-11): new designs from a template start there
+const TEMPLATES_PATH = '/content-studio/templates';
 export const designPagePath = (id: string) =>
   `${DESIGN_LIBRARY_PATH}/${encodeURIComponent(id)}`;
 
@@ -452,6 +454,12 @@ export const ContentStudioDesigns: FC = () => {
             className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
           >
             {t('content_studio', 'Content Studio')}
+          </Link>
+          <Link
+            href={TEMPLATES_PATH}
+            className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
+          >
+            {t('content_studio_from_template', 'From template')}
           </Link>
           <Button onClick={createDesign}>
             {t('content_studio_create_design', 'Create design')}

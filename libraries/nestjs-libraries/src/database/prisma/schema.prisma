@@ -70,6 +70,8 @@ model Organization {
   contentStudioRenderFontMappings        ContentStudioRenderFontMapping[]
   contentStudioDesignRenders             ContentStudioDesignRender[]
   contentStudioDesignRenderBatches       ContentStudioDesignRenderBatch[]
+  contentStudioDesignTemplates           ContentStudioDesignTemplate[]
+  contentStudioDesignTemplateRevisions   ContentStudioDesignTemplateRevision[]
 
   @@index([apiKey])
   @@index([streakSince])
@@ -166,6 +168,8 @@ model User {
   contentStudioRenderFontMappings        ContentStudioRenderFontMapping[]        @relation("ContentStudioRenderFontMappingCreatedBy")
   contentStudioDesignRenders             ContentStudioDesignRender[]             @relation("ContentStudioDesignRenderCreatedBy")
   contentStudioDesignRenderBatches       ContentStudioDesignRenderBatch[]        @relation("ContentStudioDesignRenderBatchCreatedBy")
+  contentStudioDesignTemplates           ContentStudioDesignTemplate[]           @relation("ContentStudioDesignTemplateCreatedBy")
+  contentStudioDesignTemplateRevisions   ContentStudioDesignTemplateRevision[]   @relation("ContentStudioDesignTemplateRevisionCreatedBy")
 
   @@unique([email, providerName])
   @@index([lastReadNotifications])
@@ -2373,6 +2377,53 @@ model ContentStudioDesignRevision {
   renderBatches   ContentStudioDesignRenderBatch[]
 
   @@unique([designProjectId, revisionNumber])
+  @@unique([id, organizationId])
+  @@index([organizationId])
+  @@index([createdById])
+}
+
+// A design template of one organization: a reusable starting point for new
+// designs. The row holds the name, the description, the archive state and the
+// latest revision number; the design documents (Design Document v1) are the
+// revisions, only ever created, never updated or deleted. A design made from
+// a template is an ordinary design with its own revisions: nothing links it
+// back. Built-in templates are code, not rows
+model ContentStudioDesignTemplate {
+  id                   String                                @id @default(uuid())
+  organizationId       String
+  name                 String
+  description          String?
+  latestRevisionNumber Int
+  archivedAt           DateTime?
+  createdById          String
+  createdAt            DateTime                              @default(now())
+  updatedAt            DateTime                              @updatedAt
+  organization         Organization                          @relation(fields: [organizationId], references: [id])
+  createdBy            User                                  @relation("ContentStudioDesignTemplateCreatedBy", fields: [createdById], references: [id])
+  revisions            ContentStudioDesignTemplateRevision[]
+
+  @@unique([id, organizationId])
+  @@index([organizationId, archivedAt])
+  @@index([createdById])
+}
+
+// One immutable revision of a design template: a Design Document v1 in
+// canonical JSON and the SHA-256 of exactly that text, numbered once
+model ContentStudioDesignTemplateRevision {
+  id             String                      @id @default(uuid())
+  organizationId String
+  templateId     String
+  revisionNumber Int
+  schemaVersion  Int
+  content        String
+  contentHash    String
+  createdById    String
+  createdAt      DateTime                    @default(now())
+  organization   Organization                @relation(fields: [organizationId], references: [id])
+  template       ContentStudioDesignTemplate @relation(fields: [templateId, organizationId], references: [id, organizationId])
+  createdBy      User                        @relation("ContentStudioDesignTemplateRevisionCreatedBy", fields: [createdById], references: [id])
+
+  @@unique([templateId, revisionNumber])
   @@unique([id, organizationId])
   @@index([organizationId])
   @@index([createdById])

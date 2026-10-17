@@ -38,6 +38,7 @@ import {
 } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
 import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
 import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
+import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -103,6 +104,15 @@ import {
   UpdateContentStudioDesignDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design.dto';
 import {
+  CreateContentStudioDesignTemplateDto,
+  CreateContentStudioDesignTemplateRevisionDto,
+  InstantiateContentStudioDesignTemplateDto,
+  ListContentStudioDesignTemplateRevisionsDto,
+  ListContentStudioDesignTemplatesDto,
+  SaveContentStudioDesignAsTemplateDto,
+  UpdateContentStudioDesignTemplateDto,
+} from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-template.dto';
+import {
   RenderAllContentStudioDesignDto,
   RenderContentStudioDesignDto,
   UploadContentStudioRenderFontDto,
@@ -148,7 +158,8 @@ export class ContentStudioController {
     private _contentStudioDesignService: ContentStudioDesignService,
     private _contentStudioRenderFontService: ContentStudioRenderFontService,
     private _contentStudioDesignRenderService: ContentStudioDesignRenderService,
-    private _contentStudioDesignReferenceService: ContentStudioDesignReferenceService
+    private _contentStudioDesignReferenceService: ContentStudioDesignReferenceService,
+    private _contentStudioDesignTemplateService: ContentStudioDesignTemplateService
   ) {}
 
   @Get('/projects')
@@ -963,6 +974,159 @@ export class ContentStudioController {
     @Param('id') id: string
   ) {
     return this._contentStudioDesignService.restoreDesign(org.id, id);
+  }
+
+  // Saves exactly one stored revision of a design as a new template of the
+  // organization. The server reads that revision: the body holds only the
+  // template's name and description, never a document
+  @Post('/designs/:id/revisions/:revisionId/save-as-template')
+  saveDesignRevisionAsTemplate(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Param('revisionId') revisionId: string,
+    @Body() body: SaveContentStudioDesignAsTemplateDto
+  ) {
+    return this._contentStudioDesignTemplateService.saveDesignRevisionAsTemplate(
+      {
+        organizationId: org.id,
+        userId: user.id,
+        designId: id,
+        revisionId,
+        name: body.name,
+        description: body.description,
+      }
+    );
+  }
+
+  // Design templates: the built-in ones (code, read-only) and the
+  // organization's own, whose documents are immutable revisions. Every member
+  // may read, create, rename, revise, archive, restore and use them. The
+  // organization and the user come from the request only. Using a template
+  // creates an ordinary design from one exact template revision; none
+  // renders, shares, generates or deletes
+  @Get('/design-templates')
+  listDesignTemplates(
+    @GetOrgFromRequest() org: Organization,
+    @Query() query: ListContentStudioDesignTemplatesDto
+  ) {
+    return this._contentStudioDesignTemplateService.listTemplates({
+      organizationId: org.id,
+      archived: query.archived,
+      page: query.page,
+    });
+  }
+
+  @Post('/design-templates')
+  createDesignTemplate(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Body() body: CreateContentStudioDesignTemplateDto
+  ) {
+    return this._contentStudioDesignTemplateService.createTemplate({
+      organizationId: org.id,
+      userId: user.id,
+      name: body.name,
+      description: body.description,
+      content: body.content,
+    });
+  }
+
+  @Post('/design-templates/instantiate')
+  instantiateDesignTemplate(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Body() body: InstantiateContentStudioDesignTemplateDto
+  ) {
+    return this._contentStudioDesignTemplateService.instantiateTemplate({
+      organizationId: org.id,
+      userId: user.id,
+      source: body.source,
+      templateId: body.templateId,
+      revisionId: body.revisionId,
+      revisionNumber: body.revisionNumber,
+      name: body.name,
+    });
+  }
+
+  @Get('/design-templates/:id')
+  getDesignTemplate(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioDesignTemplateService.getTemplate(org.id, id);
+  }
+
+  @Patch('/design-templates/:id')
+  updateDesignTemplate(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Body() body: UpdateContentStudioDesignTemplateDto
+  ) {
+    return this._contentStudioDesignTemplateService.updateTemplate(org.id, id, {
+      name: body.name,
+      description: body.description,
+    });
+  }
+
+  @Post('/design-templates/:id/revisions')
+  createDesignTemplateRevision(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Body() body: CreateContentStudioDesignTemplateRevisionDto
+  ) {
+    return this._contentStudioDesignTemplateService.createRevision({
+      organizationId: org.id,
+      templateId: id,
+      userId: user.id,
+      baseRevisionNumber: body.baseRevisionNumber,
+      content: body.content,
+    });
+  }
+
+  @Get('/design-templates/:id/revisions')
+  listDesignTemplateRevisions(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Query() query: ListContentStudioDesignTemplateRevisionsDto
+  ) {
+    return this._contentStudioDesignTemplateService.listRevisions({
+      organizationId: org.id,
+      templateId: id,
+      page: query.page,
+    });
+  }
+
+  @Get('/design-templates/:id/revisions/:revisionId')
+  getDesignTemplateRevision(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Param('revisionId') revisionId: string
+  ) {
+    return this._contentStudioDesignTemplateService.getRevision({
+      organizationId: org.id,
+      templateId: id,
+      revisionId,
+    });
+  }
+
+  @Post('/design-templates/:id/archive')
+  @HttpCode(200)
+  archiveDesignTemplate(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioDesignTemplateService.archiveTemplate(org.id, id);
+  }
+
+  @Post('/design-templates/:id/restore')
+  @HttpCode(200)
+  restoreDesignTemplate(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioDesignTemplateService.restoreTemplate(org.id, id);
   }
 
   // Renders one page of exactly the revision asked for (never the latest) to

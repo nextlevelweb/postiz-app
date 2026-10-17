@@ -184,10 +184,30 @@ export const isDesignEditorShortcutTarget = (target: EventTarget | null) =>
 
 // The edit of one design: entered explicitly from the current revision of an
 // active design, left by Save, Cancel or a confirmed discard
-export const useContentStudioDesignEditor = (designId: string) => {
+// Where a draft is saved: the next revision of the design (the default), or
+// of another owner of Design Document v1 revisions, a design template
+// (P4-11), with its own conflict code and wording. Same rules either way:
+// the parsed draft, once, over the base revision, never retried
+export interface ContentStudioDesignEditorTarget {
+  save: (
+    id: string,
+    baseRevisionNumber: number,
+    content: ContentStudioDesignDocumentV1
+  ) => Promise<{ created: boolean; revision: { revisionNumber: number } }>;
+  conflictCode: string;
+  savedMessage: (revisionNumber: number) => string;
+  errorMessage: (error: unknown) => string;
+}
+
+export const useContentStudioDesignEditor = (
+  designId: string,
+  target?: ContentStudioDesignEditorTarget
+) => {
   const t = useT();
   const toaster = useToaster();
   const { saveDesignRevision } = useContentStudioDesignActions();
+  const targetRef = useRef(target);
+  targetRef.current = target;
   const [state, setState] = useState<EditorState | null>(null);
   const latest = useRef<EditorState | null>(null);
   const savingRef = useRef(false);
@@ -334,29 +354,38 @@ export const useContentStudioDesignEditor = (designId: string) => {
     }
     savingRef.current = true;
     setSaving(true);
+    const custom = targetRef.current;
     try {
-      const saved = await saveDesignRevision(
+      const saved = await (custom?.save ?? saveDesignRevision)(
         current.designId,
         current.base.revisionNumber,
         content
       );
       toaster.show(
         saved.created
-          ? `${t(
-              'content_studio_design_saved_as',
-              'Design saved as Revision'
-            )} ${saved.revision.revisionNumber}.`
+          ? custom
+            ? custom.savedMessage(saved.revision.revisionNumber)
+            : `${t(
+                'content_studio_design_saved_as',
+                'Design saved as Revision'
+              )} ${saved.revision.revisionNumber}.`
           : t('content_studio_design_save_unchanged', 'No changes to save.'),
         'success'
       );
       setConflict(false);
       commit(null);
     } catch (err) {
-      if (designErrorCode(err) === 'CS_DESIGN_REVISION_CONFLICT') {
+      if (
+        designErrorCode(err) ===
+        (custom?.conflictCode ?? 'CS_DESIGN_REVISION_CONFLICT')
+      ) {
         // the draft stays; it is never sent over the newer revision
         setConflict(true);
       } else {
-        toaster.show(designSaveErrorMessage(t, err), 'warning');
+        toaster.show(
+          custom ? custom.errorMessage(err) : designSaveErrorMessage(t, err),
+          'warning'
+        );
       }
     } finally {
       savingRef.current = false;

@@ -83,6 +83,8 @@ import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/data
 import { ContentStudioDesignRenderBatchRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render-batch.repository';
 import { ContentStudioRenderMediaBridge } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-media.bridge';
 import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
+import { ContentStudioDesignTemplateRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.repository';
+import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
 
 @Global()
 @Module({
@@ -175,6 +177,8 @@ import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/d
     ContentStudioDesignRenderBatchRepository,
     ContentStudioRenderMediaBridge,
     ContentStudioDesignReferenceService,
+    ContentStudioDesignTemplateRepository,
+    ContentStudioDesignTemplateService,
   ],
   get exports() {
     return this.providers;

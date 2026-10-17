@@ -80,6 +80,7 @@ import {
   updateContentStudioDesignLayer,
 } from '@gitroom/frontend/components/content-studio/content-studio.design.editor';
 import { ContentStudioDesignCanvas } from '@gitroom/frontend/components/content-studio/content-studio.design.canvas';
+import { SaveAsTemplateForm } from '@gitroom/frontend/components/content-studio/content-studio.design-templates';
 
 // The Creative Studio workspace of one design: its pages and layers, a live
 // structural preview, an inspector, the revision history, and server renders
@@ -102,7 +103,7 @@ const parseDesign = (content: unknown) => {
 };
 
 // The revision the workspace shows: the current one or an opened one
-interface ShownRevision {
+export interface ShownRevision {
   id: string;
   revisionNumber: number;
   historical: boolean;
@@ -115,7 +116,7 @@ type BrandState =
 // The exact Brand Kit revision of the reference: its id, number and hash
 // must be the reference's, and its content a valid Brand Kit. Never the
 // current kit, never another revision
-const useDesignBrand = (
+export const useDesignBrand = (
   ref: ContentStudioDesignBrandKitRef | null
 ): BrandState => {
   const revision = useContentStudioBrandKitRevision(ref?.revisionId ?? null);
@@ -761,10 +762,14 @@ const DesignBrandProvenance: FC<{
   );
 };
 
-// The revisions of the design, newest first, one server page at a time.
-// Metadata only: a revision's document is loaded when it is opened
-const DesignHistory: FC<{
-  history: ReturnType<typeof useContentStudioDesignRevisions>;
+// The revisions of the design (or of a design template, P4-11), newest
+// first, one server page at a time. Metadata only: a revision's document is
+// loaded when it is opened
+export const DesignHistory: FC<{
+  history: {
+    data?: { pages: number; results: ContentStudioDesignRevisionSummary[] };
+    error?: unknown;
+  };
   latestRevisionNumber: number;
   shownId: string;
   page: number;
@@ -850,13 +855,15 @@ const DesignHistory: FC<{
 // Pages, preview, layers and inspector of one parsed revision, with the
 // render actions for exactly that revision. While the current revision is
 // edited, the same view shows the draft with the editing controls, and
-// nothing is rendered: renders are of saved revisions only
-const DesignRevisionView: FC<{
+// nothing is rendered: renders are of saved revisions only. A design
+// template (P4-11) uses the same view without render actions
+export const DesignRevisionView: FC<{
   revision: ShownRevision;
   document: ContentStudioDesignDocumentV1;
   pageId: string | null;
   setPageId: (id: string) => void;
-  render: ReturnType<typeof useDesignRender>;
+  render: ReturnType<typeof useDesignRender> | null;
+  editLabel?: string;
   canEdit: boolean;
   onBeginEdit: () => void;
   edit: {
@@ -873,6 +880,7 @@ const DesignRevisionView: FC<{
   pageId,
   setPageId,
   render,
+  editLabel,
   canEdit,
   onBeginEdit,
   edit,
@@ -1049,25 +1057,29 @@ const DesignRevisionView: FC<{
       <div className="flex flex-wrap gap-[8px] items-center">
         {canEdit && !edit && (
           <Button secondary disabled={!brandReady} onClick={onBeginEdit}>
-            {t('content_studio_design_edit', 'Edit design')}
+            {editLabel ?? t('content_studio_design_edit', 'Edit design')}
           </Button>
         )}
-        <Button
-          loading={render.rendering === 'page'}
-          disabled={!!render.rendering || !!edit}
-          onClick={() => render.renderPage(revision, page, index)}
-        >
-          {t('content_studio_design_render_page', 'Render page')}
-        </Button>
-        <Button
-          secondary
-          loading={render.rendering === 'all'}
-          disabled={!!render.rendering || !!edit}
-          onClick={() => render.renderAll(revision, document)}
-        >
-          {t('content_studio_design_render_all', 'Render all pages')}
-        </Button>
-        {!!edit && (
+        {render && (
+          <>
+            <Button
+              loading={render.rendering === 'page'}
+              disabled={!!render.rendering || !!edit}
+              onClick={() => render.renderPage(revision, page, index)}
+            >
+              {t('content_studio_design_render_page', 'Render page')}
+            </Button>
+            <Button
+              secondary
+              loading={render.rendering === 'all'}
+              disabled={!!render.rendering || !!edit}
+              onClick={() => render.renderAll(revision, document)}
+            >
+              {t('content_studio_design_render_all', 'Render all pages')}
+            </Button>
+          </>
+        )}
+        {!!edit && !!render && (
           <span className="text-[12px] text-textItemBlur">
             {t(
               'content_studio_design_render_saved_only',
@@ -1219,7 +1231,7 @@ const DesignRevisionView: FC<{
               onSelectLayer={setLayerId}
             />
           )}
-          {render.result && <DesignRenderResult result={render.result} />}
+          {render?.result && <DesignRenderResult result={render.result} />}
         </div>
         <div className="flex flex-col gap-[16px] min-w-0">
           <section className="flex flex-col gap-[8px]">
@@ -1352,6 +1364,7 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
     useState<ContentStudioDesignLayerCopy | null>(null);
   const confirmDiscard = useConfirmDiscard();
   const router = useRouter();
+  const modals = useModals();
 
   const currentRevision = detail.data?.currentRevision;
   const currentDocument = useMemo(
@@ -1495,7 +1508,36 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
             renameDisabled={editing}
             beforeArchive={leaveEdit}
           />
+          {/* the shown saved revision, never the unsaved draft (P4-11) */}
+          <Button
+            secondary
+            disabled={editor.dirty || editor.saving}
+            onClick={() =>
+              modals.openModal({
+                title: t('content_studio_save_as_template', 'Save as template'),
+                children: (close: () => void) => (
+                  <SaveAsTemplateForm
+                    designId={design.id}
+                    revisionId={shown.id}
+                    revisionNumber={shown.revisionNumber}
+                    defaultName={design.name}
+                    close={close}
+                  />
+                ),
+              })
+            }
+          >
+            {t('content_studio_save_as_template', 'Save as template')}
+          </Button>
         </div>
+        {editor.dirty && (
+          <div className="basis-full text-[12px] text-textItemBlur text-end">
+            {t(
+              'content_studio_save_as_template_dirty',
+              'Save your changes first: a template is made from a saved revision.'
+            )}
+          </div>
+        )}
       </div>
 
       {shown.historical ? (

@@ -1270,7 +1270,8 @@ describe('Creative Studio: workspace', () => {
     ).toBeNull();
     expect(screen.getByText('Active')).toBeTruthy();
     expect(header()).toBe(`ActiveRevision 2Updated: ${date(T1)}`);
-    expect(queryButton(/^Save/)).toBeNull();
+    // P4-11: Save as template makes a new template, it saves no design
+    expect(queryButton(/^Save(?! as template)/)).toBeNull();
     expect(
       screen.getByText(
         'This revision is read-only: inspect it here and render it to Media.'
@@ -1760,7 +1761,10 @@ describe('Creative Studio: revision history', () => {
     await renderWorkspace();
     await viewRevision(1);
     expect(
-      queryButton(/restore revision|revert|roll ?back|make current|save/i)
+      // P4-11: Save as template copies a revision into a new template
+      queryButton(
+        /restore revision|revert|roll ?back|make current|save(?! as template)/i
+      )
     ).toBeNull();
     expect(writes()).toEqual([]);
   });
@@ -2338,12 +2342,13 @@ describe('Creative Studio: frontend boundaries', () => {
     ]);
   });
 
-  it('no AI, Source, upload, template or composer code', () => {
+  // P4-11 adds design templates; the rest stays out
+  it('no AI, Source, upload or composer code', () => {
     for (const [file, text] of sources) {
       expect([file, code(text)]).not.toEqual([
         file,
         expect.stringMatching(
-          /ai-writing|ai\.proposal|intelligence\.api|sources\.api|openai|anthropic|upload|template|new-launch|launches\/|handoff|media\.component/i
+          /ai-writing|ai\.proposal|intelligence\.api|sources\.api|openai|anthropic|upload|new-launch|launches\/|handoff|media\.component/i
         ),
       ]);
     }

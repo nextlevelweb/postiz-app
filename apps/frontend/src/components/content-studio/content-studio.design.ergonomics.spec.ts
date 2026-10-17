@@ -1610,7 +1610,7 @@ describe('Editor ergonomics: static boundaries', () => {
       .join('\n');
   const source = (file: string) => code(readFileSync(join(dir, file), 'utf8'));
 
-  it('P410-1/P410-3/93 the Content Studio API keeps exactly its P4-09 routes', () => {
+  it('P410-1/P410-3/93 the Content Studio API keeps exactly its routes (P4-09: 91; P4-11 adds the 11 template routes)', () => {
     const controller = code(
       readFileSync(
         join(ROOT, 'apps/backend/src/api/routes/content-studio.controller.ts'),
@@ -1619,7 +1619,7 @@ describe('Editor ergonomics: static boundaries', () => {
     );
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(91);
+    ).toHaveLength(102);
     const api = source('content-studio.designs.api.ts');
     expect(api).not.toMatch(
       // (thumbnail is the Media list's own field, from P4-08)
@@ -1661,11 +1661,13 @@ describe('Editor ergonomics: static boundaries', () => {
     }
   });
 
-  it('P410-7 no AI or templates', () => {
+  // P4-11 adds design templates (Save as template in the workspace, the
+  // shared editor for template revisions); AI stays out
+  it('P410-7 no AI', () => {
     for (const file of FILES) {
       expect([file, source(file)]).not.toEqual([
         file,
-        expect.stringMatching(/\/ai\/|ai-writing|template|generate\(/i),
+        expect.stringMatching(/\/ai\/|ai-writing|generate\(/i),
       ]);
     }
   });
