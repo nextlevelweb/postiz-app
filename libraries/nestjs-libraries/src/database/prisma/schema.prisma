@@ -73,6 +73,7 @@ model Organization {
   contentStudioDesignTemplates           ContentStudioDesignTemplate[]
   contentStudioDesignTemplateRevisions   ContentStudioDesignTemplateRevision[]
   contentStudioDesignStylePresets        ContentStudioDesignStylePreset[]
+  contentStudioDesignLayoutPatterns      ContentStudioDesignLayoutPattern[]
 
   @@index([apiKey])
   @@index([streakSince])
@@ -172,6 +173,7 @@ model User {
   contentStudioDesignTemplates           ContentStudioDesignTemplate[]           @relation("ContentStudioDesignTemplateCreatedBy")
   contentStudioDesignTemplateRevisions   ContentStudioDesignTemplateRevision[]   @relation("ContentStudioDesignTemplateRevisionCreatedBy")
   contentStudioDesignStylePresets        ContentStudioDesignStylePreset[]        @relation("ContentStudioDesignStylePresetCreatedBy")
+  contentStudioDesignLayoutPatterns      ContentStudioDesignLayoutPattern[]      @relation("ContentStudioDesignLayoutPatternCreatedBy")
 
   @@unique([email, providerName])
   @@index([lastReadNotifications])
@@ -2462,6 +2464,32 @@ model ContentStudioDesignStylePreset {
 
   @@unique([id, organizationId])
   @@index([organizationId, kind, archivedAt])
+  @@index([createdById])
+}
+
+// A reusable layout pattern of one organization (P4-15): Layout Pattern v1
+// content (a box and its layers, without layer ids) as canonical JSON with
+// its SHA-256. Using one copies its layers into a design under new ids: no
+// design, template or revision refers to a pattern, and changing or
+// archiving one reaches no design that used it before. Archiving hides it
+// from the picker; there is no delete
+model ContentStudioDesignLayoutPattern {
+  id             String       @id @default(uuid())
+  organizationId String
+  name           String
+  description    String?
+  schemaVersion  Int
+  content        String
+  contentHash    String
+  archivedAt     DateTime?
+  createdById    String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdBy      User         @relation("ContentStudioDesignLayoutPatternCreatedBy", fields: [createdById], references: [id])
+
+  @@unique([id, organizationId])
+  @@index([organizationId, archivedAt])
   @@index([createdById])
 }
 

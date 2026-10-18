@@ -32,6 +32,7 @@ import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/data
 import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
 import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
 import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-style-preset.service';
+import { ContentStudioDesignLayoutPatternService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-layout-pattern.service';
 import {
   CreateContentStudioDesignStylePresetDto,
   ListContentStudioDesignStylePresetsDto,
@@ -93,7 +94,8 @@ const setup = () => {
     {} as ContentStudioDesignRenderService,
     {} as ContentStudioDesignReferenceService,
     {} as ContentStudioDesignTemplateService,
-    presets as unknown as ContentStudioDesignStylePresetService
+    presets as unknown as ContentStudioDesignStylePresetService,
+    {} as ContentStudioDesignLayoutPatternService
   );
   return { presets, controller, result };
 };
@@ -140,7 +142,7 @@ describe('ContentStudioController design style preset routes', () => {
     const all = Object.getOwnPropertyNames(ContentStudioController.prototype)
       .filter((name) => name !== 'constructor')
       .map(route);
-    expect(all).toHaveLength(107);
+    expect(all).toHaveLength(112);
     expect(
       all.filter(
         (r) =>

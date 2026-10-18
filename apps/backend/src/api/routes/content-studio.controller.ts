@@ -40,6 +40,7 @@ import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/data
 import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
 import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
 import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-style-preset.service';
+import { ContentStudioDesignLayoutPatternService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-layout-pattern.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -119,6 +120,11 @@ import {
   UpdateContentStudioDesignStylePresetDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-style-preset.dto';
 import {
+  CreateContentStudioDesignLayoutPatternDto,
+  ListContentStudioDesignLayoutPatternsDto,
+  UpdateContentStudioDesignLayoutPatternDto,
+} from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-layout-pattern.dto';
+import {
   RenderAllContentStudioDesignDto,
   RenderContentStudioDesignDto,
   UploadContentStudioRenderFontDto,
@@ -166,7 +172,8 @@ export class ContentStudioController {
     private _contentStudioDesignRenderService: ContentStudioDesignRenderService,
     private _contentStudioDesignReferenceService: ContentStudioDesignReferenceService,
     private _contentStudioDesignTemplateService: ContentStudioDesignTemplateService,
-    private _contentStudioDesignStylePresetService: ContentStudioDesignStylePresetService
+    private _contentStudioDesignStylePresetService: ContentStudioDesignStylePresetService,
+    private _contentStudioDesignLayoutPatternService: ContentStudioDesignLayoutPatternService
   ) {}
 
   @Get('/projects')
@@ -1208,6 +1215,80 @@ export class ContentStudioController {
     @Param('id') id: string
   ) {
     return this._contentStudioDesignStylePresetService.restorePreset(
+      org.id,
+      id
+    );
+  }
+
+  // Design layout patterns: the built-in ones (code, read-only) and the
+  // organization's own, reusable arrangements of layers the editor copies
+  // into a page under new ids. Every member may read, create, change,
+  // archive and restore them. The organization and the user come from the
+  // request only; none touches a design, none is applied here, and none
+  // deletes
+  @Get('/design-layout-patterns')
+  listDesignLayoutPatterns(
+    @GetOrgFromRequest() org: Organization,
+    @Query() query: ListContentStudioDesignLayoutPatternsDto
+  ) {
+    return this._contentStudioDesignLayoutPatternService.listPatterns({
+      organizationId: org.id,
+      archived: query.archived,
+      page: query.page,
+    });
+  }
+
+  @Post('/design-layout-patterns')
+  createDesignLayoutPattern(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Body() body: CreateContentStudioDesignLayoutPatternDto
+  ) {
+    return this._contentStudioDesignLayoutPatternService.createPattern({
+      organizationId: org.id,
+      userId: user.id,
+      name: body.name,
+      description: body.description,
+      content: body.content,
+    });
+  }
+
+  @Patch('/design-layout-patterns/:id')
+  updateDesignLayoutPattern(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Body() body: UpdateContentStudioDesignLayoutPatternDto
+  ) {
+    return this._contentStudioDesignLayoutPatternService.updatePattern(
+      org.id,
+      id,
+      {
+        name: body.name,
+        description: body.description,
+        content: body.content,
+      }
+    );
+  }
+
+  @Post('/design-layout-patterns/:id/archive')
+  @HttpCode(200)
+  archiveDesignLayoutPattern(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioDesignLayoutPatternService.archivePattern(
+      org.id,
+      id
+    );
+  }
+
+  @Post('/design-layout-patterns/:id/restore')
+  @HttpCode(200)
+  restoreDesignLayoutPattern(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioDesignLayoutPatternService.restorePattern(
       org.id,
       id
     );

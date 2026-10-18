@@ -1,5 +1,9 @@
 import { Global, Module } from '@nestjs/common';
-import { PrismaRepository, PrismaService, PrismaTransaction } from './prisma.service';
+import {
+  PrismaRepository,
+  PrismaService,
+  PrismaTransaction,
+} from './prisma.service';
 import { OrganizationRepository } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.repository';
 import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service';
 import { UsersService } from '@gitroom/nestjs-libraries/database/prisma/users/users.service';
@@ -87,6 +91,8 @@ import { ContentStudioDesignTemplateRepository } from '@gitroom/nestjs-libraries
 import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
 import { ContentStudioDesignStylePresetRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-style-preset.repository';
 import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-style-preset.service';
+import { ContentStudioDesignLayoutPatternRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-layout-pattern.repository';
+import { ContentStudioDesignLayoutPatternService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-layout-pattern.service';
 
 @Global()
 @Module({
@@ -183,6 +189,8 @@ import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries
     ContentStudioDesignTemplateService,
     ContentStudioDesignStylePresetRepository,
     ContentStudioDesignStylePresetService,
+    ContentStudioDesignLayoutPatternRepository,
+    ContentStudioDesignLayoutPatternService,
   ],
   get exports() {
     return this.providers;

@@ -22,6 +22,10 @@ import {
   ContentStudioDesignStylePresetContentV1,
   designStylePresetKindOf,
 } from '@gitroom/nestjs-libraries/content-studio/design/design.style.preset';
+import {
+  ContentStudioDesignLayoutPatternContentV1,
+  instantiateContentStudioDesignLayoutPattern,
+} from '@gitroom/nestjs-libraries/content-studio/design/design.layout.pattern';
 
 // The operations of the Creative Studio editor on a Design Document v1, as
 // pure functions: no React, API or DOM. Every operation leaves its input as
@@ -46,7 +50,8 @@ export type ContentStudioDesignEditorErrorCode =
   | 'OUT_OF_LIMITS'
   | 'STYLE_KIND_MISMATCH'
   | 'STYLE_BRAND_UNAVAILABLE'
-  | 'IMAGE_MASK_INVALID';
+  | 'IMAGE_MASK_INVALID'
+  | 'LAYOUT_BRAND_UNAVAILABLE';
 
 // A code only: the UI shows its own fixed text for it
 export class ContentStudioDesignEditorError extends Error {
@@ -778,6 +783,193 @@ export const distributeContentStudioDesignLayers = (
   return placeLayers(document, pageIndex, page, corners);
 };
 
+// ---------------------------------------------------------------------------
+// Composition (P4-15)
+// ---------------------------------------------------------------------------
+
+// Every helper below moves the stored, unrotated boxes of some layers of
+// one page, in one new document or not at all (placeLayers): sizes,
+// rotation, z-order and everything else stay. A rotated layer is placed by
+// its stored box, as align and distribute place it. A gap is in design
+// units, within the coordinate limits, and may be 0 or negative (overlap)
+
+export type ContentStudioDesignCenterAxis = 'horizontal' | 'vertical' | 'both';
+
+const boundsOf = (layers: ContentStudioDesignLayer[]): Bounds => ({
+  left: Math.min(...layers.map((layer) => layer.x)),
+  top: Math.min(...layers.map((layer) => layer.y)),
+  right: Math.max(...layers.map((layer) => layer.x + layer.width)),
+  bottom: Math.max(...layers.map((layer) => layer.y + layer.height)),
+});
+
+const gapOk = (gap: number) =>
+  Number.isFinite(gap) && Math.abs(gap) <= DESIGN_COORDINATE_MAX;
+
+// The layers, all moved by the same amount
+const translated = (
+  layers: ContentStudioDesignLayer[],
+  dx: number,
+  dy: number
+) =>
+  new Map(
+    layers.map((layer) => [layer.id, { x: layer.x + dx, y: layer.y + dy }])
+  );
+
+// One or more layers of one page moved together, so the box around them is
+// centered on the page horizontally, vertically or both; their places
+// relative to each other stay
+export const centerContentStudioDesignLayersOnPage = (
+  document: ContentStudioDesignDocumentV1,
+  layerIds: string[],
+  axis: ContentStudioDesignCenterAxis
+) => {
+  const { pageIndex, page, layers } = layersOfOnePage(document, layerIds);
+  const bounds = boundsOf(layers);
+  const dx =
+    axis === 'vertical'
+      ? 0
+      : (page.width - (bounds.right - bounds.left)) / 2 - bounds.left;
+  const dy =
+    axis === 'horizontal'
+      ? 0
+      : (page.height - (bounds.bottom - bounds.top)) / 2 - bounds.top;
+  return placeLayers(document, pageIndex, page, translated(layers, dx, dy));
+};
+
+// One or more layers of one page moved together, as little as needed, so
+// the box around them is inside the page; on an axis where it is larger
+// than the page, its left (top) edge goes to the page's. Only moved, never
+// scaled: a text box has no font size to scale with it
+export const moveContentStudioDesignLayersIntoPage = (
+  document: ContentStudioDesignDocumentV1,
+  layerIds: string[]
+) => {
+  const { pageIndex, page, layers } = layersOfOnePage(document, layerIds);
+  const bounds = boundsOf(layers);
+  const into = (start: number, end: number, size: number) =>
+    end - start > size || start < 0 ? -start : end > size ? size - end : 0;
+  return placeLayers(
+    document,
+    pageIndex,
+    page,
+    translated(
+      layers,
+      into(bounds.left, bounds.right, page.width),
+      into(bounds.top, bounds.bottom, page.height)
+    )
+  );
+};
+
+// Two or more layers of one page spaced by exactly this gap along an axis:
+// in order of their left (top) edge, ties by id; the first stays and the
+// others follow it. The other axis stays
+export const spaceContentStudioDesignLayers = (
+  document: ContentStudioDesignDocumentV1,
+  layerIds: string[],
+  axis: ContentStudioDesignDistributeAxis,
+  gap: number
+) => {
+  const { pageIndex, page, layers } = layersOfOnePage(document, layerIds);
+  if (layers.length < 2) {
+    throw fail('NOT_FOUND');
+  }
+  if (!gapOk(gap)) {
+    throw fail('OUT_OF_LIMITS');
+  }
+  const horizontal = axis === 'horizontal';
+  const start = (layer: ContentStudioDesignLayer) =>
+    horizontal ? layer.x : layer.y;
+  const order = [...layers].sort(
+    (a, b) => start(a) - start(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  );
+  const corners = new Map<string, { x: number; y: number }>();
+  let next = start(order[0]);
+  for (const layer of order) {
+    corners.set(
+      layer.id,
+      horizontal ? { x: next, y: layer.y } : { x: layer.x, y: next }
+    );
+    next += (horizontal ? layer.width : layer.height) + gap;
+  }
+  return placeLayers(document, pageIndex, page, corners);
+};
+
+// Two or more layers of one page as a grid of this many columns, in the
+// page's order (back to front) row by row, from the top left corner of the
+// box around them. A column is as wide as its widest layer and a row as
+// high as its highest; every layer goes to the top left of its cell. One
+// column is a stack, as many columns as layers is a row
+export const arrangeContentStudioDesignLayersInGrid = (
+  document: ContentStudioDesignDocumentV1,
+  layerIds: string[],
+  columns: number,
+  gapX: number,
+  gapY: number
+) => {
+  const { pageIndex, page, layers } = layersOfOnePage(document, layerIds);
+  if (layers.length < 2) {
+    throw fail('NOT_FOUND');
+  }
+  if (
+    !Number.isInteger(columns) ||
+    columns < 1 ||
+    columns > layers.length ||
+    !gapOk(gapX) ||
+    !gapOk(gapY)
+  ) {
+    throw fail('OUT_OF_LIMITS');
+  }
+  const bounds = boundsOf(layers);
+  const widths: number[] = [];
+  const heights: number[] = [];
+  layers.forEach((layer, index) => {
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    widths[column] = Math.max(widths[column] ?? 0, layer.width);
+    heights[row] = Math.max(heights[row] ?? 0, layer.height);
+  });
+  const offsets = (sizes: number[], start: number, gap: number) =>
+    sizes.reduce<number[]>(
+      (list, size, index) =>
+        index ? [...list, list[index - 1] + sizes[index - 1] + gap] : [start],
+      []
+    );
+  const xs = offsets(widths, bounds.left, gapX);
+  const ys = offsets(heights, bounds.top, gapY);
+  return placeLayers(
+    document,
+    pageIndex,
+    page,
+    new Map(
+      layers.map((layer, index) => [
+        layer.id,
+        { x: xs[index % columns], y: ys[Math.floor(index / columns)] },
+      ])
+    )
+  );
+};
+
+// A row: all the layers side by side, tops lined up
+export const arrangeContentStudioDesignLayersInRow = (
+  document: ContentStudioDesignDocumentV1,
+  layerIds: string[],
+  gap: number
+) =>
+  arrangeContentStudioDesignLayersInGrid(
+    document,
+    layerIds,
+    layerIds.length,
+    gap,
+    0
+  );
+
+// A column: all the layers stacked, left edges lined up
+export const arrangeContentStudioDesignLayersInColumn = (
+  document: ContentStudioDesignDocumentV1,
+  layerIds: string[],
+  gap: number
+) => arrangeContentStudioDesignLayersInGrid(document, layerIds, 1, 0, gap);
+
 // A layer as the editor's clipboard keeps it: an exact plain copy of
 // everything but its id (an image keeps its Media id and SHA-256)
 type WithoutId<T> = T extends unknown ? Omit<T, 'id'> : never;
@@ -1026,6 +1218,76 @@ export const applyContentStudioDesignStyle = (
       position === layerIndex ? next : entry
     )
   );
+};
+
+// ---------------------------------------------------------------------------
+// Layout patterns (P4-15)
+// ---------------------------------------------------------------------------
+
+// A layout pattern's layers copied onto a page, in front of the others,
+// with the pattern's box centered on the page: every layer under a new id,
+// in the pattern's order (its z-order kept), and nothing of the pattern
+// kept in the design. Refused as a whole, never partly inserted, when the
+// page or the document would have more layers than allowed, a layer would
+// be outside the coordinate limits, or a layer uses a Brand Kit token the
+// document's own exact revision (its content, as loaded) does not have, or
+// any token for a document without a Brand Kit. Whether the images still
+// belong to the organization is the caller's check, before this is called
+export const insertContentStudioDesignLayoutPattern = (
+  document: ContentStudioDesignDocumentV1,
+  pageId: string,
+  content: ContentStudioDesignLayoutPatternContentV1,
+  brand: ContentStudioBrandKitContentV1 | null
+) => {
+  const index = findPage(document, pageId);
+  const page = document.pages[index];
+  const count = content.layers.length;
+  if (
+    !count ||
+    page.layers.length + count > DESIGN_LAYERS_PER_PAGE_MAX ||
+    layerCount(document) + count > DESIGN_LAYERS_MAX
+  ) {
+    throw fail('LAYER_LIMIT');
+  }
+  const taken = layerIds(document);
+  const layers = instantiateContentStudioDesignLayoutPattern(
+    content,
+    page,
+    () => uniqueId(newContentStudioDesignLayerId, taken)
+  );
+  if (
+    layers.some(
+      (layer) =>
+        Math.abs(layer.x) > DESIGN_COORDINATE_MAX ||
+        Math.abs(layer.y) > DESIGN_COORDINATE_MAX
+    )
+  ) {
+    throw fail('OUT_OF_LIMITS');
+  }
+  // the tokens of the new layers only: the page's background is not theirs
+  const { colorTokenIds, typographyTokenIds } =
+    collectContentStudioDesignBrandTokenRefs({
+      ...document,
+      pages: [{ ...page, background: { type: 'solid', color: WHITE }, layers }],
+    });
+  if (colorTokenIds.length || typographyTokenIds.length) {
+    const colors = new Set(brand?.colors.map((token) => token.id) ?? []);
+    const typography = new Set(
+      brand?.typography.map((token) => token.id) ?? []
+    );
+    if (
+      !document.brandKit ||
+      !brand ||
+      colorTokenIds.some((id) => !colors.has(id)) ||
+      typographyTokenIds.some((id) => !typography.has(id))
+    ) {
+      throw fail('LAYOUT_BRAND_UNAVAILABLE');
+    }
+  }
+  return {
+    document: withLayers(document, index, [...page.layers, ...layers]),
+    layerIds: layers.map((layer) => layer.id),
+  };
 };
 
 // The literal colors the document uses (backgrounds, text and fills), each

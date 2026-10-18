@@ -1474,6 +1474,9 @@ describe('Design Document P4-02 persistence boundary', () => {
         )
         .sort()
     ).toEqual([
+      // P4-15: layouts are copied out of and into the draft document; they
+      // save no design revision
+      `${CS}/content-studio.design-layout-patterns.tsx`,
       // P4-11: design templates hold Design Document v1 revisions too
       `${CS}/content-studio.design-template.workspace.tsx`,
       `${CS}/content-studio.design-templates.api.ts`,

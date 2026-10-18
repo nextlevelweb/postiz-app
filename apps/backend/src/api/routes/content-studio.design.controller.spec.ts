@@ -32,6 +32,7 @@ import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/data
 import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
 import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
 import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-style-preset.service';
+import { ContentStudioDesignLayoutPatternService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-layout-pattern.service';
 import {
   CreateContentStudioDesignDto,
   CreateContentStudioDesignRevisionDto,
@@ -110,7 +111,8 @@ const setup = () => {
     {} as ContentStudioDesignRenderService,
     {} as ContentStudioDesignReferenceService,
     {} as ContentStudioDesignTemplateService,
-    {} as ContentStudioDesignStylePresetService
+    {} as ContentStudioDesignStylePresetService,
+    {} as ContentStudioDesignLayoutPatternService
   );
   return { designs, controller, result };
 };
@@ -142,10 +144,12 @@ describe('ContentStudioController design routes', () => {
       .filter((name) => /Designs?\b|Design[A-Z]/.test(name))
       // P4-08: the Brand Kit and Media design references live elsewhere;
       // P4-11: so do the design template routes (template controller spec),
-      // P4-13: and the style preset routes (style preset controller spec)
+      // P4-13: and the style preset routes (style preset controller spec),
+      // P4-15: and the layout pattern routes (layout pattern controller spec)
       .filter((name) => !/DesignReference$/.test(name))
       .filter((name) => !/Template/.test(name))
-      .filter((name) => !/StylePreset/.test(name));
+      .filter((name) => !/StylePreset/.test(name))
+      .filter((name) => !/LayoutPattern/.test(name));
     expect(names.map(route).sort()).toEqual([
       'GET /designs',
       'GET /designs/:id',
@@ -194,6 +198,9 @@ describe('ContentStudioController design routes', () => {
           !r.startsWith('GET /design-templates') &&
           !/^(POST|PATCH) \/design-templates/.test(r) &&
           r !== 'POST /designs/:id/revisions/:revisionId/save-as-template' &&
+          // P4-15: the layout pattern routes, pinned by the layout pattern
+          // controller spec (none touches a design, renders or applies)
+          !/^(GET|POST|PATCH) \/design-layout-patterns/.test(r) &&
           /design/i.test(r) &&
           (/^(DELETE|PUT) /.test(r) ||
             /render|preview|export|duplicate|copy|clone|template|generate|ai\b|media|upload|image|font|layout|thumbnail/i.test(

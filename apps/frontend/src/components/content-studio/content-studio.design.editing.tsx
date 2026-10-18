@@ -56,6 +56,11 @@ import {
   addContentStudioDesignLayer,
   addContentStudioDesignPage,
   alignContentStudioDesignLayers,
+  arrangeContentStudioDesignLayersInColumn,
+  arrangeContentStudioDesignLayersInGrid,
+  arrangeContentStudioDesignLayersInRow,
+  centerContentStudioDesignLayersOnPage,
+  ContentStudioDesignCenterAxis,
   alignContentStudioDesignLayerToPage,
   amendContentStudioDesignHistory,
   applyContentStudioDesignHistory,
@@ -78,6 +83,8 @@ import {
   deleteContentStudioDesignLayer,
   deleteContentStudioDesignPage,
   distributeContentStudioDesignLayers,
+  moveContentStudioDesignLayersIntoPage,
+  spaceContentStudioDesignLayers,
   duplicateContentStudioDesignLayer,
   duplicateContentStudioDesignPage,
   missingContentStudioDesignBrandTokens,
@@ -174,6 +181,11 @@ export const designEditorErrorMessage = (t: Translate, error: unknown) => {
       return t(
         'content_studio_style_preset_wrong_layer',
         'This style preset is for another kind of layer.'
+      );
+    case 'LAYOUT_BRAND_UNAVAILABLE':
+      return t(
+        'content_studio_layout_brand_unavailable',
+        'This layout uses Brand Kit colors or typography that this design’s Brand Kit revision does not have. Nothing was inserted.'
       );
     case 'STYLE_BRAND_UNAVAILABLE':
       return t(
@@ -2621,6 +2633,241 @@ const EDGE_TEXT = (
   bottom: t('content_studio_design_align_bottom', 'Bottom'),
 });
 
+const CENTER_ON_PAGE = (t: Translate) =>
+  [
+    [
+      'horizontal',
+      t('content_studio_design_center_horizontal', 'Horizontally'),
+      t(
+        'content_studio_design_center_horizontal_label',
+        'Center selection on page horizontally'
+      ),
+    ],
+    [
+      'vertical',
+      t('content_studio_design_center_vertical', 'Vertically'),
+      t(
+        'content_studio_design_center_vertical_label',
+        'Center selection on page vertically'
+      ),
+    ],
+    [
+      'both',
+      t('content_studio_design_center_both', 'Both'),
+      t('content_studio_design_center_both_label', 'Center selection on page'),
+    ],
+  ] as Array<[ContentStudioDesignCenterAxis, string, string]>;
+
+// a gap in design units, within the coordinate limits; may be negative
+const gapValue = (value: string) => {
+  const gap = value.trim() === '' ? NaN : Number(value);
+  return Number.isFinite(gap) && Math.abs(gap) <= DESIGN_COORDINATE_MAX
+    ? gap
+    : null;
+};
+
+// Composition (P4-15): the chosen layers moved together onto the page
+// (centered, or moved inside it), and two or more spaced by an exact gap,
+// or set out as a row, a column or a grid in the page's order. Each command
+// is one undo step for every layer it moves, and refuses it all when a
+// layer would leave the design limits. Boxes are moved, never resized: a
+// rotated layer is placed by its stored, unrotated box
+const DesignCompositionControls: FC<{
+  editor: ContentStudioDesignEditor;
+  layerIds: string[];
+}> = ({ editor, layerIds }) => {
+  const t = useT();
+  const disabled = editor.saving || editor.interacting;
+  const [gapText, setGapText] = useState('24');
+  const [columnsText, setColumnsText] = useState('2');
+  const gap = gapValue(gapText);
+  const columns = Number(columnsText);
+  const columnsOk =
+    Number.isInteger(columns) && columns >= 1 && columns <= layerIds.length;
+  const run = (
+    operation: (
+      latest: ContentStudioDesignDocumentV1
+    ) => ContentStudioDesignDocumentV1
+  ) => editor.apply((latest) => ({ document: operation(latest) }));
+  const several = layerIds.length > 1;
+  return (
+    <div
+      role="group"
+      aria-label={t('content_studio_design_composition', 'Composition')}
+      className="flex flex-col gap-[6px]"
+    >
+      <span className="text-[12px] text-textItemBlur">
+        {t('content_studio_design_center_on_page', 'Center on page')}
+      </span>
+      <div className="flex flex-wrap gap-[4px]">
+        {CENTER_ON_PAGE(t).map(([axis, text, name]) => (
+          <button
+            key={axis}
+            type="button"
+            aria-label={name}
+            title={name}
+            disabled={disabled}
+            className={COMMAND}
+            onClick={() =>
+              run((latest) =>
+                centerContentStudioDesignLayersOnPage(latest, layerIds, axis)
+              )
+            }
+          >
+            {text}
+          </button>
+        ))}
+        <button
+          type="button"
+          disabled={disabled}
+          className={COMMAND}
+          title={t(
+            'content_studio_design_move_into_page_hint',
+            'Moves the selection inside the page; nothing is resized.'
+          )}
+          onClick={() =>
+            run((latest) =>
+              moveContentStudioDesignLayersIntoPage(latest, layerIds)
+            )
+          }
+        >
+          {t('content_studio_design_move_into_page', 'Move into page')}
+        </button>
+      </div>
+      {several && (
+        <>
+          <div className="flex gap-[8px] items-end">
+            <label className="flex flex-col gap-[4px] text-[12px] min-w-0 flex-1">
+              {t('content_studio_design_gap', 'Gap')}
+              <input
+                type="number"
+                inputMode="decimal"
+                className={FIELD}
+                value={gapText}
+                aria-invalid={gap === null}
+                disabled={disabled}
+                onChange={(e) => setGapText(e.target.value)}
+              />
+            </label>
+            <label className="flex flex-col gap-[4px] text-[12px] min-w-0 flex-1">
+              {t('content_studio_design_grid_columns', 'Columns')}
+              <input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={layerIds.length}
+                step={1}
+                className={FIELD}
+                value={columnsText}
+                aria-invalid={!columnsOk}
+                disabled={disabled}
+                onChange={(e) => setColumnsText(e.target.value)}
+              />
+            </label>
+          </div>
+          <div className="flex flex-wrap gap-[4px]">
+            <button
+              type="button"
+              disabled={disabled || gap === null}
+              className={COMMAND}
+              onClick={() =>
+                gap !== null &&
+                run((latest) =>
+                  spaceContentStudioDesignLayers(
+                    latest,
+                    layerIds,
+                    'horizontal',
+                    gap
+                  )
+                )
+              }
+            >
+              {t(
+                'content_studio_design_space_horizontal',
+                'Space horizontally'
+              )}
+            </button>
+            <button
+              type="button"
+              disabled={disabled || gap === null}
+              className={COMMAND}
+              onClick={() =>
+                gap !== null &&
+                run((latest) =>
+                  spaceContentStudioDesignLayers(
+                    latest,
+                    layerIds,
+                    'vertical',
+                    gap
+                  )
+                )
+              }
+            >
+              {t('content_studio_design_space_vertical', 'Space vertically')}
+            </button>
+            <button
+              type="button"
+              disabled={disabled || gap === null}
+              className={COMMAND}
+              onClick={() =>
+                gap !== null &&
+                run((latest) =>
+                  arrangeContentStudioDesignLayersInRow(latest, layerIds, gap)
+                )
+              }
+            >
+              {t('content_studio_design_arrange_row', 'Row')}
+            </button>
+            <button
+              type="button"
+              disabled={disabled || gap === null}
+              className={COMMAND}
+              onClick={() =>
+                gap !== null &&
+                run((latest) =>
+                  arrangeContentStudioDesignLayersInColumn(
+                    latest,
+                    layerIds,
+                    gap
+                  )
+                )
+              }
+            >
+              {t('content_studio_design_arrange_column', 'Column')}
+            </button>
+            <button
+              type="button"
+              disabled={disabled || gap === null || !columnsOk}
+              className={COMMAND}
+              onClick={() =>
+                gap !== null &&
+                columnsOk &&
+                run((latest) =>
+                  arrangeContentStudioDesignLayersInGrid(
+                    latest,
+                    layerIds,
+                    columns,
+                    gap,
+                    gap
+                  )
+                )
+              }
+            >
+              {t('content_studio_design_arrange_grid', 'Grid')}
+            </button>
+          </div>
+          <span className="text-[11px] text-textItemBlur">
+            {t(
+              'content_studio_design_arrange_order_hint',
+              'Row, column and grid follow the layer order, back to front.'
+            )}
+          </span>
+        </>
+      )}
+    </div>
+  );
+};
+
 // The commands for the chosen layers of the page: one layer lines up with
 // the page, two or more with the box around them, three or more can be
 // distributed; each command is one undo step for every layer it moves. Copy
@@ -2731,6 +2978,9 @@ export const DesignArrangePanel: FC<{
             )}
           </button>
         </div>
+      )}
+      {layerIds.length > 0 && (
+        <DesignCompositionControls editor={editor} layerIds={layerIds} />
       )}
       <div className="flex flex-wrap gap-[4px]">
         <button

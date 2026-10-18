@@ -1024,6 +1024,9 @@ describe('Brand Kit P4-01 scope boundary', () => {
       // P4-12: template cards resolve tokens from the exact revisions their
       // documents name (through the same revision route), and a guided use
       // may name another exact revision; neither writes
+      // P4-15: layout thumbnails and insert check tokens against the same
+      // exact revision's content the design view holds; nothing is fetched
+      `${CS}/content-studio.design-layout-patterns.tsx`,
       // P4-13: style preset samples and apply use the exact revision's
       // content the design view already holds; nothing is fetched there
       `${CS}/content-studio.design-style-presets.tsx`,

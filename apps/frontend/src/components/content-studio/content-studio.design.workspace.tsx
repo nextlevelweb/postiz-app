@@ -82,6 +82,7 @@ import {
 import { ContentStudioDesignCanvas } from '@gitroom/frontend/components/content-studio/content-studio.design.canvas';
 import { SaveAsTemplateForm } from '@gitroom/frontend/components/content-studio/content-studio.design-templates';
 import { DesignStylePresets } from '@gitroom/frontend/components/content-studio/content-studio.design-style-presets';
+import { DesignLayoutPatterns } from '@gitroom/frontend/components/content-studio/content-studio.design-layout-patterns';
 
 // The Creative Studio workspace of one design: its pages and layers, a live
 // structural preview, an inspector, the revision history, and server renders
@@ -1301,6 +1302,21 @@ export const DesignRevisionView: FC<{
               editor={edit.editor}
               layer={single}
               brand={brand.content}
+            />
+          )}
+          {/* layout patterns (P4-15): insert onto this page, or save the
+              chosen layers; the inserted layers become the selection */}
+          {edit && (
+            <DesignLayoutPatterns
+              editor={edit.editor}
+              document={document}
+              page={page}
+              layerIds={chosen}
+              brand={brand.content}
+              onInserted={(ids) => {
+                setChosenIds(ids);
+                setPrimaryId(ids[ids.length - 1] ?? null);
+              }}
             />
           )}
           <section className="flex flex-col gap-[8px]">
