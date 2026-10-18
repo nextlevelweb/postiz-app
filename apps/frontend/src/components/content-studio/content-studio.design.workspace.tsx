@@ -1177,6 +1177,12 @@ export const DesignRevisionView: FC<{
                         </span>
                       )}
                     </span>
+                    <span
+                      data-page-size=""
+                      className="text-[11px] text-textItemBlur"
+                    >
+                      {entry.width} × {entry.height}
+                    </span>
                   </button>
                 </li>
               ))}

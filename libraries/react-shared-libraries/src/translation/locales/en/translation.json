@@ -1659,5 +1659,17 @@
   "content_studio_layout_error_media": "An image in these layers is not available in your media library.",
   "content_studio_layout_error_archived": "This layout is archived.",
   "content_studio_layout_not_found": "Layout not found.",
-  "content_studio_layout_error": "Something went wrong with the layout."
+  "content_studio_layout_error": "Something went wrong with the layout.",
+  "content_studio_design_variant_invalid_size": "Choose one or more different, valid page sizes.",
+  "content_studio_design_variant_out_of_limits": "At that size this page would be outside the design limits. Nothing was created.",
+  "content_studio_design_variant_source": "This page",
+  "content_studio_design_variant_hint": "Each new page is a scaled, centered copy you can edit on its own; it does not stay linked to this page.",
+  "content_studio_design_variant_sizes": "Page sizes",
+  "content_studio_design_variant_size": "Page size",
+  "content_studio_design_variant_same": "same size",
+  "content_studio_design_variant_campaign_hint": "Choose two or more sizes. The pages are added after this one in the order shown.",
+  "content_studio_design_variant_create_all": "Create variants",
+  "content_studio_design_variant_create": "Create variant",
+  "content_studio_design_variant_campaign": "Create campaign variants",
+  "content_studio_design_variant_one": "Duplicate as size"
 }

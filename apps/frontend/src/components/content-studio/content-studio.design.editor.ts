@@ -2,6 +2,7 @@ import type { ContentStudioBrandKitContentV1 } from '@gitroom/nestjs-libraries/c
 import {
   collectContentStudioDesignBrandTokenRefs,
   ContentStudioDesignBrandKitRef,
+  ContentStudioDesignDocumentError,
   ContentStudioDesignColorValue,
   ContentStudioDesignDocumentV1,
   ContentStudioDesignImageLayer,
@@ -14,7 +15,12 @@ import {
   DESIGN_CORNER_RADIUS_MAX,
   DESIGN_LAYERS_MAX,
   DESIGN_LAYERS_PER_PAGE_MAX,
+  DESIGN_PAGE_AREA_MAX,
+  DESIGN_PAGE_NAME_MAX,
+  DESIGN_PAGE_SIZE_MAX,
+  DESIGN_PAGE_SIZE_MIN,
   DESIGN_PAGES_MAX,
+  parseContentStudioDesignDocument,
 } from '@gitroom/nestjs-libraries/content-studio/design/design.document';
 import {
   applyContentStudioDesignStylePreset,
@@ -51,7 +57,9 @@ export type ContentStudioDesignEditorErrorCode =
   | 'STYLE_KIND_MISMATCH'
   | 'STYLE_BRAND_UNAVAILABLE'
   | 'IMAGE_MASK_INVALID'
-  | 'LAYOUT_BRAND_UNAVAILABLE';
+  | 'LAYOUT_BRAND_UNAVAILABLE'
+  | 'INVALID_TARGET_SIZE'
+  | 'VARIANT_OUT_OF_LIMITS';
 
 // A code only: the UI shows its own fixed text for it
 export class ContentStudioDesignEditorError extends Error {
@@ -266,6 +274,178 @@ export const duplicateContentStudioDesignPage = (
   const pages = [...document.pages];
   pages.splice(index + 1, 0, page);
   return { document: withPages(document, pages), pageId: page.id };
+};
+
+// ---------------------------------------------------------------------------
+// Size variants (P4-16)
+// ---------------------------------------------------------------------------
+
+// A size a page variant is made in, with the name it adds to the page name
+export interface ContentStudioDesignPageVariantTarget {
+  width: number;
+  height: number;
+  label: string;
+}
+
+// One layer of a page of one size, as it would be on a page of another:
+// the whole page scaled uniformly by the factor that fits it inside the
+// target (never stretched on one axis) and centered there. A layer keeps
+// its place relative to the page center; its box, and every size measured
+// in design units with it, scales by the same factor: a text's font size
+// and letter spacing (line height is a multiple of the font size and
+// stays), a shape's corner radius, an image frame's radius. Everything else
+// stays exactly: id, name, text, rotation, opacity, visibility, colors and
+// fonts (literal or Brand Kit tokens), Media reference, fit, focal point
+// and mask type. A new object; the layer is not changed
+export const scaleContentStudioDesignLayerForPageVariant = <
+  T extends ContentStudioDesignLayer
+>(
+  layer: T,
+  source: { width: number; height: number },
+  target: { width: number; height: number }
+): T => {
+  const scale = Math.min(
+    target.width / source.width,
+    target.height / source.height
+  );
+  const copy = JSON.parse(JSON.stringify(layer)) as ContentStudioDesignLayer;
+  const width = layer.width * scale;
+  const height = layer.height * scale;
+  const centerX =
+    target.width / 2 + (layer.x + layer.width / 2 - source.width / 2) * scale;
+  const centerY =
+    target.height / 2 +
+    (layer.y + layer.height / 2 - source.height / 2) * scale;
+  const box = {
+    x: plain(centerX - width / 2),
+    y: plain(centerY - height / 2),
+    width,
+    height,
+  };
+  if (copy.type === 'text') {
+    return {
+      ...copy,
+      ...box,
+      fontSize: copy.fontSize * scale,
+      letterSpacing: plain(copy.letterSpacing * scale),
+    } as T;
+  }
+  if (copy.type === 'shape') {
+    return {
+      ...copy,
+      ...box,
+      cornerRadius: copy.cornerRadius * scale,
+    } as T;
+  }
+  return {
+    ...copy,
+    ...box,
+    ...(copy.mask?.type === 'roundedRectangle'
+      ? {
+          mask: {
+            type: 'roundedRectangle',
+            cornerRadius: copy.mask.cornerRadius * scale,
+          },
+        }
+      : {}),
+  } as T;
+};
+
+// A size a Design Document v1 page can have
+const pageSizeOk = (size: { width: number; height: number }) =>
+  [size.width, size.height].every(
+    (side) =>
+      Number.isInteger(side) &&
+      side >= DESIGN_PAGE_SIZE_MIN &&
+      side <= DESIGN_PAGE_SIZE_MAX
+  ) && size.width * size.height <= DESIGN_PAGE_AREA_MAX;
+
+// "Name · Label", or the label alone for a page without a name; the name is
+// shortened (never the label) to fit the page name limit
+const variantName = (name: string, label: string) => {
+  if (!name.trim()) {
+    return label.slice(0, DESIGN_PAGE_NAME_MAX);
+  }
+  const suffix = ` · ${label}`.slice(0, DESIGN_PAGE_NAME_MAX);
+  return `${name.slice(0, DESIGN_PAGE_NAME_MAX - suffix.length)}${suffix}`;
+};
+
+// New pages made from one page, one per target size, right after it in
+// the targets' order (the pages after it move along): ordinary independent
+// pages, each with a new page id and new layer ids, the source's
+// background and its layers in the same order, scaled and centered for the
+// size (scaleContentStudioDesignLayerForPageVariant). Nothing links a
+// variant to its source or to the others, and the source is not changed.
+// All or nothing, before anything is made: no targets, an invalid or
+// repeated size (INVALID_TARGET_SIZE), more pages or layers than a design
+// may have (PAGE_LIMIT, LAYER_LIMIT), or a result that is not valid Design
+// Document v1, such as a scaled value outside its limits or too much text
+// (VARIANT_OUT_OF_LIMITS)
+export const createContentStudioDesignPageVariants = (
+  document: ContentStudioDesignDocumentV1,
+  pageId: string,
+  targets: ContentStudioDesignPageVariantTarget[]
+) => {
+  const index = findPage(document, pageId);
+  const source = document.pages[index];
+  const sizes = new Set(
+    targets.map((target) => `${target.width}x${target.height}`)
+  );
+  if (
+    !targets.length ||
+    sizes.size !== targets.length ||
+    !targets.every(pageSizeOk)
+  ) {
+    throw fail('INVALID_TARGET_SIZE');
+  }
+  if (document.pages.length + targets.length > DESIGN_PAGES_MAX) {
+    throw fail('PAGE_LIMIT');
+  }
+  if (
+    layerCount(document) + targets.length * source.layers.length >
+    DESIGN_LAYERS_MAX
+  ) {
+    throw fail('LAYER_LIMIT');
+  }
+  const takenPages = pageIds(document);
+  const takenLayers = layerIds(document);
+  const variants = targets.map(
+    (target): ContentStudioDesignPage => ({
+      id: uniqueId(newContentStudioDesignPageId, takenPages),
+      name: variantName(source.name, target.label),
+      width: target.width,
+      height: target.height,
+      background: JSON.parse(JSON.stringify(source.background)),
+      layers: source.layers.map((layer) => ({
+        ...scaleContentStudioDesignLayerForPageVariant(layer, source, target),
+        id: uniqueId(newContentStudioDesignLayerId, takenLayers),
+      })),
+    })
+  );
+  const pages = [...document.pages];
+  pages.splice(index + 1, 0, ...variants);
+  const next = withPages(document, pages);
+  try {
+    parseContentStudioDesignDocument(next);
+  } catch (err) {
+    if (err instanceof ContentStudioDesignDocumentError) {
+      throw fail('VARIANT_OUT_OF_LIMITS');
+    }
+    throw err;
+  }
+  return { document: next, pageIds: variants.map((page) => page.id) };
+};
+
+// One size variant of a page, right after it
+export const createContentStudioDesignPageVariant = (
+  document: ContentStudioDesignDocumentV1,
+  pageId: string,
+  target: ContentStudioDesignPageVariantTarget
+) => {
+  const created = createContentStudioDesignPageVariants(document, pageId, [
+    target,
+  ]);
+  return { document: created.document, pageId: created.pageIds[0] };
 };
 
 // Never the last page. The page now at the same position is selected next,

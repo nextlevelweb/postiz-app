@@ -2,6 +2,7 @@
 
 import {
   FC,
+  FormEvent,
   KeyboardEvent,
   PointerEvent,
   ReactNode,
@@ -86,6 +87,8 @@ import {
   moveContentStudioDesignLayersIntoPage,
   spaceContentStudioDesignLayers,
   duplicateContentStudioDesignLayer,
+  createContentStudioDesignPageVariant,
+  createContentStudioDesignPageVariants,
   duplicateContentStudioDesignPage,
   missingContentStudioDesignBrandTokens,
   moveContentStudioDesignLayer,
@@ -99,6 +102,7 @@ import {
 } from '@gitroom/frontend/components/content-studio/content-studio.design.editor';
 import {
   ContentStudioDesignMediaRef,
+  DESIGN_CANVAS_PRESETS,
   designErrorCode,
   designReferenceErrorMessage,
   designSaveErrorMessage,
@@ -181,6 +185,16 @@ export const designEditorErrorMessage = (t: Translate, error: unknown) => {
       return t(
         'content_studio_style_preset_wrong_layer',
         'This style preset is for another kind of layer.'
+      );
+    case 'INVALID_TARGET_SIZE':
+      return t(
+        'content_studio_design_variant_invalid_size',
+        'Choose one or more different, valid page sizes.'
+      );
+    case 'VARIANT_OUT_OF_LIMITS':
+      return t(
+        'content_studio_design_variant_out_of_limits',
+        'At that size this page would be outside the design limits. Nothing was created.'
       );
     case 'LAYOUT_BRAND_UNAVAILABLE':
       return t(
@@ -1396,6 +1410,132 @@ export const DesignBrandKitPicker: FC<{
 // The editing controls of the workspace
 // ---------------------------------------------------------------------------
 
+// Size variants (P4-16): the current page made again in one fixed canvas
+// size (Duplicate as size) or in several at once (Create campaign
+// variants), each one an ordinary new page right after it, scaled
+// uniformly and centered. One undo step for all of them; the first new page
+// opens with nothing selected. Nothing links a variant to its page, and a
+// template's guidance is never copied: the new layers have new ids
+const DesignPageVariantDialog: FC<{
+  editor: ContentStudioDesignEditor;
+  page: ContentStudioDesignPage;
+  campaign: boolean;
+  close: () => void;
+  onCreated: (pageId: string) => void;
+}> = ({ editor, page, campaign, close, onCreated }) => {
+  const t = useT();
+  const sameSize = (preset: { width: number; height: number }) =>
+    preset.width === page.width && preset.height === page.height;
+  const [chosen, setChosen] = useState<string[]>(() => {
+    const other = DESIGN_CANVAS_PRESETS.find((preset) => !sameSize(preset));
+    return campaign || !other ? [] : [other.id];
+  });
+  const label = (preset: (typeof DESIGN_CANVAS_PRESETS)[number]) =>
+    t(`content_studio_design_preset_${preset.id}`, preset.label);
+  // the targets in the presets' own order, whatever order they were ticked
+  const targets = DESIGN_CANVAS_PRESETS.filter((preset) =>
+    chosen.includes(preset.id)
+  ).map((preset) => ({
+    width: preset.width,
+    height: preset.height,
+    label: label(preset),
+  }));
+  const ready = campaign ? targets.length >= 2 : targets.length === 1;
+  const toggle = (id: string) =>
+    setChosen((current) =>
+      campaign
+        ? current.includes(id)
+          ? current.filter((entry) => entry !== id)
+          : [...current, id]
+        : [id]
+    );
+  const create = (e: FormEvent) => {
+    e.preventDefault();
+    if (!ready || editor.saving || editor.interacting) {
+      return;
+    }
+    const first = editor.apply((latest) => {
+      if (!campaign) {
+        const created = createContentStudioDesignPageVariant(
+          latest,
+          page.id,
+          targets[0]
+        );
+        return { document: created.document, result: created.pageId };
+      }
+      const created = createContentStudioDesignPageVariants(
+        latest,
+        page.id,
+        targets
+      );
+      return { document: created.document, result: created.pageIds[0] };
+    });
+    if (first) {
+      onCreated(first);
+      close();
+    }
+  };
+  return (
+    <form onSubmit={create} className="flex flex-col gap-[16px] min-w-0">
+      <div className="text-[13px] text-textItemBlur">
+        {`${t('content_studio_design_variant_source', 'This page')}: ${
+          page.width
+        } × ${page.height} · ${t(
+          'content_studio_design_variant_hint',
+          'Each new page is a scaled, centered copy you can edit on its own; it does not stay linked to this page.'
+        )}`}
+      </div>
+      <fieldset className="flex flex-col gap-[8px]">
+        <legend className="text-[14px] mb-[6px]">
+          {campaign
+            ? t('content_studio_design_variant_sizes', 'Page sizes')
+            : t('content_studio_design_variant_size', 'Page size')}
+        </legend>
+        {DESIGN_CANVAS_PRESETS.map((preset) => (
+          <label
+            key={preset.id}
+            className="flex items-center gap-[8px] cursor-pointer"
+          >
+            <input
+              type={campaign ? 'checkbox' : 'radio'}
+              name="variant-size"
+              value={preset.id}
+              checked={chosen.includes(preset.id)}
+              onChange={() => toggle(preset.id)}
+            />
+            <span>
+              {label(preset)}{' '}
+              <span className="text-textItemBlur">
+                {preset.width} × {preset.height}
+                {sameSize(preset) &&
+                  ` · ${t('content_studio_design_variant_same', 'same size')}`}
+              </span>
+            </span>
+          </label>
+        ))}
+      </fieldset>
+      {campaign && (
+        <div className="text-[12px] text-textItemBlur">
+          {t(
+            'content_studio_design_variant_campaign_hint',
+            'Choose two or more sizes. The pages are added after this one in the order shown.'
+          )}
+        </div>
+      )}
+      <div className="flex gap-[8px] justify-end">
+        <Button type="button" secondary onClick={close}>
+          {t('cancel', 'Cancel')}
+        </Button>
+        <Button type="submit" disabled={!ready || editor.saving}>
+          {campaign
+            ? t('content_studio_design_variant_create_all', 'Create variants')
+            : t('content_studio_design_variant_create', 'Create variant')}
+        </Button>
+      </div>
+    </form>
+  );
+};
+
 // Save, Cancel, Undo, Redo, adding layers and page actions. Save waits for a
 // change, a known Brand Kit and no known conflict
 export const DesignEditorToolbar: FC<{
@@ -1500,6 +1640,28 @@ export const DesignEditorToolbar: FC<{
       setLayerId(null);
     }
   };
+
+  const openVariants = (campaign: boolean) =>
+    modals.openModal({
+      title: campaign
+        ? t(
+            'content_studio_design_variant_campaign',
+            'Create campaign variants'
+          )
+        : t('content_studio_design_variant_one', 'Duplicate as size'),
+      children: (close: () => void) => (
+        <DesignPageVariantDialog
+          editor={editor}
+          page={page}
+          campaign={campaign}
+          close={close}
+          onCreated={(pageId) => {
+            setPageId(pageId);
+            setLayerId(null);
+          }}
+        />
+      ),
+    });
 
   return (
     <div className="flex flex-col gap-[8px] border border-newTableBorder rounded-[8px] p-[12px]">
@@ -1633,6 +1795,23 @@ export const DesignEditorToolbar: FC<{
           }
         >
           {t('content_studio_design_duplicate_page', 'Duplicate page')}
+        </Button>
+        <Button
+          secondary
+          disabled={busy || !limits.canAddPage}
+          onClick={() => openVariants(false)}
+        >
+          {t('content_studio_design_variant_one', 'Duplicate as size')}
+        </Button>
+        <Button
+          secondary
+          disabled={busy || !limits.canAddPage}
+          onClick={() => openVariants(true)}
+        >
+          {t(
+            'content_studio_design_variant_campaign',
+            'Create campaign variants'
+          )}
         </Button>
         <Button
           secondary

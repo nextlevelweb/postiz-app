@@ -1740,7 +1740,10 @@ describe('Creative Studio: revision history', () => {
     expect(screen.getByText('Read-only historical revision')).toBeTruthy();
     expect(header()).toContain('Revision 1 · Historical');
     expect(layerButtons()).toEqual(['▭First only shape']);
-    expect(pageButton(/Page 1/).textContent).toBe('Page 1First draft');
+    // P4-16: a page card also shows its size
+    expect(pageButton(/Page 1/).textContent).toBe(
+      'Page 1First draft1080 × 1080'
+    );
     expect(screen.getByText('No Brand Kit revision attached')).toBeTruthy();
   });
 
