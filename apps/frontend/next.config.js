@@ -1,8 +1,26 @@
 // @ts-check
 import { withSentryConfig } from '@sentry/nextjs';
 
+// Hostnames that may load the dev server's own assets and HMR (`next dev`
+// only): localhost and 127.0.0.1, plus the comma-separated hostnames or IPs in
+// POSTIZ_ALLOWED_DEV_ORIGINS, e.g. a LAN address. Entries are trimmed,
+// lowercased and kept once; one with a scheme, port, path or wildcard is
+// ignored. Builds and production do not use this
+const allowedDevOrigins = [
+  ...new Set(
+    [
+      'localhost',
+      '127.0.0.1',
+      ...(process.env.POSTIZ_ALLOWED_DEV_ORIGINS ?? '').split(','),
+    ]
+      .map((entry) => entry.trim().toLowerCase())
+      .filter((entry) => /^[a-z0-9.-]+$/.test(entry))
+  ),
+];
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  allowedDevOrigins,
   experimental: {
     proxyTimeout: 90_000,
   },
