@@ -1610,7 +1610,7 @@ describe('Editor ergonomics: static boundaries', () => {
       .join('\n');
   const source = (file: string) => code(readFileSync(join(dir, file), 'utf8'));
 
-  it('P410-1/P410-3/93 the Content Studio API keeps exactly its routes (P4-09: 91; P4-11 adds the 11 template routes)', () => {
+  it('P410-1/P410-3/93 the Content Studio API keeps exactly its routes (P4-09: 91; P4-11 adds the 11 template routes, P4-13 the 5 style preset routes)', () => {
     const controller = code(
       readFileSync(
         join(ROOT, 'apps/backend/src/api/routes/content-studio.controller.ts'),
@@ -1619,7 +1619,7 @@ describe('Editor ergonomics: static boundaries', () => {
     );
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(102);
+    ).toHaveLength(107);
     const api = source('content-studio.designs.api.ts');
     expect(api).not.toMatch(
       // (thumbnail is the Media list's own field, from P4-08)

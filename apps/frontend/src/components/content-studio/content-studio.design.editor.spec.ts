@@ -1191,3 +1191,208 @@ describe('Design editor: nudging and runs of edits', () => {
     expect(amendContentStudioDesignHistory(fresh, at(1))).toBe(fresh);
   });
 });
+
+// ============================================================================
+// P4-13: style presets as an editor operation, and the document palette
+describe('Design editor: style presets', () => {
+  const {
+    applyContentStudioDesignStyle,
+    contentStudioDesignDocumentColors,
+    ContentStudioDesignEditorError: EditorError,
+  } = require('./content-studio.design.editor');
+  const {
+    parseContentStudioDesignDocument: parseDoc,
+  } = require('@gitroom/nestjs-libraries/content-studio/design/design.document');
+  const common = {
+    x: 1,
+    y: 2,
+    width: 30,
+    height: 40,
+    rotation: 0,
+    opacity: 1,
+    visible: true,
+  };
+  const words = {
+    ...common,
+    id: 'words',
+    name: 'Words',
+    type: 'text',
+    text: 'Keep me',
+    font: { type: 'family', family: 'Inter', weight: 400, style: 'normal' },
+    fontSize: 20,
+    lineHeight: 1.2,
+    letterSpacing: 0,
+    color: lit('#111111'),
+    align: 'left',
+    verticalAlign: 'top',
+    overflow: 'clip',
+  };
+  const box = {
+    ...common,
+    id: 'box',
+    name: 'Box',
+    type: 'shape',
+    shape: 'rectangle',
+    fill: lit('#222222'),
+    cornerRadius: 0,
+  };
+  const picture = {
+    ...common,
+    id: 'picture',
+    name: 'Picture',
+    type: 'image',
+    imageRef: { type: 'media', mediaId: 'm1', sha256: SHA('a') },
+    fit: 'cover',
+    focalPoint: { x: 0.5, y: 0.5 },
+  };
+  const BRAND_REF = {
+    brandKitId: '0f8fad5b-d9cb-469f-a165-70867728950e',
+    revisionId: '8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d',
+    revisionNumber: 1,
+    contentHash: SHA('b'),
+  };
+  const document = (brandKit: Plain | null = null) =>
+    parseDoc({
+      schemaVersion: 1,
+      brandKit,
+      pages: [
+        {
+          id: 'p1',
+          name: '',
+          width: 100,
+          height: 100,
+          background: { type: 'solid', color: lit('#ffffff') },
+          layers: [words, box, picture],
+        },
+      ],
+    });
+  const brand = parseContentStudioBrandKitContent({
+    schemaVersion: 1,
+    identity: { brandName: 'B', tagline: '', description: '' },
+    colors: [
+      { id: 'primary', name: 'Primary', value: '#0057ff', role: 'primary' },
+    ],
+    typography: [],
+    visualDirection: { keywords: [], dos: [], donts: [] },
+  });
+  const text = (color: Plain = lit('#abcdef')) => ({
+    schemaVersion: 1,
+    kind: 'text',
+    style: {
+      font: { type: 'family', family: 'Inter', weight: 700, style: 'italic' },
+      fontSize: 50,
+      lineHeight: 1.5,
+      letterSpacing: 1,
+      color,
+      align: 'right',
+      verticalAlign: 'bottom',
+      opacity: 0.5,
+    },
+  });
+  const shape = {
+    schemaVersion: 1,
+    kind: 'shape',
+    style: { fill: tok('primary'), cornerRadius: 8, opacity: 0.25 },
+  };
+  const codeOf = (run: () => unknown) => {
+    try {
+      run();
+    } catch (err) {
+      return err instanceof EditorError ? (err as any).code : 'other';
+    }
+    return 'ok';
+  };
+
+  it('AP1/AP12 writes the style over one layer; other layers and the source document stay', () => {
+    const source = document();
+    const before = JSON.stringify(source);
+    const next = applyContentStudioDesignStyle(source, 'words', text(), null);
+    expect(JSON.stringify(source)).toBe(before);
+    expect(next.pages[0].layers[0]).toEqual({ ...words, ...text().style });
+    expect(next.pages[0].layers.slice(1)).toEqual(
+      source.pages[0].layers.slice(1)
+    );
+    expect(parseDoc(next)).toEqual(next);
+  });
+
+  it('AP7/M10/M11 a preset of another kind, or any preset for an image, is the editor’s kind error', () => {
+    expect(
+      codeOf(() =>
+        applyContentStudioDesignStyle(document(), 'box', text(), null)
+      )
+    ).toBe('STYLE_KIND_MISMATCH');
+    expect(
+      codeOf(() =>
+        applyContentStudioDesignStyle(document(), 'words', shape, brand)
+      )
+    ).toBe('STYLE_KIND_MISMATCH');
+    expect(
+      codeOf(() =>
+        applyContentStudioDesignStyle(document(), 'picture', text(), null)
+      )
+    ).toBe('STYLE_KIND_MISMATCH');
+    expect(
+      codeOf(() =>
+        applyContentStudioDesignStyle(document(), 'gone', text(), null)
+      )
+    ).toBe('NOT_FOUND');
+  });
+
+  it('BP2/BP3/BP4/M14/M15/M16 tokens need the document’s exact revision content to have them; all or nothing', () => {
+    const branded = document(BRAND_REF);
+    expect(
+      applyContentStudioDesignStyle(branded, 'box', shape, brand).pages[0]
+        .layers[1].fill
+    ).toEqual(tok('primary'));
+    // no Brand Kit on the document, or its revision not loaded
+    expect(
+      codeOf(() =>
+        applyContentStudioDesignStyle(document(), 'box', shape, brand)
+      )
+    ).toBe('STYLE_BRAND_UNAVAILABLE');
+    expect(
+      codeOf(() => applyContentStudioDesignStyle(branded, 'box', shape, null))
+    ).toBe('STYLE_BRAND_UNAVAILABLE');
+    // a token the revision does not have, among valid literals
+    expect(
+      codeOf(() =>
+        applyContentStudioDesignStyle(
+          branded,
+          'words',
+          text(tok('missing')),
+          brand
+        )
+      )
+    ).toBe('STYLE_BRAND_UNAVAILABLE');
+    expect(
+      codeOf(() =>
+        applyContentStudioDesignStyle(
+          branded,
+          'words',
+          { ...text(), style: { ...text().style, font: tok('heading') } },
+          brand
+        )
+      )
+    ).toBe('STYLE_BRAND_UNAVAILABLE');
+  });
+
+  it('the document palette: literal colors once each, in first-use order, at most 12', () => {
+    expect(contentStudioDesignDocumentColors(document())).toEqual([
+      '#ffffff',
+      '#111111',
+      '#222222',
+    ]);
+    const many = document();
+    many.pages[0].layers = Array.from({ length: 20 }, (_, i) => ({
+      ...box,
+      id: `b${i}`,
+      fill: lit(`#0000${String(i).padStart(2, '0')}`),
+    }));
+    expect(contentStudioDesignDocumentColors(many)).toHaveLength(12);
+    expect(contentStudioDesignDocumentColors(document(BRAND_REF))).toEqual([
+      '#ffffff',
+      '#111111',
+      '#222222',
+    ]);
+  });
+});

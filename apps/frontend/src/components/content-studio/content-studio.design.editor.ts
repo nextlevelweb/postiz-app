@@ -14,6 +14,12 @@ import {
   DESIGN_LAYERS_PER_PAGE_MAX,
   DESIGN_PAGES_MAX,
 } from '@gitroom/nestjs-libraries/content-studio/design/design.document';
+import {
+  applyContentStudioDesignStylePreset,
+  collectContentStudioDesignStylePresetBrandTokens,
+  ContentStudioDesignStylePresetContentV1,
+  designStylePresetKindOf,
+} from '@gitroom/nestjs-libraries/content-studio/design/design.style.preset';
 
 // The operations of the Creative Studio editor on a Design Document v1, as
 // pure functions: no React, API or DOM. Every operation leaves its input as
@@ -35,7 +41,9 @@ export type ContentStudioDesignEditorErrorCode =
   | 'ID_EXHAUSTED'
   | 'BRAND_TOKENS_IN_USE'
   | 'BRAND_TOKENS_MISSING'
-  | 'OUT_OF_LIMITS';
+  | 'OUT_OF_LIMITS'
+  | 'STYLE_KIND_MISMATCH'
+  | 'STYLE_BRAND_UNAVAILABLE';
 
 // A code only: the UI shows its own fixed text for it
 export class ContentStudioDesignEditorError extends Error {
@@ -874,6 +882,80 @@ export const setContentStudioDesignBrandKit = (
     ...document,
     brandKit: { brandKitId, revisionId, revisionNumber, contentHash },
   };
+};
+
+// ---------------------------------------------------------------------------
+// Style presets (P4-13)
+// ---------------------------------------------------------------------------
+
+// A style preset's values written over the same fields of one text or shape
+// layer: geometry, text, name, visibility and the shape stay, and nothing of
+// the preset is kept. A preset of the other kind is refused, and so is one
+// using a Brand Kit token that the document's own exact revision (its
+// content, as loaded) does not have, or any token for a document without a
+// Brand Kit: nothing is attached, converted to a literal or partly applied
+export const applyContentStudioDesignStyle = (
+  document: ContentStudioDesignDocumentV1,
+  layerId: string,
+  content: ContentStudioDesignStylePresetContentV1,
+  brand: ContentStudioBrandKitContentV1 | null
+) => {
+  const { pageIndex, layerIndex, page, layer } = findLayer(document, layerId);
+  if (designStylePresetKindOf(layer) !== content.kind) {
+    throw fail('STYLE_KIND_MISMATCH');
+  }
+  const { colorTokenIds, typographyTokenIds } =
+    collectContentStudioDesignStylePresetBrandTokens(content);
+  if (colorTokenIds.length || typographyTokenIds.length) {
+    const colors = new Set(brand?.colors.map((token) => token.id) ?? []);
+    const typography = new Set(
+      brand?.typography.map((token) => token.id) ?? []
+    );
+    if (
+      !document.brandKit ||
+      !brand ||
+      colorTokenIds.some((id) => !colors.has(id)) ||
+      typographyTokenIds.some((id) => !typography.has(id))
+    ) {
+      throw fail('STYLE_BRAND_UNAVAILABLE');
+    }
+  }
+  const next = applyContentStudioDesignStylePreset(layer, content);
+  return withLayers(
+    document,
+    pageIndex,
+    page.layers.map((entry, position) =>
+      position === layerIndex ? next : entry
+    )
+  );
+};
+
+// The literal colors the document uses (backgrounds, text and fills), each
+// once in first-use order, for quick reuse: at most 12
+export const contentStudioDesignDocumentColors = (
+  document: ContentStudioDesignDocumentV1
+) => {
+  const colors: string[] = [];
+  const add = (value: ContentStudioDesignColorValue) => {
+    if (
+      value.type === 'literal' &&
+      !colors.includes(value.value) &&
+      colors.length < 12
+    ) {
+      colors.push(value.value);
+    }
+  };
+  for (const page of document.pages) {
+    add(page.background.color);
+    for (const layer of page.layers) {
+      if (layer.type === 'text') {
+        add(layer.color);
+      } else if (layer.type === 'shape') {
+        add(layer.fill);
+      }
+    }
+  }
+  return colors;
 };
 
 // ---------------------------------------------------------------------------

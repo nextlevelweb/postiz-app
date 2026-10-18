@@ -72,6 +72,7 @@ model Organization {
   contentStudioDesignRenderBatches       ContentStudioDesignRenderBatch[]
   contentStudioDesignTemplates           ContentStudioDesignTemplate[]
   contentStudioDesignTemplateRevisions   ContentStudioDesignTemplateRevision[]
+  contentStudioDesignStylePresets        ContentStudioDesignStylePreset[]
 
   @@index([apiKey])
   @@index([streakSince])
@@ -170,6 +171,7 @@ model User {
   contentStudioDesignRenderBatches       ContentStudioDesignRenderBatch[]        @relation("ContentStudioDesignRenderBatchCreatedBy")
   contentStudioDesignTemplates           ContentStudioDesignTemplate[]           @relation("ContentStudioDesignTemplateCreatedBy")
   contentStudioDesignTemplateRevisions   ContentStudioDesignTemplateRevision[]   @relation("ContentStudioDesignTemplateRevisionCreatedBy")
+  contentStudioDesignStylePresets        ContentStudioDesignStylePreset[]        @relation("ContentStudioDesignStylePresetCreatedBy")
 
   @@unique([email, providerName])
   @@index([lastReadNotifications])
@@ -2433,6 +2435,33 @@ model ContentStudioDesignTemplateRevision {
   @@unique([templateId, revisionNumber])
   @@unique([id, organizationId])
   @@index([organizationId])
+  @@index([createdById])
+}
+
+// A style preset of one organization: a reusable text or shape style
+// (Style Preset v1 in canonical JSON, with the SHA-256 of exactly that text)
+// that the editor copies into a layer. It is a mutable recipe: changing it
+// changes only later uses, and nothing links a design to it. Archived ones
+// are kept and can be restored; none is deleted. Built-in presets are code,
+// not rows
+model ContentStudioDesignStylePreset {
+  id             String       @id @default(uuid())
+  organizationId String
+  name           String
+  description    String?
+  kind           String
+  schemaVersion  Int
+  content        String
+  contentHash    String
+  archivedAt     DateTime?
+  createdById    String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdBy      User         @relation("ContentStudioDesignStylePresetCreatedBy", fields: [createdById], references: [id])
+
+  @@unique([id, organizationId])
+  @@index([organizationId, kind, archivedAt])
   @@index([createdById])
 }
 

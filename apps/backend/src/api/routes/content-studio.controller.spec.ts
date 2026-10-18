@@ -29,6 +29,7 @@ import { ContentStudioRenderFontService } from '@gitroom/nestjs-libraries/databa
 import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
 import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
 import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
+import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-style-preset.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -104,7 +105,8 @@ const setup = () => {
     {} as ContentStudioRenderFontService,
     {} as ContentStudioDesignRenderService,
     {} as ContentStudioDesignReferenceService,
-    {} as ContentStudioDesignTemplateService
+    {} as ContentStudioDesignTemplateService,
+    {} as ContentStudioDesignStylePresetService
   );
   return { service, handoffs, controller, result };
 };
@@ -317,6 +319,7 @@ describe('ContentStudioController wiring', () => {
       'GET /brand-kit/revisions',
       'GET /brand-kit/revisions/:revisionId',
       'GET /brand-kit/revisions/:revisionId/design-ref',
+      'GET /design-style-presets',
       'GET /design-templates',
       'GET /design-templates/:id',
       'GET /design-templates/:id/revisions',
@@ -350,6 +353,7 @@ describe('ContentStudioController wiring', () => {
       'GET /writing-profiles/:id/revisions/:revisionId',
       'PATCH /ai/connections/:id',
       'PATCH /audience-profiles/:id',
+      'PATCH /design-style-presets/:id',
       'PATCH /design-templates/:id',
       'PATCH /designs/:id',
       'PATCH /expertise-profiles/:id',
@@ -367,6 +371,9 @@ describe('ContentStudioController wiring', () => {
       'POST /audience-profiles/:id/restore',
       'POST /audience-profiles/:id/revisions',
       'POST /brand-kit/revisions',
+      'POST /design-style-presets',
+      'POST /design-style-presets/:id/archive',
+      'POST /design-style-presets/:id/restore',
       'POST /design-templates',
       'POST /design-templates/:id/archive',
       'POST /design-templates/:id/restore',
@@ -523,6 +530,7 @@ describe('ContentStudioController handoffs', () => {
       ContentStudioDesignRenderService,
       ContentStudioDesignReferenceService,
       ContentStudioDesignTemplateService,
+      ContentStudioDesignStylePresetService,
     ]);
   });
 });

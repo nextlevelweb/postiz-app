@@ -30,6 +30,7 @@ import { ContentStudioRenderFontService } from '@gitroom/nestjs-libraries/databa
 import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
 import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
 import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
+import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-style-preset.service';
 import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
 import {
   CreateContentStudioAudienceProfileDto,
@@ -102,7 +103,8 @@ const setup = () => {
     {} as ContentStudioRenderFontService,
     {} as ContentStudioDesignRenderService,
     {} as ContentStudioDesignReferenceService,
-    {} as ContentStudioDesignTemplateService
+    {} as ContentStudioDesignTemplateService,
+    {} as ContentStudioDesignStylePresetService
   );
   return { profiles, controller, result };
 };

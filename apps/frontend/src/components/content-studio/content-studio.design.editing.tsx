@@ -64,6 +64,7 @@ import {
   ContentStudioDesignLayerMove,
   ContentStudioDesignLayerPatch,
   contentStudioDesignEditorLimits,
+  contentStudioDesignDocumentColors,
   contentStudioDesignLayerMoves,
   contentStudioDesignTextLength,
   deleteContentStudioDesignLayer,
@@ -155,6 +156,16 @@ export const designEditorErrorMessage = (t: Translate, error: unknown) => {
       return t(
         'content_studio_design_align_out_of_limits',
         'That alignment is outside the design limits.'
+      );
+    case 'STYLE_KIND_MISMATCH':
+      return t(
+        'content_studio_style_preset_wrong_layer',
+        'This style preset is for another kind of layer.'
+      );
+    case 'STYLE_BRAND_UNAVAILABLE':
+      return t(
+        'content_studio_style_preset_brand_unavailable',
+        'This style uses Brand Kit colors or typography that this design’s Brand Kit revision does not have. Nothing was changed.'
       );
     default:
       return t(
@@ -651,13 +662,18 @@ const HEX = /^#[0-9a-f]{6}$/i;
 
 // A literal #rrggbb (stored lowercase) or a color token of the exact Brand
 // Kit revision; a token stays a token, never its value
+// A literal #rrggbb or a color token of the design's exact Brand Kit
+// revision. Swatches (P4-13) offer that revision's color tokens and the
+// literal colors the design already uses, as the same two kinds of value:
+// nothing else is accepted, and no other revision is looked at
 export const DesignColorField: FC<{
   label: string;
   value: ContentStudioDesignColorValue;
   brand: ContentStudioBrandKitContentV1 | null;
   disabled?: boolean;
   onCommit: (value: ContentStudioDesignColorValue) => void;
-}> = ({ label, value, brand, disabled, onCommit }) => {
+  palette?: string[];
+}> = ({ label, value, brand, disabled, onCommit, palette }) => {
   const t = useT();
   const resolved = resolveDesignPreviewColor(value, brand);
   const [text, setText] = useState(value.type === 'literal' ? value.value : '');
@@ -764,6 +780,78 @@ export const DesignColorField: FC<{
           ))}
         </select>
       )}
+      {!!tokens.length && (
+        <div
+          role="group"
+          aria-label={`${label}: ${t(
+            'content_studio_design_brand_swatches',
+            'Brand colors'
+          )}`}
+          className="flex flex-wrap gap-[4px]"
+        >
+          {tokens.map((token) => {
+            const pressed =
+              value.type === 'brand' && value.tokenId === token.id;
+            return (
+              <button
+                key={token.id}
+                type="button"
+                disabled={disabled}
+                aria-pressed={pressed}
+                aria-label={`${label}: ${t(
+                  'content_studio_design_color_brand',
+                  'Brand color'
+                )} ${token.name}`}
+                title={token.name}
+                data-swatch="brand"
+                className={clsx(
+                  'w-[22px] h-[22px] rounded-[4px] border disabled:opacity-50',
+                  pressed
+                    ? 'border-textColor border-[2px]'
+                    : 'border-newTableBorder'
+                )}
+                style={{ backgroundColor: token.value }}
+                onClick={() =>
+                  !pressed && onCommit({ type: 'brand', tokenId: token.id })
+                }
+              />
+            );
+          })}
+        </div>
+      )}
+      {!!palette?.length && (
+        <div
+          role="group"
+          aria-label={`${label}: ${t(
+            'content_studio_design_document_swatches',
+            'Colors in this design'
+          )}`}
+          className="flex flex-wrap gap-[4px]"
+        >
+          {palette.map((hex) => {
+            const pressed = value.type === 'literal' && value.value === hex;
+            return (
+              <button
+                key={hex}
+                type="button"
+                disabled={disabled}
+                aria-pressed={pressed}
+                aria-label={`${label}: ${hex}`}
+                title={hex}
+                data-swatch="literal"
+                className={clsx(
+                  'w-[22px] h-[22px] rounded-[4px] border disabled:opacity-50',
+                  pressed
+                    ? 'border-textColor border-[2px]'
+                    : 'border-newTableBorder'
+                )}
+                style={{ backgroundColor: hex }}
+                onClick={() => !pressed && commitHex(hex)}
+              />
+            );
+          })}
+        </div>
+      )}
     </FieldLabel>
   );
 };
@@ -847,6 +935,43 @@ const DesignFontField: FC<{
               })
             }
           />
+          <div
+            role="group"
+            aria-label={t(
+              'content_studio_design_quick_font',
+              'Quick font style'
+            )}
+            className="flex flex-wrap gap-[6px]"
+          >
+            <button
+              type="button"
+              className={COMMAND}
+              disabled={disabled}
+              aria-pressed={family.weight >= 600}
+              onClick={() =>
+                onCommit({
+                  ...family,
+                  weight: family.weight >= 600 ? 400 : 700,
+                })
+              }
+            >
+              {t('content_studio_design_bold', 'Bold')}
+            </button>
+            <button
+              type="button"
+              className={COMMAND}
+              disabled={disabled}
+              aria-pressed={family.style === 'italic'}
+              onClick={() =>
+                onCommit({
+                  ...family,
+                  style: family.style === 'italic' ? 'normal' : 'italic',
+                })
+              }
+            >
+              {t('content_studio_design_style_italic', 'Italic')}
+            </button>
+          </div>
           <ChoiceField
             label={t('content_studio_design_style', 'Style')}
             value={family.style}
@@ -1634,6 +1759,8 @@ export const DesignEditableInspector: FC<{
     editor.apply((latest) => ({
       document: updateContentStudioDesignLayer(latest, layer.id, patch),
     }));
+  // the literal colors of the draft, for the color swatches
+  const palette = contentStudioDesignDocumentColors(document);
 
   if (!layer) {
     return (
@@ -1660,6 +1787,7 @@ export const DesignEditableInspector: FC<{
           value={page.background.color}
           brand={brand}
           disabled={disabled}
+          palette={palette}
           onCommit={(background) => updatePage({ background })}
         />
       </div>
@@ -1779,6 +1907,68 @@ export const DesignEditableInspector: FC<{
             disabled={disabled}
             onCommit={(font) => update({ font })}
           />
+          <div
+            role="group"
+            aria-label={t(
+              'content_studio_design_font_size_steps',
+              'Font size steps'
+            )}
+            className="flex flex-wrap gap-[6px]"
+          >
+            {(
+              [
+                [
+                  -2,
+                  t('content_studio_design_font_smaller', 'Decrease font size'),
+                  'A−',
+                ],
+                [
+                  2,
+                  t('content_studio_design_font_larger', 'Increase font size'),
+                  'A+',
+                ],
+              ] as const
+            ).map(([step, name, mark]) => (
+              <button
+                key={step}
+                type="button"
+                className={COMMAND}
+                disabled={
+                  disabled ||
+                  (step < 0
+                    ? layer.fontSize <= DESIGN_FONT_SIZE_MIN
+                    : layer.fontSize >= DESIGN_FONT_SIZE_MAX)
+                }
+                aria-label={name}
+                // presses in a row are one undo step
+                onClick={() =>
+                  editor.apply((latest) => {
+                    const current = latest.pages
+                      .flatMap((entry) => entry.layers)
+                      .find((entry) => entry.id === layer.id);
+                    const size =
+                      current?.type === 'text'
+                        ? current.fontSize
+                        : layer.fontSize;
+                    return {
+                      document: updateContentStudioDesignLayer(
+                        latest,
+                        layer.id,
+                        {
+                          fontSize: Math.min(
+                            DESIGN_FONT_SIZE_MAX,
+                            Math.max(DESIGN_FONT_SIZE_MIN, size + step)
+                          ),
+                        }
+                      ),
+                    };
+                  }, `font-size:${layer.id}`)
+                }
+              >
+                {mark}
+              </button>
+            ))}
+          </div>
           <div className="grid grid-cols-2 gap-[8px]">
             <DesignNumberField
               label={t('content_studio_design_font_size', 'Font size')}
@@ -1816,6 +2006,34 @@ export const DesignEditableInspector: FC<{
             disabled={disabled}
             onChange={(align) => update({ align: align as 'left' })}
           />
+          <div
+            role="group"
+            aria-label={t(
+              'content_studio_design_alignment_quick',
+              'Text alignment'
+            )}
+            className="flex flex-wrap gap-[6px]"
+          >
+            {ALIGN_OPTIONS(t).map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                className={COMMAND}
+                disabled={disabled}
+                aria-pressed={layer.align === option.value}
+                aria-label={`${t(
+                  'content_studio_design_align_text',
+                  'Align text'
+                )} ${option.label}`}
+                onClick={() =>
+                  layer.align !== option.value &&
+                  update({ align: option.value as 'left' })
+                }
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
           <ChoiceField
             label={t(
               'content_studio_design_vertical_alignment',
@@ -1840,6 +2058,7 @@ export const DesignEditableInspector: FC<{
             value={layer.color}
             brand={brand}
             disabled={disabled}
+            palette={palette}
             onCommit={(color) => update({ color })}
           />
         </>
@@ -1851,17 +2070,64 @@ export const DesignEditableInspector: FC<{
             value={layer.fill}
             brand={brand}
             disabled={disabled}
+            palette={palette}
             onCommit={(fill) => update({ fill })}
           />
           {layer.shape === 'rectangle' && (
-            <DesignNumberField
-              label={t('content_studio_design_corner_radius', 'Corner radius')}
-              value={layer.cornerRadius}
-              min={0}
-              max={DESIGN_CORNER_RADIUS_MAX}
-              disabled={disabled}
-              onCommit={(cornerRadius) => update({ cornerRadius })}
-            />
+            <>
+              <DesignNumberField
+                label={t(
+                  'content_studio_design_corner_radius',
+                  'Corner radius'
+                )}
+                value={layer.cornerRadius}
+                min={0}
+                max={DESIGN_CORNER_RADIUS_MAX}
+                disabled={disabled}
+                onCommit={(cornerRadius) => update({ cornerRadius })}
+              />
+              <div
+                role="group"
+                aria-label={t(
+                  'content_studio_design_corner_presets',
+                  'Corner presets'
+                )}
+                className="flex flex-wrap gap-[6px]"
+              >
+                {(
+                  [
+                    [0, t('content_studio_design_corner_square', 'Square')],
+                    [16, t('content_studio_design_corner_rounded', 'Rounded')],
+                    [
+                      // half the shorter side: the renderer limits it there
+                      Math.min(
+                        DESIGN_CORNER_RADIUS_MAX,
+                        Math.round(Math.min(layer.width, layer.height) / 2)
+                      ),
+                      t('content_studio_design_corner_pill', 'Pill'),
+                    ],
+                  ] as const
+                ).map(([radius, name]) => (
+                  <button
+                    key={name}
+                    type="button"
+                    className={COMMAND}
+                    disabled={disabled}
+                    aria-pressed={layer.cornerRadius === radius}
+                    aria-label={`${t(
+                      'content_studio_design_corners',
+                      'Corners'
+                    )} ${name}`}
+                    onClick={() =>
+                      layer.cornerRadius !== radius &&
+                      update({ cornerRadius: radius })
+                    }
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
+            </>
           )}
         </>
       )}

@@ -39,6 +39,7 @@ import {
 import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
 import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
 import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
+import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-style-preset.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -113,6 +114,11 @@ import {
   UpdateContentStudioDesignTemplateDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-template.dto';
 import {
+  CreateContentStudioDesignStylePresetDto,
+  ListContentStudioDesignStylePresetsDto,
+  UpdateContentStudioDesignStylePresetDto,
+} from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-style-preset.dto';
+import {
   RenderAllContentStudioDesignDto,
   RenderContentStudioDesignDto,
   UploadContentStudioRenderFontDto,
@@ -159,7 +165,8 @@ export class ContentStudioController {
     private _contentStudioRenderFontService: ContentStudioRenderFontService,
     private _contentStudioDesignRenderService: ContentStudioDesignRenderService,
     private _contentStudioDesignReferenceService: ContentStudioDesignReferenceService,
-    private _contentStudioDesignTemplateService: ContentStudioDesignTemplateService
+    private _contentStudioDesignTemplateService: ContentStudioDesignTemplateService,
+    private _contentStudioDesignStylePresetService: ContentStudioDesignStylePresetService
   ) {}
 
   @Get('/projects')
@@ -1130,6 +1137,80 @@ export class ContentStudioController {
     @Param('id') id: string
   ) {
     return this._contentStudioDesignTemplateService.restoreTemplate(org.id, id);
+  }
+
+  // Design style presets: the built-in ones (code, read-only) and the
+  // organization's own, reusable text and shape styles the editor copies
+  // into a layer. Every member may read, create, change, archive and restore
+  // them. The organization and the user come from the request only; none
+  // touches a design, and none deletes
+  @Get('/design-style-presets')
+  listDesignStylePresets(
+    @GetOrgFromRequest() org: Organization,
+    @Query() query: ListContentStudioDesignStylePresetsDto
+  ) {
+    return this._contentStudioDesignStylePresetService.listPresets({
+      organizationId: org.id,
+      kind: query.kind,
+      archived: query.archived,
+      page: query.page,
+    });
+  }
+
+  @Post('/design-style-presets')
+  createDesignStylePreset(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Body() body: CreateContentStudioDesignStylePresetDto
+  ) {
+    return this._contentStudioDesignStylePresetService.createPreset({
+      organizationId: org.id,
+      userId: user.id,
+      name: body.name,
+      description: body.description,
+      content: body.content,
+    });
+  }
+
+  @Patch('/design-style-presets/:id')
+  updateDesignStylePreset(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Body() body: UpdateContentStudioDesignStylePresetDto
+  ) {
+    return this._contentStudioDesignStylePresetService.updatePreset(
+      org.id,
+      id,
+      {
+        name: body.name,
+        description: body.description,
+        content: body.content,
+      }
+    );
+  }
+
+  @Post('/design-style-presets/:id/archive')
+  @HttpCode(200)
+  archiveDesignStylePreset(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioDesignStylePresetService.archivePreset(
+      org.id,
+      id
+    );
+  }
+
+  @Post('/design-style-presets/:id/restore')
+  @HttpCode(200)
+  restoreDesignStylePreset(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioDesignStylePresetService.restorePreset(
+      org.id,
+      id
+    );
   }
 
   // Renders one page of exactly the revision asked for (never the latest) to

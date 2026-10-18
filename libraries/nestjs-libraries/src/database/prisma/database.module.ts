@@ -85,6 +85,8 @@ import { ContentStudioRenderMediaBridge } from '@gitroom/nestjs-libraries/databa
 import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
 import { ContentStudioDesignTemplateRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.repository';
 import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
+import { ContentStudioDesignStylePresetRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-style-preset.repository';
+import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-style-preset.service';
 
 @Global()
 @Module({
@@ -179,6 +181,8 @@ import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/da
     ContentStudioDesignReferenceService,
     ContentStudioDesignTemplateRepository,
     ContentStudioDesignTemplateService,
+    ContentStudioDesignStylePresetRepository,
+    ContentStudioDesignStylePresetService,
   ],
   get exports() {
     return this.providers;

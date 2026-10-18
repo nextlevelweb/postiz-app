@@ -81,6 +81,7 @@ import {
 } from '@gitroom/frontend/components/content-studio/content-studio.design.editor';
 import { ContentStudioDesignCanvas } from '@gitroom/frontend/components/content-studio/content-studio.design.canvas';
 import { SaveAsTemplateForm } from '@gitroom/frontend/components/content-studio/content-studio.design-templates';
+import { DesignStylePresets } from '@gitroom/frontend/components/content-studio/content-studio.design-style-presets';
 
 // The Creative Studio workspace of one design: its pages and layers, a live
 // structural preview, an inspector, the revision history, and server renders
@@ -1285,6 +1286,14 @@ export const DesignRevisionView: FC<{
               />
             )}
           </section>
+          {/* style presets (P4-13): one text or shape layer while editing */}
+          {edit && single && single.type !== 'image' && (
+            <DesignStylePresets
+              editor={edit.editor}
+              layer={single}
+              brand={brand.content}
+            />
+          )}
           <section className="flex flex-col gap-[8px]">
             <h2 className="font-[600]">
               {t('content_studio_design_brand_kit', 'Brand Kit')}

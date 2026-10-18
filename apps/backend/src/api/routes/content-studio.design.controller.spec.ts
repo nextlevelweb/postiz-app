@@ -31,6 +31,7 @@ import { ContentStudioRenderFontService } from '@gitroom/nestjs-libraries/databa
 import { ContentStudioDesignRenderService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.service';
 import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-reference.service';
 import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
+import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-style-preset.service';
 import {
   CreateContentStudioDesignDto,
   CreateContentStudioDesignRevisionDto,
@@ -108,7 +109,8 @@ const setup = () => {
     {} as ContentStudioRenderFontService,
     {} as ContentStudioDesignRenderService,
     {} as ContentStudioDesignReferenceService,
-    {} as ContentStudioDesignTemplateService
+    {} as ContentStudioDesignTemplateService,
+    {} as ContentStudioDesignStylePresetService
   );
   return { designs, controller, result };
 };
@@ -139,9 +141,11 @@ describe('ContentStudioController design routes', () => {
     const names = Object.getOwnPropertyNames(ContentStudioController.prototype)
       .filter((name) => /Designs?\b|Design[A-Z]/.test(name))
       // P4-08: the Brand Kit and Media design references live elsewhere;
-      // P4-11: so do the design template routes (template controller spec)
+      // P4-11: so do the design template routes (template controller spec),
+      // P4-13: and the style preset routes (style preset controller spec)
       .filter((name) => !/DesignReference$/.test(name))
-      .filter((name) => !/Template/.test(name));
+      .filter((name) => !/Template/.test(name))
+      .filter((name) => !/StylePreset/.test(name));
     expect(names.map(route).sort()).toEqual([
       'GET /designs',
       'GET /designs/:id',
