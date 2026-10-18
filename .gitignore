@@ -5,6 +5,10 @@ dist
 tmp
 /out-tsc
 .env
+# local environment variants and backups (e.g. .env.content-studio.backup);
+# the committed example stays tracked
+.env.*
+!.env.example
 .apple
 # dependencies
 node_modules
