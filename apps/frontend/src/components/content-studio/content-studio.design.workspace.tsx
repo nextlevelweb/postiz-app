@@ -482,6 +482,15 @@ const DesignInspector: FC<{
           <Fact label={t('content_studio_design_focal_point', 'Focal point')}>
             {layer.focalPoint.x}, {layer.focalPoint.y}
           </Fact>
+          <Fact label={t('content_studio_design_frame', 'Frame')}>
+            {layer.mask?.type === 'roundedRectangle'
+              ? `${t('content_studio_design_frame_rounded', 'Rounded')} · ${
+                  layer.mask.cornerRadius
+                }`
+              : layer.mask?.type === 'ellipse'
+              ? t('content_studio_design_frame_ellipse', 'Ellipse')
+              : t('content_studio_design_frame_rectangle', 'Rectangle')}
+          </Fact>
         </>
       )}
     </dl>

@@ -153,9 +153,18 @@ export interface ContentStudioDesignLayoutEllipseItem
   fill: string;
 }
 
+// The shape an image is cut to, within its unrotated box (P4-14): it turns
+// with the item. Only there when the layer has a mask; a rounded rectangle's
+// radius is limited to half the width and half the height, as for a
+// rectangle shape
+export type ContentStudioDesignLayoutImageMask =
+  | { type: 'rectangle' }
+  | { type: 'roundedRectangle'; cornerRadius: number }
+  | { type: 'ellipse' };
+
 // sourceRect is in intrinsic image pixels and may be fractional;
 // destinationRect is in page coordinates. The renderer draws sourceRect
-// scaled into destinationRect, then rotates
+// scaled into destinationRect, cuts it to the mask in the box, then rotates
 export interface ContentStudioDesignLayoutImageItem
   extends ContentStudioDesignLayoutItemBase {
   type: 'image';
@@ -164,6 +173,7 @@ export interface ContentStudioDesignLayoutImageItem
   fit: 'cover' | 'contain';
   sourceRect: ContentStudioDesignLayoutRect;
   destinationRect: ContentStudioDesignLayoutRect;
+  mask?: ContentStudioDesignLayoutImageMask;
 }
 
 // A glyph placed on the page before rotation: x and y are where its origin

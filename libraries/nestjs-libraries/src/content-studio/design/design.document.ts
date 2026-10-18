@@ -163,6 +163,23 @@ const shapeLayer = z
   })
   .strict();
 
+// How an image is cut to its box (P4-14), in the box's own coordinates so it
+// turns with the layer. Left out, the image is cut to the box, as before the
+// field existed; rectangle says the same. A rounded rectangle's radius is in
+// design units, stored as given and limited to half the width and half the
+// height when drawn, like a rectangle shape's; an ellipse fills the box (a
+// circle in a square box). Three fixed shapes only: no path, SVG, CSS or URL
+const imageMask = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('rectangle') }).strict(),
+  z
+    .object({
+      type: z.literal('roundedRectangle'),
+      cornerRadius: finite(0, DESIGN_CORNER_RADIUS_MAX),
+    })
+    .strict(),
+  z.object({ type: z.literal('ellipse') }).strict(),
+]);
+
 // The image reference only: a Media id with the SHA-256 of its bytes, for
 // the Media bridge to verify later. No URL, path, file name or encoded data
 const imageLayer = z
@@ -179,6 +196,7 @@ const imageLayer = z
     fit: z.enum(['cover', 'contain']),
     // where cover cropping centers, 0..1 across and down the image
     focalPoint: z.object({ x: finite(0, 1), y: finite(0, 1) }).strict(),
+    mask: imageMask.optional(),
   })
   .strict();
 
@@ -305,12 +323,19 @@ export interface ContentStudioDesignShapeLayer
   cornerRadius: number;
 }
 
+export type ContentStudioDesignImageMask =
+  | { type: 'rectangle' }
+  | { type: 'roundedRectangle'; cornerRadius: number }
+  | { type: 'ellipse' };
+
 export interface ContentStudioDesignImageLayer
   extends ContentStudioDesignLayerBase {
   type: 'image';
   imageRef: { type: 'media'; mediaId: string; sha256: string };
   fit: 'cover' | 'contain';
   focalPoint: { x: number; y: number };
+  // left out: cut to the box (the same as a rectangle)
+  mask?: ContentStudioDesignImageMask;
 }
 
 export type ContentStudioDesignLayer =

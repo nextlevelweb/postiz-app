@@ -22,7 +22,10 @@ import {
 // Per item, in display-list order (first at the back):
 //   <g transform="rotate(angle originX originY)" opacity="o"> ... </g>
 // with transform left out at rotation 0 and opacity left out at 1. Text and
-// images clip inside that group, so the clip turns with the layer
+// images clip inside that group, so the clip turns with the layer. An image
+// with a rounded rectangle or ellipse mask (P4-14) is also clipped to that
+// shape in its box, an outer clip numbered before the image's own; a
+// rectangle mask is the box itself and adds nothing
 
 export interface ContentStudioDesignSvgAssets {
   font(key: string): { unitsPerEm: number; glyphPath(id: number): string };
@@ -79,12 +82,44 @@ export function buildContentStudioDesignPageSvg(
     return id;
   };
 
+  // the mask shape in the item's box, or null when the box itself is the cut
+  const maskClip = (item: ContentStudioDesignLayoutImageItem) => {
+    const mask = item.mask;
+    if (
+      !mask ||
+      mask.type === 'rectangle' ||
+      (mask.type === 'roundedRectangle' && mask.cornerRadius === 0)
+    ) {
+      return null;
+    }
+    const id = `clip-${clips}`;
+    clips += 1;
+    const { box } = item;
+    const shape =
+      mask.type === 'ellipse'
+        ? `<ellipse cx="${svgNumber(box.x + box.width / 2)}" cy="${svgNumber(
+            box.y + box.height / 2
+          )}" rx="${svgNumber(box.width / 2)}" ry="${svgNumber(
+            box.height / 2
+          )}"/>`
+        : `<rect ${rect(box)} rx="${svgNumber(
+            mask.cornerRadius
+          )}" ry="${svgNumber(mask.cornerRadius)}"/>`;
+    write(`<defs><clipPath id="${id}">${shape}</clipPath></defs>`);
+    return id;
+  };
+
   // the source rectangle of the image scaled exactly onto the destination;
-  // the whole image is placed accordingly and clipped to the destination
+  // the whole image is placed accordingly and clipped to the destination,
+  // and to its mask
   const image = (item: ContentStudioDesignLayoutImageItem) => {
     const { sourceRect: source, destinationRect: target } = item;
     const scaleX = target.width / source.width;
     const scaleY = target.height / source.height;
+    const masked = maskClip(item);
+    if (masked) {
+      write(`<g clip-path="url(#${masked})">`);
+    }
     const id = clip(target);
     const { png } = assets.image(item.imageRef);
     // refused before the base64 text is made
@@ -100,6 +135,9 @@ export function buildContentStudioDesignPageSvg(
         height: item.intrinsic.height * scaleY,
       })} preserveAspectRatio="none" href="data:image/png;base64,${data}"/></g>`
     );
+    if (masked) {
+      write('</g>');
+    }
   };
 
   // every glyph outline at its laid-out origin, scaled from font units to

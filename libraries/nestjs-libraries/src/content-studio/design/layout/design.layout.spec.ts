@@ -2696,3 +2696,118 @@ describe('design layout: boundaries', () => {
     ).toBe(true);
   });
 });
+
+// ============================================================================
+// P4-14: image masks in the display list
+describe('design layout: image masks', () => {
+  const coverImage = (extra: Plain = {}) =>
+    image('photo', {
+      x: 10,
+      y: 20,
+      width: 200,
+      height: 100,
+      fit: 'cover',
+      focalPoint: { x: 0.25, y: 0.5 },
+      ...extra,
+    });
+
+  it('LIMG1/LIMG5/LIMG6/LIMG7 an image without a mask gives exactly the item it gave before: no mask key', () => {
+    const item = layoutImage(coverImage());
+    expect(Object.keys(item).sort()).toEqual([
+      'box',
+      'destinationRect',
+      'fit',
+      'imageRef',
+      'intrinsic',
+      'layerId',
+      'opacity',
+      'rotation',
+      'sourceRect',
+      'transformOrigin',
+      'type',
+    ]);
+    // the cover crop for an 800 x 400 image in a 2:1 box, focal x kept
+    expect(item.sourceRect).toEqual({ x: 0, y: 0, width: 800, height: 400 });
+    const contain = layoutImage(coverImage({ fit: 'contain' }));
+    expect(contain.destinationRect).toEqual({
+      x: 10,
+      y: 20,
+      width: 200,
+      height: 100,
+    });
+  });
+
+  it('LIMG2/LIMG3/LIMG4 each mask comes through as the same shape; a rounded radius is limited to half the shorter side', () => {
+    expect(
+      layoutImage(coverImage({ mask: { type: 'rectangle' } })).mask
+    ).toEqual({ type: 'rectangle' });
+    expect(layoutImage(coverImage({ mask: { type: 'ellipse' } })).mask).toEqual(
+      {
+        type: 'ellipse',
+      }
+    );
+    expect(
+      layoutImage(
+        coverImage({ mask: { type: 'roundedRectangle', cornerRadius: 12.5 } })
+      ).mask
+    ).toEqual({ type: 'roundedRectangle', cornerRadius: 12.5 });
+    expect(
+      layoutImage(
+        coverImage({ mask: { type: 'roundedRectangle', cornerRadius: 4096 } })
+      ).mask
+    ).toEqual({ type: 'roundedRectangle', cornerRadius: 50 });
+  });
+
+  it('LIMG5/LIMG6/LIMG7 a mask never changes the crop, the placement or the focal point', () => {
+    for (const fit of ['cover', 'contain']) {
+      for (const focalPoint of [
+        { x: 0, y: 0 },
+        { x: 0.25, y: 0.5 },
+        { x: 1, y: 1 },
+      ]) {
+        const plain = layoutImage(coverImage({ fit, focalPoint }));
+        for (const mask of [
+          { type: 'rectangle' },
+          { type: 'roundedRectangle', cornerRadius: 30 },
+          { type: 'ellipse' },
+        ]) {
+          const masked = layoutImage(coverImage({ fit, focalPoint, mask }));
+          const { mask: _mask, ...rest } = masked;
+          expect(_mask).toBeDefined();
+          expect(rest).toEqual(plain);
+        }
+      }
+    }
+    // a tall image under cover still follows the focal point
+    const tall = fakeImages({
+      [`photo-1:${SHA_A}`]: { width: 400, height: 800 },
+    });
+    const top = layoutImage(
+      coverImage({ focalPoint: { x: 0.5, y: 0 }, mask: { type: 'ellipse' } }),
+      { images: tall }
+    );
+    const bottom = layoutImage(
+      coverImage({ focalPoint: { x: 0.5, y: 1 }, mask: { type: 'ellipse' } }),
+      { images: tall }
+    );
+    expect(top.sourceRect.y).toBe(0);
+    expect(bottom.sourceRect.y).toBe(800 - top.sourceRect.height);
+  });
+
+  it('LIMG8/LIMG9 the mask belongs to the unrotated box: rotation turns the item, not the mask', () => {
+    const turned = layoutImage(
+      coverImage({
+        rotation: 30,
+        mask: { type: 'roundedRectangle', cornerRadius: 20 },
+      })
+    );
+    const straight = layoutImage(
+      coverImage({ mask: { type: 'roundedRectangle', cornerRadius: 20 } })
+    );
+    expect(turned.mask).toEqual(straight.mask);
+    expect(turned.box).toEqual({ x: 10, y: 20, width: 200, height: 100 });
+    expect(turned.rotation).toBe(30);
+    expect(turned.transformOrigin).toEqual({ x: 110, y: 70 });
+    expect(JSON.stringify(turned.mask)).not.toMatch(/[xy]"|width|height|rotat/);
+  });
+});

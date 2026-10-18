@@ -1512,3 +1512,163 @@ describe('Design Document P4-02 persistence boundary', () => {
     );
   });
 });
+
+// ============================================================================
+// P4-14: the optional image mask
+describe('Design Document v1: image masks', () => {
+  const imageLayer = (extra: Record<string, unknown> = {}) => ({
+    id: 'photo',
+    name: '',
+    x: 10,
+    y: 20,
+    width: 300,
+    height: 200,
+    rotation: 15,
+    opacity: 0.8,
+    visible: true,
+    type: 'image',
+    imageRef: { type: 'media', mediaId: 'media-1', sha256: 'a'.repeat(64) },
+    fit: 'cover',
+    focalPoint: { x: 0.25, y: 0.75 },
+    ...extra,
+  });
+  const documentWith = (layer: Record<string, unknown>) => ({
+    schemaVersion: 1,
+    brandKit: null,
+    pages: [
+      {
+        id: 'p1',
+        name: '',
+        width: 1080,
+        height: 1080,
+        background: {
+          type: 'solid',
+          color: { type: 'literal', value: '#ffffff' },
+        },
+        layers: [layer],
+      },
+    ],
+  });
+  const parsedLayer = (layer: Record<string, unknown>) =>
+    parseContentStudioDesignDocument(documentWith(layer)).pages[0].layers[0];
+  const refused = (mask: unknown) => {
+    expect(() =>
+      parseContentStudioDesignDocument(documentWith(imageLayer({ mask })))
+    ).toThrow();
+  };
+
+  it('DDIMG1/P414-1 a legacy image without a mask parses unchanged: no default is written, the version stays 1', () => {
+    const document = parseContentStudioDesignDocument(
+      documentWith(imageLayer())
+    );
+    expect(document.schemaVersion).toBe(1);
+    expect(document.pages[0].layers[0]).toEqual(imageLayer());
+    expect(Object.keys(document.pages[0].layers[0])).not.toContain('mask');
+    expect(storedContentStudioDesignDocument(document).content).not.toContain(
+      'mask'
+    );
+  });
+
+  it('DDIMG2/DDIMG3/DDIMG4 rectangle, rounded rectangle and ellipse parse exactly', () => {
+    for (const mask of [
+      { type: 'rectangle' },
+      { type: 'roundedRectangle', cornerRadius: 0 },
+      { type: 'roundedRectangle', cornerRadius: 24.5 },
+      { type: 'roundedRectangle', cornerRadius: 4096 },
+      { type: 'ellipse' },
+    ]) {
+      expect(parsedLayer(imageLayer({ mask }))).toEqual(imageLayer({ mask }));
+    }
+    // a radius beyond the box is stored as given, like a shape's corner
+    // radius; the layout limits it when drawn
+    expect(
+      parsedLayer(
+        imageLayer({ mask: { type: 'roundedRectangle', cornerRadius: 1000 } })
+      )
+    ).toMatchObject({ mask: { cornerRadius: 1000 } });
+  });
+
+  it('DDIMG5/DDIMG6/DDIMG7/DDIMG8/DDIMG9/P414-3/P414-4/SECIMG3/SECIMG4 anything else is refused', () => {
+    for (const mask of [
+      { type: 'circle' },
+      { type: 'path', d: 'M0 0L10 10Z' },
+      { type: 'svg', svg: '<clipPath/>' },
+      { type: 'ellipse', clipPath: 'circle(50%)' },
+      { type: 'rectangle', url: 'https://example.test/mask.png' },
+      { type: 'roundedRectangle', cornerRadius: -1 },
+      { type: 'roundedRectangle', cornerRadius: 4097 },
+      { type: 'roundedRectangle', cornerRadius: Number.NaN },
+      { type: 'roundedRectangle', cornerRadius: Infinity },
+      { type: 'roundedRectangle', cornerRadius: '24' },
+      { type: 'roundedRectangle' },
+      { type: 'rectangle', cornerRadius: 8 },
+      { type: 'ellipse', cornerRadius: 8 },
+      { type: 'roundedRectangle', cornerRadius: 8, extra: true },
+      'ellipse',
+      null,
+      [],
+    ]) {
+      refused(mask);
+    }
+    // a mask belongs to images only
+    expect(() =>
+      parseContentStudioDesignDocument(
+        documentWith({
+          ...imageLayer(),
+          type: 'shape',
+          shape: 'rectangle',
+          fill: { type: 'literal', value: '#000000' },
+          cornerRadius: 0,
+          imageRef: undefined,
+          fit: undefined,
+          focalPoint: undefined,
+          mask: { type: 'ellipse' },
+        })
+      )
+    ).toThrow();
+  });
+
+  it('DDIMG10 the canonical JSON is the same whatever the key order', () => {
+    const one = storedContentStudioDesignDocument(
+      parseContentStudioDesignDocument(
+        documentWith(
+          imageLayer({ mask: { type: 'roundedRectangle', cornerRadius: 12 } })
+        )
+      )
+    );
+    const two = storedContentStudioDesignDocument(
+      parseContentStudioDesignDocument(
+        documentWith(
+          imageLayer({ mask: { cornerRadius: 12, type: 'roundedRectangle' } })
+        )
+      )
+    );
+    expect(two).toEqual(one);
+    expect(one.content).toContain(
+      '"mask":{"cornerRadius":12,"type":"roundedRectangle"}'
+    );
+  });
+
+  it('P414-2/P414-13/P414-14 no new version, no filter, zoom, frame background or arbitrary mask field in the schema', () => {
+    const source = fs
+      .readFileSync(path.join(__dirname, 'design.document.ts'), 'utf8')
+      .replace(/^\s*\/\/.*$/gm, '');
+    expect(source).toContain(
+      'export const DESIGN_DOCUMENT_SCHEMA_VERSION = 1;'
+    );
+    expect(source).not.toMatch(
+      /brightness|contrast|saturat|grayscale|blur|duotone|blendMode|zoom|scale:|frameBackground|clipPath|svg|polygon/i
+    );
+    // the mask schema itself: three fixed shapes, one number
+    const mask = source.slice(
+      source.indexOf('const imageMask'),
+      source.indexOf('const imageLayer')
+    );
+    expect(mask.match(/z\.literal\('(\w+)'\)/g)).toEqual([
+      "z.literal('rectangle')",
+      "z.literal('roundedRectangle')",
+      "z.literal('ellipse')",
+    ]);
+    expect(mask).not.toMatch(/z\.string\(|path|url|href|d:/i);
+  });
+});

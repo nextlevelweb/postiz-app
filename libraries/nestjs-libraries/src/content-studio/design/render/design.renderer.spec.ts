@@ -2101,3 +2101,204 @@ describe('design renderer: boundaries', () => {
     expect(manifest.dependencies.sharp).toBe('^0.33.4');
   });
 });
+
+// ============================================================================
+// P4-14: image masks in the SVG and the PNG
+describe('design renderer: image masks', () => {
+  const LEGACY =
+    '<g><defs><clipPath id="clip-0"><rect x="0" y="25" width="100" height="50"/></clipPath></defs>' +
+    '<g clip-path="url(#clip-0)"><image x="0" y="25" width="100" height="50" preserveAspectRatio="none" href="data:image/png;base64,AQID"/></g></g>';
+
+  it('SRIMG1/R1/R2 an image without a mask, with a rectangle mask or a radius of 0 gives exactly the SVG it gave before', () => {
+    expect(body([imageItem()])).toBe(LEGACY);
+    expect(body([imageItem({ mask: { type: 'rectangle' } })])).toBe(LEGACY);
+    expect(
+      body([imageItem({ mask: { type: 'roundedRectangle', cornerRadius: 0 } })])
+    ).toBe(LEGACY);
+  });
+
+  it('R3/R4 a rounded rectangle or an ellipse is an outer clip in the box, numbered before the image clip', () => {
+    expect(
+      body([
+        imageItem({ mask: { type: 'roundedRectangle', cornerRadius: 20 } }),
+      ])
+    ).toBe(
+      '<g><defs><clipPath id="clip-0"><rect x="0" y="0" width="100" height="100" rx="20" ry="20"/></clipPath></defs>' +
+        '<g clip-path="url(#clip-0)"><defs><clipPath id="clip-1"><rect x="0" y="25" width="100" height="50"/></clipPath></defs>' +
+        '<g clip-path="url(#clip-1)"><image x="0" y="25" width="100" height="50" preserveAspectRatio="none" href="data:image/png;base64,AQID"/></g></g></g>'
+    );
+    expect(body([imageItem({ mask: { type: 'ellipse' } })])).toContain(
+      '<defs><clipPath id="clip-0"><ellipse cx="50" cy="50" rx="50" ry="50"/></clipPath></defs><g clip-path="url(#clip-0)">'
+    );
+  });
+
+  it('R9/M14 the mask clip sits inside the rotated group, so it turns with the layer', () => {
+    const svg = body([
+      imageItem({
+        rotation: 30,
+        transformOrigin: { x: 50, y: 50 },
+        mask: { type: 'ellipse' },
+      }),
+    ]);
+    expect(
+      svg.startsWith(
+        '<g transform="rotate(30 50 50)"><defs><clipPath id="clip-0"><ellipse'
+      )
+    ).toBe(true);
+  });
+
+  it('R5/M15 numbers stay counters in item order and the SVG is the same every time', () => {
+    const items = [
+      imageItem({ mask: { type: 'ellipse' } }),
+      rectangleItem('r'),
+      imageItem({
+        layerId: 'k',
+        mask: { type: 'roundedRectangle', cornerRadius: 5 },
+      }),
+      textItem(),
+    ];
+    const first = svgWith(items);
+    expect(Array.from(first.matchAll(/id="([^"]+)"/g), (m) => m[1])).toEqual([
+      'clip-0',
+      'clip-1',
+      'clip-2',
+      'clip-3',
+      'clip-4',
+    ]);
+    for (let index = 0; index < 20; index += 1) {
+      expect(svgWith(items)).toBe(first);
+    }
+    // the fixed vocabulary still holds
+    const tags = new Set(
+      Array.from(first.matchAll(/<\/?([A-Za-z]+)/g), (m) => m[1])
+    );
+    expect([...tags].sort()).toEqual([
+      'clipPath',
+      'defs',
+      'ellipse',
+      'g',
+      'image',
+      'path',
+      'rect',
+      'svg',
+    ]);
+  });
+
+  const square = { width: 100, height: 100 };
+  const full = (extra: Plain = {}) =>
+    image('photo', 'red', { width: 100, height: 100, fit: 'cover', ...extra });
+
+  it('SRIMG2/M12 a rounded rectangle leaves its corners transparent', async () => {
+    const plain = await renderPixels([full()], square);
+    expect(plain(2, 2)).toEqual(RED);
+    const round = await renderPixels(
+      [full({ mask: { type: 'roundedRectangle', cornerRadius: 30 } })],
+      square
+    );
+    expect(round(2, 2)).toEqual(WHITE);
+    expect(round(97, 97)).toEqual(WHITE);
+    expect(round(50, 50)).toEqual(RED);
+    expect(round(50, 1)).toEqual(RED);
+  });
+
+  it('SRIMG3/M13 an ellipse leaves the corners of its box transparent', async () => {
+    const px = await renderPixels(
+      [full({ mask: { type: 'ellipse' } })],
+      square
+    );
+    for (const [x, y] of [
+      [3, 3],
+      [96, 3],
+      [3, 96],
+      [96, 96],
+    ]) {
+      expect(px(x, y)).toEqual(WHITE);
+    }
+    expect(px(50, 50)).toEqual(RED);
+    expect(px(50, 2)).toEqual(RED);
+  });
+
+  it('SRIMG4/R6 contain inside an ellipse: only where image and ellipse meet', async () => {
+    // a 2:1 image contained in a square box spans y 25..75
+    const plain = await renderPixels([full({ fit: 'contain' })], square);
+    expect(plain(3, 27)).toEqual(RED);
+    const px = await renderPixels(
+      [full({ fit: 'contain', mask: { type: 'ellipse' } })],
+      square
+    );
+    expect(px(3, 27)).toEqual(WHITE);
+    expect(px(50, 50)).toEqual(RED);
+    expect(px(50, 10)).toEqual(WHITE);
+  });
+
+  it('SRIMG5/R7/R8 cover keeps following the focal point inside an ellipse or a rounded rectangle', async () => {
+    for (const mask of [
+      { type: 'ellipse' },
+      { type: 'roundedRectangle', cornerRadius: 30 },
+    ]) {
+      const at = async (x: number) =>
+        renderPixels(
+          [
+            image('photo', 'halves', {
+              width: 100,
+              height: 100,
+              fit: 'cover',
+              focalPoint: { x, y: 0.5 },
+              mask,
+            }),
+          ],
+          square
+        );
+      expect((await at(0))(50, 50)).toEqual(RED);
+      expect((await at(1))(50, 50)).toEqual(BLUE);
+      expect((await at(1))(2, 2)).toEqual(WHITE);
+    }
+  });
+
+  it('SRIMG6/SRIMG7/R9/M14 a mask turns with its layer, in the layer box', async () => {
+    // a 100 x 40 pill across the middle, turned upright
+    const pill = (rotation: number, mask: Plain) =>
+      renderPixels(
+        [full({ x: 0, y: 30, width: 100, height: 40, rotation, mask })],
+        square
+      );
+    const rounded = await pill(90, {
+      type: 'roundedRectangle',
+      cornerRadius: 20,
+    });
+    expect(rounded(50, 3)).toEqual(RED);
+    expect(rounded(35, 3)).toEqual(WHITE);
+    expect(rounded(15, 50)).toEqual(WHITE);
+    const ellipseUp = await pill(-90, { type: 'ellipse' });
+    expect(ellipseUp(50, 15)).toEqual(RED);
+    expect(ellipseUp(15, 50)).toEqual(WHITE);
+    // the same layers unturned: the other way round
+    const flat = await pill(0, { type: 'ellipse' });
+    expect(flat(50, 15)).toEqual(WHITE);
+    expect(flat(15, 50)).toEqual(RED);
+  });
+
+  it('R10 opacity applies once to the clipped image', async () => {
+    const px = await renderPixels(
+      [full({ opacity: 0.5, mask: { type: 'ellipse' } })],
+      square
+    );
+    near(px(50, 50), [255, 128, 128], 2);
+    expect(px(3, 3)).toEqual(WHITE);
+  });
+
+  it('SRIMG8/SRIMG9/R5 the same masked design gives the same bytes; the exact Media is read once, unchanged', async () => {
+    const images = imageResolver();
+    const document = design([
+      page(
+        [full({ mask: { type: 'roundedRectangle', cornerRadius: 12 } })],
+        square
+      ),
+    ]);
+    const first = await render(document, { images });
+    const second = await render(document);
+    expect(second.bytes.equals(first.bytes)).toBe(true);
+    expect(second.sha256).toBe(first.sha256);
+    expect(images.calls).toEqual([{ mediaId: 'red-1', sha256: sha('red') }]);
+  });
+});

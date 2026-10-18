@@ -2520,3 +2520,34 @@ describe('ContentStudioDesignTemplate schema', () => {
     expect(model('ContentStudioDesignRevision')).not.toMatch(/template/i);
   });
 });
+
+// ============================================================================
+// P4-14: masked images travel with templates exactly
+describe('P4-14 image composition in templates', () => {
+  it('a template revision keeps its image mask, and using it copies the mask into the design exactly', async () => {
+    const { templates, designs } = setup();
+    const document = JSON.parse(JSON.stringify(brandedDocument()));
+    document.pages[0].layers[2].mask = {
+      type: 'roundedRectangle',
+      cornerRadius: 40,
+    };
+    document.pages[0].layers[2].fit = 'contain';
+    const created = await createTemplate(templates, { content: document });
+    expect(
+      (await templates.getTemplate(ORG, created.id)).currentRevision.content
+    ).toEqual(parseContentStudioDesignDocument(document));
+    const design = await templates.instantiateTemplate({
+      organizationId: ORG,
+      userId: USER,
+      source: 'organization',
+      templateId: created.id,
+      revisionId: created.currentRevision.id,
+      revisionNumber: undefined,
+      name: 'Masked',
+    });
+    const layer = (await designs.getDesign(ORG, design.id)).currentRevision
+      .content.pages[0].layers[2] as Row;
+    expect(layer).toEqual(document.pages[0].layers[2]);
+    expect(layer.mask).toEqual({ type: 'roundedRectangle', cornerRadius: 40 });
+  });
+});

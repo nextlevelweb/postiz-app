@@ -647,3 +647,61 @@ describe('Brand Kit rebinding (pure)', () => {
     expect(result.brandKit).toEqual(OTHER_BRAND);
   });
 });
+
+// ============================================================================
+// P4-14: a guided image keeps the layer's composition
+describe('Template customization: image composition', () => {
+  const masked = (mask: Row) =>
+    parseContentStudioDesignDocument({
+      schemaVersion: 1,
+      brandKit: null,
+      pages: [
+        {
+          id: 'p_one',
+          name: '',
+          width: 1080,
+          height: 1080,
+          background: {
+            type: 'solid',
+            color: { type: 'literal', value: '#ffffff' },
+          },
+          layers: [picture('photo', { fit: 'contain', mask })],
+        },
+      ],
+    });
+  const guidance = (document: Row) =>
+    parseContentStudioDesignTemplateGuidance(
+      { schemaVersion: 1, brandRebinding: false, slots: [imageSlot()] },
+      document as never
+    );
+
+  it('GTIMG1/GTIMG2/GTIMG3/GTIMG4/GTIMG5/GTIMG6/M19 only the Media reference changes: fit, focal point, mask, radius and geometry stay', () => {
+    for (const mask of [
+      { type: 'roundedRectangle', cornerRadius: 36 },
+      { type: 'ellipse' },
+      { type: 'rectangle' },
+    ]) {
+      const document = masked(mask);
+      const before = JSON.stringify(document);
+      const result = applyContentStudioDesignTemplateCustomization({
+        document,
+        guidance: guidance(document),
+        values: parseContentStudioDesignTemplateValues({ photo: NEW_IMAGE }),
+      });
+      expect(layerOf(result, 'photo')).toEqual({
+        ...layerOf(document, 'photo'),
+        imageRef: { type: 'media', ...NEW_IMAGE },
+      });
+      expect(layerOf(result, 'photo')).toMatchObject({
+        fit: 'contain',
+        focalPoint: { x: 0.25, y: 0.75 },
+        mask,
+      });
+      // the template is untouched, and the result is a plain image layer
+      expect(JSON.stringify(document)).toBe(before);
+      expect(JSON.stringify(result)).not.toMatch(
+        /slot|guidance|label|required/
+      );
+    }
+  });
+});

@@ -1396,3 +1396,254 @@ describe('Design editor: style presets', () => {
     ]);
   });
 });
+
+// ============================================================================
+// P4-14: image composition as editor operations
+describe('Design editor: image composition', () => {
+  const editor = require('./content-studio.design.editor');
+  const {
+    parseContentStudioDesignDocument: parseDoc,
+  } = require('@gitroom/nestjs-libraries/content-studio/design/design.document');
+  const photo = (extra: Plain = {}) => ({
+    id: 'photo',
+    name: 'Photo',
+    x: 10,
+    y: 20,
+    width: 300,
+    height: 200,
+    rotation: 12,
+    opacity: 0.9,
+    visible: true,
+    type: 'image',
+    imageRef: { type: 'media', mediaId: 'm1', sha256: SHA('a') },
+    fit: 'cover',
+    focalPoint: { x: 0.2, y: 0.8 },
+    ...extra,
+  });
+  const other = {
+    id: 'other',
+    name: 'Other',
+    x: 0,
+    y: 0,
+    width: 10,
+    height: 10,
+    rotation: 0,
+    opacity: 1,
+    visible: true,
+    type: 'shape',
+    shape: 'rectangle',
+    fill: lit('#000000'),
+    cornerRadius: 0,
+  };
+  const doc = (layer: Plain = photo()) =>
+    parseDoc({
+      schemaVersion: 1,
+      brandKit: null,
+      pages: [
+        {
+          id: 'p1',
+          name: '',
+          width: 1080,
+          height: 1080,
+          background: { type: 'solid', color: lit('#ffffff') },
+          layers: [layer, other],
+        },
+      ],
+    });
+  const imageOf = (document: Plain, id = 'photo') =>
+    document.pages
+      .flatMap((page: Plain) => page.layers)
+      .find((layer: Plain) => layer.id === id);
+  const ROUNDED = { type: 'roundedRectangle', cornerRadius: 40 };
+
+  it('IMG6/IMG7/IMG8/M8/M9/M10/M11 a mask changes only the mask: Media, fit, focal point and geometry stay', () => {
+    const source = doc();
+    const before = JSON.stringify(source);
+    for (const mask of [ROUNDED, { type: 'ellipse' }]) {
+      const next = editor.setContentStudioDesignImageMask(
+        source,
+        'photo',
+        mask
+      );
+      expect(imageOf(next)).toEqual({ ...photo(), mask });
+      expect(imageOf(next, 'other')).toEqual(other);
+      expect(parseDoc(next)).toEqual(next);
+    }
+    expect(JSON.stringify(source)).toBe(before);
+  });
+
+  it('Rectangle (or null) leaves the field out again, exactly as before masks', () => {
+    const rounded = editor.setContentStudioDesignImageMask(
+      doc(),
+      'photo',
+      ROUNDED
+    );
+    for (const mask of [null, { type: 'rectangle' }]) {
+      const back = editor.setContentStudioDesignImageMask(
+        rounded,
+        'photo',
+        mask
+      );
+      expect(imageOf(back)).toEqual(photo());
+      expect(Object.keys(imageOf(back))).not.toContain('mask');
+    }
+  });
+
+  it('IMG9/IMG10 the radius is held to the document limits; a non-image is not masked', () => {
+    const code = (run: () => unknown) => {
+      try {
+        run();
+      } catch (err) {
+        return (err as any).code;
+      }
+      return 'ok';
+    };
+    for (const cornerRadius of [0, 12.5, 4096]) {
+      expect(
+        code(() =>
+          editor.setContentStudioDesignImageMask(doc(), 'photo', {
+            type: 'roundedRectangle',
+            cornerRadius,
+          })
+        )
+      ).toBe('ok');
+    }
+    for (const cornerRadius of [-1, 4097, Number.NaN, Infinity, '8']) {
+      expect(
+        code(() =>
+          editor.setContentStudioDesignImageMask(doc(), 'photo', {
+            type: 'roundedRectangle',
+            cornerRadius,
+          })
+        )
+      ).toBe('IMAGE_MASK_INVALID');
+    }
+    expect(
+      code(() =>
+        editor.setContentStudioDesignImageMask(doc(), 'other', ROUNDED)
+      )
+    ).toBe('NOT_FOUND');
+    expect(
+      editor.contentStudioDesignImagePillRadius({ width: 300, height: 200 })
+    ).toBe(100);
+    expect(
+      editor.contentStudioDesignImagePillRadius({ width: 9000, height: 9000 })
+    ).toBe(4096);
+  });
+
+  it('IMG4/M6 a pointer position becomes a focal point clamped to 0..1, nothing else', () => {
+    const box = { left: 100, top: 50, width: 200, height: 100 };
+    expect(editor.contentStudioDesignFocalPointAt(box, 150, 75)).toEqual({
+      x: 0.25,
+      y: 0.25,
+    });
+    expect(editor.contentStudioDesignFocalPointAt(box, 0, 500)).toEqual({
+      x: 0,
+      y: 1,
+    });
+    expect(editor.contentStudioDesignFocalPointAt(box, 900, -10)).toEqual({
+      x: 1,
+      y: 0,
+    });
+    expect(editor.contentStudioDesignFocalPointAt(box, 166.66666, 100)).toEqual(
+      { x: 0.3333, y: 0.5 }
+    );
+    for (const bad of [
+      [{ ...box, width: 0 }, 150, 75],
+      [box, Number.NaN, 75],
+      [box, 150, Infinity],
+    ] as const) {
+      expect(editor.contentStudioDesignFocalPointAt(...bad)).toBeNull();
+    }
+    expect(
+      editor.nudgeContentStudioDesignFocalPoint(
+        { x: 0.98, y: 0.02 },
+        0.05,
+        -0.05
+      )
+    ).toEqual({ x: 1, y: 0 });
+    expect(
+      editor.nudgeContentStudioDesignFocalPoint({ x: 0.5, y: 0.5 }, 0.01, 0)
+    ).toEqual({ x: 0.51, y: 0.5 });
+  });
+
+  it('IMG1/IMG2/IMG3/M5/M7 fit and focal point changes touch only their own field; switching fit keeps the focal point', () => {
+    const masked = editor.setContentStudioDesignImageMask(
+      doc(),
+      'photo',
+      ROUNDED
+    );
+    const contain = editor.updateContentStudioDesignLayer(masked, 'photo', {
+      fit: 'contain',
+    });
+    expect(imageOf(contain)).toEqual({
+      ...photo({ fit: 'contain' }),
+      mask: ROUNDED,
+    });
+    const cover = editor.updateContentStudioDesignLayer(contain, 'photo', {
+      fit: 'cover',
+    });
+    expect(imageOf(cover)).toEqual(imageOf(masked));
+    const focal = editor.updateContentStudioDesignLayer(masked, 'photo', {
+      focalPoint: { x: 0.5, y: 0 },
+    });
+    expect(imageOf(focal)).toEqual({
+      ...photo({ focalPoint: { x: 0.5, y: 0 } }),
+      mask: ROUNDED,
+    });
+  });
+
+  it('MRIMG1/MRIMG2/MRIMG3/MRIMG4/MRIMG5/MRIMG6/M16/M17/M18 replacing the Media changes only imageRef', () => {
+    for (const mask of [ROUNDED, { type: 'ellipse' }]) {
+      const masked = editor.setContentStudioDesignImageMask(
+        doc(),
+        'photo',
+        mask
+      );
+      const replaced = editor.updateContentStudioDesignLayer(masked, 'photo', {
+        imageRef: { type: 'media', mediaId: 'm2', sha256: SHA('c') },
+      });
+      expect(imageOf(replaced)).toEqual({
+        ...photo(),
+        mask,
+        imageRef: { type: 'media', mediaId: 'm2', sha256: SHA('c') },
+      });
+    }
+  });
+
+  it('CPIMG1/CPIMG2/CPIMG3/CPIMG4/M21/M22 duplicate, copy and paste and page duplicate keep the composition; only the id (and the offset) is new', () => {
+    const masked = editor.setContentStudioDesignImageMask(
+      doc(),
+      'photo',
+      ROUNDED
+    );
+    const strip = (layer: Plain) => {
+      const { id, x, y, ...rest } = layer;
+      return rest;
+    };
+    const duplicated = editor.duplicateContentStudioDesignLayer(
+      masked,
+      'photo'
+    );
+    const copy = imageOf(duplicated.document, duplicated.layerId);
+    expect(copy.id).not.toBe('photo');
+    expect(strip(copy)).toEqual(strip(imageOf(masked)));
+    const clipboard = editor.copyContentStudioDesignLayer(masked, 'photo');
+    const pasted = editor.pasteContentStudioDesignLayer(
+      masked,
+      'p1',
+      clipboard
+    );
+    const paste = imageOf(pasted.document, pasted.layerId);
+    expect(strip(paste)).toEqual(strip(imageOf(masked)));
+    expect(paste.mask).toEqual(ROUNDED);
+    const pages = editor.duplicateContentStudioDesignPage(masked, 'p1');
+    const copied = pages.document.pages[1].layers.find(
+      (layer: Plain) => layer.type === 'image'
+    );
+    expect(copied.id).not.toBe('photo');
+    const { id, ...rest } = copied;
+    const { id: _id, ...original } = imageOf(masked);
+    expect(rest).toEqual(original);
+  });
+});

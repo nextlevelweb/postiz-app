@@ -1593,5 +1593,20 @@
   "content_studio_style_preset_error_archived": "This style preset is archived.",
   "content_studio_style_preset_error_kind": "A style preset keeps its kind.",
   "content_studio_style_preset_not_found": "Style preset not found.",
-  "content_studio_style_preset_error": "Something went wrong with the style preset."
+  "content_studio_style_preset_error": "Something went wrong with the style preset.",
+  "content_studio_design_frame": "Frame",
+  "content_studio_design_frame_rounded": "Rounded",
+  "content_studio_design_frame_ellipse": "Ellipse",
+  "content_studio_design_frame_rectangle": "Rectangle",
+  "content_studio_design_frame_invalid": "That frame radius is not possible.",
+  "content_studio_design_focal_picker": "Focal point picker",
+  "content_studio_design_focal_contain": "Contain shows the whole image: the focal point is kept for Cover.",
+  "content_studio_design_focal_hint": "Point at the part of the image Cover should keep in view, or use the arrow keys.",
+  "content_studio_design_frame_radius": "Frame radius",
+  "content_studio_design_frame_radius_presets": "Frame radius presets",
+  "content_studio_design_frame_small": "Small",
+  "content_studio_design_frame_medium": "Medium",
+  "content_studio_design_frame_large": "Large",
+  "content_studio_design_frame_radius_hint": "Drawn at most half the shorter side of the box.",
+  "content_studio_design_fit_options": "Fit options"
 }

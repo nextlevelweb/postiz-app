@@ -18,6 +18,7 @@ import {
   ContentStudioDesignImageProvider,
   ContentStudioDesignLayoutError,
   ContentStudioDesignLayoutImageItem,
+  ContentStudioDesignLayoutImageMask,
   ContentStudioDesignLayoutInput,
   ContentStudioDesignLayoutItem,
   ContentStudioDesignLayoutRect,
@@ -239,6 +240,23 @@ export function layoutContentStudioDesignImageGeometry(
   };
 }
 
+// The mask of an image layer as the renderer draws it: the same shape, a
+// rounded rectangle's radius limited to half the width and half the height
+// of the box, as for a rectangle shape
+export function layoutContentStudioDesignImageMask(
+  layer: Pick<ContentStudioDesignImageLayer, 'mask' | 'width' | 'height'>
+): ContentStudioDesignLayoutImageMask {
+  const mask = layer.mask ?? { type: 'rectangle' as const };
+  return mask.type === 'roundedRectangle'
+    ? {
+        type: 'roundedRectangle',
+        cornerRadius: layoutNumber(
+          Math.min(mask.cornerRadius, layer.width / 2, layer.height / 2)
+        ),
+      }
+    : { type: mask.type };
+}
+
 // The input is checked at this boundary: the document is parsed again (a
 // new, normalized copy), the providers must be callable and the Brand Kit
 // context must be given, null included
@@ -343,6 +361,9 @@ export function layoutContentStudioDesign(
         layer.fit,
         layer.focalPoint
       ),
+      ...(layer.mask
+        ? { mask: layoutContentStudioDesignImageMask(layer) }
+        : {}),
     };
   };
 

@@ -174,16 +174,27 @@ const LayerPreview: FC<
       />
     );
   }
-  // the image itself is drawn by the server render, from the verified bytes
+  // the image itself is drawn by the server render, from the verified bytes;
+  // its frame (P4-14) is shown as the box's rounding: the stored radius (how
+  // far it is limited is the renderer's rule) or a full ellipse
+  const mask = layer.mask?.type ?? 'rectangle';
   return (
     <div
       data-layer={selection.marked ? layer.id : undefined}
+      data-mask={mask}
       className={clsx(
         'flex items-center justify-center border-dashed border-[2px] border-textItemBlur bg-newTableBorder/40 text-textItemBlur overflow-hidden',
         selection.selected && SELECTED
       )}
       {...selectable(layer.id, selection)}
-      style={boxStyle(layer)}
+      style={{
+        ...boxStyle(layer),
+        ...(layer.mask?.type === 'roundedRectangle'
+          ? { borderRadius: layer.mask.cornerRadius }
+          : mask === 'ellipse'
+          ? { borderRadius: '50%' }
+          : {}),
+      }}
     >
       <span className="text-[32px]">
         {t('content_studio_design_layer_image', 'Image')}

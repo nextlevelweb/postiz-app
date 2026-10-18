@@ -3,6 +3,7 @@
 import {
   FC,
   KeyboardEvent,
+  PointerEvent,
   ReactNode,
   useCallback,
   useEffect,
@@ -31,6 +32,8 @@ import {
   ContentStudioDesignDocumentError,
   ContentStudioDesignDocumentV1,
   ContentStudioDesignFontRef,
+  ContentStudioDesignImageLayer,
+  ContentStudioDesignImageMask,
   ContentStudioDesignLayer,
   ContentStudioDesignPage,
   DESIGN_COORDINATE_MAX,
@@ -65,6 +68,11 @@ import {
   ContentStudioDesignLayerPatch,
   contentStudioDesignEditorLimits,
   contentStudioDesignDocumentColors,
+  contentStudioDesignFocalPointAt,
+  contentStudioDesignImagePillRadius,
+  DESIGN_IMAGE_MASK_DEFAULT_RADIUS,
+  nudgeContentStudioDesignFocalPoint,
+  setContentStudioDesignImageMask,
   contentStudioDesignLayerMoves,
   contentStudioDesignTextLength,
   deleteContentStudioDesignLayer,
@@ -156,6 +164,11 @@ export const designEditorErrorMessage = (t: Translate, error: unknown) => {
       return t(
         'content_studio_design_align_out_of_limits',
         'That alignment is outside the design limits.'
+      );
+    case 'IMAGE_MASK_INVALID':
+      return t(
+        'content_studio_design_frame_invalid',
+        'That frame radius is not possible.'
       );
     case 'STYLE_KIND_MISMATCH':
       return t(
@@ -1735,6 +1748,233 @@ const FIT_OPTIONS = (t: Translate) => [
   },
 ];
 
+// The focal point of an image, by pointing (P4-14): the box stands for the
+// whole image, 0..1 across and down. A press-drag-release is one change,
+// committed on release; the marker follows the pointer meanwhile. Arrow keys
+// move it by 0.05 (0.01 with Shift), a run of presses one way being one
+// undo step. With Contain the focal point is kept but not used, so the
+// picker rests. Only the 0..1 values are stored, nothing of the screen
+const DesignFocalPointPicker: FC<{
+  editor: ContentStudioDesignEditor;
+  layer: ContentStudioDesignImageLayer;
+  disabled: boolean;
+}> = ({ editor, layer, disabled }) => {
+  const t = useT();
+  const [drag, setDrag] = useState<{ x: number; y: number } | null>(null);
+  const resting = disabled || layer.fit === 'contain';
+  const shown = drag ?? layer.focalPoint;
+  const commit = (point: { x: number; y: number }, runKey?: string) =>
+    editor.apply(
+      (latest) => ({
+        document: updateContentStudioDesignLayer(latest, layer.id, {
+          focalPoint: point,
+        }),
+      }),
+      runKey
+    );
+  const pointAt = (event: PointerEvent<HTMLButtonElement>) =>
+    contentStudioDesignFocalPointAt(
+      event.currentTarget.getBoundingClientRect(),
+      event.clientX,
+      event.clientY
+    );
+  const percent = (value: number) => `${Math.round(value * 100)}%`;
+  return (
+    <div className="flex flex-col gap-[4px] min-w-0">
+      <button
+        type="button"
+        data-focal-picker=""
+        disabled={resting}
+        aria-label={`${t(
+          'content_studio_design_focal_picker',
+          'Focal point picker'
+        )}: X ${percent(shown.x)}, Y ${percent(shown.y)}`}
+        className="relative w-full h-[90px] rounded-[6px] border border-newTableBorder bg-newTableBorder/40 disabled:opacity-50 touch-none"
+        onPointerDown={(event) => {
+          const point = pointAt(event);
+          if (!point) {
+            return;
+          }
+          event.currentTarget.setPointerCapture?.(event.pointerId);
+          setDrag(point);
+        }}
+        onPointerMove={(event) => {
+          const point = drag && pointAt(event);
+          if (point) {
+            setDrag(point);
+          }
+        }}
+        onPointerUp={(event) => {
+          const point = drag && (pointAt(event) ?? drag);
+          setDrag(null);
+          if (
+            point &&
+            (point.x !== layer.focalPoint.x || point.y !== layer.focalPoint.y)
+          ) {
+            commit(point);
+          }
+        }}
+        onPointerCancel={() => setDrag(null)}
+        onKeyDown={(event) => {
+          const step = event.shiftKey ? 0.01 : 0.05;
+          const move: Record<string, [number, number]> = {
+            ArrowLeft: [-step, 0],
+            ArrowRight: [step, 0],
+            ArrowUp: [0, -step],
+            ArrowDown: [0, step],
+          };
+          const delta = move[event.key];
+          if (!delta) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          commit(
+            nudgeContentStudioDesignFocalPoint(
+              layer.focalPoint,
+              delta[0],
+              delta[1]
+            ),
+            `focal:${layer.id}:${event.key}:${step}`
+          );
+        }}
+      >
+        <span
+          aria-hidden="true"
+          data-focal-marker=""
+          className="absolute w-[12px] h-[12px] -ml-[6px] -mt-[6px] rounded-full border-[2px] border-textColor bg-newBgColorInner pointer-events-none"
+          style={{ left: percent(shown.x), top: percent(shown.y) }}
+        />
+      </button>
+      <span className="text-[12px] text-textItemBlur">
+        {layer.fit === 'contain'
+          ? t(
+              'content_studio_design_focal_contain',
+              'Contain shows the whole image: the focal point is kept for Cover.'
+            )
+          : t(
+              'content_studio_design_focal_hint',
+              'Point at the part of the image Cover should keep in view, or use the arrow keys.'
+            )}
+      </span>
+    </div>
+  );
+};
+
+// The shape an image is cut to (P4-14), in its box: the box itself, a
+// rounded rectangle with a radius in design units (presets, or the field)
+// or an ellipse filling the box. One choice is one change; Media, fit, focal
+// point and geometry stay
+const DesignImageFrameControls: FC<{
+  editor: ContentStudioDesignEditor;
+  layer: ContentStudioDesignImageLayer;
+  disabled: boolean;
+}> = ({ editor, layer, disabled }) => {
+  const t = useT();
+  const type = layer.mask?.type ?? 'rectangle';
+  const radius =
+    layer.mask?.type === 'roundedRectangle' ? layer.mask.cornerRadius : null;
+  const pill = contentStudioDesignImagePillRadius(layer);
+  const setMask = (mask: ContentStudioDesignImageMask | null) =>
+    editor.apply((latest) => ({
+      document: setContentStudioDesignImageMask(latest, layer.id, mask),
+    }));
+  const rounded = (cornerRadius: number) =>
+    setMask({ type: 'roundedRectangle', cornerRadius });
+  const frames = [
+    {
+      value: 'rectangle',
+      label: t('content_studio_design_frame_rectangle', 'Rectangle'),
+      apply: () => setMask(null),
+    },
+    {
+      value: 'roundedRectangle',
+      label: t('content_studio_design_frame_rounded', 'Rounded'),
+      apply: () => rounded(Math.min(DESIGN_IMAGE_MASK_DEFAULT_RADIUS, pill)),
+    },
+    {
+      value: 'ellipse',
+      label: t('content_studio_design_frame_ellipse', 'Ellipse'),
+      apply: () => setMask({ type: 'ellipse' }),
+    },
+  ];
+  return (
+    <div className="flex flex-col gap-[6px] min-w-0">
+      <div
+        role="group"
+        aria-label={t('content_studio_design_frame', 'Frame')}
+        className="flex flex-wrap gap-[6px]"
+      >
+        {frames.map((frame) => (
+          <button
+            key={frame.value}
+            type="button"
+            className={COMMAND}
+            disabled={disabled}
+            aria-pressed={type === frame.value}
+            aria-label={`${t('content_studio_design_frame', 'Frame')} ${
+              frame.label
+            }`}
+            onClick={() => type !== frame.value && frame.apply()}
+          >
+            {frame.label}
+          </button>
+        ))}
+      </div>
+      {radius !== null && (
+        <>
+          <DesignNumberField
+            label={t('content_studio_design_frame_radius', 'Frame radius')}
+            value={radius}
+            min={0}
+            max={DESIGN_CORNER_RADIUS_MAX}
+            disabled={disabled}
+            onCommit={(cornerRadius) => rounded(cornerRadius)}
+          />
+          <div
+            role="group"
+            aria-label={t(
+              'content_studio_design_frame_radius_presets',
+              'Frame radius presets'
+            )}
+            className="flex flex-wrap gap-[6px]"
+          >
+            {(
+              [
+                [8, t('content_studio_design_frame_small', 'Small')],
+                [24, t('content_studio_design_frame_medium', 'Medium')],
+                [48, t('content_studio_design_frame_large', 'Large')],
+                [pill, t('content_studio_design_corner_pill', 'Pill')],
+              ] as const
+            ).map(([value, name]) => (
+              <button
+                key={name}
+                type="button"
+                className={COMMAND}
+                disabled={disabled}
+                aria-pressed={radius === value}
+                aria-label={`${t(
+                  'content_studio_design_frame_radius',
+                  'Frame radius'
+                )} ${name}`}
+                onClick={() => radius !== value && rounded(value)}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+          <span className="text-[12px] text-textItemBlur">
+            {t(
+              'content_studio_design_frame_radius_hint',
+              'Drawn at most half the shorter side of the box.'
+            )}
+          </span>
+        </>
+      )}
+    </div>
+  );
+};
+
 // The inspector while editing: the page's name and background (its size
 // stays), or every field of the selected layer, each committed as one step
 export const DesignEditableInspector: FC<{
@@ -2140,6 +2380,36 @@ export const DesignEditableInspector: FC<{
             disabled={disabled}
             onChange={(fit) => update({ fit: fit as 'cover' })}
           />
+          <div
+            role="group"
+            aria-label={t('content_studio_design_fit_options', 'Fit options')}
+            className="flex flex-wrap gap-[6px]"
+          >
+            {FIT_OPTIONS(t).map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                className={COMMAND}
+                disabled={disabled}
+                aria-pressed={layer.fit === option.value}
+                aria-label={`${t('content_studio_design_fit', 'Fit')} ${
+                  option.label
+                }`}
+                // the focal point stays, also with Contain
+                onClick={() =>
+                  layer.fit !== option.value &&
+                  update({ fit: option.value as 'cover' })
+                }
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <DesignFocalPointPicker
+            editor={editor}
+            layer={layer}
+            disabled={disabled}
+          />
           <div className="grid grid-cols-2 gap-[8px]">
             <DesignNumberField
               label={t('content_studio_design_focal_x', 'Focal point X')}
@@ -2190,6 +2460,11 @@ export const DesignEditableInspector: FC<{
               </button>
             ))}
           </div>
+          <DesignImageFrameControls
+            editor={editor}
+            layer={layer}
+            disabled={disabled}
+          />
           <Button secondary disabled={disabled} onClick={replaceImage}>
             {t('content_studio_design_replace_image', 'Replace image')}
           </Button>

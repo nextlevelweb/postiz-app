@@ -5,11 +5,13 @@ import {
   ContentStudioDesignColorValue,
   ContentStudioDesignDocumentV1,
   ContentStudioDesignImageLayer,
+  ContentStudioDesignImageMask,
   ContentStudioDesignLayer,
   ContentStudioDesignPage,
   ContentStudioDesignShapeLayer,
   ContentStudioDesignTextLayer,
   DESIGN_COORDINATE_MAX,
+  DESIGN_CORNER_RADIUS_MAX,
   DESIGN_LAYERS_MAX,
   DESIGN_LAYERS_PER_PAGE_MAX,
   DESIGN_PAGES_MAX,
@@ -43,7 +45,8 @@ export type ContentStudioDesignEditorErrorCode =
   | 'BRAND_TOKENS_MISSING'
   | 'OUT_OF_LIMITS'
   | 'STYLE_KIND_MISMATCH'
-  | 'STYLE_BRAND_UNAVAILABLE';
+  | 'STYLE_BRAND_UNAVAILABLE'
+  | 'IMAGE_MASK_INVALID';
 
 // A code only: the UI shows its own fixed text for it
 export class ContentStudioDesignEditorError extends Error {
@@ -883,6 +886,101 @@ export const setContentStudioDesignBrandKit = (
     brandKit: { brandKitId, revisionId, revisionNumber, contentHash },
   };
 };
+
+// ---------------------------------------------------------------------------
+// Image composition (P4-14)
+// ---------------------------------------------------------------------------
+
+// a new rounded frame's radius, where the box allows it
+export const DESIGN_IMAGE_MASK_DEFAULT_RADIUS = 24;
+
+// The mask of one image layer: a rounded rectangle (radius in design units,
+// 0 to the document limit) or an ellipse, or null to cut the image to its
+// box again, which leaves the field out exactly as before masks existed.
+// Nothing else of the layer changes: Media, fit, focal point and geometry
+// stay
+export const setContentStudioDesignImageMask = (
+  document: ContentStudioDesignDocumentV1,
+  layerId: string,
+  mask: ContentStudioDesignImageMask | null
+) => {
+  const { pageIndex, layerIndex, page, layer } = findLayer(document, layerId);
+  if (layer.type !== 'image') {
+    throw fail('NOT_FOUND');
+  }
+  if (
+    mask?.type === 'roundedRectangle' &&
+    !(
+      typeof mask.cornerRadius === 'number' &&
+      Number.isFinite(mask.cornerRadius) &&
+      mask.cornerRadius >= 0 &&
+      mask.cornerRadius <= DESIGN_CORNER_RADIUS_MAX
+    )
+  ) {
+    throw fail('IMAGE_MASK_INVALID');
+  }
+  const copy = JSON.parse(
+    JSON.stringify(layer)
+  ) as ContentStudioDesignImageLayer;
+  delete copy.mask;
+  const next: ContentStudioDesignImageLayer =
+    !mask || mask.type === 'rectangle'
+      ? copy
+      : {
+          ...copy,
+          mask:
+            mask.type === 'roundedRectangle'
+              ? { type: 'roundedRectangle', cornerRadius: mask.cornerRadius }
+              : { type: 'ellipse' },
+        };
+  return withLayers(
+    document,
+    pageIndex,
+    page.layers.map((entry, position) =>
+      position === layerIndex ? next : entry
+    )
+  );
+};
+
+// half the shorter side of the box: the largest radius that still shows
+export const contentStudioDesignImagePillRadius = (layer: {
+  width: number;
+  height: number;
+}) =>
+  Math.min(DESIGN_CORNER_RADIUS_MAX, Math.min(layer.width, layer.height) / 2);
+
+const unit = (value: number) =>
+  Math.round(Math.min(Math.max(value, 0), 1) * 10_000) / 10_000;
+
+// The focal point under a pointer in a picker of this on-screen box: 0..1
+// across and down, rounded to 4 places. Null when the box has no size or the
+// position is not a number: nothing of the screen is stored
+export const contentStudioDesignFocalPointAt = (
+  box: { left: number; top: number; width: number; height: number },
+  clientX: number,
+  clientY: number
+) => {
+  if (
+    ![box.left, box.top, box.width, box.height, clientX, clientY].every(
+      Number.isFinite
+    ) ||
+    box.width <= 0 ||
+    box.height <= 0
+  ) {
+    return null;
+  }
+  return {
+    x: unit((clientX - box.left) / box.width),
+    y: unit((clientY - box.top) / box.height),
+  };
+};
+
+// The focal point moved by a step across and down, kept within 0..1
+export const nudgeContentStudioDesignFocalPoint = (
+  point: { x: number; y: number },
+  dx: number,
+  dy: number
+) => ({ x: unit(point.x + dx), y: unit(point.y + dy) });
 
 // ---------------------------------------------------------------------------
 // Style presets (P4-13)
