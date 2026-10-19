@@ -9,6 +9,10 @@ import type {
   ContentStudioReviewTargetType,
   ContentStudioRevisionRequestStatus,
 } from '@gitroom/nestjs-libraries/content-studio/review/review.state';
+import type {
+  ContentStudioReviewClaimStatus,
+  ContentStudioReviewClaimSummary,
+} from '@gitroom/nestjs-libraries/content-studio/review/review.claim';
 import {
   ContentStudioRequestError,
   request,
@@ -24,7 +28,11 @@ import { designErrorCode } from '@gitroom/frontend/components/content-studio/con
 // Its discussion (P5-02) is the review's own: comments, loaded only for a
 // review that exists, and the formal revision request, loaded only once the
 // review asked for changes. A request is resolved by the id of a saved newer
-// revision, nothing else
+// revision, nothing else. Claim review (P5-03B) is a package review's own:
+// the claims of exactly its revision with their assessments and evidence,
+// all as the server read and verified them (the browser never looks a
+// source version up for it), and an assessment sends a status and a
+// finding only
 
 interface ContentStudioReviewPerson {
   id: string;
@@ -74,12 +82,46 @@ export interface ContentStudioRevisionRequest {
   };
 }
 
+// One grounded claim of the reviewed revision, its assessment and its exact
+// evidence, as the server verified them
+export interface ContentStudioReviewClaim {
+  claimId: string;
+  threadItemId: string;
+  claimText: string;
+  claimContentHash: string;
+  status: ContentStudioReviewClaimStatus;
+  finding: string | null;
+  reviewedBy: ContentStudioReviewPerson | null;
+  reviewedAt: string | null;
+  evidence: {
+    source: { id: string; name: string };
+    version: {
+      id: string;
+      versionNumber: number;
+      title: string | null;
+      contentHash: string;
+      fetchedAt: string;
+    };
+    block: { id: string; type: string; text: string };
+    quote: string | null;
+  }[];
+}
+
+export interface ContentStudioReviewClaimList {
+  reviewId: string;
+  reviewState: ContentStudioReviewState;
+  reviewVersion: number;
+  summary: ContentStudioReviewClaimSummary;
+  claims: ContentStudioReviewClaim[];
+}
+
 export const REVIEWS_PATH = '/content-studio/reviews';
 const reviewPath = (id: string) => `${REVIEWS_PATH}/${encodeURIComponent(id)}`;
 export const reviewCommentsPath = (id: string, page: number) =>
   `${reviewPath(id)}/comments?page=${page}`;
 export const reviewRevisionRequestPath = (id: string) =>
   `${reviewPath(id)}/revision-request`;
+export const reviewClaimsPath = (id: string) => `${reviewPath(id)}/claims`;
 export const reviewForRevisionPath = (
   targetType: ContentStudioReviewTargetType,
   revisionId: string
@@ -168,6 +210,23 @@ export const useContentStudioReviewRevisionRequest = (
   );
 };
 
+// The claims of a package review, or nothing without one. An answer about
+// another review is refused
+export const useContentStudioReviewClaims = (reviewId: string | null) => {
+  const fetch = useFetch();
+  const load = useCallback(
+    async (path: string) => {
+      const list = await request<ContentStudioReviewClaimList>(fetch, path);
+      if (list.reviewId !== reviewId) {
+        throw new ContentStudioRequestError(500, 'CS_REVIEW_INTEGRITY_ERROR');
+      }
+      return list;
+    },
+    [fetch, reviewId]
+  );
+  return useSWR(reviewId ? reviewClaimsPath(reviewId) : null, load, swrOptions);
+};
+
 // Review writes: one request each, never retried; each reloads the reviews
 // shown and their discussion. Nothing is edited in the cache by hand
 export const useContentStudioReviewActions = () => {
@@ -249,6 +308,22 @@ export const useContentStudioReviewActions = () => {
         await refresh();
         return comment;
       },
+      // the whole assessment of one claim: its status and finding only. The
+      // reviewer, time and claim hash are the server's
+      assessClaim: async (
+        reviewId: string,
+        claimId: string,
+        status: ContentStudioReviewClaimStatus,
+        finding: string | null
+      ) => {
+        const list = await request<ContentStudioReviewClaimList>(
+          fetch,
+          `${reviewClaimsPath(reviewId)}/${encodeURIComponent(claimId)}`,
+          { method: 'PUT', body: JSON.stringify({ status, finding }) }
+        );
+        await refresh();
+        return list;
+      },
       // the exact saved revision, by its id only: the server knows its type
       resolveRevisionRequest: async (
         reviewId: string,
@@ -328,6 +403,31 @@ export const reviewErrorMessage = (t: Translate, error: unknown) => {
       return t(
         'content_studio_review_error_target',
         'The revision to review is no longer available.'
+      );
+    case 'CS_REVIEW_CLAIMS_UNAVAILABLE':
+      return t(
+        'content_studio_review_error_claims_unavailable',
+        'Claim review is only available for content package reviews.'
+      );
+    case 'CS_REVIEW_CLAIM_NOT_FOUND':
+      return t(
+        'content_studio_review_error_claim_missing',
+        'This claim is not part of the reviewed version.'
+      );
+    case 'CS_REVIEW_CLAIM_INVALID':
+      return t(
+        'content_studio_review_error_claim_invalid',
+        'A claim that needs revision needs a finding of at most 10,000 characters.'
+      );
+    case 'CS_REVIEW_CLAIM_MUTATION_FORBIDDEN':
+      return t(
+        'content_studio_review_error_claim_frozen',
+        'Claims can only be assessed while the review is in review.'
+      );
+    case 'CS_REVIEW_CLAIMS_INCOMPLETE':
+      return t(
+        'content_studio_review_claims_incomplete',
+        'Review every grounded claim before marking this revision ready for approval.'
       );
     case 'CS_NOT_FOUND':
       return t('content_studio_review_not_found', 'Review not found.');

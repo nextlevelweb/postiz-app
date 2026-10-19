@@ -15,8 +15,10 @@ import {
 import {
   reviewErrorMessage,
   useContentStudioReviewActions,
+  useContentStudioReviewClaims,
   useContentStudioReviewForRevision,
 } from '@gitroom/frontend/components/content-studio/content-studio.reviews.api';
+import { ContentStudioReviewClaims } from '@gitroom/frontend/components/content-studio/content-studio.review.claims';
 import { designErrorCode } from '@gitroom/frontend/components/content-studio/content-studio.designs.api';
 import {
   ContentStudioRequestChangesForm,
@@ -67,8 +69,11 @@ const actionLabel = (t: Translate, action: ContentStudioReviewAction) => {
 // revision only. Its discussion (P5-02) is part of it: Request changes asks
 // what must change first, a review that asked for changes shows its
 // revision request, resolved by one of the saved newer revisions the page
-// passes (never an unsaved draft), and the comments open on demand. A review
-// is not an approval; nothing here hands off, publishes or approves
+// passes (never an unsaved draft), and the comments open on demand. A
+// package review also shows the claims of its revision (P5-03B), loaded while
+// it is in review (Ready for approval waits for every claim to be verified;
+// the server checks it again) or once opened; a design review has none. A
+// review is not an approval; nothing here hands off, publishes or approves
 export const ContentStudioReviewStatus: FC<{
   targetType: ContentStudioReviewTargetType;
   revisionId: string;
@@ -89,6 +94,7 @@ export const ContentStudioReviewStatus: FC<{
   const [busy, setBusy] = useState<string | null>(null);
   // the review the Request changes form is open for, if any
   const [askingFor, setAskingFor] = useState<string | null>(null);
+  const [claimsOpen, setClaimsOpen] = useState(false);
   const revision =
     targetType === 'PACKAGE_REVISION'
       ? `${t('content_studio_revision', 'Version')} ${revisionNumber}`
@@ -123,6 +129,18 @@ export const ContentStudioReviewStatus: FC<{
   const open = current ? contentStudioReviewActions(current.state) : [];
   const askingChanges =
     !!current && askingFor === current.id && open.includes('request-changes');
+  const packageReview = !!current && current.targetType === 'PACKAGE_REVISION';
+  // loaded as soon as the review could become ready, so Ready for approval
+  // knows whether every claim is verified
+  const canBeReady = open.includes('ready-for-approval');
+  const claims = useContentStudioReviewClaims(
+    packageReview && (canBeReady || claimsOpen) ? current?.id ?? null : null
+  );
+  // known to be incomplete: the server would refuse it anyway
+  const claimsIncomplete =
+    packageReview &&
+    claims.data?.reviewId === current?.id &&
+    !claims.data?.summary.complete;
 
   return (
     <section
@@ -178,7 +196,11 @@ export const ContentStudioReviewStatus: FC<{
               key={action}
               secondary={action !== open[0]}
               loading={busy === action}
-              disabled={!!busy || askingChanges}
+              disabled={
+                !!busy ||
+                askingChanges ||
+                (action === 'ready-for-approval' && claimsIncomplete)
+              }
               aria-expanded={
                 action === 'request-changes' ? askingChanges : undefined
               }
@@ -194,6 +216,14 @@ export const ContentStudioReviewStatus: FC<{
             </Button>
           ))}
       </div>
+      {canBeReady && claimsIncomplete && (
+        <div className="text-[12px]" data-review-claims-blocking="">
+          {t(
+            'content_studio_review_claims_incomplete',
+            'Review every grounded claim before marking this revision ready for approval.'
+          )}
+        </div>
+      )}
       {current && askingChanges && (
         <ContentStudioRequestChangesForm
           review={current}
@@ -221,6 +251,14 @@ export const ContentStudioReviewStatus: FC<{
           review={current}
           newerRevisions={newerRevisions}
           unsaved={unsaved}
+        />
+      )}
+      {current && packageReview && (
+        <ContentStudioReviewClaims
+          review={current}
+          open={claimsOpen}
+          setOpen={setClaimsOpen}
+          claims={claims}
         />
       )}
       {current && <ContentStudioReviewDiscussion review={current} />}

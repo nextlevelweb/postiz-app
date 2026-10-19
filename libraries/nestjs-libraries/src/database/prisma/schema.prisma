@@ -79,6 +79,7 @@ model Organization {
   contentStudioReviews                   ContentStudioReview[]
   contentStudioReviewStateEvents         ContentStudioReviewStateEvent[]
   contentStudioReviewComments            ContentStudioReviewComment[]
+  contentStudioReviewClaims              ContentStudioReviewClaim[]
   contentStudioReviewRevisionRequests    ContentStudioReviewRevisionRequest[]
 
   @@index([apiKey])
@@ -187,6 +188,7 @@ model User {
   contentStudioReviewComments            ContentStudioReviewComment[]            @relation("ContentStudioReviewCommentAuthor")
   contentStudioRevisionRequests          ContentStudioReviewRevisionRequest[]    @relation("ContentStudioRevisionRequestRequestedBy")
   contentStudioRevisionRequestsResolved  ContentStudioReviewRevisionRequest[]    @relation("ContentStudioRevisionRequestResolvedBy")
+  contentStudioReviewClaimsReviewed      ContentStudioReviewClaim[]              @relation("ContentStudioReviewClaimReviewedBy")
 
   @@unique([email, providerName])
   @@index([lastReadNotifications])
@@ -2590,6 +2592,7 @@ model ContentStudioReview {
   stateEvents       ContentStudioReviewStateEvent[]
   comments          ContentStudioReviewComment[]
   revisionRequest   ContentStudioReviewRevisionRequest?
+  claims            ContentStudioReviewClaim[]
 
   @@unique([organizationId, packageRevisionId])
   @@unique([organizationId, designRevisionId])
@@ -2679,6 +2682,37 @@ model ContentStudioReviewRevisionRequest {
   @@index([resolvedByUserId])
   @@index([resolvedByPackageRevisionId])
   @@index([resolvedByDesignRevisionId])
+}
+
+// The assessment of one grounded claim of the exact package revision a
+// review is about (P5-03B), bound to the review and to the claim by its id
+// within that revision. claimContentHash is the SHA-256 of the claim's
+// canonical JSON as the server computed it from the revision: the claim's
+// text, post and evidence live in the revision only and are never copied
+// here. Sparse: a claim without a row is UNREVIEWED. status is checked in
+// code (UNREVIEWED, VERIFIED, NEEDS_REVISION); UNREVIEWED has no finding,
+// reviewer or time, the other two have a reviewer and a time, and
+// NEEDS_REVISION its finding. Changed only while the review is IN_REVIEW;
+// never deleted, and never carried over to another review
+model ContentStudioReviewClaim {
+  id               String              @id @default(uuid())
+  organizationId   String
+  reviewId         String
+  claimId          String
+  claimContentHash String
+  status           String
+  finding          String?
+  reviewedByUserId String?
+  reviewedAt       DateTime?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  organization     Organization        @relation(fields: [organizationId], references: [id])
+  review           ContentStudioReview @relation(fields: [reviewId, organizationId], references: [id, organizationId])
+  reviewedBy       User?               @relation("ContentStudioReviewClaimReviewedBy", fields: [reviewedByUserId], references: [id])
+
+  @@unique([reviewId, organizationId, claimId])
+  @@index([organizationId])
+  @@index([reviewedByUserId])
 }
 
 // One render font file as uploaded: the exact bytes of a single TrueType or

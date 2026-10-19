@@ -848,7 +848,12 @@ describe('ContentStudioSourceRepository: grounding evidence versions', () => {
     const rows = await repository.getVersionsByIdsForOrganization(ORG, ids);
     expect(version.findMany.mock.calls.at(-1)?.[0]).toEqual({
       where: { organizationId: ORG, id: { in: ids } },
-      select: { ...VERSION_FIELDS, content: true, sourceId: true },
+      select: {
+        ...VERSION_FIELDS,
+        content: true,
+        sourceId: true,
+        source: { select: { name: true } },
+      },
     });
     // the named version only: never the latest one of its source
     expect(

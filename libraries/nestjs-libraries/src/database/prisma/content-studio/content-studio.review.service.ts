@@ -2,13 +2,21 @@ import { HttpException, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import {
+  ContentStudioReviewClaimRow,
   ContentStudioReviewRepository,
   ContentStudioReviewTargetFilter,
 } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.repository';
 import {
+  ContentStudioGroundingError,
+  ContentStudioGroundingService,
+} from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.grounding.service';
+import {
   ContentPackageRevisionIntegrityError,
+  getReviewableClaimsFromContentPackageRevision,
+  hashContentPackageClaim,
   parseVerifiedContentPackageRevision,
 } from '@gitroom/nestjs-libraries/content-studio/content.package.revision';
+import { ContentPackageClaimV2 } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 import {
   ContentStudioDesignIntegrityError,
   parseVerifiedContentStudioDesignRevision,
@@ -28,6 +36,13 @@ import {
   isContentStudioRevisionRequestStatus,
   transitionContentStudioReviewState,
 } from '@gitroom/nestjs-libraries/content-studio/review/review.state';
+import {
+  contentStudioReviewClaimSummary,
+  ContentStudioReviewClaimStatus,
+  isContentStudioReviewClaimAssessable,
+  isContentStudioReviewClaimAssessmentIntact,
+  parseContentStudioReviewClaimAssessment,
+} from '@gitroom/nestjs-libraries/content-studio/review/review.claim';
 
 // Fixed messages only: never ids, hashes, states of another request, content
 // or Prisma errors. A review or a revision of another organization is a
@@ -143,6 +158,47 @@ const revisionRequestConflict = () =>
     },
     409
   );
+// Claim review (P5-03B)
+const claimsUnavailable = () =>
+  new HttpException(
+    {
+      msg: 'Claim review is only available for content package reviews.',
+      code: 'CS_REVIEW_CLAIMS_UNAVAILABLE',
+    },
+    409
+  );
+const claimNotFound = () =>
+  new HttpException(
+    {
+      msg: 'This claim is not part of the reviewed revision.',
+      code: 'CS_REVIEW_CLAIM_NOT_FOUND',
+    },
+    404
+  );
+const claimInvalid = () =>
+  new HttpException(
+    {
+      msg: 'A claim is verified, needs revision with a finding saying why, or is unreviewed without one.',
+      code: 'CS_REVIEW_CLAIM_INVALID',
+    },
+    400
+  );
+const claimMutationForbidden = () =>
+  new HttpException(
+    {
+      msg: 'Claims can only be assessed while the review is in review.',
+      code: 'CS_REVIEW_CLAIM_MUTATION_FORBIDDEN',
+    },
+    409
+  );
+const claimsIncomplete = () =>
+  new HttpException(
+    {
+      msg: 'Every grounded claim must be verified before the review is ready for approval.',
+      code: 'CS_REVIEW_CLAIMS_INCOMPLETE',
+    },
+    409
+  );
 const integrityError = () =>
   new HttpException(
     {
@@ -156,6 +212,16 @@ const integrityError = () =>
 // same review: the unique constraint refuses it
 const isUniqueConstraintError = (err: unknown) =>
   err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
+
+// A claim id as package grounding writes it (content.package.draft.ts)
+const CLAIM_ID = /^c_[A-Za-z0-9_-]{8,40}$/;
+
+// One exact claim of the reviewed revision with the hash the server computed
+// of it
+interface ReviewedClaim {
+  claim: ContentPackageClaimV2;
+  hash: string;
+}
 
 // Review and revision ids are Prisma uuid() values; anything else cannot exist
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -268,13 +334,26 @@ const parented = (
 // design; the server finds it inside the organization, verifies it and keeps
 // its stored hash. The review stays CHANGES_REQUESTED and the resolving
 // revision gets no review of its own until one is requested. A cancelled
-// review is frozen. No comment changes a state
+// review is frozen. No comment changes a state.
+//
+// Claim review (P5-03B) is for package reviews only: the claims are exactly
+// the grounding of the reviewed revision, read from that verified revision
+// (a v1 revision has none), each assessed by the review's own sparse rows,
+// bound to the claim id and the claim's hash. Evidence is shown from the
+// exact source versions and blocks the revision names, verified, never
+// refreshed or replaced by a newer capture. Assessments change only while
+// the review is IN_REVIEW, without changing its state, version or history,
+// and IN_REVIEW -> READY_FOR_APPROVAL of a package review requires every
+// claim VERIFIED, checked in the same transaction as the transition. A claim
+// that needs revision asks for nothing by itself: requesting changes stays
+// its own explicit step
 @Injectable()
 export class ContentStudioReviewService {
   private readonly _logger = new Logger(ContentStudioReviewService.name);
 
   constructor(
-    private _contentStudioReviewRepository: ContentStudioReviewRepository
+    private _contentStudioReviewRepository: ContentStudioReviewRepository,
+    private _contentStudioGroundingService: ContentStudioGroundingService
   ) {}
 
   // One page of the organization's reviews, newest first. The revision id
@@ -433,6 +512,13 @@ export class ContentStudioReviewService {
       throw err;
     }
     await this.verifiedReviewedRevision(input.organizationId, review);
+    // a package review is ready only when every claim of its revision is
+    // verified, as the assessments stand once the transition holds the row
+    const claims =
+      input.action === 'ready-for-approval' &&
+      review.targetType === 'PACKAGE_REVISION'
+        ? await this.reviewedClaims(input.organizationId, review)
+        : null;
     let transitioned: boolean;
     try {
       transitioned =
@@ -448,6 +534,9 @@ export class ContentStudioReviewService {
               revisionRequestBody === undefined
                 ? undefined
                 : { id: randomUUID(), body: revisionRequestBody },
+            claimGate: claims
+              ? (rows) => this.assertClaimsVerified(review.id, claims, rows)
+              : undefined,
           }
         );
     } catch (err) {
@@ -650,6 +739,280 @@ export class ContentStudioReviewService {
       await this.getRevisionRequestRow(input.organizationId, row),
       row
     );
+  }
+
+  // --- claim review (P5-03B) ---
+
+  // Every claim of the reviewed revision, in its order, with its assessment
+  // (none is UNREVIEWED) and its evidence, and the counts. Readable in every
+  // state. Nothing is returned unless all of it is intact
+  async listClaims(input: { organizationId: string; reviewId: string }) {
+    const review = this.claimReview(
+      await this.getRow(input.organizationId, input.reviewId)
+    );
+    return this.claimList(input.organizationId, review);
+  }
+
+  // The request user's assessment of one claim of the reviewed revision,
+  // only while the review is IN_REVIEW. The reviewer and time come from the
+  // server; UNREVIEWED clears them and the finding, keeping the row. The
+  // review's state, version and history do not change
+  async assessClaim(input: {
+    organizationId: string;
+    userId: string;
+    reviewId: string;
+    claimId: string;
+    status: unknown;
+    finding: unknown;
+  }) {
+    const review = this.claimReview(
+      await this.getRow(input.organizationId, input.reviewId)
+    );
+    if (!isContentStudioReviewClaimAssessable(review.state)) {
+      throw claimMutationForbidden();
+    }
+    const claims = await this.reviewedClaims(input.organizationId, review);
+    const reviewed =
+      typeof input.claimId === 'string' && CLAIM_ID.test(input.claimId)
+        ? claims.find((entry) => entry.claim.id === input.claimId)
+        : undefined;
+    if (!reviewed) {
+      throw claimNotFound();
+    }
+    const assessment = parseContentStudioReviewClaimAssessment(
+      input.status,
+      input.finding
+    );
+    if (!assessment) {
+      throw claimInvalid();
+    }
+    // the stored assessments must be intact before one is changed
+    this.claimAssessments(
+      review.id,
+      claims,
+      await this._contentStudioReviewRepository.listClaimsForReview(
+        input.organizationId,
+        review.id
+      )
+    );
+    const assessed = assessment.status !== 'UNREVIEWED';
+    let written: boolean;
+    try {
+      written = await this._contentStudioReviewRepository.setClaimAssessment({
+        organizationId: input.organizationId,
+        reviewId: review.id,
+        expectedVersion: review.version,
+        claimId: reviewed.claim.id,
+        claimContentHash: reviewed.hash,
+        status: assessment.status,
+        finding: assessment.finding,
+        reviewedByUserId: assessed ? input.userId : null,
+        reviewedAt: assessed ? new Date() : null,
+      });
+    } catch (err) {
+      // a row of this claim with another hash
+      if (isUniqueConstraintError(err)) {
+        this._logger.error(
+          `Stored Content Studio review claim is invalid: ${review.id}`
+        );
+        throw integrityError();
+      }
+      throw err;
+    }
+    const current = this.claimReview(
+      await this.getRow(input.organizationId, review.id)
+    );
+    if (!written) {
+      throw isContentStudioReviewClaimAssessable(current.state)
+        ? conflict()
+        : claimMutationForbidden();
+    }
+    return this.claimList(input.organizationId, current);
+  }
+
+  // A package review, intact; a design review has no claims
+  private claimReview(row: ReviewRow) {
+    const review = this.reviewDetail(row);
+    if (review.targetType !== 'PACKAGE_REVISION') {
+      throw claimsUnavailable();
+    }
+    return review;
+  }
+
+  // The exact claims of the reviewed revision, read from that revision of the
+  // organization only after it proves to be exactly what was stored, with
+  // the hash the review was requested for. Never the package's draft or
+  // latest revision
+  private async reviewedClaims(
+    organizationId: string,
+    review: {
+      id: string;
+      targetRevisionId: string;
+      targetContentHash: string;
+    }
+  ): Promise<ReviewedClaim[]> {
+    const revision =
+      await this._contentStudioReviewRepository.getPackageRevisionForOrganization(
+        organizationId,
+        review.targetRevisionId
+      );
+    if (
+      !revision ||
+      revision.id !== review.targetRevisionId ||
+      revision.contentHash !== review.targetContentHash
+    ) {
+      this._logger.error(`Content Studio review target changed: ${review.id}`);
+      throw integrityError();
+    }
+    try {
+      return getReviewableClaimsFromContentPackageRevision(revision).map(
+        (claim) => ({ claim, hash: hashContentPackageClaim(claim) })
+      );
+    } catch (err) {
+      if (err instanceof ContentPackageRevisionIntegrityError) {
+        this._logger.error(
+          `Content Studio review target is invalid: ${revision.id}`
+        );
+        throw integrityError();
+      }
+      throw err;
+    }
+  }
+
+  // The stored assessments by claim id. Each must belong to a claim of the
+  // revision (no orphan), at most once, with exactly that claim's hash, and
+  // be whole; anything else is reported, never repaired or skipped
+  private claimAssessments(
+    reviewId: string,
+    claims: ReviewedClaim[],
+    rows: ContentStudioReviewClaimRow[]
+  ) {
+    const hashes = new Map(claims.map((entry) => [entry.claim.id, entry.hash]));
+    const byClaim = new Map<string, ContentStudioReviewClaimRow>();
+    for (const row of rows) {
+      if (
+        byClaim.has(row.claimId) ||
+        hashes.get(row.claimId) !== row.claimContentHash ||
+        !isContentStudioReviewClaimAssessmentIntact(row) ||
+        (row.reviewedByUserId !== null &&
+          row.reviewedBy?.id !== row.reviewedByUserId)
+      ) {
+        this._logger.error(
+          `Stored Content Studio review claim is invalid: ${reviewId}`
+        );
+        throw integrityError();
+      }
+      byClaim.set(row.claimId, row);
+    }
+    return byClaim;
+  }
+
+  // The gate of IN_REVIEW -> READY_FOR_APPROVAL, run inside the transition's
+  // transaction: throwing rolls it back
+  private assertClaimsVerified(
+    reviewId: string,
+    claims: ReviewedClaim[],
+    rows: ContentStudioReviewClaimRow[]
+  ) {
+    const assessments = this.claimAssessments(reviewId, claims, rows);
+    const summary = contentStudioReviewClaimSummary(
+      claims.map((entry) => entry.claim.id),
+      this.claimStatuses(assessments)
+    );
+    if (!summary.complete) {
+      throw claimsIncomplete();
+    }
+  }
+
+  private claimStatuses(assessments: Map<string, ContentStudioReviewClaimRow>) {
+    return new Map(
+      Array.from(assessments, ([claimId, row]) => [
+        claimId,
+        row.status as ContentStudioReviewClaimStatus,
+      ])
+    );
+  }
+
+  // Claims, assessments and evidence together. Evidence of every claim is
+  // resolved in one call, so each source version is read and verified once
+  private async claimList(
+    organizationId: string,
+    review: {
+      id: string;
+      state: ContentStudioReviewState;
+      version: number;
+      targetRevisionId: string;
+      targetContentHash: string;
+    }
+  ) {
+    const claims = await this.reviewedClaims(organizationId, review);
+    const assessments = this.claimAssessments(
+      review.id,
+      claims,
+      await this._contentStudioReviewRepository.listClaimsForReview(
+        organizationId,
+        review.id
+      )
+    );
+    let evidence;
+    try {
+      evidence = await this._contentStudioGroundingService.resolveEvidence(
+        organizationId,
+        claims.flatMap((entry) => entry.claim.evidence)
+      );
+    } catch (err) {
+      if (err instanceof ContentStudioGroundingError) {
+        this._logger.error(
+          `Content Studio review claim evidence is invalid: ${review.id}`
+        );
+        throw integrityError();
+      }
+      throw err;
+    }
+    let at = 0;
+    return {
+      reviewId: review.id,
+      reviewState: review.state,
+      reviewVersion: review.version,
+      summary: contentStudioReviewClaimSummary(
+        claims.map((entry) => entry.claim.id),
+        this.claimStatuses(assessments)
+      ),
+      claims: claims.map(({ claim, hash }) => {
+        const row = assessments.get(claim.id);
+        const resolved = evidence.slice(at, at + claim.evidence.length);
+        at += claim.evidence.length;
+        return {
+          claimId: claim.id,
+          threadItemId: claim.threadItemId,
+          claimText: claim.text,
+          claimContentHash: hash,
+          status: (row?.status ??
+            'UNREVIEWED') as ContentStudioReviewClaimStatus,
+          finding: row?.finding ?? null,
+          reviewedBy: row?.reviewedBy
+            ? { id: row.reviewedBy.id, name: row.reviewedBy.name }
+            : null,
+          reviewedAt: row?.reviewedAt ?? null,
+          evidence: resolved.map((entry) => ({
+            source: { id: entry.source.id, name: entry.source.name },
+            version: {
+              id: entry.version.id,
+              versionNumber: entry.version.versionNumber,
+              title: entry.version.title,
+              contentHash: entry.version.contentHash,
+              fetchedAt: entry.version.fetchedAt,
+            },
+            block: {
+              id: entry.block.id,
+              type: entry.block.type,
+              text: entry.block.text,
+            },
+            quote: entry.evidence.quote,
+          })),
+        };
+      }),
+    };
   }
 
   // The reviewed revision, re-verified: still exactly what was stored, with

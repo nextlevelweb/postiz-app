@@ -7,6 +7,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import { Transform, TransformFnParams } from 'class-transformer';
 import {
@@ -15,6 +16,10 @@ import {
   CONTENT_STUDIO_REVIEW_TARGET_TYPES,
   CONTENT_STUDIO_REVISION_REQUEST_MAX,
 } from '@gitroom/nestjs-libraries/content-studio/review/review.state';
+import {
+  CONTENT_STUDIO_REVIEW_CLAIM_FINDING_MAX,
+  CONTENT_STUDIO_REVIEW_CLAIM_STATUSES,
+} from '@gitroom/nestjs-libraries/content-studio/review/review.claim';
 
 // Digits only: '2' becomes 2, while '2abc', '' or '1.5' stay text and fail
 const toQueryInteger = ({ value }: TransformFnParams) =>
@@ -88,6 +93,23 @@ export class UpdateContentStudioReviewCommentDto {
   @IsString()
   @MaxLength(CONTENT_STUDIO_REVIEW_COMMENT_MAX)
   body: string;
+}
+
+// The whole current assessment of one claim (P5-03B): its status and, when
+// one is wanted, the finding as plain text. The claim comes from the path and
+// the reviewed revision, the reviewer, time and claim hash from the server;
+// there is no field for a claim text, item, evidence, source, version, hash,
+// revision, user or organization. Which status needs or forbids a finding is
+// checked by the service
+export class UpdateContentStudioReviewClaimDto {
+  @IsIn(CONTENT_STUDIO_REVIEW_CLAIM_STATUSES)
+  status: string;
+
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsString()
+  @MaxLength(CONTENT_STUDIO_REVIEW_CLAIM_FINDING_MAX)
+  finding?: string | null;
 }
 
 // The exact saved revision that made the requested changes, by its id only:

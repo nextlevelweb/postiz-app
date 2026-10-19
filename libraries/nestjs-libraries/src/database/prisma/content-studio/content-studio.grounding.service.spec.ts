@@ -128,7 +128,10 @@ const sourceStore = () => {
           .filter((row) => row && row.organizationId === organizationId)
           .map((row) => {
             const { organizationId: _org, ...rest } = row as VersionRow;
-            return { ...rest };
+            return {
+              ...rest,
+              source: { name: `Source ${rest.sourceId.slice(0, 2)}` },
+            };
           })
     ),
     // reads and writes that grounding must never use
@@ -370,6 +373,11 @@ describe('ContentStudioGroundingService evidence (P3-11)', () => {
       ]
     );
     expect(resolved[0].block.text).toBe('Spring sales grew by ten percent. v2');
+    // its source by id and name only (P5-03B shows it in the review)
+    expect(resolved.map((entry) => entry.source)).toEqual([
+      { id: SOURCE_1, name: 'Source e1' },
+      { id: SOURCE_2, name: 'Source e2' },
+    ]);
     expect(resolved[0].version).toEqual({
       id: versionId(SOURCE_1, 2),
       sourceId: SOURCE_1,
@@ -869,13 +877,21 @@ describe('P3-11 boundaries', () => {
   const root = path.join(__dirname, '..', '..', '..', '..', '..', '..');
   const schema = read('..', 'schema.prisma');
 
-  it('P311-1/P311-2/P311-3 no claim, evidence, claim review or approval model in the database', () => {
+  it('P311-1/P311-2/P311-3 no claim, evidence or approval model in the database: claims live in revisions; the one claim-review model (P5-03B) holds assessments only', () => {
     const models = schema.match(/^model \w+/gm) ?? [];
     expect(
       models.filter((model) => /Claim|Evidence|Grounding|Approval/.test(model))
-    ).toEqual([]);
-    expect(schema).not.toMatch(
-      /^\s+(claims?|claimId|evidence\w*|grounding\w*|approvedBy\w*|approvedAt)\s/m
+    ).toEqual(['model ContentStudioReviewClaim']);
+    const assessment = schema.slice(
+      schema.indexOf('model ContentStudioReviewClaim {'),
+      schema.indexOf('\n}', schema.indexOf('model ContentStudioReviewClaim {'))
+    );
+    expect(assessment).not.toMatch(
+      /text|evidence|quote|source|threadItem|Json/i
+    );
+    const rest = schema.replace(assessment, '');
+    expect(rest).not.toMatch(
+      /^\s+(claims?|claimId|evidence\w*|grounding\w*|approvedBy\w*|approvedAt)\s+(?!\s|ContentStudioReviewClaim\[\])/m
     );
   });
 
@@ -976,10 +992,12 @@ describe('P3-11 boundaries', () => {
     ).toEqual([]);
   });
 
-  it('the review code is untouched by grounding: no claim review or READY gate yet', () => {
+  it('the review reads claims only through the revision helper and evidence only through this service (P5-03B)', () => {
     const review = read('content-studio.review.service.ts');
+    expect(review).toContain('getReviewableClaimsFromContentPackageRevision(');
+    expect(review).toContain('_contentStudioGroundingService.resolveEvidence(');
     expect(review).not.toMatch(
-      /contentPackageClaims|getReviewableClaims|grounding|Grounding/
+      /contentPackageClaims\(|withContentPackageClaim|replaceContentPackageItemClaims|verifyDraftGrounding|getVersionsByIdsForOrganization/
     );
   });
 

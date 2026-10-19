@@ -29,10 +29,15 @@ export class ContentStudioGroundingError extends Error {
   }
 }
 
-// One piece of evidence with what it points at: the exact version it names
-// (never the source's current one) and the block itself
+// One piece of evidence with what it points at: its source by name, the
+// exact version it names (never the source's current one) and the block
+// itself
 export interface ContentStudioResolvedEvidence {
   evidence: ContentPackageClaimEvidenceV2;
+  source: {
+    id: string;
+    name: string;
+  };
   version: {
     id: string;
     sourceId: string;
@@ -114,6 +119,10 @@ export class ContentStudioGroundingService {
       }
       return {
         evidence: { ...entry },
+        source: {
+          id: row.sourceId,
+          name: row.source.name,
+        },
         version: {
           id: row.id,
           sourceId: row.sourceId,

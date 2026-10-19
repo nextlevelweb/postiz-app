@@ -8,6 +8,8 @@ import {
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ContentStudioReviewRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.repository';
 import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
+import { ContentStudioGroundingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.grounding.service';
+import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
 import {
   canonicalJson,
   sha256Hex,
@@ -17,6 +19,9 @@ import {
   parseContentPackageDraft,
 } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 import { parseContentStudioDesignDocument } from '@gitroom/nestjs-libraries/content-studio/design/design.document';
+import { parseContentStudioSourceContent } from '@gitroom/nestjs-libraries/content-studio/sources/source.content';
+import { storedContentStudioSourceContent } from '@gitroom/nestjs-libraries/content-studio/sources/source.version';
+import { hashContentPackageClaim } from '@gitroom/nestjs-libraries/content-studio/content.package.revision';
 import { storedContentStudioDesignDocument } from '@gitroom/nestjs-libraries/content-studio/design/design.document.revision';
 
 // Reviews (P5-01) through the real service AND the real repository, on an
@@ -114,6 +119,10 @@ const createDb = () => {
     designRevision: [] as Row[],
     comment: [] as Row[],
     revisionRequest: [] as Row[],
+    // P5-03B: claim assessments, and the stored source versions evidence
+    // names
+    claim: [] as Row[],
+    sourceVersion: [] as Row[],
     user: [
       { id: USER_A, name: 'Ann' },
       { id: USER_A2, name: 'Bo' },
@@ -183,6 +192,18 @@ const createDb = () => {
       row.resolvedByDesignRevisionId ?? null,
       row.organizationId
     ),
+  });
+  const claimView = (row: Row) => ({
+    id: row.id,
+    claimId: row.claimId,
+    claimContentHash: row.claimContentHash,
+    status: row.status,
+    finding: row.finding ?? null,
+    reviewedByUserId: row.reviewedByUserId ?? null,
+    reviewedAt: row.reviewedAt ?? null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    reviewedBy: person(row.reviewedByUserId ?? null),
   });
   const update = (rows: Row[], data: Row) => {
     for (const row of rows) {
@@ -382,6 +403,56 @@ const createDb = () => {
         return { count: rows.length };
       },
     },
+    contentStudioReviewClaim: {
+      findMany: async (args: Row) => {
+        log.push({ op: 'claim.findMany', where: args.where });
+        expect(args.orderBy).toEqual([{ createdAt: 'asc' }, { id: 'asc' }]);
+        return tables.claim
+          .filter((entry) => matches(entry, args.where))
+          .sort(
+            (a, b) =>
+              a.createdAt.getTime() - b.createdAt.getTime() ||
+              a.id.localeCompare(b.id)
+          )
+          .map(claimView);
+      },
+      updateMany: async (args: Row) => {
+        log.push({
+          op: 'claim.updateMany',
+          where: args.where,
+          data: args.data,
+        });
+        const rows = tables.claim.filter((entry) => matches(entry, args.where));
+        update(rows, args.data);
+        for (const row of rows) {
+          row.updatedAt = now();
+        }
+        return { count: rows.length };
+      },
+      create: async (args: Row) => {
+        log.push({ op: 'claim.create', data: args.data });
+        const data = args.data;
+        // unique (reviewId, organizationId, claimId)
+        if (
+          tables.claim.some(
+            (entry) =>
+              entry.reviewId === data.reviewId &&
+              entry.organizationId === data.organizationId &&
+              entry.claimId === data.claimId
+          )
+        ) {
+          throw uniqueError();
+        }
+        const at = now();
+        tables.claim.push({
+          id: `claim-row-${tables.claim.length + 1}`,
+          ...data,
+          createdAt: at,
+          updatedAt: at,
+        });
+        return { id: 'claim-row' };
+      },
+    },
     contentStudioReviewStateEvent: {
       create: async (args: Row) => {
         log.push({ op: 'event.create', data: args.data });
@@ -454,9 +525,37 @@ const createDb = () => {
     {
       model: prisma,
     } as unknown as PrismaRepository<'contentStudioReviewRevisionRequest'>,
+    {
+      model: prisma,
+    } as unknown as PrismaRepository<'contentStudioReviewClaim'>,
     { model: prisma } as unknown as PrismaTransaction
   );
-  const service = new ContentStudioReviewService(repository);
+  // the real grounding service, on stored source versions only: the one
+  // query it makes is organization-scoped and by exact version id
+  const sources = {
+    getVersionsByIdsForOrganization: async (
+      organizationId: string,
+      ids: string[]
+    ) => {
+      log.push({
+        op: 'sourceVersion.findMany',
+        where: { organizationId, ids },
+      });
+      return tables.sourceVersion
+        .filter(
+          (entry) =>
+            entry.organizationId === organizationId && ids.includes(entry.id)
+        )
+        .map(({ organizationId: _org, sourceName, ...rest }) => ({
+          ...rest,
+          source: { name: sourceName },
+        }));
+    },
+  };
+  const grounding = new ContentStudioGroundingService(
+    sources as unknown as ContentStudioSourceRepository
+  );
+  const service = new ContentStudioReviewService(repository, grounding);
   return {
     get tables() {
       return tables;
@@ -537,6 +636,7 @@ const snapshot = (db: ReturnType<typeof createDb>) =>
     event: db.tables.event,
     comment: db.tables.comment,
     revisionRequest: db.tables.revisionRequest,
+    claim: db.tables.claim,
   });
 
 describe('ContentStudioReviewService: requesting a review', () => {
@@ -1370,7 +1470,9 @@ describe('ContentStudioReviewService boundaries', () => {
     const queries = source
       .split(/\.(?:findFirst|findMany|count|updateMany|create)\(/)
       .slice(1);
-    expect(queries.length).toBe(18);
+    // P5-03B: the claim reads (one inside the READY transition), the hold
+    // and the assessment write
+    expect(queries.length).toBe(23);
     for (const query of queries) {
       expect(query.slice(0, 400)).toMatch(/organizationId/);
     }
@@ -2761,8 +2863,1208 @@ describe('ContentStudioReviewService discussion boundaries (P5-02)', () => {
       'content-studio.review.repository.ts',
     ]) {
       expect(source(file)).not.toMatch(
-        /deleteComment|removeComment|attachment|upload|layerId|pageId|coordinates|annotation|sourceId|claimId/i
+        /deleteComment|removeComment|attachment|upload|layerId|pageId|coordinates|annotation|sourceId/i
       );
     }
+    // claims exist since P5-03B, but a comment never names one (P503B-9)
+    const repository = source('content-studio.review.repository.ts');
+    const comments = [
+      repository.slice(
+        repository.indexOf('const COMMENT = {'),
+        repository.indexOf('const REVISION_REQUEST = {')
+      ),
+      repository.slice(
+        repository.indexOf('listCommentsForReview('),
+        repository.indexOf('getRevisionRequestForReview(')
+      ),
+    ];
+    for (const section of comments) {
+      expect(section.length).toBeGreaterThan(100);
+      expect(section).not.toMatch(/claim/i);
+    }
+  });
+});
+
+// --- claim review (P5-03B): the grounded claims of the exact package
+// revision a review is about, their assessments and their exact evidence ---
+
+const SOURCE_A = uuid(500);
+const SOURCE_V1 = uuid(501);
+const SOURCE_V2 = uuid(502);
+const SOURCE_B = uuid(510);
+const SOURCE_B_V1 = uuid(511);
+const PKG_REV_G = uuid(60);
+const PKG_REV_G_NEXT = uuid(61);
+const PKG_REV_EMPTY = uuid(62);
+
+const sourceVersionRow = (
+  id: string,
+  org: string,
+  sourceId: string,
+  n: number
+) => ({
+  id,
+  organizationId: org,
+  sourceId,
+  sourceName: `Weekly report ${org}`,
+  versionNumber: n,
+  title: `Report v${n}`,
+  fetchedAt: new Date('2026-10-10T10:00:00.000Z'),
+  finalUrl: 'https://example.com/report?token=REVIEW_PRIVATE_URL',
+  ...storedContentStudioSourceContent(
+    parseContentStudioSourceContent({
+      schemaVersion: 1,
+      blocks: [
+        {
+          id: 'b1',
+          type: 'paragraph',
+          text: `Sales grew by ten percent in v${n}.`,
+          level: null,
+        },
+        { id: 'b2', type: 'heading', text: `Outlook v${n}`, level: 2 },
+      ],
+    })
+  ),
+});
+const SOURCE_ROWS = () => [
+  sourceVersionRow(SOURCE_V1, ORG_A, SOURCE_A, 1),
+  sourceVersionRow(SOURCE_V2, ORG_A, SOURCE_A, 2),
+  sourceVersionRow(SOURCE_B_V1, ORG_B, SOURCE_B, 1),
+];
+const evidenceOf = (
+  row: ReturnType<typeof sourceVersionRow>,
+  blockId = 'b1',
+  quote: string | null = null
+) => ({
+  sourceId: row.sourceId,
+  versionId: row.id,
+  versionNumber: row.versionNumber,
+  contentHash: row.contentHash,
+  blockId,
+  quote,
+});
+const claimOf = (id: string, text: string, evidence: Row[]) => ({
+  id,
+  threadItemId: 'item-1',
+  text,
+  evidence,
+});
+const groundedRevision = (
+  id: string,
+  org: string,
+  n: number,
+  claims: Row[]
+) => {
+  const draft = parseContentPackageDraft({
+    schemaVersion: 2,
+    copy: {
+      global: {
+        thread: [{ id: 'item-1', text: `Grounded v${n}`, mediaIds: [] }],
+      },
+    },
+    grounding: { claims },
+  });
+  const content = canonicalJson(draft);
+  return {
+    id,
+    organizationId: org,
+    packageId: `package-${org}`,
+    revisionNumber: n,
+    schemaVersion: 2,
+    content,
+    contentHash: sha256Hex(content),
+  };
+};
+const C1 = 'c_claim000000000001';
+const C2 = 'c_claim000000000002';
+const C3 = 'c_claim000000000003';
+
+const claimed = async (
+  start = true,
+  claims?: (rows: ReturnType<typeof SOURCE_ROWS>) => Row[]
+) => {
+  const db = seeded();
+  const rows = SOURCE_ROWS();
+  db.tables.sourceVersion.push(...rows);
+  const [v1] = rows;
+  db.tables.packageRevision.push(
+    groundedRevision(
+      PKG_REV_G,
+      ORG_A,
+      6,
+      claims
+        ? claims(rows)
+        : [
+            claimOf(C1, 'Sales grew by ten percent.', [
+              evidenceOf(v1, 'b1', 'grew by ten percent'),
+            ]),
+            claimOf(C2, 'The outlook is covered.', [evidenceOf(v1, 'b2')]),
+          ]
+    ),
+    // a newer revision of the same package: other claims, C1 reworded
+    groundedRevision(PKG_REV_G_NEXT, ORG_A, 7, [
+      claimOf(C1, 'Sales grew by twenty percent.', [evidenceOf(rows[1])]),
+      claimOf(C3, 'A claim only revision 7 has.', [evidenceOf(rows[1], 'b2')]),
+    ]),
+    groundedRevision(PKG_REV_EMPTY, ORG_A, 8, [])
+  );
+  let review = await request(db, 'PACKAGE_REVISION', PKG_REV_G);
+  if (start) {
+    review = await act(db, review.id, 'start');
+  }
+  return { db, review, rows };
+};
+const listClaims = (
+  db: ReturnType<typeof createDb>,
+  reviewId: string,
+  org = ORG_A
+) => db.service.listClaims({ organizationId: org, reviewId });
+const assess = (
+  db: ReturnType<typeof createDb>,
+  reviewId: string,
+  claimId: string,
+  status: unknown,
+  finding?: unknown,
+  user = USER_A2,
+  org = ORG_A
+) =>
+  db.service.assessClaim({
+    organizationId: org,
+    userId: user,
+    reviewId,
+    claimId,
+    status,
+    finding,
+  });
+const claimHash = (
+  db: ReturnType<typeof createDb>,
+  revisionId: string,
+  id: string
+) => {
+  const revision = db.tables.packageRevision.find((r) => r.id === revisionId)!;
+  const claim = JSON.parse(revision.content).grounding.claims.find(
+    (entry: Row) => entry.id === id
+  );
+  return hashContentPackageClaim(claim);
+};
+const reviewRow = (db: ReturnType<typeof createDb>, id: string) =>
+  db.tables.review.find((row) => row.id === id)!;
+
+describe('ContentStudioReviewService: claim inventory (P5-03B)', () => {
+  it('CI1 a v1 package revision has no claims: nothing to review, complete', async () => {
+    const db = seeded();
+    const review = await request(db, 'PACKAGE_REVISION', PKG_REV_4);
+    const list = await listClaims(db, review.id);
+    expect(list.summary).toEqual({
+      total: 0,
+      verified: 0,
+      needsRevision: 0,
+      unreviewed: 0,
+      complete: true,
+    });
+    expect(list.claims).toEqual([]);
+  });
+
+  it('CI2 a v2 revision without claims has none either', async () => {
+    const { db } = await claimed();
+    const review = await request(db, 'PACKAGE_REVISION', PKG_REV_EMPTY);
+    expect((await listClaims(db, review.id)).claims).toEqual([]);
+  });
+
+  it('CI3/CI4/CI5 exactly the claims of the reviewed revision, in its order, each with its server hash and UNREVIEWED', async () => {
+    const { db, review } = await claimed();
+    const list = await listClaims(db, review.id);
+    expect(list.reviewId).toBe(review.id);
+    expect(list.reviewState).toBe('IN_REVIEW');
+    expect(
+      list.claims.map((claim) => [
+        claim.claimId,
+        claim.threadItemId,
+        claim.claimText,
+        claim.claimContentHash,
+        claim.status,
+        claim.finding,
+        claim.reviewedBy,
+        claim.reviewedAt,
+      ])
+    ).toEqual([
+      [
+        C1,
+        'item-1',
+        'Sales grew by ten percent.',
+        claimHash(db, PKG_REV_G, C1),
+        'UNREVIEWED',
+        null,
+        null,
+        null,
+      ],
+      [
+        C2,
+        'item-1',
+        'The outlook is covered.',
+        claimHash(db, PKG_REV_G, C2),
+        'UNREVIEWED',
+        null,
+        null,
+        null,
+      ],
+    ]);
+    expect(list.summary).toEqual({
+      total: 2,
+      verified: 0,
+      needsRevision: 0,
+      unreviewed: 2,
+      complete: false,
+    });
+  });
+
+  it('CI6/RG9 the newer revision of the package is never read: its claims never enter this review', async () => {
+    const { db, review } = await claimed();
+    db.log.length = 0;
+    const list = await listClaims(db, review.id);
+    expect(list.claims.map((claim) => claim.claimText)).not.toContain(
+      'A claim only revision 7 has.'
+    );
+    expect(
+      db.log
+        .filter((entry) => entry.op === 'packageRevision.findFirst')
+        .map((entry) => entry.where)
+    ).toEqual([{ id: PKG_REV_G, organizationId: ORG_A }]);
+  });
+
+  it('CI8 a revision changed after it was reviewed fails closed, with nothing returned', async () => {
+    const { db, review } = await claimed();
+    const revision = db.tables.packageRevision.find((r) => r.id === PKG_REV_G)!;
+    revision.content = revision.content.replace(
+      'ten percent.',
+      'nine percent.'
+    );
+    expect(await code(listClaims(db, review.id))).toEqual({
+      status: 500,
+      code: 'CS_REVIEW_INTEGRITY_ERROR',
+    });
+    // rehashed: the review's own targetContentHash no longer matches
+    revision.contentHash = sha256Hex(revision.content);
+    expect((await code(listClaims(db, review.id))).code).toBe(
+      'CS_REVIEW_INTEGRITY_ERROR'
+    );
+  });
+});
+
+describe('ContentStudioReviewService: claim evidence (P5-03B)', () => {
+  it('CE1-CE5 each claim shows its exact evidence: source, version number and hash, block and quote', async () => {
+    const { db, review, rows } = await claimed();
+    const [first, second] = (await listClaims(db, review.id)).claims;
+    expect(first.evidence).toEqual([
+      {
+        source: { id: SOURCE_A, name: `Weekly report ${ORG_A}` },
+        version: {
+          id: SOURCE_V1,
+          versionNumber: 1,
+          title: 'Report v1',
+          contentHash: rows[0].contentHash,
+          fetchedAt: new Date('2026-10-10T10:00:00.000Z'),
+        },
+        block: {
+          id: 'b1',
+          type: 'paragraph',
+          text: 'Sales grew by ten percent in v1.',
+        },
+        quote: 'grew by ten percent',
+      },
+    ]);
+    expect(
+      second.evidence.map((entry) => [entry.block.id, entry.quote])
+    ).toEqual([['b2', null]]);
+    // no URL, fetch provenance or full source body
+    expect(JSON.stringify(first)).not.toMatch(
+      /https?:|REVIEW_PRIVATE_URL|finalUrl|blocks|Outlook v1/
+    );
+  });
+
+  it('CE6 a newer capture of the source is never shown in its place', async () => {
+    const { db, review } = await claimed();
+    const evidence = (await listClaims(db, review.id)).claims.flatMap(
+      (claim) => claim.evidence
+    );
+    expect(evidence.map((entry) => entry.version.versionNumber)).toEqual([
+      1, 1,
+    ]);
+    expect(JSON.stringify(evidence)).not.toContain('v2.');
+  });
+
+  it('reads every source version once, in one organization-scoped query', async () => {
+    const { db, review } = await claimed();
+    db.log.length = 0;
+    await listClaims(db, review.id);
+    expect(
+      db.log
+        .filter((entry) => entry.op === 'sourceVersion.findMany')
+        .map((entry) => entry.where)
+    ).toEqual([{ organizationId: ORG_A, ids: [SOURCE_V1] }]);
+  });
+
+  it('CE7/CLSEC4 evidence of a version that is missing or of another organization fails closed', async () => {
+    const missing = await claimed();
+    missing.db.tables.sourceVersion.splice(0, 1);
+    expect(await code(listClaims(missing.db, missing.review.id))).toEqual({
+      status: 500,
+      code: 'CS_REVIEW_INTEGRITY_ERROR',
+    });
+    const foreign = await claimed();
+    foreign.db.tables.sourceVersion[0].organizationId = ORG_B;
+    expect((await code(listClaims(foreign.db, foreign.review.id))).code).toBe(
+      'CS_REVIEW_INTEGRITY_ERROR'
+    );
+  });
+
+  it('CE8 a corrupted source version fails closed', async () => {
+    const { db, review } = await claimed();
+    db.tables.sourceVersion[0].content =
+      db.tables.sourceVersion[0].content.replace('ten', 'nine');
+    expect((await code(listClaims(db, review.id))).code).toBe(
+      'CS_REVIEW_INTEGRITY_ERROR'
+    );
+  });
+});
+
+describe('ContentStudioReviewService: assessing a claim (P5-03B)', () => {
+  it('CU1/CU2/CU3/CU8 VERIFIED while IN_REVIEW: the request user, a server time and the server claim hash', async () => {
+    const { db, review } = await claimed();
+    const list = await assess(db, review.id, C1, 'VERIFIED');
+    const [claim] = list.claims;
+    expect(claim).toMatchObject({
+      claimId: C1,
+      status: 'VERIFIED',
+      finding: null,
+      reviewedBy: { id: USER_A2, name: 'Bo' },
+      reviewedAt: expect.any(Date),
+    });
+    expect(db.tables.claim).toEqual([
+      expect.objectContaining({
+        organizationId: ORG_A,
+        reviewId: review.id,
+        claimId: C1,
+        claimContentHash: claimHash(db, PKG_REV_G, C1),
+        status: 'VERIFIED',
+        finding: null,
+        reviewedByUserId: USER_A2,
+        reviewedAt: expect.any(Date),
+      }),
+    ]);
+    expect(list.summary).toMatchObject({ verified: 1, unreviewed: 1 });
+  });
+
+  it('CU4 a VERIFIED finding is kept exactly as written; a blank one is none', async () => {
+    const { db, review } = await claimed();
+    const finding = '  Checked against\nthe report.  ';
+    expect(
+      (await assess(db, review.id, C1, 'VERIFIED', finding)).claims[0].finding
+    ).toBe(finding);
+    expect(
+      (await assess(db, review.id, C1, 'VERIFIED', '   ')).claims[0].finding
+    ).toBe(null);
+  });
+
+  it('CU5/CU6 NEEDS_REVISION needs a finding and keeps it exactly', async () => {
+    const { db, review } = await claimed();
+    for (const finding of [undefined, null, '', '   \n ']) {
+      expect(
+        await code(assess(db, review.id, C1, 'NEEDS_REVISION', finding))
+      ).toEqual({
+        status: 400,
+        code: 'CS_REVIEW_CLAIM_INVALID',
+      });
+    }
+    expect(db.tables.claim).toEqual([]);
+    const finding = 'The quote says ten,\n  not twenty.';
+    const list = await assess(db, review.id, C2, 'NEEDS_REVISION', finding);
+    expect(list.claims[1]).toMatchObject({
+      status: 'NEEDS_REVISION',
+      finding,
+      reviewedBy: { id: USER_A2, name: 'Bo' },
+    });
+    expect(list.summary).toMatchObject({ needsRevision: 1, complete: false });
+  });
+
+  it.each([
+    ['an unknown status', 'APPROVED', null],
+    ['a lower-case status', 'verified', null],
+    ['UNREVIEWED with a finding', 'UNREVIEWED', 'no'],
+    ['a finding over 10,000 characters', 'VERIFIED', 'x'.repeat(10_001)],
+    ['a NUL in a finding', 'NEEDS_REVISION', 'a\u0000b'],
+    ['a finding that is not text', 'VERIFIED', 5],
+  ])(
+    'CD6/API refuses %s and writes nothing',
+    async (_label, status, finding) => {
+      const { db, review } = await claimed();
+      expect(await code(assess(db, review.id, C1, status, finding))).toEqual({
+        status: 400,
+        code: 'CS_REVIEW_CLAIM_INVALID',
+      });
+      expect(db.tables.claim).toEqual([]);
+    }
+  );
+
+  it('CU7/M7 reset to UNREVIEWED keeps the row and clears reviewer, time and finding', async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'NEEDS_REVISION', 'Wrong figure.');
+    const list = await assess(db, review.id, C1, 'UNREVIEWED', null);
+    expect(list.claims[0]).toMatchObject({
+      status: 'UNREVIEWED',
+      finding: null,
+      reviewedBy: null,
+      reviewedAt: null,
+    });
+    expect(db.tables.claim).toHaveLength(1);
+    expect(db.tables.claim[0]).toMatchObject({
+      status: 'UNREVIEWED',
+      finding: null,
+      reviewedByUserId: null,
+      reviewedAt: null,
+      claimContentHash: claimHash(db, PKG_REV_G, C1),
+    });
+  });
+
+  it('a second assessment of a claim updates its one row: the later one wins', async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'VERIFIED', null, USER_A);
+    await assess(
+      db,
+      review.id,
+      C1,
+      'NEEDS_REVISION',
+      'Changed my mind.',
+      USER_A2
+    );
+    expect(db.tables.claim).toHaveLength(1);
+    expect(db.tables.claim[0]).toMatchObject({
+      status: 'NEEDS_REVISION',
+      reviewedByUserId: USER_A2,
+    });
+  });
+
+  it('CU9/M5 a stored row with another claim hash fails closed and is never overwritten', async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'VERIFIED');
+    db.tables.claim[0].claimContentHash = 'f'.repeat(64);
+    const before = JSON.stringify(db.tables.claim);
+    expect(await code(listClaims(db, review.id))).toEqual({
+      status: 500,
+      code: 'CS_REVIEW_INTEGRITY_ERROR',
+    });
+    expect(
+      (await code(assess(db, review.id, C1, 'NEEDS_REVISION', 'x'))).code
+    ).toBe('CS_REVIEW_INTEGRITY_ERROR');
+    expect((await code(assess(db, review.id, C2, 'VERIFIED'))).code).toBe(
+      'CS_REVIEW_INTEGRITY_ERROR'
+    );
+    expect(JSON.stringify(db.tables.claim)).toBe(before);
+  });
+
+  it.each([
+    [
+      'M7 UNREVIEWED with a reviewer',
+      {
+        status: 'UNREVIEWED',
+        reviewedByUserId: USER_A,
+        reviewedAt: new Date(),
+      },
+    ],
+    ['UNREVIEWED with a finding', { status: 'UNREVIEWED', finding: 'x' }],
+    [
+      'CD2 VERIFIED without a reviewer',
+      { status: 'VERIFIED', reviewedAt: new Date() },
+    ],
+    [
+      'CD2 VERIFIED without a time',
+      { status: 'VERIFIED', reviewedByUserId: USER_A },
+    ],
+    [
+      'M6 NEEDS_REVISION without a finding',
+      {
+        status: 'NEEDS_REVISION',
+        reviewedByUserId: USER_A,
+        reviewedAt: new Date(),
+      },
+    ],
+    [
+      'NEEDS_REVISION with a blank finding',
+      {
+        status: 'NEEDS_REVISION',
+        finding: '  ',
+        reviewedByUserId: USER_A,
+        reviewedAt: new Date(),
+      },
+    ],
+    [
+      'an unknown status',
+      { status: 'APPROVED', reviewedByUserId: USER_A, reviewedAt: new Date() },
+    ],
+    [
+      'a reviewer that does not exist',
+      { status: 'VERIFIED', reviewedByUserId: 'ghost', reviewedAt: new Date() },
+    ],
+  ])('a malformed stored row (%s) fails closed', async (_label, fields) => {
+    const { db, review } = await claimed();
+    db.tables.claim.push({
+      id: 'claim-row-x',
+      organizationId: ORG_A,
+      reviewId: review.id,
+      claimId: C1,
+      claimContentHash: claimHash(db, PKG_REV_G, C1),
+      finding: null,
+      reviewedByUserId: null,
+      reviewedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...fields,
+    });
+    expect((await code(listClaims(db, review.id))).code).toBe(
+      'CS_REVIEW_INTEGRITY_ERROR'
+    );
+  });
+
+  it('two stored rows for one claim fail closed', async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'VERIFIED');
+    db.tables.claim.push({ ...db.tables.claim[0], id: 'claim-row-copy' });
+    expect((await code(listClaims(db, review.id))).code).toBe(
+      'CS_REVIEW_INTEGRITY_ERROR'
+    );
+  });
+
+  it('CU10 a claim that is not in the reviewed revision is not found, and writes nothing', async () => {
+    const { db, review } = await claimed();
+    for (const claimId of [C3, 'c_unknown0000', 'item-1', '0', '../c1']) {
+      expect(await code(assess(db, review.id, claimId, 'VERIFIED'))).toEqual({
+        status: 404,
+        code: 'CS_REVIEW_CLAIM_NOT_FOUND',
+      });
+    }
+    expect(db.tables.claim).toEqual([]);
+  });
+
+  it('CU11/M8 REQUESTED: no assessment yet', async () => {
+    const { db, review } = await claimed(false);
+    expect(await code(assess(db, review.id, C1, 'VERIFIED'))).toEqual({
+      status: 409,
+      code: 'CS_REVIEW_CLAIM_MUTATION_FORBIDDEN',
+    });
+    expect(db.tables.claim).toEqual([]);
+  });
+
+  it.each([
+    ['CU12 CHANGES_REQUESTED', 'request-changes'],
+    ['CU13/M9 READY_FOR_APPROVAL', 'ready-for-approval'],
+    ['CU14 CANCELLED', 'cancel'],
+  ] as const)(
+    '%s: assessments are frozen and stay readable',
+    async (_label, action) => {
+      const { db, review } = await claimed(true, (rows) => [
+        claimOf(C1, 'Sales grew.', [evidenceOf(rows[0])]),
+      ]);
+      await assess(db, review.id, C1, 'VERIFIED');
+      await act(db, review.id, action);
+      const before = JSON.stringify(db.tables.claim);
+      for (const status of ['VERIFIED', 'NEEDS_REVISION', 'UNREVIEWED']) {
+        expect(
+          await code(
+            assess(
+              db,
+              review.id,
+              C1,
+              status,
+              status === 'NEEDS_REVISION' ? 'x' : null
+            )
+          )
+        ).toEqual({ status: 409, code: 'CS_REVIEW_CLAIM_MUTATION_FORBIDDEN' });
+      }
+      expect(JSON.stringify(db.tables.claim)).toBe(before);
+      expect((await listClaims(db, review.id)).claims[0].status).toBe(
+        'VERIFIED'
+      );
+    }
+  );
+
+  it('CU15/M10 an assessment changes no review state, version or history; only its updatedAt moves', async () => {
+    const { db, review } = await claimed();
+    const before = { ...reviewRow(db, review.id) };
+    const events = JSON.stringify(db.tables.event);
+    await assess(db, review.id, C1, 'VERIFIED');
+    await assess(db, review.id, C2, 'NEEDS_REVISION', 'Missing source.');
+    await assess(db, review.id, C2, 'UNREVIEWED');
+    const after = reviewRow(db, review.id);
+    expect({ ...after, updatedAt: before.updatedAt }).toEqual(before);
+    expect(after.state).toBe('IN_REVIEW');
+    expect(after.version).toBe(2);
+    expect(JSON.stringify(db.tables.event)).toBe(events);
+  });
+
+  it('M15 the write holds the review row IN_REVIEW at the version read, in the same transaction', async () => {
+    const { db, review } = await claimed();
+    db.log.length = 0;
+    await assess(db, review.id, C1, 'VERIFIED');
+    const writes = db.log.filter((entry) => /updateMany|create/.test(entry.op));
+    expect(writes[0]).toEqual({
+      op: 'review.updateMany',
+      where: {
+        id: review.id,
+        organizationId: ORG_A,
+        state: 'IN_REVIEW',
+        version: 2,
+      },
+      data: { version: { increment: 0 } },
+    });
+    expect(writes.slice(1).map((entry) => entry.op)).toEqual([
+      'claim.updateMany',
+      'claim.create',
+    ]);
+  });
+
+  it('RG7/M4 an assessment of a claim the revision does not have is an integrity error, never ignored', async () => {
+    const { db, review } = await claimed();
+    db.tables.claim.push({
+      id: 'orphan',
+      organizationId: ORG_A,
+      reviewId: review.id,
+      claimId: C3,
+      claimContentHash: claimHash(db, PKG_REV_G_NEXT, C3),
+      status: 'VERIFIED',
+      finding: null,
+      reviewedByUserId: USER_A,
+      reviewedAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    expect((await code(listClaims(db, review.id))).code).toBe(
+      'CS_REVIEW_INTEGRITY_ERROR'
+    );
+    expect((await code(act(db, review.id, 'ready-for-approval'))).code).toBe(
+      'CS_REVIEW_INTEGRITY_ERROR'
+    );
+    expect(reviewRow(db, review.id).state).toBe('IN_REVIEW');
+  });
+});
+
+describe('ContentStudioReviewService: design reviews have no claims (P5-03B)', () => {
+  it('DR1/DR2/DR4 listing or assessing claims of a design review is refused, and nothing is read or written', async () => {
+    const db = seeded();
+    const review = await act(
+      db,
+      (
+        await request(db, 'DESIGN_REVISION', DESIGN_REV_7)
+      ).id,
+      'start'
+    );
+    db.log.length = 0;
+    expect(await code(listClaims(db, review.id))).toEqual({
+      status: 409,
+      code: 'CS_REVIEW_CLAIMS_UNAVAILABLE',
+    });
+    expect(await code(assess(db, review.id, C1, 'VERIFIED'))).toEqual({
+      status: 409,
+      code: 'CS_REVIEW_CLAIMS_UNAVAILABLE',
+    });
+    expect(db.tables.claim).toEqual([]);
+    expect(db.log.map((entry) => entry.op)).toEqual([
+      'review.findFirst',
+      'review.findFirst',
+    ]);
+  });
+
+  it('DR3/M13 a design review becomes ready exactly as before: no claim or source query', async () => {
+    const db = seeded();
+    const review = await act(
+      db,
+      (
+        await request(db, 'DESIGN_REVISION', DESIGN_REV_7)
+      ).id,
+      'start'
+    );
+    db.log.length = 0;
+    const ready = await act(db, review.id, 'ready-for-approval');
+    expect(ready.state).toBe('READY_FOR_APPROVAL');
+    expect(db.log.map((entry) => entry.op)).not.toEqual(
+      expect.arrayContaining(['claim.findMany'])
+    );
+    expect(db.log.map((entry) => entry.op)).not.toEqual(
+      expect.arrayContaining(['sourceVersion.findMany'])
+    );
+  });
+});
+
+describe('ContentStudioReviewService: the READY_FOR_APPROVAL claim gate (P5-03B)', () => {
+  const blocked = async (db: ReturnType<typeof createDb>, id: string) => {
+    expect(await code(act(db, id, 'ready-for-approval'))).toEqual({
+      status: 409,
+      code: 'CS_REVIEW_CLAIMS_INCOMPLETE',
+    });
+    // rolled back: still IN_REVIEW at version 2 with two events
+    expect(reviewRow(db, id)).toMatchObject({ state: 'IN_REVIEW', version: 2 });
+    expect(db.tables.event.filter((e) => e.reviewId === id)).toHaveLength(2);
+  };
+
+  it('RG1 a v1 package review has no claims and becomes ready', async () => {
+    const db = seeded();
+    const review = await act(
+      db,
+      (
+        await request(db, 'PACKAGE_REVISION', PKG_REV_4)
+      ).id,
+      'start'
+    );
+    expect((await act(db, review.id, 'ready-for-approval')).state).toBe(
+      'READY_FOR_APPROVAL'
+    );
+  });
+
+  it('RG2 a v2 package review without claims becomes ready', async () => {
+    const { db } = await claimed();
+    const review = await act(
+      db,
+      (
+        await request(db, 'PACKAGE_REVISION', PKG_REV_EMPTY)
+      ).id,
+      'start'
+    );
+    expect((await act(db, review.id, 'ready-for-approval')).state).toBe(
+      'READY_FOR_APPROVAL'
+    );
+  });
+
+  it('RG4/M11 a claim without an assessment blocks it', async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'VERIFIED');
+    await blocked(db, review.id);
+  });
+
+  it('RG3 a claim reset to UNREVIEWED blocks it', async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'VERIFIED');
+    await assess(db, review.id, C2, 'VERIFIED');
+    await assess(db, review.id, C2, 'UNREVIEWED');
+    await blocked(db, review.id);
+  });
+
+  it('RG5/M12 a claim that needs revision blocks it', async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'VERIFIED');
+    await assess(db, review.id, C2, 'NEEDS_REVISION', 'Wrong source.');
+    await blocked(db, review.id);
+  });
+
+  it('RG6/RRACE4 every claim VERIFIED: ready, version 3, event 3, assessments frozen', async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'VERIFIED');
+    await assess(db, review.id, C2, 'VERIFIED', 'Checked.');
+    const ready = await act(db, review.id, 'ready-for-approval');
+    expect(ready.state).toBe('READY_FOR_APPROVAL');
+    expect(ready.version).toBe(3);
+    expect(ready.events.map((e) => e.sequence)).toEqual([1, 2, 3]);
+    expect((await listClaims(db, review.id)).summary.complete).toBe(true);
+  });
+
+  it('RG8 an assessment whose claim hash differs is an integrity error, never a pass', async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'VERIFIED');
+    await assess(db, review.id, C2, 'VERIFIED');
+    db.tables.claim[1].claimContentHash = 'e'.repeat(64);
+    expect((await code(act(db, review.id, 'ready-for-approval'))).code).toBe(
+      'CS_REVIEW_INTEGRITY_ERROR'
+    );
+    expect(reviewRow(db, review.id).state).toBe('IN_REVIEW');
+  });
+
+  it("RG9/RG10/M14 the newer revision's claims never count: verifying revision 6 is enough", async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'VERIFIED');
+    await assess(db, review.id, C2, 'VERIFIED');
+    // revision 7 has C3, never assessed here
+    expect((await act(db, review.id, 'ready-for-approval')).state).toBe(
+      'READY_FOR_APPROVAL'
+    );
+  });
+
+  it('the gate reads the assessments inside the transition, after the review row is held', async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'VERIFIED');
+    await assess(db, review.id, C2, 'VERIFIED');
+    db.log.length = 0;
+    await act(db, review.id, 'ready-for-approval');
+    const ops = db.log.map((entry) => entry.op);
+    const cas = ops.indexOf('review.updateMany');
+    expect(cas).toBeGreaterThan(-1);
+    expect(ops.slice(cas)).toEqual([
+      'review.updateMany',
+      'claim.findMany',
+      'event.create',
+      'review.findFirst',
+    ]);
+  });
+});
+
+describe('ContentStudioReviewService: claim review races (P5-03B)', () => {
+  // the other request runs to completion exactly between this one's reads
+  // and its transaction
+  const between = <
+    K extends 'transitionReviewWithCompareAndSwap' | 'setClaimAssessment'
+  >(
+    db: ReturnType<typeof createDb>,
+    method: K,
+    other: () => Promise<unknown>
+  ) => {
+    const original = db.repository[method].bind(db.repository) as (
+      ...args: unknown[]
+    ) => Promise<boolean>;
+    let ran = false;
+    (db.repository as unknown as Record<string, unknown>)[method] = async (
+      ...args: unknown[]
+    ) => {
+      if (!ran) {
+        ran = true;
+        await other();
+      }
+      return original(...args);
+    };
+  };
+
+  it('RRACE1/M16 a claim marked NEEDS_REVISION just before READY commits: READY fails and the review stays IN_REVIEW', async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'VERIFIED');
+    await assess(db, review.id, C2, 'VERIFIED');
+    between(db, 'transitionReviewWithCompareAndSwap', () =>
+      assess(
+        db,
+        review.id,
+        C2,
+        'NEEDS_REVISION',
+        'Changed: the quote is wrong.'
+      )
+    );
+    expect((await code(act(db, review.id, 'ready-for-approval'))).code).toBe(
+      'CS_REVIEW_CLAIMS_INCOMPLETE'
+    );
+    expect(reviewRow(db, review.id)).toMatchObject({
+      state: 'IN_REVIEW',
+      version: 2,
+    });
+    expect(db.tables.claim[1].status).toBe('NEEDS_REVISION');
+  });
+
+  it('RRACE2/RRACE3 READY commits just before a NEEDS_REVISION: the assessment fails and VERIFIED stays', async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'VERIFIED');
+    await assess(db, review.id, C2, 'VERIFIED');
+    between(db, 'setClaimAssessment', () =>
+      act(db, review.id, 'ready-for-approval')
+    );
+    expect(
+      await code(assess(db, review.id, C2, 'NEEDS_REVISION', 'Too late.'))
+    ).toEqual({ status: 409, code: 'CS_REVIEW_CLAIM_MUTATION_FORBIDDEN' });
+    expect(reviewRow(db, review.id)).toMatchObject({
+      state: 'READY_FOR_APPROVAL',
+      version: 3,
+    });
+    expect(db.tables.claim.map((row) => row.status)).toEqual([
+      'VERIFIED',
+      'VERIFIED',
+    ]);
+    expect(
+      db.tables.event.filter((e) => e.reviewId === review.id)
+    ).toHaveLength(3);
+  });
+
+  it('RRACE3 truly at once: whichever order, never READY with a NEEDS_REVISION written', async () => {
+    for (let round = 0; round < 2; round += 1) {
+      const { db, review } = await claimed();
+      await assess(db, review.id, C1, 'VERIFIED');
+      await assess(db, review.id, C2, 'VERIFIED');
+      const calls = [
+        () => act(db, review.id, 'ready-for-approval'),
+        () => assess(db, review.id, C2, 'NEEDS_REVISION', 'At once.'),
+      ];
+      if (round) {
+        calls.reverse();
+      }
+      await Promise.allSettled(calls.map((call) => call()));
+      const state = reviewRow(db, review.id).state;
+      const status = db.tables.claim[1].status;
+      expect([state, status]).not.toEqual([
+        'READY_FOR_APPROVAL',
+        'NEEDS_REVISION',
+      ]);
+      expect([
+        ['READY_FOR_APPROVAL', 'VERIFIED'],
+        ['IN_REVIEW', 'NEEDS_REVISION'],
+      ]).toContainEqual([state, status]);
+    }
+  });
+
+  it('a review row that moved to another version under the write writes nothing and fails closed', async () => {
+    const { db, review } = await claimed();
+    // no transition keeps IN_REVIEW while moving the version, so this can
+    // only be a damaged row: the hold misses and the reread is refused
+    between(db, 'setClaimAssessment', async () => {
+      reviewRow(db, review.id).version = 99;
+    });
+    expect((await code(assess(db, review.id, C1, 'VERIFIED'))).code).toBe(
+      'CS_REVIEW_INTEGRITY_ERROR'
+    );
+  });
+
+  it('RACE3 two assessments of one claim at once: both serialize on the review row, one row, the later wins', async () => {
+    const { db, review } = await claimed();
+    await Promise.all([
+      assess(db, review.id, C1, 'VERIFIED', null, USER_A),
+      assess(db, review.id, C1, 'NEEDS_REVISION', 'Second.', USER_A2),
+    ]);
+    expect(db.tables.claim).toHaveLength(1);
+    expect(db.tables.claim[0]).toMatchObject({
+      status: 'NEEDS_REVISION',
+      reviewedByUserId: USER_A2,
+    });
+  });
+
+  it('CRACE1 an assessment before request-changes: both stand, the review ends CHANGES_REQUESTED', async () => {
+    const { db, review } = await claimed();
+    between(db, 'transitionReviewWithCompareAndSwap', () =>
+      assess(db, review.id, C1, 'NEEDS_REVISION', 'Wrong figure.')
+    );
+    expect((await act(db, review.id, 'request-changes')).state).toBe(
+      'CHANGES_REQUESTED'
+    );
+    expect(db.tables.claim[0].status).toBe('NEEDS_REVISION');
+    expect(db.tables.revisionRequest).toHaveLength(1);
+  });
+
+  it('CRACE2/P502R4 request-changes first: a later assessment fails and nothing is written', async () => {
+    const { db, review } = await claimed();
+    between(db, 'setClaimAssessment', () =>
+      act(db, review.id, 'request-changes')
+    );
+    expect(await code(assess(db, review.id, C1, 'VERIFIED'))).toEqual({
+      status: 409,
+      code: 'CS_REVIEW_CLAIM_MUTATION_FORBIDDEN',
+    });
+    expect(db.tables.claim).toEqual([]);
+    expect(reviewRow(db, review.id).state).toBe('CHANGES_REQUESTED');
+  });
+
+  it('CRACE3 a request-changes that fails (a second revision request) still rolls back as a whole; assessments are untouched', async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'VERIFIED');
+    db.tables.revisionRequest.push({
+      id: 'existing',
+      organizationId: ORG_A,
+      reviewId: review.id,
+      requestedByUserId: USER_A,
+      body: 'x',
+      status: 'OPEN',
+      createdAt: new Date(),
+    });
+    const before = snapshot(db);
+    expect((await code(act(db, review.id, 'request-changes'))).code).toBe(
+      'CS_REVIEW_REVISION_REQUEST_ALREADY_EXISTS'
+    );
+    expect(snapshot(db)).toBe(before);
+  });
+});
+
+describe('ContentStudioReviewService: claim review tenancy (P5-03B)', () => {
+  it('CLSEC1/CLSEC2 another organization cannot list or assess the claims: a plain 404, nothing written', async () => {
+    const { db, review } = await claimed();
+    expect(await code(listClaims(db, review.id, ORG_B))).toEqual({
+      status: 404,
+      code: 'CS_NOT_FOUND',
+    });
+    expect(
+      await code(assess(db, review.id, C1, 'VERIFIED', null, USER_B, ORG_B))
+    ).toEqual({ status: 404, code: 'CS_NOT_FOUND' });
+    expect(db.tables.claim).toEqual([]);
+  });
+
+  it("CLSEC3/M18 a review whose revision is another organization's binds nothing: integrity error", async () => {
+    const { db, review } = await claimed();
+    db.tables.packageRevision.push(groundedRevision(uuid(63), ORG_B, 1, []));
+    reviewRow(db, review.id).packageRevisionId = uuid(63);
+    expect((await code(listClaims(db, review.id))).code).toBe(
+      'CS_REVIEW_INTEGRITY_ERROR'
+    );
+  });
+
+  it('M17 every assessment read and write names the organization and the review', async () => {
+    const { db, review } = await claimed();
+    db.log.length = 0;
+    await assess(db, review.id, C1, 'VERIFIED');
+    // and the READY gate's read inside the transition
+    await code(act(db, review.id, 'ready-for-approval'));
+    expect(
+      db.log.filter((e) => e.op === 'claim.findMany').length
+    ).toBeGreaterThan(2);
+    for (const entry of db.log.filter((e) => e.op.startsWith('claim.'))) {
+      expect(entry.where ?? entry.data).toMatchObject({
+        organizationId: ORG_A,
+        reviewId: review.id,
+      });
+    }
+  });
+});
+
+describe('ContentStudioReviewService: claim review and the discussion (P5-03B)', () => {
+  it('P502R1/P502R2 NEEDS_REVISION writes no revision request and no comment', async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'NEEDS_REVISION', 'Wrong figure.');
+    expect(db.tables.revisionRequest).toEqual([]);
+    expect(db.tables.comment).toEqual([]);
+    expect(reviewRow(db, review.id).state).toBe('IN_REVIEW');
+  });
+
+  it('P502R3 request-changes still needs its own body', async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'NEEDS_REVISION', 'Wrong figure.');
+    expect(
+      (
+        await code(
+          db.service.requestChanges({
+            organizationId: ORG_A,
+            userId: USER_A,
+            id: review.id,
+            body: '',
+          })
+        )
+      ).code
+    ).toBe('CS_REVIEW_REVISION_REQUEST_INVALID');
+  });
+
+  it("P502R5/P502R6/NCR the resolving revision's review starts with every claim UNREVIEWED; the old assessments stay", async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'NEEDS_REVISION', 'Wrong figure.');
+    await act(db, review.id, 'request-changes');
+    await db.service.resolveRevisionRequest({
+      organizationId: ORG_A,
+      userId: USER_A,
+      reviewId: review.id,
+      resolutionRevisionId: PKG_REV_G_NEXT,
+    });
+    const next = await act(
+      db,
+      (
+        await request(db, 'PACKAGE_REVISION', PKG_REV_G_NEXT)
+      ).id,
+      'start'
+    );
+    const fresh = await listClaims(db, next.id);
+    // C1 shares its id with revision 6's claim: no carry-over
+    expect(fresh.claims.map((claim) => [claim.claimId, claim.status])).toEqual([
+      [C1, 'UNREVIEWED'],
+      [C3, 'UNREVIEWED'],
+    ]);
+    expect(fresh.claims[0].claimText).toBe('Sales grew by twenty percent.');
+    const old = await listClaims(db, review.id);
+    expect(old.claims[0]).toMatchObject({
+      claimId: C1,
+      status: 'NEEDS_REVISION',
+      claimText: 'Sales grew by ten percent.',
+    });
+    expect(db.tables.claim).toHaveLength(1);
+  });
+});
+
+describe('ContentStudioReviewService claim review boundaries (P5-03B)', () => {
+  const source = (file: string) =>
+    readFileSync(join(__dirname, file), 'utf8').replace(/\/\/.*$/gm, '');
+  const root = join(__dirname, '..', '..', '..', '..', '..', '..');
+  const schema = readFileSync(join(__dirname, '..', 'schema.prisma'), 'utf8');
+
+  it('P503B-1/P503B-4/P503B-5 one new model only: no approval, source review or claim event model', () => {
+    const models = (schema.match(/^model \w+/gm) ?? []).filter((model) =>
+      /Review|Approval|Claim/.test(model)
+    );
+    expect(models).toEqual([
+      'model ContentStudioReview',
+      'model ContentStudioReviewStateEvent',
+      'model ContentStudioReviewComment',
+      'model ContentStudioReviewRevisionRequest',
+      'model ContentStudioReviewClaim',
+    ]);
+    // the existing APPROVED_SUBMIT_FOR_ORDER enum of posts is not an approval
+    expect(schema).not.toMatch(/approvedBy|rejectedBy|approvedAt|\bAPPROVED\b/);
+  });
+
+  it('the assessment row holds no claim text, item, evidence or source', () => {
+    const model = schema.slice(
+      schema.indexOf('model ContentStudioReviewClaim {'),
+      schema.indexOf('}', schema.indexOf('model ContentStudioReviewClaim {'))
+    );
+    expect(model).not.toMatch(
+      /text|threadItem|evidence|source|quote|blockId|versionId|Json/i
+    );
+    expect(model).toMatch(/@@unique\(\[reviewId, organizationId, claimId\]\)/);
+  });
+
+  it('P503B-6/P503B-7/P503B-8 no AI operation, live fetch, ingestion or latest-version lookup in claim review', () => {
+    for (const file of [
+      'content-studio.review.service.ts',
+      'content-studio.review.repository.ts',
+    ]) {
+      expect(source(file)).not.toMatch(
+        /AIOperation|aiOperation|safeFetch|SafeFetch|fetch\(|ingest|refresh|getVersionDetailByNumber|latestVersionNumber|latestRevision|getPackageForOrganization|\.draft\b(?!')|draftVersion/i
+      );
+    }
+  });
+
+  it('P503B-2/P503B-3 handoff and publishing know nothing of claim review', () => {
+    for (const file of [
+      'content-studio.handoff.service.ts',
+      'content-studio.handoff.repository.ts',
+    ]) {
+      expect(source(file)).not.toMatch(/claim|Claim|review|Review|READY/);
+    }
+  });
+
+  it('P503B-10 assessing a claim requests no changes and writes no comment', () => {
+    const text = source('content-studio.review.service.ts');
+    const assessClaim = text.slice(
+      text.indexOf('async assessClaim('),
+      text.indexOf('private claimReview(')
+    );
+    expect(assessClaim).not.toMatch(
+      /requestChanges|revisionRequest|createComment|transitionReview/
+    );
+  });
+
+  it('P503B-11 assessments are only ever read for their own review', () => {
+    const text = source('content-studio.review.repository.ts');
+    const reads = text
+      .split(/contentStudioReviewClaim\.(?:findMany|updateMany|create)\(/)
+      .slice(1);
+    expect(reads).toHaveLength(4);
+    for (const read of reads) {
+      expect(read.slice(0, 300)).toMatch(/reviewId/);
+    }
+  });
+
+  it('P503B-12/P503B-13/P503B-14 package grounding, the Design Document and dependencies are unchanged', () => {
+    const draft = readFileSync(
+      join(
+        root,
+        'libraries/nestjs-libraries/src/content-studio/content.package.draft.ts'
+      ),
+      'utf8'
+    );
+    expect(draft).toMatch(
+      /export const CONTENT_PACKAGE_GROUNDED_SCHEMA_VERSION = 2;/
+    );
+    expect(draft).not.toMatch(/status|VERIFIED|reviewed/);
+    const design = readFileSync(
+      join(
+        root,
+        'libraries/nestjs-libraries/src/content-studio/design/design.document.ts'
+      ),
+      'utf8'
+    );
+    expect(design).toMatch(/export const DESIGN_DOCUMENT_SCHEMA_VERSION = 1;/);
+    expect(design).not.toMatch(/claim/i);
   });
 });

@@ -43,6 +43,7 @@ import {
   ListContentStudioReviewsDto,
   RequestContentStudioReviewChangesDto,
   ResolveContentStudioReviewRevisionRequestDto,
+  UpdateContentStudioReviewClaimDto,
   UpdateContentStudioReviewCommentDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.review.dto';
 
@@ -82,6 +83,8 @@ const setup = () => {
     editComment: jest.fn().mockResolvedValue(result),
     getRevisionRequest: jest.fn().mockResolvedValue(result),
     resolveRevisionRequest: jest.fn().mockResolvedValue(result),
+    listClaims: jest.fn().mockResolvedValue(result),
+    assessClaim: jest.fn().mockResolvedValue(result),
   };
   const controller = new ContentStudioController(
     {} as ContentStudioService,
@@ -161,12 +164,13 @@ const TRANSITIONS = [
 // request organization and user only, the strict DTOs. The service has its
 // own spec
 describe('ContentStudioController review routes', () => {
-  it('RE8/P501-13/C16/P502-6 declares exactly these eleven routes (122 -> 128 -> 133): no delete, event, approval or reopen route', () => {
+  it('RE8/P501-13/C16/P502-6/API10 declares exactly these thirteen routes (122 -> 128 -> 133 -> 135): no delete, event, approval or reopen route', () => {
     const names = Object.getOwnPropertyNames(
       ContentStudioController.prototype
     ).filter((name) => /Review(?!sion)/.test(name));
     expect(names.map(route).sort()).toEqual([
       'GET /reviews',
+      'GET /reviews/:id/claims',
       'GET /reviews/:id/comments',
       'GET /reviews/:id/revision-request',
       'PATCH /reviews/:id/comments/:commentId',
@@ -177,6 +181,7 @@ describe('ContentStudioController review routes', () => {
       'POST /reviews/:id/request-changes',
       'POST /reviews/:id/revision-request/resolve',
       'POST /reviews/:id/start',
+      'PUT /reviews/:id/claims/:claimId',
     ]);
     for (const name of [
       ...TRANSITIONS.map(([name]) => name),
@@ -192,13 +197,15 @@ describe('ContentStudioController review routes', () => {
       ).toBeUndefined();
     }
     const all = allRoutes();
-    expect(all).toHaveLength(133);
+    expect(all).toHaveLength(135);
     expect(
       all.filter(
         (r) =>
           /review/i.test(r) &&
           /^(DELETE|PUT) |events|approve|approval(?!$)|reason|assign|reopen|latest|mention|attachment|reaction|annotation|layer|claim|source/i.test(
-            r.replace('ready-for-approval', '')
+            r
+              .replace('ready-for-approval', '')
+              .replace(/^(GET|PUT) \/reviews\/:id\/claims(\/:claimId)?$/, '')
           )
       )
     ).toEqual([]);
@@ -206,8 +213,14 @@ describe('ContentStudioController review routes', () => {
     expect(all.filter((r) => /review/i.test(r) && /^PATCH /.test(r))).toEqual([
       'PATCH /reviews/:id/comments/:commentId',
     ]);
-    expect(all.filter((r) => /approv|claim/i.test(r))).toEqual([
+    expect(all.filter((r) => /approv|claim/i.test(r)).sort()).toEqual([
+      'GET /reviews/:id/claims',
       'POST /reviews/:id/ready-for-approval',
+      'PUT /reviews/:id/claims/:claimId',
+    ]);
+    // the one whole-assessment write; a claim is never deleted
+    expect(all.filter((r) => /review/i.test(r) && /^PUT /.test(r))).toEqual([
+      'PUT /reviews/:id/claims/:claimId',
     ]);
     expect(all.filter((r) => /^DELETE .*comment/i.test(r))).toEqual([]);
   });
@@ -419,9 +432,51 @@ describe('ContentStudioController review routes', () => {
     expect(block).toContain('cancelReview');
     expect(block).toContain('resolveReviewRevisionRequest');
     expect(block).not.toMatch(
-      /AIConnection|AIWriting|Role\.|users|render|Handoff|@Delete|CheckPolicies|BrandKit|Media|isAdmin|ADMIN|@Body\(\) body: (?!(CreateContentStudioReview|RequestContentStudioReviewChanges|CreateContentStudioReviewComment|UpdateContentStudioReviewComment|ResolveContentStudioReviewRevisionRequest)Dto\b)/
+      /AIConnection|AIWriting|Role\.|users|render|Handoff|@Delete|CheckPolicies|BrandKit|Media|isAdmin|ADMIN|AIOperation|Source(Service|Ingestion)|@Body\(\) body: (?!(CreateContentStudioReview|RequestContentStudioReviewChanges|CreateContentStudioReviewComment|UpdateContentStudioReviewComment|ResolveContentStudioReviewRevisionRequest|UpdateContentStudioReviewClaim)Dto\b)/
     );
-    expect(block.match(/@Body\(\)/g)).toHaveLength(5);
+    expect(block.match(/@Body\(\)/g)).toHaveLength(6);
+  });
+
+  it('API1/API9/CLSEC1/CLSEC2 claims are listed and assessed for the request organization, by the request user, with the path claim and the declared fields only', async () => {
+    const { controller, reviews, result } = setup();
+    expect(await controller.listReviewClaims(ORG, ID)).toBe(result);
+    expect(reviews.listClaims).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      reviewId: ID,
+    });
+    expect(
+      await controller.assessReviewClaim(
+        ORG,
+        USER,
+        ID,
+        'c_claim000000000001',
+        Object.assign(withExtras(new UpdateContentStudioReviewClaimDto()), {
+          status: 'NEEDS_REVISION',
+          finding: 'Wrong figure.',
+          claimContentHash: 'f'.repeat(64),
+          reviewedByUserId: 'user-b',
+        })
+      )
+    ).toBe(result);
+    expect(reviews.assessClaim).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      userId: 'user-1',
+      reviewId: ID,
+      claimId: 'c_claim000000000001',
+      status: 'NEEDS_REVISION',
+      finding: 'Wrong figure.',
+    });
+    expect(types('listReviewClaims')).toEqual([Object, String]);
+    expect(types('assessReviewClaim')).toEqual([
+      Object,
+      Object,
+      String,
+      String,
+      UpdateContentStudioReviewClaimDto,
+    ]);
+    expect(
+      Reflect.getMetadata(HTTP_CODE_METADATA, handler('assessReviewClaim'))
+    ).toBeUndefined();
   });
 });
 
@@ -566,6 +621,67 @@ describe('Review DTO validation', () => {
     [{ where: MARKER }],
   ])('RA6 refuses the query %p', async (query) => {
     await rejected(ListContentStudioReviewsDto, query, 'query');
+  });
+});
+
+describe('Claim review DTO validation (P5-03B)', () => {
+  it('API2/API3/API4 accepts a status with an optional finding as sent', async () => {
+    for (const body of [
+      { status: 'VERIFIED' },
+      { status: 'VERIFIED', finding: null },
+      { status: 'VERIFIED', finding: '  Checked\nagainst it.  ' },
+      { status: 'NEEDS_REVISION', finding: 'Wrong figure.' },
+      { status: 'UNREVIEWED', finding: null },
+      { status: 'UNREVIEWED' },
+    ]) {
+      expect({
+        ...(await run(UpdateContentStudioReviewClaimDto, body)),
+      }).toEqual(body);
+    }
+    // which status needs or forbids a finding is the service's rule
+    expect({
+      ...(await run(UpdateContentStudioReviewClaimDto, {
+        status: 'NEEDS_REVISION',
+      })),
+    }).toEqual({ status: 'NEEDS_REVISION' });
+    await run(UpdateContentStudioReviewClaimDto, {
+      status: 'VERIFIED',
+      finding: 'x'.repeat(10_000),
+    });
+  });
+
+  it.each([
+    ['API6 an unknown status', { status: 'APPROVED' }],
+    ['API6 a lower-case status', { status: 'verified' }],
+    ['no status', { finding: 'x' }],
+    [
+      'API7 a finding over 10,000 characters',
+      { status: 'VERIFIED', finding: 'x'.repeat(10_001) },
+    ],
+    ['a finding that is not text', { status: 'VERIFIED', finding: 5 }],
+    [
+      'API5/CLSEC5 an organization',
+      { status: 'VERIFIED', organizationId: 'org-b' },
+    ],
+    ['API5/CLSEC6 a user', { status: 'VERIFIED', userId: 'user-b' }],
+    ['CLSEC6 a reviewer', { status: 'VERIFIED', reviewedByUserId: 'user-b' }],
+    ['CLSEC6 a review time', { status: 'VERIFIED', reviewedAt: '2026-01-01' }],
+    [
+      'CLSEC7 a claim hash',
+      { status: 'VERIFIED', claimContentHash: 'f'.repeat(64) },
+    ],
+    ['CLSEC8 a claim text', { status: 'VERIFIED', claimText: MARKER }],
+    ['CLSEC8 a thread item', { status: 'VERIFIED', threadItemId: 'main' }],
+    ['CLSEC8 evidence', { status: 'VERIFIED', evidence: [] }],
+    ['CLSEC8 a source', { status: 'VERIFIED', sourceId: REVISION }],
+    ['CLSEC8 a source version', { status: 'VERIFIED', versionId: REVISION }],
+    [
+      'CLSEC8 a package revision',
+      { status: 'VERIFIED', packageRevisionId: REVISION },
+    ],
+    ['a review id', { status: 'VERIFIED', reviewId: ID }],
+  ])('API5 refuses %s', async (_label, body) => {
+    await rejected(UpdateContentStudioReviewClaimDto, body);
   });
 });
 
@@ -726,10 +842,12 @@ describe('Review boundaries (P5-01)', () => {
       'ContentStudioReviewStateEvent',
       'ContentStudioReviewComment',
       'ContentStudioReviewRevisionRequest',
+      // P5-03B: the one claim assessment model
+      'ContentStudioReviewClaim',
     ]);
     expect(
       models.filter((m) =>
-        /Approval|Claim|Annotation|Reviewer|Signature|Mention|Attachment|Reaction|Notification/.test(
+        /Approval|Claim(?!$)|Annotation|Reviewer|Signature|Mention|Attachment|Reaction|Notification|SourceReview|Event(?!$)/.test(
           m
         )
       )

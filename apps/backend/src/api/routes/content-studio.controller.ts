@@ -144,6 +144,7 @@ import {
   ListContentStudioReviewsDto,
   RequestContentStudioReviewChangesDto,
   ResolveContentStudioReviewRevisionRequestDto,
+  UpdateContentStudioReviewClaimDto,
   UpdateContentStudioReviewCommentDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.review.dto';
 import {
@@ -1630,6 +1631,39 @@ export class ContentStudioController {
       userId: user.id,
       reviewId: id,
       resolutionRevisionId: body.resolutionRevisionId,
+    });
+  }
+
+  // Claim review (P5-03B): every grounded claim of the exact package
+  // revision the review is about, with its assessment and exact evidence
+  @Get('/reviews/:id/claims')
+  listReviewClaims(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioReviewService.listClaims({
+      organizationId: org.id,
+      reviewId: id,
+    });
+  }
+
+  // The whole current assessment of one claim, by the request user, while
+  // the review is in review
+  @Put('/reviews/:id/claims/:claimId')
+  assessReviewClaim(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Param('claimId') claimId: string,
+    @Body() body: UpdateContentStudioReviewClaimDto
+  ) {
+    return this._contentStudioReviewService.assessClaim({
+      organizationId: org.id,
+      userId: user.id,
+      reviewId: id,
+      claimId,
+      status: body.status,
+      finding: body.finding,
     });
   }
 

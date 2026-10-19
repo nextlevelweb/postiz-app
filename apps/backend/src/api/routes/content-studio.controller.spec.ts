@@ -355,6 +355,7 @@ describe('ContentStudioController wiring', () => {
       'GET /projects',
       'GET /render-fonts',
       'GET /reviews',
+      'GET /reviews/:id/claims',
       'GET /reviews/:id/comments',
       'GET /reviews/:id/revision-request',
       'GET /sources',
@@ -449,6 +450,7 @@ describe('ContentStudioController wiring', () => {
       'POST /writing-profiles/:id/revisions',
       'PUT /ai/connections/:id/credential',
       'PUT /packages/:id/draft',
+      'PUT /reviews/:id/claims/:claimId',
     ]);
   });
 });

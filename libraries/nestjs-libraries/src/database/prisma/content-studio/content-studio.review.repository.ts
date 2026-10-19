@@ -117,6 +117,27 @@ const REVISION_REQUEST = {
   },
 } as const;
 
+// A claim assessment as stored (P5-03B): the claim is named by its id in the
+// reviewed revision and the hash the server computed of it, never by its
+// text or evidence
+const CLAIM = {
+  id: true,
+  claimId: true,
+  claimContentHash: true,
+  status: true,
+  finding: true,
+  reviewedByUserId: true,
+  reviewedAt: true,
+  createdAt: true,
+  updatedAt: true,
+  reviewedBy: PERSON,
+} as const;
+
+export type ContentStudioReviewClaimRow =
+  Prisma.ContentStudioReviewClaimGetPayload<{
+    select: typeof CLAIM;
+  }>;
+
 // Exactly one of the two is set: the service never passes both or neither
 export interface ContentStudioReviewTargetFilter {
   packageRevisionId?: string | { not: null };
@@ -129,7 +150,11 @@ export interface ContentStudioReviewTargetFilter {
 // is created with its first state event and changes state only together with
 // the next one, in one transaction and only from the state and version it
 // was read at; IN_REVIEW -> CHANGES_REQUESTED also writes the revision
-// request in that transaction. Its target never changes. Nothing is deleted
+// request in that transaction. Its target never changes. Nothing is deleted.
+// Claim assessments (P5-03B) are written only while the review row is held
+// IN_REVIEW at the version read, and IN_REVIEW -> READY_FOR_APPROVAL of a
+// package review checks them inside its own transaction, after it holds the
+// same row: the two are serialized on that row
 @Injectable()
 export class ContentStudioReviewRepository {
   constructor(
@@ -138,6 +163,7 @@ export class ContentStudioReviewRepository {
     private _designRevision: PrismaRepository<'contentStudioDesignRevision'>,
     private _comment: PrismaRepository<'contentStudioReviewComment'>,
     private _revisionRequest: PrismaRepository<'contentStudioReviewRevisionRequest'>,
+    private _claim: PrismaRepository<'contentStudioReviewClaim'>,
     private _transaction: PrismaTransaction
   ) {}
 
@@ -258,7 +284,11 @@ export class ContentStudioReviewRepository {
   // matches while both are still current and holds the review row until
   // commit, so of two concurrent transitions exactly one is written; the
   // other changes nothing and gets false. A revision request that cannot be
-  // written (a second one for the review: P2002) takes the transition with it
+  // written (a second one for the review: P2002) takes the transition with it.
+  // claimGate (READY_FOR_APPROVAL of a package review) is handed the review's
+  // claim assessments as they are once this transaction holds the row, so no
+  // assessment can change between the check and the commit; when it throws,
+  // nothing is written
   transitionReviewWithCompareAndSwap(input: {
     organizationId: string;
     reviewId: string;
@@ -267,6 +297,7 @@ export class ContentStudioReviewRepository {
     toState: string;
     actorUserId: string;
     revisionRequest?: { id: string; body: string };
+    claimGate?: (claims: ContentStudioReviewClaimRow[]) => void;
   }) {
     return this._transaction.model.$transaction(async (tx) => {
       const { count } = await tx.contentStudioReview.updateMany({
@@ -285,6 +316,18 @@ export class ContentStudioReviewRepository {
       });
       if (count !== 1) {
         return false;
+      }
+      if (input.claimGate) {
+        input.claimGate(
+          await tx.contentStudioReviewClaim.findMany({
+            where: {
+              organizationId: input.organizationId,
+              reviewId: input.reviewId,
+            },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+            select: CLAIM,
+          })
+        );
       }
       await tx.contentStudioReviewStateEvent.create({
         data: {
@@ -497,5 +540,84 @@ export class ContentStudioReviewRepository {
         }
       );
     return count === 1;
+  }
+
+  // --- claim review (P5-03B) ---
+
+  // Every assessment of the review: at most one per claim of its revision
+  listClaimsForReview(organizationId: string, reviewId: string) {
+    return this._claim.model.contentStudioReviewClaim.findMany({
+      where: {
+        organizationId,
+        reviewId,
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: CLAIM,
+    });
+  }
+
+  // Holds the review row IN_REVIEW at the version the service read (its
+  // version written back unchanged, so only updatedAt moves), then writes the
+  // claim's one assessment: the row of that claim with that exact claim hash
+  // is updated, or created when the claim has none. A held row that is no
+  // longer IN_REVIEW at that version writes nothing (false). Two assessments
+  // of one review wait for each other on the hold: the later one wins
+  setClaimAssessment(input: {
+    organizationId: string;
+    reviewId: string;
+    expectedVersion: number;
+    claimId: string;
+    claimContentHash: string;
+    status: string;
+    finding: string | null;
+    reviewedByUserId: string | null;
+    reviewedAt: Date | null;
+  }) {
+    return this._transaction.model.$transaction(async (tx) => {
+      const held = await tx.contentStudioReview.updateMany({
+        where: {
+          id: input.reviewId,
+          organizationId: input.organizationId,
+          state: 'IN_REVIEW',
+          version: input.expectedVersion,
+        },
+        data: {
+          version: {
+            increment: 0,
+          },
+        },
+      });
+      if (held.count !== 1) {
+        return false;
+      }
+      const assessment = {
+        status: input.status,
+        finding: input.finding,
+        reviewedByUserId: input.reviewedByUserId,
+        reviewedAt: input.reviewedAt,
+      };
+      const { count } = await tx.contentStudioReviewClaim.updateMany({
+        where: {
+          organizationId: input.organizationId,
+          reviewId: input.reviewId,
+          claimId: input.claimId,
+          claimContentHash: input.claimContentHash,
+        },
+        data: assessment,
+      });
+      if (count !== 1) {
+        await tx.contentStudioReviewClaim.create({
+          data: {
+            organizationId: input.organizationId,
+            reviewId: input.reviewId,
+            claimId: input.claimId,
+            claimContentHash: input.claimContentHash,
+            ...assessment,
+          },
+          select: { id: true },
+        });
+      }
+      return true;
+    });
   }
 }

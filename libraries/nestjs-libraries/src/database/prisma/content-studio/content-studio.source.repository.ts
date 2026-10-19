@@ -323,7 +323,7 @@ export class ContentStudioSourceRepository {
 
   // The versions a package's grounding names, with their content, in one
   // query: only versions of this organization, by exact id. Never the latest
-  // version of a source, and nothing of the source row itself
+  // version of a source; of the source itself only its name
   getVersionsByIdsForOrganization(organizationId: string, ids: string[]) {
     return this._version.model.contentStudioSourceVersion.findMany({
       where: {
@@ -333,6 +333,11 @@ export class ContentStudioSourceRepository {
       select: {
         ...VERSION_DETAIL,
         sourceId: true,
+        source: {
+          select: {
+            name: true,
+          },
+        },
       },
     });
   }

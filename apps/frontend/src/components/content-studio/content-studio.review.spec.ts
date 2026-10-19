@@ -110,6 +110,8 @@ let failNext: { status: number; code: string } | null;
 let comments: Record<string, Plain[]>;
 let revisionRequests: Record<string, Plain>;
 let extraDesignRevisions: Plain[];
+// P5-03B: the claims of each package review, as the server answers them
+let claimLists: Record<string, Plain>;
 const NEXT: Record<string, Record<string, string>> = {
   REQUESTED: { start: 'IN_REVIEW', cancel: 'CANCELLED' },
   IN_REVIEW: {
@@ -197,6 +199,55 @@ const openRequest = (text: string) => ({
   resolution: null,
 });
 
+const claimOf = (
+  id: string,
+  text: string,
+  status = 'UNREVIEWED',
+  finding: string | null = null
+) => ({
+  claimId: id,
+  threadItemId: 'i1',
+  claimText: text,
+  claimContentHash: SHA('a'),
+  status,
+  finding,
+  reviewedBy: status === 'UNREVIEWED' ? null : { id: 'user-2', name: 'Bo' },
+  reviewedAt: status === 'UNREVIEWED' ? null : T0,
+  evidence: [
+    {
+      source: { id: uuid(700), name: 'Weekly report' },
+      version: {
+        id: uuid(701),
+        versionNumber: 2,
+        title: 'Spring report',
+        contentHash: SHA('b'),
+        fetchedAt: T0,
+      },
+      block: { id: 'b1', type: 'paragraph', text: `Block of ${id}.` },
+      quote: `quote of ${id}`,
+    },
+  ],
+});
+const claimListOf = (review: Plain, claims: Plain[]) => {
+  const verified = claims.filter((c) => c.status === 'VERIFIED').length;
+  const needsRevision = claims.filter(
+    (c) => c.status === 'NEEDS_REVISION'
+  ).length;
+  return {
+    reviewId: review.id,
+    reviewState: review.state,
+    reviewVersion: review.version,
+    summary: {
+      total: claims.length,
+      verified,
+      needsRevision,
+      unreviewed: claims.length - verified - needsRevision,
+      complete: verified === claims.length,
+    },
+    claims,
+  };
+};
+
 const server = (method: string, url: string, body: any): Reply => {
   const { pathname, searchParams } = new URL(url, 'https://api.test');
   if (pathname === '/content-studio/reviews') {
@@ -231,6 +282,42 @@ const server = (method: string, url: string, body: any): Reply => {
     );
     reviews.push(created);
     return reply(201, created);
+  }
+  // claim review (P5-03B)
+  const km = pathname.match(
+    /^\/content-studio\/reviews\/([^/]+)\/claims(?:\/([^/]+))?$/
+  );
+  if (km) {
+    if (failNext) {
+      const failure = failNext;
+      failNext = null;
+      return reply(failure.status, { msg: SECRET, code: failure.code });
+    }
+    const review = reviews.find((r) => r.id === km[1]);
+    if (!review) return reply(404, { msg: SECRET, code: 'CS_NOT_FOUND' });
+    if (review.targetType !== 'PACKAGE_REVISION') {
+      return reply(409, { msg: SECRET, code: 'CS_REVIEW_CLAIMS_UNAVAILABLE' });
+    }
+    const list = claimLists[review.id] ?? claimListOf(review, []);
+    if (method === 'PUT') {
+      if (review.state !== 'IN_REVIEW') {
+        return reply(409, {
+          msg: SECRET,
+          code: 'CS_REVIEW_CLAIM_MUTATION_FORBIDDEN',
+        });
+      }
+      const claim = list.claims.find((c: Plain) => c.claimId === km[2]);
+      if (!claim) {
+        return reply(404, { msg: SECRET, code: 'CS_REVIEW_CLAIM_NOT_FOUND' });
+      }
+      claim.status = body.status;
+      claim.finding = body.finding;
+      claim.reviewedBy =
+        body.status === 'UNREVIEWED' ? null : { id: 'user-1', name: 'Ann' };
+      claim.reviewedAt = body.status === 'UNREVIEWED' ? null : T0;
+      claimLists[review.id] = claimListOf(review, list.claims);
+    }
+    return reply(200, claimLists[review.id] ?? list);
   }
   // the discussion (P5-02)
   const cm = pathname.match(
@@ -394,6 +481,7 @@ beforeEach(() => {
   comments = {};
   revisionRequests = {};
   extraDesignRevisions = [];
+  claimLists = {};
   mockFetch.mockReset();
   mockFetch.mockImplementation(async (url: string, init: RequestInit = {}) =>
     server(
@@ -437,7 +525,7 @@ const buttons = () =>
   within(card())
     .queryAllByRole('button')
     .map((b) => b.textContent)
-    .filter((name) => !/^(Show|Hide) discussion$/.test(name ?? ''));
+    .filter((name) => !/^(Show|Hide) (discussion|claims)$/.test(name ?? ''));
 const button = (name: string) =>
   within(card()).getByRole('button', { name }) as HTMLButtonElement;
 const state = () => within(card()).getByRole('status').textContent;
@@ -770,12 +858,16 @@ describe('Review UI boundaries', () => {
       'body',
       'body',
       'body',
+      'status, finding',
       'resolutionRevisionId',
     ]);
-    const writes = api.slice(
-      api.indexOf('export const useContentStudioReviewActions'),
-      api.indexOf('export const reviewErrorMessage')
-    );
+    // a claim assessment sends its status and finding (P5-03B), nothing else
+    const writes = api
+      .slice(
+        api.indexOf('export const useContentStudioReviewActions'),
+        api.indexOf('export const reviewErrorMessage')
+      )
+      .replace(/assessClaim: async \([\s\S]*?\n      \},\n/, '');
     expect(writes).toContain("method: 'POST'");
     expect(writes).not.toMatch(
       /organization|userId|user:|authorUserId|resolvedBy|contentHash|state|status|version|latest|DELETE/i
@@ -783,6 +875,7 @@ describe('Review UI boundaries', () => {
     // P502-6 the only edit is PATCH of a comment; there is no delete
     expect(api.match(/method: '(PATCH|PUT|DELETE)'/g)).toEqual([
       "method: 'PATCH'",
+      "method: 'PUT'",
     ]);
   });
 
@@ -1338,5 +1431,343 @@ describe('Review discussion UI boundaries (P5-02)', () => {
         /handoff|publish|approve\(|approval[A-Z]|signature/i
       );
     }
+  });
+});
+
+// --- claim review (P5-03B) ---
+
+describe('Claims & evidence in a package review (P5-03B)', () => {
+  const read = (file: string) => readFileSync(join(__dirname, file), 'utf8');
+  const C1 = 'c_claim000000000001';
+  const C2 = 'c_claim000000000002';
+  const reviewIn = (state: string, revisionId = PKG_REV_4, n = 4) => {
+    const review = { ...reviewOf('PACKAGE_REVISION', revisionId, n), state };
+    reviews.push(review);
+    return review;
+  };
+  const withClaims = (review: Plain, claims: Plain[]) => {
+    claimLists[review.id] = claimListOf(review, claims);
+  };
+  const showPackage = (revisionId = PKG_REV_4, n = 4) =>
+    show(
+      h(ContentStudioReviewStatus, {
+        targetType: 'PACKAGE_REVISION',
+        revisionId,
+        revisionNumber: n,
+      })
+    );
+  const section = () =>
+    within(card()).getByRole('region', { name: 'Claims & evidence' });
+  const openClaims = () =>
+    click(within(card()).getByRole('button', { name: 'Show claims' }));
+  const claimCard = (id: string) =>
+    card().querySelector(`[data-review-claim="${id}"]`) as HTMLElement;
+  const claimCalls = () => calls().filter((c) => c.url.includes('/claims'));
+  const sourceCalls = () =>
+    calls().filter((c) => c.url.startsWith('/content-studio/sources'));
+  const ready = () =>
+    within(card()).getByRole('button', {
+      name: 'Ready for approval',
+    }) as HTMLButtonElement;
+
+  it('FCL1/FCL4/FCL5 an in-review package review loads its claims: the counts in words and each claim exactly', async () => {
+    const review = reviewIn('IN_REVIEW');
+    withClaims(review, [
+      claimOf(C1, '  Sales grew\nby ten percent.', 'VERIFIED'),
+      claimOf(C2, 'The outlook is covered.', 'NEEDS_REVISION', 'Wrong figure.'),
+      claimOf('c_claim000000000003', 'Third.'),
+    ]);
+    await showPackage();
+    expect(claimCalls()).toEqual([
+      {
+        method: 'GET',
+        url: `/content-studio/reviews/${review.id}/claims`,
+        body: undefined,
+      },
+    ]);
+    const summary = section().querySelector('[data-review-claims-summary]')!;
+    expect(
+      Array.from(summary.querySelectorAll('dt')).map((n) => n.textContent)
+    ).toEqual(['Total', 'Verified', 'Needs revision', 'Unreviewed']);
+    expect(
+      Array.from(summary.querySelectorAll('dd')).map((n) => n.textContent)
+    ).toEqual(['3', '1', '1', '1']);
+    await openClaims();
+    const first = claimCard(C1);
+    expect(first.querySelector('.whitespace-pre-wrap')?.textContent).toBe(
+      '  Sales grew\nby ten percent.'
+    );
+    expect(first.getAttribute('data-review-claim-status')).toBe('VERIFIED');
+    expect(within(first).getByText('Verified')).toBeTruthy();
+    expect(within(first).getByText('Evidence: 1')).toBeTruthy();
+    expect(first.textContent).toContain('Bo');
+    expect(
+      claimCard(C2).querySelector('[data-review-claim-finding]')?.textContent
+    ).toBe('Wrong figure.');
+    expect(
+      within(section()).getByText(
+        'Use Request changes to formally send required changes back.'
+      )
+    ).toBeTruthy();
+  });
+
+  it('FCL6/FCL7 evidence opens on demand from the review answer: no source request at all', async () => {
+    const review = reviewIn('IN_REVIEW');
+    withClaims(review, [claimOf(C1, 'Sales grew.')]);
+    await showPackage();
+    await openClaims();
+    const toggle = within(claimCard(C1)).getByRole('button', {
+      name: 'Show evidence',
+    });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(
+      claimCard(C1).querySelector('[data-review-evidence-block]')
+    ).toBeNull();
+    await click(toggle);
+    const evidence = claimCard(C1).querySelector(
+      '[data-review-evidence-block="b1"]'
+    ) as HTMLElement;
+    expect(evidence.getAttribute('data-review-evidence-version')).toBe(
+      uuid(701)
+    );
+    expect(evidence.textContent).toContain(
+      'Weekly report · Spring report · Version 2'
+    );
+    expect(evidence.querySelector('blockquote')?.textContent).toBe(
+      `quote of ${C1}`
+    );
+    expect(evidence.textContent).toContain(`Block of ${C1}.`);
+    expect(sourceCalls()).toEqual([]);
+  });
+
+  it('FCL8 Mark verified sends the status and an empty finding only', async () => {
+    const review = reviewIn('IN_REVIEW');
+    withClaims(review, [claimOf(C1, 'Sales grew.')]);
+    await showPackage();
+    await openClaims();
+    await click(
+      within(claimCard(C1)).getByRole('button', { name: 'Mark verified' })
+    );
+    const form = within(card()).getByRole('form', { name: 'Mark verified' });
+    expect(
+      within(form).getByRole('textbox', { name: 'Finding (optional)' })
+    ).toBeTruthy();
+    await click(within(form).getByRole('button', { name: 'Save as verified' }));
+    expect(
+      claimCalls()
+        .filter((c) => c.method === 'PUT')
+        .map((c) => [c.url, JSON.parse(c.body as string)])
+    ).toEqual([
+      [
+        `/content-studio/reviews/${review.id}/claims/${C1}`,
+        { status: 'VERIFIED', finding: null },
+      ],
+    ]);
+    expect(claimCard(C1).getAttribute('data-review-claim-status')).toBe(
+      'VERIFIED'
+    );
+  });
+
+  it('FCL9 Needs revision needs a finding before it can be saved, and sends it exactly', async () => {
+    const review = reviewIn('IN_REVIEW');
+    withClaims(review, [claimOf(C1, 'Sales grew.')]);
+    await showPackage();
+    await openClaims();
+    await click(
+      within(claimCard(C1)).getByRole('button', { name: 'Needs revision' })
+    );
+    const form = within(card()).getByRole('form', { name: 'Needs revision' });
+    const save = within(form).getByRole('button', {
+      name: 'Save as needs revision',
+    }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    const box = within(form).getByRole('textbox', {
+      name: 'Finding (required)',
+    });
+    fireEvent.change(box, { target: { value: '   ' } });
+    expect(save.disabled).toBe(true);
+    fireEvent.change(box, {
+      target: { value: ' The quote says ten,\nnot twenty. ' },
+    });
+    expect(save.disabled).toBe(false);
+    await click(save);
+    expect(
+      JSON.parse(claimCalls().find((c) => c.method === 'PUT')!.body as string)
+    ).toEqual({
+      status: 'NEEDS_REVISION',
+      finding: ' The quote says ten,\nnot twenty. ',
+    });
+  });
+
+  it('FCL10 Reset to unreviewed sends UNREVIEWED without a finding', async () => {
+    const review = reviewIn('IN_REVIEW');
+    withClaims(review, [claimOf(C1, 'Sales grew.', 'NEEDS_REVISION', 'Why.')]);
+    await showPackage();
+    await openClaims();
+    await click(
+      within(claimCard(C1)).getByRole('button', { name: 'Reset to unreviewed' })
+    );
+    expect(
+      JSON.parse(claimCalls().find((c) => c.method === 'PUT')!.body as string)
+    ).toEqual({ status: 'UNREVIEWED', finding: null });
+    expect(claimCard(C1).getAttribute('data-review-claim-status')).toBe(
+      'UNREVIEWED'
+    );
+  });
+
+  it.each([
+    'REQUESTED',
+    'CHANGES_REQUESTED',
+    'READY_FOR_APPROVAL',
+    'CANCELLED',
+  ])(
+    'FCL11/M21 %s: the claims are readable once opened, with no assessment control',
+    async (state) => {
+      const review = reviewIn(state);
+      withClaims(review, [claimOf(C1, 'Sales grew.', 'VERIFIED')]);
+      await showPackage();
+      // not in review: nothing is loaded until the section is opened
+      expect(claimCalls()).toEqual([]);
+      await openClaims();
+      expect(claimCard(C1)).toBeTruthy();
+      for (const name of [
+        'Mark verified',
+        'Needs revision',
+        'Reset to unreviewed',
+      ]) {
+        expect(
+          within(claimCard(C1)).queryByRole('button', { name })
+        ).toBeNull();
+      }
+      expect(
+        within(claimCard(C1)).getByRole('button', { name: 'Show evidence' })
+      ).toBeTruthy();
+    }
+  );
+
+  it('FCL12/M22 Ready for approval is off, with the reason, while a claim is not verified', async () => {
+    const review = reviewIn('IN_REVIEW');
+    withClaims(review, [claimOf(C1, 'One.', 'VERIFIED'), claimOf(C2, 'Two.')]);
+    await showPackage();
+    expect(ready().disabled).toBe(true);
+    expect(
+      card().querySelector('[data-review-claims-blocking]')?.textContent
+    ).toBe(
+      'Review every grounded claim before marking this revision ready for approval.'
+    );
+    // Request changes and Cancel stay available
+    expect(
+      (
+        within(card()).getByRole('button', {
+          name: 'Request changes',
+        }) as HTMLButtonElement
+      ).disabled
+    ).toBe(false);
+  });
+
+  it('FCL13 every claim verified (or no claims): Ready for approval is on', async () => {
+    const review = reviewIn('IN_REVIEW');
+    withClaims(review, [claimOf(C1, 'One.', 'VERIFIED')]);
+    await showPackage();
+    expect(ready().disabled).toBe(false);
+    expect(card().querySelector('[data-review-claims-blocking]')).toBeNull();
+    await click(ready());
+    expect(state()).toBe('Ready for approval');
+  });
+
+  it('FCL3 a version without grounded claims says so, and can become ready', async () => {
+    const review = reviewIn('IN_REVIEW');
+    withClaims(review, []);
+    await showPackage();
+    expect(ready().disabled).toBe(false);
+    await openClaims();
+    expect(
+      within(section()).getByText(
+        'No grounded claims were recorded in this revision.'
+      )
+    ).toBeTruthy();
+  });
+
+  it('FCL14 a stale page that sends Ready for approval gets the fixed reason from the server', async () => {
+    const review = reviewIn('IN_REVIEW');
+    withClaims(review, [claimOf(C1, 'One.', 'VERIFIED')]);
+    await showPackage();
+    // the server finds a claim no longer verified
+    const original = mockFetch.getMockImplementation()!;
+    mockFetch.mockImplementation(async (url: string, init: RequestInit = {}) =>
+      /ready-for-approval$/.test(url)
+        ? reply(409, { msg: SECRET, code: 'CS_REVIEW_CLAIMS_INCOMPLETE' })
+        : original(url, init)
+    );
+    await click(ready());
+    expect(mockToast).toHaveBeenCalledWith(
+      'Review every grounded claim before marking this revision ready for approval.',
+      'warning'
+    );
+    expect(state()).toBe('In review');
+  });
+
+  it('a refused assessment shows its fixed message and reloads', async () => {
+    const review = reviewIn('IN_REVIEW');
+    withClaims(review, [claimOf(C1, 'One.')]);
+    await showPackage();
+    await openClaims();
+    await click(
+      within(claimCard(C1)).getByRole('button', { name: 'Mark verified' })
+    );
+    failNext = { status: 409, code: 'CS_REVIEW_CLAIM_MUTATION_FORBIDDEN' };
+    await click(
+      within(
+        within(card()).getByRole('form', { name: 'Mark verified' })
+      ).getByRole('button', { name: 'Save as verified' })
+    );
+    expect(mockToast).toHaveBeenCalledWith(
+      'Claims can only be assessed while the review is in review.',
+      'warning'
+    );
+  });
+
+  it('FCL2 a design review has no Claims & evidence and asks for none', async () => {
+    reviews.push({
+      ...reviewOf('DESIGN_REVISION', DESIGN_REV_1, 1),
+      state: 'IN_REVIEW',
+    });
+    await show(
+      h(ContentStudioReviewStatus, {
+        targetType: 'DESIGN_REVISION',
+        revisionId: DESIGN_REV_1,
+        revisionNumber: 1,
+      })
+    );
+    expect(
+      within(card()).queryByRole('region', { name: 'Claims & evidence' })
+    ).toBeNull();
+    expect(claimCalls()).toEqual([]);
+    expect(ready().disabled).toBe(false);
+  });
+
+  it("FCL15/M25 each version's review shows its own claims: a newer version never replaces them", async () => {
+    const four = reviewIn('IN_REVIEW', PKG_REV_4, 4);
+    const five = reviewIn('IN_REVIEW', PKG_REV_5, 5);
+    withClaims(four, [claimOf(C1, 'Claim of version 4.')]);
+    withClaims(five, [claimOf(C2, 'Claim of version 5.')]);
+    await showPackage(PKG_REV_4, 4);
+    await openClaims();
+    expect(section().textContent).toContain('Claim of version 4.');
+    expect(section().textContent).not.toContain('Claim of version 5.');
+    expect(claimCalls().map((c) => c.url)).toEqual([
+      `/content-studio/reviews/${four.id}/claims`,
+    ]);
+  });
+
+  it('FCL16/M23/M24 the claim UI reads verified data only, sends status and finding only, and grounding authoring has no review words', () => {
+    const claimsUi = read('content-studio.review.claims.tsx');
+    expect(claimsUi).not.toMatch(
+      /sources\.api|useContentStudioSource|fetch\(|organizationId|claimContentHash|reviewedBy:|userId/
+    );
+    const grounding = read('content-studio.grounding.tsx');
+    expect(grounding).not.toMatch(
+      /review|Verified|Needs revision|Unreviewed|claims\.api/i
+    );
   });
 });
