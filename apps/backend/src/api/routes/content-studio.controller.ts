@@ -41,6 +41,7 @@ import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/d
 import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
 import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-style-preset.service';
 import { ContentStudioDesignLayoutPatternService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-layout-pattern.service';
+import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-page-set.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -125,6 +126,11 @@ import {
   UpdateContentStudioDesignLayoutPatternDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-layout-pattern.dto';
 import {
+  CreateContentStudioDesignPageSetDto,
+  ListContentStudioDesignPageSetsDto,
+  UpdateContentStudioDesignPageSetDto,
+} from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-page-set.dto';
+import {
   RenderAllContentStudioDesignDto,
   RenderContentStudioDesignDto,
   UploadContentStudioRenderFontDto,
@@ -173,7 +179,8 @@ export class ContentStudioController {
     private _contentStudioDesignReferenceService: ContentStudioDesignReferenceService,
     private _contentStudioDesignTemplateService: ContentStudioDesignTemplateService,
     private _contentStudioDesignStylePresetService: ContentStudioDesignStylePresetService,
-    private _contentStudioDesignLayoutPatternService: ContentStudioDesignLayoutPatternService
+    private _contentStudioDesignLayoutPatternService: ContentStudioDesignLayoutPatternService,
+    private _contentStudioDesignPageSetService: ContentStudioDesignPageSetService
   ) {}
 
   @Get('/projects')
@@ -902,12 +909,23 @@ export class ContentStudioController {
     });
   }
 
+  // A new design from its first document, or from a page set (P4-17), whose
+  // pages the page set service makes and hands to the design service
   @Post('/designs')
   createDesign(
     @GetOrgFromRequest() org: Organization,
     @GetUserFromRequest() user: User,
     @Body() body: CreateContentStudioDesignDto
   ) {
+    if (body.pageSetId !== undefined) {
+      return this._contentStudioDesignPageSetService.createDesignFromPageSet({
+        organizationId: org.id,
+        userId: user.id,
+        name: body.name,
+        pageSetId: body.pageSetId,
+        content: body.content,
+      });
+    }
     return this._contentStudioDesignService.createDesign({
       organizationId: org.id,
       userId: user.id,
@@ -1292,6 +1310,70 @@ export class ContentStudioController {
       org.id,
       id
     );
+  }
+
+  // Design page sets: the built-in ones (code, read-only) and the
+  // organization's own, reusable page structures (names, sizes, literal
+  // backgrounds) a new design starts from or the editor adds to a draft as
+  // blank pages. Every member may read, create, change, archive and restore
+  // them. The organization and the user come from the request only; none
+  // touches an existing design, and none deletes
+  @Get('/design-page-sets')
+  listDesignPageSets(
+    @GetOrgFromRequest() org: Organization,
+    @Query() query: ListContentStudioDesignPageSetsDto
+  ) {
+    return this._contentStudioDesignPageSetService.listPageSets({
+      organizationId: org.id,
+      archived: query.archived,
+      page: query.page,
+    });
+  }
+
+  @Post('/design-page-sets')
+  createDesignPageSet(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Body() body: CreateContentStudioDesignPageSetDto
+  ) {
+    return this._contentStudioDesignPageSetService.createPageSet({
+      organizationId: org.id,
+      userId: user.id,
+      name: body.name,
+      description: body.description,
+      content: body.content,
+    });
+  }
+
+  @Patch('/design-page-sets/:id')
+  updateDesignPageSet(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Body() body: UpdateContentStudioDesignPageSetDto
+  ) {
+    return this._contentStudioDesignPageSetService.updatePageSet(org.id, id, {
+      name: body.name,
+      description: body.description,
+      content: body.content,
+    });
+  }
+
+  @Post('/design-page-sets/:id/archive')
+  @HttpCode(200)
+  archiveDesignPageSet(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioDesignPageSetService.archivePageSet(org.id, id);
+  }
+
+  @Post('/design-page-sets/:id/restore')
+  @HttpCode(200)
+  restoreDesignPageSet(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioDesignPageSetService.restorePageSet(org.id, id);
   }
 
   // Renders one page of exactly the revision asked for (never the latest) to

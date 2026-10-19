@@ -1619,7 +1619,7 @@ describe('Editor ergonomics: static boundaries', () => {
     );
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(112);
+    ).toHaveLength(117);
     const api = source('content-studio.designs.api.ts');
     expect(api).not.toMatch(
       // (thumbnail is the Media list's own field, from P4-08)

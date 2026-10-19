@@ -32,6 +32,7 @@ import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/d
 import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
 import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-style-preset.service';
 import { ContentStudioDesignLayoutPatternService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-layout-pattern.service';
+import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-page-set.service';
 import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
 import {
   CreateContentStudioExpertiseProfileDto,
@@ -105,7 +106,8 @@ const setup = () => {
     {} as ContentStudioDesignReferenceService,
     {} as ContentStudioDesignTemplateService,
     {} as ContentStudioDesignStylePresetService,
-    {} as ContentStudioDesignLayoutPatternService
+    {} as ContentStudioDesignLayoutPatternService,
+    {} as ContentStudioDesignPageSetService
   );
   return { profiles, controller, result };
 };

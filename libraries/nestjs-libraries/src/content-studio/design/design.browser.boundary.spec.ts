@@ -136,6 +136,9 @@ describe('design modules: browser-safe boundary', () => {
       // P4-15: the pure Layout Pattern v1 parser, extraction and placement;
       // its hashing and built-ins stay server-side
       'libraries/nestjs-libraries/src/content-studio/design/design.layout.pattern.ts',
+      // P4-17: the pure Page Set v1 parser, extraction and instantiation, and
+      // the canvas presets; its hashing and built-ins stay server-side
+      'libraries/nestjs-libraries/src/content-studio/design/design.page.set.ts',
       // P4-13: the pure Style Preset v1 parser, extraction and apply; its
       // hashing and built-ins stay server-side
       'libraries/nestjs-libraries/src/content-studio/design/design.style.preset.ts',

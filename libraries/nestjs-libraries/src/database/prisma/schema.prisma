@@ -74,6 +74,7 @@ model Organization {
   contentStudioDesignTemplateRevisions   ContentStudioDesignTemplateRevision[]
   contentStudioDesignStylePresets        ContentStudioDesignStylePreset[]
   contentStudioDesignLayoutPatterns      ContentStudioDesignLayoutPattern[]
+  contentStudioDesignPageSets            ContentStudioDesignPageSet[]
 
   @@index([apiKey])
   @@index([streakSince])
@@ -174,6 +175,7 @@ model User {
   contentStudioDesignTemplateRevisions   ContentStudioDesignTemplateRevision[]   @relation("ContentStudioDesignTemplateRevisionCreatedBy")
   contentStudioDesignStylePresets        ContentStudioDesignStylePreset[]        @relation("ContentStudioDesignStylePresetCreatedBy")
   contentStudioDesignLayoutPatterns      ContentStudioDesignLayoutPattern[]      @relation("ContentStudioDesignLayoutPatternCreatedBy")
+  contentStudioDesignPageSets            ContentStudioDesignPageSet[]            @relation("ContentStudioDesignPageSetCreatedBy")
 
   @@unique([email, providerName])
   @@index([lastReadNotifications])
@@ -2487,6 +2489,32 @@ model ContentStudioDesignLayoutPattern {
   updatedAt      DateTime     @updatedAt
   organization   Organization @relation(fields: [organizationId], references: [id])
   createdBy      User         @relation("ContentStudioDesignLayoutPatternCreatedBy", fields: [createdById], references: [id])
+
+  @@unique([id, organizationId])
+  @@index([organizationId, archivedAt])
+  @@index([createdById])
+}
+
+// A reusable page set of one organization (P4-17): Page Set v1 content (the
+// names, sizes and literal backgrounds of some pages, in order; no ids,
+// layers, Media or Brand Kit) as canonical JSON with its SHA-256. Using one
+// makes ordinary blank pages under new ids: no design or revision refers to
+// a page set, and changing or archiving one reaches no design made with it.
+// Archiving hides it from the pickers; there is no delete
+model ContentStudioDesignPageSet {
+  id             String       @id @default(uuid())
+  organizationId String
+  name           String
+  description    String?
+  schemaVersion  Int
+  content        String
+  contentHash    String
+  archivedAt     DateTime?
+  createdById    String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdBy      User         @relation("ContentStudioDesignPageSetCreatedBy", fields: [createdById], references: [id])
 
   @@unique([id, organizationId])
   @@index([organizationId, archivedAt])

@@ -33,6 +33,7 @@ import { ContentStudioDesignReferenceService } from '@gitroom/nestjs-libraries/d
 import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
 import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-style-preset.service';
 import { ContentStudioDesignLayoutPatternService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-layout-pattern.service';
+import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-page-set.service';
 import {
   CreateContentStudioDesignDto,
   CreateContentStudioDesignRevisionDto,
@@ -112,7 +113,8 @@ const setup = () => {
     {} as ContentStudioDesignReferenceService,
     {} as ContentStudioDesignTemplateService,
     {} as ContentStudioDesignStylePresetService,
-    {} as ContentStudioDesignLayoutPatternService
+    {} as ContentStudioDesignLayoutPatternService,
+    {} as ContentStudioDesignPageSetService
   );
   return { designs, controller, result };
 };
@@ -145,11 +147,13 @@ describe('ContentStudioController design routes', () => {
       // P4-08: the Brand Kit and Media design references live elsewhere;
       // P4-11: so do the design template routes (template controller spec),
       // P4-13: and the style preset routes (style preset controller spec),
-      // P4-15: and the layout pattern routes (layout pattern controller spec)
+      // P4-15: and the layout pattern routes (layout pattern controller spec),
+      // P4-17: and the page set routes (page set controller spec)
       .filter((name) => !/DesignReference$/.test(name))
       .filter((name) => !/Template/.test(name))
       .filter((name) => !/StylePreset/.test(name))
-      .filter((name) => !/LayoutPattern/.test(name));
+      .filter((name) => !/LayoutPattern/.test(name))
+      .filter((name) => !/PageSet/.test(name));
     expect(names.map(route).sort()).toEqual([
       'GET /designs',
       'GET /designs/:id',

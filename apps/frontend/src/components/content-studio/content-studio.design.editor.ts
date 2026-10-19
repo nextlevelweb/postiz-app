@@ -29,6 +29,10 @@ import {
   designStylePresetKindOf,
 } from '@gitroom/nestjs-libraries/content-studio/design/design.style.preset';
 import {
+  ContentStudioDesignPageSetContentV1,
+  instantiateContentStudioDesignPageSet,
+} from '@gitroom/nestjs-libraries/content-studio/design/design.page.set';
+import {
   ContentStudioDesignLayoutPatternContentV1,
   instantiateContentStudioDesignLayoutPattern,
 } from '@gitroom/nestjs-libraries/content-studio/design/design.layout.pattern';
@@ -59,7 +63,8 @@ export type ContentStudioDesignEditorErrorCode =
   | 'IMAGE_MASK_INVALID'
   | 'LAYOUT_BRAND_UNAVAILABLE'
   | 'INVALID_TARGET_SIZE'
-  | 'VARIANT_OUT_OF_LIMITS';
+  | 'VARIANT_OUT_OF_LIMITS'
+  | 'PAGE_SET_OUT_OF_LIMITS';
 
 // A code only: the UI shows its own fixed text for it
 export class ContentStudioDesignEditorError extends Error {
@@ -446,6 +451,42 @@ export const createContentStudioDesignPageVariant = (
     target,
   ]);
   return { document: created.document, pageId: created.pageIds[0] };
+};
+
+// ---------------------------------------------------------------------------
+// Page sets (P4-17)
+// ---------------------------------------------------------------------------
+
+// The pages of a page set added after the last page of the design, in the
+// set's order: ordinary blank pages, each with a new page id, the set's
+// name, size and background, and no layers. Nothing of the page set stays
+// in the design. All or nothing: more than 25 pages in all (PAGE_LIMIT), or
+// a result that is not valid Design Document v1 (PAGE_SET_OUT_OF_LIMITS),
+// adds no page
+export const addContentStudioDesignPageSet = (
+  document: ContentStudioDesignDocumentV1,
+  content: ContentStudioDesignPageSetContentV1
+) => {
+  if (
+    !content.pages.length ||
+    document.pages.length + content.pages.length > DESIGN_PAGES_MAX
+  ) {
+    throw fail('PAGE_LIMIT');
+  }
+  const taken = pageIds(document);
+  const added = instantiateContentStudioDesignPageSet(content, () =>
+    uniqueId(newContentStudioDesignPageId, taken)
+  );
+  const next = withPages(document, [...document.pages, ...added]);
+  try {
+    parseContentStudioDesignDocument(next);
+  } catch (err) {
+    if (err instanceof ContentStudioDesignDocumentError) {
+      throw fail('PAGE_SET_OUT_OF_LIMITS');
+    }
+    throw err;
+  }
+  return { document: next, pageIds: added.map((page) => page.id) };
 };
 
 // Never the last page. The page now at the same position is selected next,

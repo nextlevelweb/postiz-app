@@ -8,6 +8,7 @@ import type {
   ContentStudioDesignBrandKitRef,
   ContentStudioDesignDocumentV1,
 } from '@gitroom/nestjs-libraries/content-studio/design/design.document';
+import type { ContentStudioDesignCanvasPreset } from '@gitroom/nestjs-libraries/content-studio/design/design.page.set';
 import {
   ContentStudioRequestError,
   request,
@@ -157,16 +158,12 @@ export interface ContentStudioRenderedMedia {
 // The limit the API enforces
 export const DESIGN_NAME_MAX = 200;
 
-// The canvas sizes a new design can start from: nothing else is offered
-export const DESIGN_CANVAS_PRESETS = [
-  { id: 'square', label: 'Square', width: 1080, height: 1080 },
-  { id: 'portrait', label: 'Portrait', width: 1080, height: 1350 },
-  { id: 'story', label: 'Story', width: 1080, height: 1920 },
-  { id: 'landscape', label: 'Landscape', width: 1200, height: 628 },
-] as const;
-
-export type ContentStudioDesignCanvasPreset =
-  (typeof DESIGN_CANVAS_PRESETS)[number];
+// The canvas sizes a new design can start from: nothing else is offered.
+// One list, shared with the size variants and the built-in page sets
+export {
+  DESIGN_CANVAS_PRESETS,
+  type ContentStudioDesignCanvasPreset,
+} from '@gitroom/nestjs-libraries/content-studio/design/design.page.set';
 
 export { newContentStudioDesignPageId };
 
@@ -362,6 +359,20 @@ export const useContentStudioDesignActions = () => {
           {
             method: 'POST',
             body: JSON.stringify({ name, content }),
+          }
+        );
+        await refresh();
+        return created;
+      },
+      // a new design from a page set, by its id only: the server makes its
+      // blank pages (P4-17); the browser sends no pages
+      createDesignFromPageSet: async (name: string, pageSetId: string) => {
+        const created = await request<ContentStudioDesignSummary>(
+          fetch,
+          DESIGNS_PATH,
+          {
+            method: 'POST',
+            body: JSON.stringify({ name, pageSetId }),
           }
         );
         await refresh();

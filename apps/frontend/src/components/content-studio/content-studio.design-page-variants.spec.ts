@@ -696,9 +696,11 @@ describe('Size variant boundaries', () => {
       ),
       'utf8'
     );
-    expect(schema).not.toMatch(
-      /model \w*(Campaign|Variant|PageLink|PageSet)\w* \{/
-    );
+    // P4-17 adds the one page set recipe model; still no link or campaign
+    expect(schema).not.toMatch(/model \w*(Campaign|Variant|PageLink)\w* \{/);
+    expect(schema.match(/model \w*PageSet\w* \{/g)).toEqual([
+      'model ContentStudioDesignPageSet {',
+    ]);
   });
 
   it('P416-7/P416-9/P416-10/P416-11 pure: no Fabric, network, AI, Media read or Brand Kit lookup', () => {
@@ -710,13 +712,14 @@ describe('Size variant boundaries', () => {
     expect(variants()).toContain('parseContentStudioDesignDocument(next)');
   });
 
-  it('P416-8/P416-14 no variant route: the API keeps its 112 routes', () => {
+  // P4-17 adds the 5 page set routes: still no variant route
+  it('P416-8/P416-14 no variant route: the API keeps its routes (112, 117 with page sets)', () => {
     const controller = code(
       'apps/backend/src/api/routes/content-studio.controller.ts'
     );
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(112);
+    ).toHaveLength(117);
     expect(controller).not.toMatch(/variant|campaign|resize|responsive/i);
   });
 

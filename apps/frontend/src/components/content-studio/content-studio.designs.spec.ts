@@ -894,10 +894,13 @@ describe('Creative Studio: create a design', () => {
     expect(createPosts()).toEqual([]);
   });
 
+  // P4-17: a design can also start from a page set (one canvas size first)
   it('DC-UI3/DC-UI4 four fixed canvas presets, Square by default', async () => {
     await renderLibrary();
     const form = await openCreate();
     expect(presets(form)).toEqual([
+      'One canvas size',
+      'A page set',
       'Square 1080 × 1080',
       'Portrait 1080 × 1350',
       'Story 1080 × 1920',
@@ -907,6 +910,7 @@ describe('Creative Studio: create a design', () => {
       .getAllByRole('radio')
       .filter((r) => (r as HTMLInputElement).checked);
     expect(checked.map((r) => (r as HTMLInputElement).value)).toEqual([
+      'size',
       'square',
     ]);
     expect(within(form).queryByRole('spinbutton')).toBeNull();
@@ -2310,7 +2314,9 @@ describe('Creative Studio: frontend boundaries', () => {
         '/content-studio/media/${encodeURIComponent(mediaId)}/design-ref',
       ].sort()
     );
+    // P4-17: a new design from a page set is a second POST to /designs
     expect(api.match(/method: '(\w+)'/g)).toEqual([
+      "method: 'POST'",
       "method: 'POST'",
       "method: 'PATCH'",
       "method: 'POST'",
@@ -2338,6 +2344,8 @@ describe('Creative Studio: frontend boundaries', () => {
       Array.from(api.matchAll(/JSON\.stringify\(([^)]*)\)/g), (m) => m[1])
     ).toEqual([
       '{ name, content }',
+      // P4-17: a page set by its id only, never pages
+      '{ name, pageSetId }',
       '{ name }',
       '{ revisionId, pageId }',
       '{ baseRevisionNumber, content }',

@@ -18,11 +18,14 @@ import {
   ContentStudioDesignSummary,
   DESIGN_CANVAS_PRESETS,
   DESIGN_NAME_MAX,
+  designErrorCode,
   designErrorMessage,
   newContentStudioDesignDocument,
   useContentStudioDesignActions,
   useContentStudioDesigns,
 } from '@gitroom/frontend/components/content-studio/content-studio.designs.api';
+import { designPageSetErrorMessage } from '@gitroom/frontend/components/content-studio/content-studio.design-page-sets.api';
+import { DesignPageSetPicker } from '@gitroom/frontend/components/content-studio/content-studio.design-page-sets';
 
 export const DESIGN_LIBRARY_PATH = '/content-studio/designs';
 // the template library (P4-11): new designs from a template start there
@@ -38,31 +41,39 @@ const validName = (name: string) => {
   );
 };
 
-// A new design: its name and one of the fixed canvas sizes. It starts as one
-// empty white page without a Brand Kit, and opens once it exists; nothing is
-// rendered
+// A new design: its name and one of the fixed canvas sizes, or a page set
+// (P4-17). A canvas size starts it as one empty white page; a page set as
+// its blank pages, which the server makes from the page set's id. No Brand
+// Kit either way; it opens once it exists, and nothing is rendered
 const CreateDesignForm: FC<{ close: () => void }> = ({ close }) => {
   const t = useT();
   const toaster = useToaster();
   const router = useRouter();
-  const { createDesign } = useContentStudioDesignActions();
+  const { createDesign, createDesignFromPageSet } =
+    useContentStudioDesignActions();
   const [name, setName] = useState('');
   const [presetId, setPresetId] = useState<string>(DESIGN_CANVAS_PRESETS[0].id);
+  const [start, setStart] = useState<'size' | 'pageSet'>('size');
+  const [pageSetId, setPageSetId] = useState<string | null>(null);
+  const ready = validName(name) && (start === 'size' || !!pageSetId);
   const { busy, run } = useSingleFlight();
 
   const submit = useCallback(
     async (e: FormEvent) => {
       e.preventDefault();
       const preset = DESIGN_CANVAS_PRESETS.find((p) => p.id === presetId);
-      if (!validName(name) || !preset) {
+      if (!ready || !preset) {
         return;
       }
       await run('create', async () => {
         try {
-          const created = await createDesign(
-            name.trim(),
-            newContentStudioDesignDocument(preset)
-          );
+          const created =
+            start === 'pageSet' && pageSetId
+              ? await createDesignFromPageSet(name.trim(), pageSetId)
+              : await createDesign(
+                  name.trim(),
+                  newContentStudioDesignDocument(preset)
+                );
           toaster.show(
             t('content_studio_design_created', 'Design created.'),
             'success'
@@ -71,11 +82,32 @@ const CreateDesignForm: FC<{ close: () => void }> = ({ close }) => {
           router.push(designPagePath(created.id));
         } catch (err) {
           // the input stays as typed, to correct and try again
-          toaster.show(designErrorMessage(t, err, 'create'), 'warning');
+          const code = designErrorCode(err);
+          toaster.show(
+            start === 'pageSet' &&
+              (code === 'CS_NOT_FOUND' ||
+                String(code).startsWith('CS_DESIGN_PAGE_SET_'))
+              ? designPageSetErrorMessage(t, err)
+              : designErrorMessage(t, err, 'create'),
+            'warning'
+          );
         }
       });
     },
-    [name, presetId, run, createDesign, toaster, close, router, t]
+    [
+      ready,
+      name,
+      presetId,
+      start,
+      pageSetId,
+      run,
+      createDesign,
+      createDesignFromPageSet,
+      toaster,
+      close,
+      router,
+      t,
+    ]
   );
 
   return (
@@ -92,40 +124,65 @@ const CreateDesignForm: FC<{ close: () => void }> = ({ close }) => {
         onChange={(e) => setName(e.target.value)}
         autoFocus
       />
-      <fieldset className="flex flex-col gap-[8px]">
+      <fieldset className="flex flex-wrap gap-[16px]">
         <legend className="text-[14px] mb-[6px]">
-          {t('content_studio_design_canvas', 'Canvas size')}
+          {t('content_studio_design_start_with', 'Start with')}
         </legend>
-        {DESIGN_CANVAS_PRESETS.map((preset) => (
-          <label
-            key={preset.id}
-            className="flex items-center gap-[8px] cursor-pointer"
-          >
-            <input
-              type="radio"
-              name="preset"
-              value={preset.id}
-              checked={presetId === preset.id}
-              onChange={() => setPresetId(preset.id)}
-            />
-            <span>
-              {t(`content_studio_design_preset_${preset.id}`, preset.label)}{' '}
-              <span className="text-textItemBlur">
-                {preset.width} × {preset.height}
-              </span>
-            </span>
-          </label>
-        ))}
+        <label className="flex items-center gap-[8px] cursor-pointer">
+          <input
+            type="radio"
+            name="start"
+            value="size"
+            checked={start === 'size'}
+            onChange={() => setStart('size')}
+          />
+          {t('content_studio_design_start_size', 'One canvas size')}
+        </label>
+        <label className="flex items-center gap-[8px] cursor-pointer">
+          <input
+            type="radio"
+            name="start"
+            value="pageSet"
+            checked={start === 'pageSet'}
+            onChange={() => setStart('pageSet')}
+          />
+          {t('content_studio_design_start_page_set', 'A page set')}
+        </label>
       </fieldset>
+      {start === 'pageSet' ? (
+        <DesignPageSetPicker value={pageSetId} onChange={setPageSetId} />
+      ) : (
+        <fieldset className="flex flex-col gap-[8px]">
+          <legend className="text-[14px] mb-[6px]">
+            {t('content_studio_design_canvas', 'Canvas size')}
+          </legend>
+          {DESIGN_CANVAS_PRESETS.map((preset) => (
+            <label
+              key={preset.id}
+              className="flex items-center gap-[8px] cursor-pointer"
+            >
+              <input
+                type="radio"
+                name="preset"
+                value={preset.id}
+                checked={presetId === preset.id}
+                onChange={() => setPresetId(preset.id)}
+              />
+              <span>
+                {t(`content_studio_design_preset_${preset.id}`, preset.label)}{' '}
+                <span className="text-textItemBlur">
+                  {preset.width} × {preset.height}
+                </span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+      )}
       <div className="flex gap-[8px] justify-end">
         <Button type="button" secondary onClick={close}>
           {t('cancel', 'Cancel')}
         </Button>
-        <Button
-          type="submit"
-          loading={!!busy}
-          disabled={!!busy || !validName(name)}
-        >
+        <Button type="submit" loading={!!busy} disabled={!!busy || !ready}>
           {t('content_studio_create_design', 'Create design')}
         </Button>
       </div>

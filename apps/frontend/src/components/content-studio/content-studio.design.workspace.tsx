@@ -83,6 +83,7 @@ import { ContentStudioDesignCanvas } from '@gitroom/frontend/components/content-
 import { SaveAsTemplateForm } from '@gitroom/frontend/components/content-studio/content-studio.design-templates';
 import { DesignStylePresets } from '@gitroom/frontend/components/content-studio/content-studio.design-style-presets';
 import { DesignLayoutPatterns } from '@gitroom/frontend/components/content-studio/content-studio.design-layout-patterns';
+import { DesignPageSets } from '@gitroom/frontend/components/content-studio/content-studio.design-page-sets';
 
 // The Creative Studio workspace of one design: its pages and layers, a live
 // structural preview, an inspector, the revision history, and server renders
@@ -1322,6 +1323,18 @@ export const DesignRevisionView: FC<{
               onInserted={(ids) => {
                 setChosenIds(ids);
                 setPrimaryId(ids[ids.length - 1] ?? null);
+              }}
+            />
+          )}
+          {/* page sets (P4-17): add blank pages from one, or save this
+              structure; the first added page opens with nothing selected */}
+          {edit && (
+            <DesignPageSets
+              editor={edit.editor}
+              document={document}
+              onAdded={(ids) => {
+                setPageId(ids[0]);
+                setLayerId(null);
               }}
             />
           )}
