@@ -1,4 +1,5 @@
 import { HttpException, Injectable } from '@nestjs/common';
+import { randomBytes } from 'crypto';
 import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.repository';
 import { ContentStudioWritingProfileRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.writing-profile.repository';
 import { ContentStudioEditorialPolicyRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.repository';
@@ -31,18 +32,26 @@ import {
   ContentStudioAIWritingContext,
   ContentStudioAIWritingSource,
   ContentStudioAIWritingTask,
+  contentStudioAISourceBlockRef,
   contentStudioAISourceContextBytes,
   contentStudioAIWritingPromptBytes,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.writing.prompt';
 import {
+  ContentStudioAIGroundingError,
+  ContentStudioAIProposedClaim,
   ContentStudioAIThreadProposalItem,
+  parseContentStudioAIGroundedItemProposal,
+  parseContentStudioAIGroundedThreadProposal,
   parseContentStudioAIItemProposal,
   parseContentStudioAIThreadProposal,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.writing.proposal';
 import {
-  ContentPackageDraftV1,
+  ContentPackageClaimV2,
+  ContentPackageDraft,
   parseContentPackageDraft,
+  replaceContentPackageItemClaims,
 } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
+import { ContentStudioSourceBlock } from '@gitroom/nestjs-libraries/content-studio/sources/source.content';
 import { parseVerifiedContentStudioWritingProfileRevision } from '@gitroom/nestjs-libraries/content-studio/editorial/writing.profile.revision';
 import { parseVerifiedContentStudioEditorialPolicyRevision } from '@gitroom/nestjs-libraries/content-studio/editorial/editorial.policy.revision';
 import { parseVerifiedContentStudioAudienceProfileRevision } from '@gitroom/nestjs-libraries/content-studio/editorial/audience.profile.revision';
@@ -127,6 +136,14 @@ const sourceContextTooLarge = () =>
     400,
     'CS_AI_SOURCE_CONTEXT_TOO_LARGE',
     'The selected source context is too large.'
+  );
+// The suggestion named source material that was not given, or quoted words
+// its block does not hold: refused as a whole, never partly kept
+const groundingInvalid = () =>
+  fail(
+    502,
+    'CS_AI_GROUNDING_INVALID',
+    'The AI suggestion cited source material that does not match the selected sources.'
   );
 const sourceIntegrityError = () =>
   fail(
@@ -239,6 +256,9 @@ const PROVIDER_FAILURES: Record<
 };
 
 const fromAIError = (err: unknown) => {
+  if (err instanceof ContentStudioAIGroundingError) {
+    return groundingInvalid();
+  }
   if (err instanceof ContentStudioAIExecutionError) {
     return EXECUTION_FAILURES[err.code]();
   }
@@ -381,27 +401,92 @@ const assertComplete = (result: ContentStudioAITextResult) => {
 };
 
 // The draft with the suggested texts in place must still be a valid draft
-// (its size limit included), or the suggestion could never be saved
+// (its size limit included), or the suggestion could never be saved. The
+// claims of the items it replaces go with their old text; the suggested
+// claims take their place, and must fit the draft too
 const assertApplicable = (
-  draft: ContentPackageDraftV1,
-  texts: ContentStudioAIThreadProposalItem[]
+  draft: ContentPackageDraft,
+  texts: ContentStudioAIThreadProposalItem[],
+  claims: ContentPackageClaimV2[] = []
 ) => {
-  try {
-    parseContentPackageDraft({
-      ...draft,
-      copy: {
-        global: {
-          thread: draft.copy.global.thread.map((item) => {
-            const proposed = texts.find((entry) => entry.itemId === item.id);
-            return proposed ? { ...item, text: proposed.text } : item;
-          }),
-        },
+  const withTexts = {
+    ...draft,
+    copy: {
+      global: {
+        thread: draft.copy.global.thread.map((item) => {
+          const proposed = texts.find((entry) => entry.itemId === item.id);
+          return proposed ? { ...item, text: proposed.text } : item;
+        }),
       },
-    });
+    },
+  } as ContentPackageDraft;
+  try {
+    parseContentPackageDraft(withTexts);
   } catch {
     throw new ContentStudioAIProviderError('INVALID_RESPONSE');
   }
+  try {
+    parseContentPackageDraft(
+      replaceContentPackageItemClaims(
+        withTexts,
+        texts.map((entry) => entry.itemId),
+        claims
+      )
+    );
+  } catch {
+    throw new ContentStudioAIGroundingError();
+  }
 };
+
+// A new claim id, c_ and 16 characters from the server's random source
+const claimId = () => `c_${randomBytes(12).toString('base64url')}`;
+
+// Every block the prompt showed, by its reference, with the exact version it
+// came from. Only these can be evidence
+const groundingBlocks = (sources: ResolvedSource[]) =>
+  new Map<string, { source: ResolvedSource; block: ContentStudioSourceBlock }>(
+    sources.flatMap((source, sourceIndex) =>
+      source.content.blocks.map(
+        (block, blockIndex) =>
+          [
+            contentStudioAISourceBlockRef(sourceIndex, blockIndex),
+            { source, block },
+          ] as const
+      )
+    )
+  );
+
+// The provider's claims for one item as claims of the draft: each reference
+// replaced by the exact source, version, hash and block it stands for, each
+// quote checked to be words of that block. Anything unknown or not matching
+// refuses the whole answer
+const toClaims = (
+  proposed: ContentStudioAIProposedClaim[],
+  threadItemId: string,
+  blocks: ReturnType<typeof groundingBlocks>
+): ContentPackageClaimV2[] =>
+  proposed.map((claim) => ({
+    id: claimId(),
+    threadItemId,
+    text: claim.text,
+    evidence: claim.evidence.map((entry) => {
+      const found = blocks.get(entry.ref);
+      if (
+        !found ||
+        (entry.quote !== null && !found.block.text.includes(entry.quote))
+      ) {
+        throw new ContentStudioAIGroundingError();
+      }
+      return {
+        sourceId: found.source.sourceId,
+        versionId: found.source.versionId,
+        versionNumber: found.source.versionNumber,
+        contentHash: found.source.contentHash,
+        blockId: found.block.id,
+        quote: entry.quote,
+      };
+    }),
+  }));
 
 // AI writing proposals for a package: what one AI action suggests for an
 // item or the whole thread, returned for the user to review. Nothing here
@@ -414,7 +499,12 @@ const assertApplicable = (
 // versions, and the prompt is built from exactly their content. Sources are
 // used only when the user selects them, as stored: nothing is fetched,
 // refreshed or searched here, and using a source says nothing about whether
-// its text is true. The provider is reached only through
+// its text is true. With sources, the answer also lists the claims of the
+// suggested text with the blocks that support them; they are answered as
+// grounding.claims only after every block and quote is matched to exactly the
+// versions given, and they enter the draft only when the user accepts the
+// suggestion (the draft save checks them again). Selected sources alone never
+// become claims. The provider is reached only through
 // ContentStudioAIExecutionService, with the connection and model the user
 // chose and no fallback
 @Injectable()
@@ -468,6 +558,7 @@ export class ContentStudioAIWritingService {
     }
 
     let text = '';
+    let claims: ContentPackageClaimV2[] = [];
     const { operationId, provenance } = await this.run(
       input,
       selection,
@@ -480,17 +571,30 @@ export class ContentStudioAIWritingService {
       },
       { itemId },
       ITEM_MAX_OUTPUT_TOKENS,
-      (result) => {
+      (result, sources) => {
         assertComplete(result);
-        const proposed = parseContentStudioAIItemProposal(result.text);
-        assertApplicable(draft, [{ itemId, text: proposed }]);
-        text = proposed;
+        if (!sources.length) {
+          const proposed = parseContentStudioAIItemProposal(result.text);
+          assertApplicable(draft, [{ itemId, text: proposed }]);
+          text = proposed;
+          return;
+        }
+        const proposed = parseContentStudioAIGroundedItemProposal(result.text);
+        const grounded = toClaims(
+          proposed.claims,
+          itemId,
+          groundingBlocks(sources)
+        );
+        assertApplicable(draft, [{ itemId, text: proposed.text }], grounded);
+        text = proposed.text;
+        claims = grounded;
       }
     );
     return {
       operationId,
       baseDraftVersion: selection.baseDraftVersion,
       proposal: { type: 'item' as const, itemId, text },
+      grounding: { claims },
       provenance,
     };
   }
@@ -519,23 +623,43 @@ export class ContentStudioAIWritingService {
     const itemIds = items.map((item) => item.id);
 
     let proposed: ContentStudioAIThreadProposalItem[] = [];
+    let claims: ContentPackageClaimV2[] = [];
     const { operationId, provenance } = await this.run(
       input,
       selection,
       { kind: 'generate_thread', items, instruction: selection.instruction },
       {},
       THREAD_MAX_OUTPUT_TOKENS,
-      (result) => {
+      (result, sources) => {
         assertComplete(result);
-        const parsed = parseContentStudioAIThreadProposal(result.text, itemIds);
-        assertApplicable(draft, parsed);
-        proposed = parsed;
+        if (!sources.length) {
+          const parsed = parseContentStudioAIThreadProposal(
+            result.text,
+            itemIds
+          );
+          assertApplicable(draft, parsed);
+          proposed = parsed;
+          return;
+        }
+        const parsed = parseContentStudioAIGroundedThreadProposal(
+          result.text,
+          itemIds
+        );
+        const blocks = groundingBlocks(sources);
+        const grounded = parsed.flatMap((item) =>
+          toClaims(item.claims, item.itemId, blocks)
+        );
+        const texts = parsed.map(({ itemId, text }) => ({ itemId, text }));
+        assertApplicable(draft, texts, grounded);
+        proposed = texts;
+        claims = grounded;
       }
     );
     return {
       operationId,
       baseDraftVersion: selection.baseDraftVersion,
       proposal: { type: 'thread' as const, items: proposed },
+      grounding: { claims },
       provenance,
     };
   }
@@ -549,7 +673,10 @@ export class ContentStudioAIWritingService {
     task: ContentStudioAIWritingTask,
     target: { itemId?: string },
     maxOutputTokens: number,
-    accept: (result: ContentStudioAITextResult) => void
+    accept: (
+      result: ContentStudioAITextResult,
+      sources: ResolvedSource[]
+    ) => void
   ) {
     const { context, refs, sources } = await this.resolveContext(
       input.organizationId,
@@ -589,7 +716,7 @@ export class ContentStudioAIWritingService {
     try {
       const { operationId } =
         await this._contentStudioAIExecutionService.execute(execution, {
-          validateResult: accept,
+          validateResult: (result) => accept(result, sources),
         });
       return {
         operationId,

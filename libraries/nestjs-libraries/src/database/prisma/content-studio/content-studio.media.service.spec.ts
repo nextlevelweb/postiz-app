@@ -4,7 +4,7 @@ import {
   ContentStudioMediaUnavailableError,
 } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
 import {
-  ContentPackageDraftV1,
+  ContentPackageDraft,
   parseContentPackageDraft,
 } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 
@@ -40,7 +40,7 @@ const resolved = (id: string) => ({
 });
 
 // A draft with one thread item per list of Media ids
-const draft = (...items: string[][]): ContentPackageDraftV1 =>
+const draft = (...items: string[][]): ContentPackageDraft =>
   parseContentPackageDraft({
     schemaVersion: 1,
     copy: {

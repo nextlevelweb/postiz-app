@@ -36,23 +36,57 @@ import {
   ContentStudioAIProposalReview,
   isContentStudioAIProposalCurrent,
 } from '@gitroom/frontend/components/content-studio/content-studio.ai-proposal';
+import { ContentStudioGroundingPanel } from '@gitroom/frontend/components/content-studio/content-studio.grounding';
+import { upgradeContentPackageDraftToV2 } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 
 const HANDOFF_ID = /^[0-9a-f]{64}$/;
 
 // A copy of a revision's content in the draft's own key order, so it shares
-// nothing with the revision it came from
-const draftFrom = (content: ContentStudioDraft): ContentStudioDraft => ({
-  schemaVersion: 1,
-  copy: {
-    global: {
-      thread: content.copy.global.thread.map((item) => ({
-        id: item.id,
-        text: item.text,
-        mediaIds: [...item.mediaIds],
-      })),
-    },
-  },
-});
+// nothing with the revision it came from: a v1 revision gives a v1 draft, a
+// v2 revision a v2 draft with its claims
+const draftFrom = (content: ContentStudioDraft): ContentStudioDraft =>
+  content.schemaVersion === 2
+    ? (upgradeContentPackageDraftToV2(content) as ContentStudioDraft)
+    : {
+        schemaVersion: 1,
+        copy: {
+          global: {
+            thread: content.copy.global.thread.map((item) => ({
+              id: item.id,
+              text: item.text,
+              mediaIds: [...item.mediaIds],
+            })),
+          },
+        },
+      };
+
+// Fixed text for a save the server refused for its grounding
+const groundingSaveError = (
+  t: (key: string, fallback: string) => string,
+  error: unknown
+) => {
+  const code =
+    error instanceof ContentStudioRequestError ? error.code : undefined;
+  switch (code) {
+    case 'CS_DRAFT_GROUNDING_INVALID':
+      return t(
+        'content_studio_grounding_save_invalid',
+        'Some grounding evidence does not match its source version. Remove or replace it to save.'
+      );
+    case 'CS_DRAFT_GROUNDING_STALE':
+      return t(
+        'content_studio_grounding_save_stale',
+        'A grounded claim no longer matches the text it was made for. Remove it to save.'
+      );
+    case 'CS_GROUNDING_SOURCE_INTEGRITY_ERROR':
+      return t(
+        'content_studio_grounding_save_integrity',
+        'A source version used as evidence could not be verified.'
+      );
+    default:
+      return undefined;
+  }
+};
 
 interface PackageMeta {
   name: string;
@@ -236,6 +270,11 @@ export const ContentStudioWorkspace: FC<{ packageId: string }> = ({
             ),
             'warning'
           );
+          return;
+        case 'CS_DRAFT_GROUNDING_INVALID':
+        case 'CS_DRAFT_GROUNDING_STALE':
+        case 'CS_GROUNDING_SOURCE_INTEGRITY_ERROR':
+          toaster.show(groundingSaveError(t, err) as string, 'warning');
           return;
         default:
           toaster.show(fallback, 'warning');
@@ -628,10 +667,11 @@ export const ContentStudioWorkspace: FC<{ packageId: string }> = ({
           className="flex flex-wrap items-center gap-[12px] border border-red-400 rounded-[8px] p-[12px]"
         >
           <div className="flex-1 min-w-[200px]">
-            {t(
-              'content_studio_save_error',
-              'Could not save this Content Studio draft.'
-            )}
+            {groundingSaveError(t, autosave.error) ||
+              t(
+                'content_studio_save_error',
+                'Could not save this Content Studio draft.'
+              )}
           </div>
           <Button onClick={() => controller.retry()}>
             {t('content_studio_retry_save', 'Retry save')}
@@ -682,6 +722,13 @@ export const ContentStudioWorkspace: FC<{ packageId: string }> = ({
             {t('content_studio_ai', 'AI')}
           </Button>
         )}
+      />
+
+      <ContentStudioGroundingPanel
+        draft={autosave.draft}
+        mode="draft"
+        editable={!meta.archived && !locked && !conflict}
+        edit={edit}
       />
     </div>
   );

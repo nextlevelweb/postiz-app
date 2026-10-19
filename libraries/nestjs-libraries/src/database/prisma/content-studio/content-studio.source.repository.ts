@@ -321,6 +321,22 @@ export class ContentStudioSourceRepository {
     });
   }
 
+  // The versions a package's grounding names, with their content, in one
+  // query: only versions of this organization, by exact id. Never the latest
+  // version of a source, and nothing of the source row itself
+  getVersionsByIdsForOrganization(organizationId: string, ids: string[]) {
+    return this._version.model.contentStudioSourceVersion.findMany({
+      where: {
+        organizationId,
+        id: { in: ids },
+      },
+      select: {
+        ...VERSION_DETAIL,
+        sourceId: true,
+      },
+    });
+  }
+
   // One version with its content, by number: what AI writing reads for a
   // selected source at its current version
   getVersionDetailByNumber(

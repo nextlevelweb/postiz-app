@@ -57,6 +57,7 @@ import { AdminStatsService } from '@gitroom/nestjs-libraries/database/prisma/adm
 import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.repository';
 import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.service';
 import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
+import { ContentStudioGroundingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.grounding.service';
 import { ContentStudioHandoffRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.repository';
 import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.service';
 import { ContentStudioAIConnectionRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.repository';
@@ -161,6 +162,7 @@ import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/p
     ContentStudioRepository,
     ContentStudioService,
     ContentStudioMediaService,
+    ContentStudioGroundingService,
     ContentStudioHandoffRepository,
     ContentStudioHandoffService,
     ContentStudioAIConnectionRepository,

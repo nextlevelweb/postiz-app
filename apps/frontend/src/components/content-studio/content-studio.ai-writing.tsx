@@ -7,6 +7,7 @@ import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
 import {
+  ContentStudioClaim,
   ContentStudioRequestError,
   packageDetailPath,
   request,
@@ -85,11 +86,14 @@ export interface ContentStudioAIProposalSource {
 }
 
 // A suggestion for the draft at baseDraftVersion. It is shown for review and
-// never saved by itself
+// never saved by itself. With sources, grounding.claims are the claims of the
+// suggested text the server matched to exact blocks of the versions used;
+// they enter the draft only when the suggestion is accepted
 export interface ContentStudioAIProposal {
   operationId: string;
   baseDraftVersion: number;
   proposal: ContentStudioAIProposalContent;
+  grounding?: { claims: ContentStudioClaim[] };
   provenance: { sources: ContentStudioAIProposalSource[] };
 }
 
@@ -256,6 +260,11 @@ export const aiWritingErrorMessage = (
       return t(
         'content_studio_ai_test_content_rejected',
         'The provider rejected the request content.'
+      );
+    case 'CS_AI_GROUNDING_INVALID':
+      return t(
+        'content_studio_ai_writing_error_grounding_invalid',
+        'The AI suggestion cited source material that does not match the selected sources. Try again.'
       );
     case 'CS_AI_INVALID_RESPONSE':
       return t(

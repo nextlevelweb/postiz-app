@@ -14,9 +14,11 @@ import {
 import { ContentStudioPager } from '@gitroom/frontend/components/content-studio/content-studio.package.list';
 import { ContentStudioMediaTile } from '@gitroom/frontend/components/content-studio/content-studio.thread.editor';
 import { ContentStudioReviewStatus } from '@gitroom/frontend/components/content-studio/content-studio.review.status';
+import { ContentStudioGroundingPanel } from '@gitroom/frontend/components/content-studio/content-studio.grounding';
 
 // One revision, read-only: its text as plain text and its Media as they are
-// now, and the review of exactly this version (P5-01), never of the draft.
+// now, its grounding exactly as saved in it (P3-11), and the review of
+// exactly this version (P5-01), never of the draft.
 // A revision request of that review is resolved by one of the newest saved
 // versions of this package (P5-02). Nothing here can change a revision
 const RevisionView: FC<{
@@ -67,29 +69,35 @@ const RevisionView: FC<{
       ) : !detail.data ? (
         <LoadingComponent width={40} height={40} />
       ) : (
-        detail.data.content.copy.global.thread.map((item, index) => (
-          <section
-            key={item.id}
-            className="flex flex-col gap-[8px] border border-newTableBorder rounded-[8px] p-[12px]"
-          >
-            <div className="font-[600]">
-              {index === 0
-                ? t('content_studio_main_post', 'Post')
-                : `${t('content_studio_followup', 'Follow-up')} ${index}`}
-            </div>
-            <div className="whitespace-pre-wrap break-words">{item.text}</div>
-            {!!item.mediaIds.length && (
-              <div className="flex flex-wrap gap-[8px]">
-                {item.mediaIds.map((mediaId, mediaIndex) => (
-                  <ContentStudioMediaTile
-                    key={`${mediaId}-${mediaIndex}`}
-                    preview={media.get(mediaId)}
-                  />
-                ))}
+        <>
+          {detail.data.content.copy.global.thread.map((item, index) => (
+            <section
+              key={item.id}
+              className="flex flex-col gap-[8px] border border-newTableBorder rounded-[8px] p-[12px]"
+            >
+              <div className="font-[600]">
+                {index === 0
+                  ? t('content_studio_main_post', 'Post')
+                  : `${t('content_studio_followup', 'Follow-up')} ${index}`}
               </div>
-            )}
-          </section>
-        ))
+              <div className="whitespace-pre-wrap break-words">{item.text}</div>
+              {!!item.mediaIds.length && (
+                <div className="flex flex-wrap gap-[8px]">
+                  {item.mediaIds.map((mediaId, mediaIndex) => (
+                    <ContentStudioMediaTile
+                      key={`${mediaId}-${mediaIndex}`}
+                      preview={media.get(mediaId)}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+          ))}
+          <ContentStudioGroundingPanel
+            draft={detail.data.content}
+            mode="revision"
+          />
+        </>
       )}
     </div>
   );

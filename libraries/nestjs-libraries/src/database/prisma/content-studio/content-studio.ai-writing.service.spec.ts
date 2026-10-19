@@ -19,6 +19,7 @@ import {
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.error';
 import {
   ContentStudioAIProviderErrorCode,
+  ContentStudioAITextRequest,
   ContentStudioAITextResult,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.types';
 import { hashContentStudioAIRequest } from '@gitroom/nestjs-libraries/content-studio/ai/ai.operation.hash';
@@ -195,6 +196,20 @@ const threadAnswer = (items: Array<[string, string]>) =>
     items: items.map(([itemId, text]) => ({ itemId, text })),
   });
 const VALID_THREAD = threadAnswer([
+  ['main', `${RESULT_MARKER} one`],
+  ['f1', 'two'],
+  ['f2', 'three'],
+]);
+// the same with source material: every item lists its claims, none here
+const groundedThreadAnswer = (items: Array<[string, string, unknown[]?]>) =>
+  JSON.stringify({
+    items: items.map(([itemId, text, claims = []]) => ({
+      itemId,
+      text,
+      claims,
+    })),
+  });
+const GROUNDED_THREAD = groundedThreadAnswer([
   ['main', `${RESULT_MARKER} one`],
   ['f1', 'two'],
   ['f2', 'three'],
@@ -421,8 +436,17 @@ const setup = (provider: 'openai' | 'anthropic' = 'openai') => {
   const adapter = {
     provider,
     validateConnection: jest.fn(),
-    generateText: jest.fn(async () =>
-      providerResult(`${RESULT_MARKER} A brighter spring.`)
+    // with source material an item answer is the grounded JSON, here
+    // without claims
+    generateText: jest.fn(async (request: ContentStudioAITextRequest) =>
+      providerResult(
+        request.system.includes('"claims"')
+          ? JSON.stringify({
+              text: `${RESULT_MARKER} A brighter spring.`,
+              claims: [],
+            })
+          : `${RESULT_MARKER} A brighter spring.`
+      )
     ),
   };
   const resolver = {
@@ -1269,7 +1293,7 @@ describe('ContentStudioAIWritingService: prompt', () => {
     expect(output).toEqual({ type: 'text' });
     expect(model).toBe('gpt-6.1-sol');
     expect(maxOutputTokens).toBe(4096);
-    expect(created(ctx).promptVersion).toBe('cs-rewrite-item-v2');
+    expect(created(ctx).promptVersion).toBe('cs-rewrite-item-v3');
   });
 
   it('BP11-BP13 sends no profile, revision, policy, connection, package, organization or user id', async () => {
@@ -1371,11 +1395,11 @@ describe('ContentStudioAIWritingService: prompt', () => {
 
 describe('ContentStudioAIWritingService: item proposals', () => {
   it.each([
-    ['BI1', 'generate_item', 'cs-generate-item-v2'],
-    ['BI2', 'rewrite_item', 'cs-rewrite-item-v2'],
-    ['BI3', 'shorten_item', 'cs-shorten-item-v2'],
-    ['BI4', 'expand_item', 'cs-expand-item-v2'],
-    ['BI5', 'change_tone', 'cs-change-tone-v2'],
+    ['BI1', 'generate_item', 'cs-generate-item-v3'],
+    ['BI2', 'rewrite_item', 'cs-rewrite-item-v3'],
+    ['BI3', 'shorten_item', 'cs-shorten-item-v3'],
+    ['BI4', 'expand_item', 'cs-expand-item-v3'],
+    ['BI5', 'change_tone', 'cs-change-tone-v3'],
   ])(
     '%s %s runs once and returns a proposal only',
     async (_n, operation, promptVersion) => {
@@ -1391,6 +1415,7 @@ describe('ContentStudioAIWritingService: item proposals', () => {
           itemId: 'main',
           text: `${RESULT_MARKER} A brighter spring.`,
         },
+        grounding: { claims: [] },
         provenance: { sources: [] },
       });
       expect(ctx.executeSpy).toHaveBeenCalledTimes(1);
@@ -1441,7 +1466,7 @@ describe('ContentStudioAIWritingService: item proposals', () => {
         kind: 'rewrite_item',
         provider: 'openai',
         model: 'gpt-6.1-sol',
-        promptVersion: 'cs-rewrite-item-v2',
+        promptVersion: 'cs-rewrite-item-v3',
         packageId: PACKAGE,
         baseDraftVersion: 7,
         context: { v: 1, itemId: 'f2' },
@@ -1570,6 +1595,7 @@ describe('ContentStudioAIWritingService: item proposals', () => {
     expect(persisted(ctx)).not.toMatch(/Mention the sale|A brighter spring/);
     expect(Object.keys(value).sort()).toEqual([
       'baseDraftVersion',
+      'grounding',
       'operationId',
       'proposal',
       'provenance',
@@ -1602,12 +1628,13 @@ describe('ContentStudioAIWritingService: thread proposals', () => {
           { itemId: 'f2', text: 'three' },
         ],
       },
+      grounding: { claims: [] },
       provenance: { sources: [] },
     });
     expect(ctx.adapter.generateText).toHaveBeenCalledTimes(1);
     expect(created(ctx)).toMatchObject({
       kind: 'generate_thread',
-      promptVersion: 'cs-generate-thread-v2',
+      promptVersion: 'cs-generate-thread-v3',
       context: { v: 1 },
     });
     expect(created(ctx).context).toEqual({ v: 1 });
@@ -2311,7 +2338,7 @@ describe('ContentStudioAIWritingService: source grounding', () => {
   it('SR-AI17/SR-AI18 reads stored versions only: no fetch, no refresh, no source write, and the provider is asked exactly once', async () => {
     const ctx = setup();
     ctx.adapter.generateText.mockResolvedValueOnce(
-      providerResult(VALID_THREAD)
+      providerResult(GROUNDED_THREAD)
     );
     await ctx.service.proposeThread(threadInput({}, withSources(1, 2, 3)));
     expect(jest.mocked(safeFetch)).not.toHaveBeenCalled();
@@ -2427,7 +2454,7 @@ describe('ContentStudioAIWritingService: source grounding', () => {
     try {
       await ctx.service.proposeItem(itemInput({}, withSources(1)));
       const { system, prompt } = sentRequest(ctx);
-      expect(prompt).toContain(`[Quote]\n| ${SOURCE_INJECTION}`);
+      expect(prompt).toContain(`[S1-B4 Quote]\n| ${SOURCE_INJECTION}`);
       expect(
         prompt.split('\n').filter((line) => line.startsWith('Ignore'))
       ).toEqual([]);
@@ -2479,6 +2506,7 @@ describe('ContentStudioAIWritingService: proposal provenance', () => {
         itemId: 'main',
         text: `${RESULT_MARKER} A brighter spring.`,
       },
+      grounding: { claims: [] },
       provenance: { sources: [proposalSource(3)] },
     });
     expect(Object.keys(value.provenance.sources[0]).sort()).toEqual([
@@ -2499,7 +2527,7 @@ describe('ContentStudioAIWritingService: proposal provenance', () => {
   it('PP2/PP4 a thread proposal names its sources the same way, in the order chosen', async () => {
     const ctx = setup();
     ctx.adapter.generateText.mockResolvedValueOnce(
-      providerResult(VALID_THREAD)
+      providerResult(GROUNDED_THREAD)
     );
     const value = await ctx.service.proposeThread(
       threadInput({}, withSources(5, 2))
@@ -2534,7 +2562,7 @@ describe('ContentStudioAIWritingService: proposal provenance', () => {
       { ...proposalSource(1), title: null },
     ]);
     expect(sentRequest(ctx).prompt).toContain(
-      'Name: Source name 1\n[Heading 2]'
+      'Name: Source name 1\n[S1-B1 Heading 2]'
     );
   });
 
@@ -2595,5 +2623,255 @@ describe('ContentStudioAIWritingService source', () => {
       /saveDraft|saveDraftCompareAndSwap|createRevision|updatePackage|archivePackage|restorePackage|createPackage|Handoff|createProfile|updateProfileName|archiveProfile|restoreProfile|createPolicy/
     );
     expect(text.match(/\.execute\(/g)).toHaveLength(1);
+  });
+});
+
+// P3-11: with source material the answer lists the claims of its text, each
+// naming blocks by the references the prompt gave. The server maps every
+// reference back to the exact version and block it put in the prompt, checks
+// every quote, and refuses the whole answer otherwise
+describe('ContentStudioAIWritingService: grounded claims (P3-11)', () => {
+  const groundedItem = (claims: unknown[], text = 'Spring sales are up.') =>
+    providerResult(JSON.stringify({ text, claims }));
+  const claim = (
+    text: string,
+    ...evidence: Array<[string, string | null]>
+  ) => ({
+    text,
+    evidence: evidence.map(([ref, quote]) => ({ ref, quote })),
+  });
+  const evidenceOf = (
+    n: number,
+    blockId: string,
+    quote: string | null,
+    version = 3
+  ) => ({
+    ...sourceRef(n, version),
+    blockId,
+    quote,
+  });
+
+  it('AI-G1 maps each reference to exactly the block of the version the prompt showed', async () => {
+    const ctx = setup();
+    ctx.adapter.generateText.mockResolvedValueOnce(
+      groundedItem([
+        claim('Report one says spring is here.', ['S1-B1', 'Report 1']),
+        claim('Point two is listed.', ['S2-B3', null], ['S1-B3', 'Point']),
+      ])
+    );
+    const value = await ctx.service.proposeItem(
+      itemInput({}, withSources(1, 2))
+    );
+    expect(sentRequest(ctx).system).toContain('"claims"');
+    expect(sentRequest(ctx).prompt).toContain('[S2-B3 List item level 1]');
+    expect(value.proposal).toEqual({
+      type: 'item',
+      itemId: 'main',
+      text: 'Spring sales are up.',
+    });
+    expect(value.grounding.claims).toEqual([
+      {
+        id: expect.stringMatching(/^c_[A-Za-z0-9_-]{16}$/),
+        threadItemId: 'main',
+        text: 'Report one says spring is here.',
+        evidence: [evidenceOf(1, 'b1', 'Report 1')],
+      },
+      {
+        id: expect.stringMatching(/^c_[A-Za-z0-9_-]{16}$/),
+        threadItemId: 'main',
+        text: 'Point two is listed.',
+        evidence: [evidenceOf(2, 'b3', null), evidenceOf(1, 'b3', 'Point')],
+      },
+    ]);
+    const ids = value.grounding.claims.map((entry) => entry.id);
+    expect(new Set(ids).size).toBe(2);
+    // the claims are answered only: no operation write holds them
+    expect(persisted(ctx)).not.toMatch(/Report one says|Point two is listed/);
+    noDraftOrProfileWrite(ctx);
+  });
+
+  it('AI-G1 a grounded thread gives each item its own claims', async () => {
+    const ctx = setup();
+    ctx.adapter.generateText.mockResolvedValueOnce(
+      providerResult(
+        groundedThreadAnswer([
+          ['main', 'One', [claim('First claim.', ['S1-B2', null])]],
+          ['f1', 'Two'],
+          ['f2', 'Three', [claim('Third claim.', ['S1-B1', 'Report'])]],
+        ])
+      )
+    );
+    const value = await ctx.service.proposeThread(
+      threadInput({}, withSources(1))
+    );
+    expect(
+      value.grounding.claims.map((entry) => [
+        entry.threadItemId,
+        entry.text,
+        entry.evidence.map((item) => item.blockId),
+      ])
+    ).toEqual([
+      ['main', 'First claim.', ['b2']],
+      ['f2', 'Third claim.', ['b1']],
+    ]);
+  });
+
+  it.each([
+    ['AI-G2 an invented block', ['S1-B9', null]],
+    ['AI-G3 an invented source', ['S3-B1', null]],
+    ['AI-G3 a source or version id', [sourceVersionId(1, 3), null]],
+    ['AI-G3 a URL', ['https://example.com/news/1', null]],
+    ['a block id instead of a reference', ['b1', null]],
+    ['AI-G4 a quote the block does not hold', ['S1-B1', 'Report 9']],
+    ['AI-G4 a quote of another block', ['S1-B1', 'Point 1']],
+  ] as const)(
+    '%s refuses the whole answer as CS_AI_GROUNDING_INVALID',
+    async (_label, evidence) => {
+      const ctx = setup();
+      ctx.adapter.generateText.mockResolvedValueOnce(
+        groundedItem([
+          claim('Fine claim.', ['S1-B2', null]),
+          claim('Bad claim.', evidence as [string, string | null]),
+        ])
+      );
+      expect(
+        await refusal(ctx.service.proposeItem(itemInput({}, withSources(1, 2))))
+      ).toEqual({
+        status: 502,
+        code: 'CS_AI_GROUNDING_INVALID',
+        msg: 'The AI suggestion cited source material that does not match the selected sources.',
+      });
+      // a failed operation with the normalized code; nothing else kept
+      expect(ctx.operations.completeFailedWithUsage).toHaveBeenCalledTimes(1);
+      expect(
+        (
+          ctx.operations.completeFailedWithUsage.mock.calls[0] as unknown as [
+            { errorCode: string }
+          ]
+        )[0].errorCode
+      ).toBe('INVALID_RESPONSE');
+      expect(ctx.operations.completeSucceededWithUsage).not.toHaveBeenCalled();
+      noDraftOrProfileWrite(ctx);
+    }
+  );
+
+  it.each([
+    ['a blank claim', [claim('   ', ['S1-B1', null])]],
+    [
+      'a claim over 2000 characters',
+      [claim('x'.repeat(2001), ['S1-B1', null])],
+    ],
+    ['a claim without evidence', [{ text: 'No evidence.', evidence: [] }]],
+    [
+      'the same block twice in one claim',
+      [claim('Twice.', ['S1-B1', null], ['S1-B1', 'Report'])],
+    ],
+    [
+      'an evidence entry with an extra key',
+      [{ text: 'Extra.', evidence: [{ ref: 'S1-B1', quote: null, url: 'x' }] }],
+    ],
+    [
+      'a claim with an id of its own',
+      [
+        {
+          id: 'c_chosenbymodel',
+          text: 'Id.',
+          evidence: [{ ref: 'S1-B1', quote: null }],
+        },
+      ],
+    ],
+    ['claims that are not a list', 'none'],
+  ])('%s is refused as CS_AI_GROUNDING_INVALID', async (_label, claims) => {
+    const ctx = setup();
+    ctx.adapter.generateText.mockResolvedValueOnce(
+      providerResult(JSON.stringify({ text: 'Fine text.', claims }))
+    );
+    expect(
+      (await refusal(ctx.service.proposeItem(itemInput({}, withSources(1)))))
+        .code
+    ).toBe('CS_AI_GROUNDING_INVALID');
+  });
+
+  it('a grounded answer without its claims list is an unexpected response', async () => {
+    const ctx = setup();
+    ctx.adapter.generateText.mockResolvedValueOnce(
+      providerResult(`${RESULT_MARKER} plain text`)
+    );
+    expect(
+      (await refusal(ctx.service.proposeItem(itemInput({}, withSources(1)))))
+        .code
+    ).toBe('CS_AI_INVALID_RESPONSE');
+    const thread = setup();
+    thread.adapter.generateText.mockResolvedValueOnce(
+      providerResult(VALID_THREAD)
+    );
+    expect(
+      (
+        await refusal(
+          thread.service.proposeThread(threadInput({}, withSources(1)))
+        )
+      ).code
+    ).toBe('CS_AI_INVALID_RESPONSE');
+  });
+
+  it('AI-G5 without sources nothing is grounded: the plain output, and no claims', async () => {
+    const ctx = setup();
+    const value = await ctx.service.proposeItem(itemInput());
+    expect(sentRequest(ctx).system).not.toContain('"claims"');
+    expect(sentRequest(ctx).system).toContain(
+      '- Output: the text of one post, at most 10000 characters.'
+    );
+    expect(value.grounding).toEqual({ claims: [] });
+  });
+
+  it('AI-G6 selected sources alone never become claims: an empty list stays empty', async () => {
+    const ctx = setup();
+    ctx.adapter.generateText.mockResolvedValueOnce(groundedItem([]));
+    const value = await ctx.service.proposeItem(
+      itemInput({}, withSources(1, 2, 3))
+    );
+    expect(value.provenance.sources).toHaveLength(3);
+    expect(value.grounding).toEqual({ claims: [] });
+  });
+
+  it('AI-G1 a reference names the version this run used, never a newer one', async () => {
+    const ctx = setup();
+    ctx.adapter.generateText.mockImplementationOnce(async () => {
+      // a newer capture appears while the provider answers
+      ctx.sources.state.rows.get(sourceId(1))!.latestVersionNumber = 4;
+      ctx.sources.state.versions.get(sourceId(1))!.set(4, storedVersion(1, 4));
+      return groundedItem([claim('Claim.', ['S1-B2', null])]);
+    });
+    const value = await ctx.service.proposeItem(itemInput({}, withSources(1)));
+    expect(value.grounding.claims[0].evidence).toEqual([
+      evidenceOf(1, 'b2', null, 3),
+    ]);
+  });
+
+  it('suggested claims must fit the draft: a draft over its size limit is refused', async () => {
+    const ctx = setup();
+    ctx.adapter.generateText.mockResolvedValueOnce(
+      groundedItem(
+        Array.from({ length: 40 }, (_, index) =>
+          claim(`${index} ${'y'.repeat(1990)}`, ['S1-B1', null])
+        )
+      )
+    );
+    expect(
+      (await refusal(ctx.service.proposeItem(itemInput({}, withSources(1)))))
+        .code
+    ).toBe('CS_AI_GROUNDING_INVALID');
+  });
+
+  it('AI-G7/AI-G8 the service never saves a suggestion: grounding reaches the draft only through the editor save', () => {
+    const source = fs.readFileSync(
+      path.join(__dirname, 'content-studio.ai-writing.service.ts'),
+      'utf8'
+    );
+    expect(source).not.toMatch(/saveDraft|grounding\.service|GroundingService/);
+    // claims come from the answer's references only, never from the
+    // selection itself
+    expect(source).not.toMatch(/sources\.map\([^)]*\)\s*=>\s*\(\{\s*id:/);
+    expect(source).toContain('groundingBlocks(sources)');
   });
 });

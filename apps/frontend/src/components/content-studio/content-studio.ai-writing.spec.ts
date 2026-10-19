@@ -1971,3 +1971,186 @@ describe('AI writing: source surface', () => {
     );
   });
 });
+
+// P3-11: a suggestion made with sources can carry grounded claims. They are
+// shown with the suggestion and enter the draft only on Accept, in place of
+// the claims of the posts it changes
+describe('AI writing: grounded claims (P3-11)', () => {
+  const evidence = (blockId: string) => ({
+    sourceId: SOURCE(1),
+    versionId: '01222222-2222-4222-8222-222222222222',
+    versionNumber: 3,
+    contentHash: '1'.repeat(64),
+    blockId,
+    quote: null,
+  });
+  const claim = (id: string, threadItemId: string, text: string) => ({
+    id,
+    threadItemId,
+    text,
+    evidence: [evidence('b1')],
+  });
+  const proposeWith = (claims: ReturnType<typeof claim>[]) => {
+    ai.propose = (kind, body) => {
+      const base = proposeAnswer(kind, body);
+      return {
+        ...base,
+        json: async () => ({
+          ...((await base.json()) as object),
+          grounding: { claims },
+        }),
+      };
+    };
+  };
+  const putDraft = (index = 0) => puts()[index].body.draft;
+
+  it('FG6/AP1 accepting a grounded suggestion saves its claims in a v2 draft, once', async () => {
+    proposeWith([claim('c_aaaaaaaaaaaaaaaa', 'main', 'Sales grew.')]);
+    await renderWorkspace();
+    await openItem();
+    await generate();
+    const root = review();
+    expect(within(root).getByText('Grounded claims')).toBeTruthy();
+    expect(
+      root.querySelector('[data-proposal-claim="c_aaaaaaaaaaaaaaaa"]')
+        ?.textContent
+    ).toContain('Sales grew.');
+    expect(puts()).toHaveLength(0);
+    await click('Accept');
+    expect(puts()).toHaveLength(1);
+    expect(putDraft()).toEqual({
+      schemaVersion: 2,
+      copy: draftOf(
+        item('main', 'Suggested main', ['m1', 'm2']),
+        item('f1', 'Second', ['m3', 'gone']),
+        item('f2', 'Third')
+      ).copy,
+      grounding: {
+        claims: [claim('c_aaaaaaaaaaaaaaaa', 'main', 'Sales grew.')],
+      },
+    });
+    // the workspace shows the claim it saved
+    const grounding = screen.getByRole('region', { name: 'Grounding' });
+    expect(within(grounding).getByText('Sales grew.')).toBeTruthy();
+  });
+
+  it('FG7/AP2 a grounded suggestion that is discarded writes nothing', async () => {
+    proposeWith([claim('c_aaaaaaaaaaaaaaaa', 'main', 'Sales grew.')]);
+    await renderWorkspace();
+    await openItem();
+    await generate();
+    await click('Discard');
+    await advance(10_000);
+    expect(puts()).toHaveLength(0);
+    expect(
+      screen
+        .getByRole('region', { name: 'Grounding' })
+        .querySelector('[data-claim-count]')
+        ?.getAttribute('data-claim-count')
+    ).toBe('0');
+  });
+
+  it("AP3/AP4 a suggestion for one post replaces only that post's claims", async () => {
+    server.draft = {
+      schemaVersion: 2,
+      copy: server.draft.copy,
+      grounding: {
+        claims: [
+          claim('c_main000000000001', 'main', 'Old main claim.'),
+          claim('c_f10000000000001', 'f1', 'Follow-up claim.'),
+        ],
+      },
+    } as never;
+    proposeWith([claim('c_main000000000002', 'main', 'New main claim.')]);
+    await renderWorkspace();
+    await openItem();
+    await generate();
+    expect(
+      within(review()).getByText(
+        'Accepting replaces the grounded claims of the posts it changes.'
+      )
+    ).toBeTruthy();
+    await click('Accept');
+    expect(
+      putDraft().grounding.claims.map((entry: { id: string }) => entry.id)
+    ).toEqual(['c_f10000000000001', 'c_main000000000002']);
+  });
+
+  it("AP7 an ungrounded suggestion for a grounded post removes that post's claims", async () => {
+    server.draft = {
+      schemaVersion: 2,
+      copy: server.draft.copy,
+      grounding: {
+        claims: [
+          claim('c_main000000000001', 'main', 'Old main claim.'),
+          claim('c_f10000000000001', 'f1', 'Follow-up claim.'),
+        ],
+      },
+    } as never;
+    await renderWorkspace();
+    await openItem();
+    await generate();
+    await click('Accept');
+    expect(putDraft().schemaVersion).toBe(2);
+    expect(
+      putDraft().grounding.claims.map((entry: { id: string }) => entry.id)
+    ).toEqual(['c_f10000000000001']);
+  });
+
+  it('an ungrounded suggestion on a v1 draft still saves a v1 draft', async () => {
+    await renderWorkspace();
+    await openItem();
+    await generate();
+    await click('Accept');
+    expect(putDraft().schemaVersion).toBe(1);
+    expect(putDraft().grounding).toBeUndefined();
+  });
+
+  it('a claim the suggestion names for another post is never taken', async () => {
+    proposeWith([
+      claim('c_aaaaaaaaaaaaaaaa', 'main', 'Main claim.'),
+      claim('c_bbbbbbbbbbbbbbbb', 'f2', 'Not this post.'),
+    ]);
+    await renderWorkspace();
+    await openItem();
+    await generate();
+    await click('Accept');
+    expect(
+      putDraft().grounding.claims.map((entry: { id: string }) => entry.id)
+    ).toEqual(['c_aaaaaaaaaaaaaaaa']);
+  });
+
+  it('a thread suggestion replaces the claims of every post', async () => {
+    server.draft = {
+      schemaVersion: 2,
+      copy: server.draft.copy,
+      grounding: {
+        claims: [claim('c_f10000000000001', 'f1', 'Follow-up claim.')],
+      },
+    } as never;
+    proposeWith([claim('c_f20000000000001', 'f2', 'Third claim.')]);
+    await renderWorkspace();
+    await click('AI thread');
+    await generate();
+    await click('Accept');
+    expect(
+      putDraft().grounding.claims.map((entry: { id: string }) => entry.id)
+    ).toEqual(['c_f20000000000001']);
+  });
+
+  it('a suggestion refused for its grounding has its own fixed message', async () => {
+    ai.propose = () =>
+      reply(502, {
+        msg: 'server text PRIVATE',
+        code: 'CS_AI_GROUNDING_INVALID',
+      });
+    await renderWorkspace();
+    await openItem();
+    await generate();
+    expect(toasts()).toContain(
+      'The AI suggestion cited source material that does not match the selected sources. Try again.'
+    );
+    expect(toasts().join('\n')).not.toContain('PRIVATE');
+    expect(puts()).toHaveLength(0);
+  });
+});

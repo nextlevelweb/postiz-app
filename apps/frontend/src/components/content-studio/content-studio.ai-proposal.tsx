@@ -3,9 +3,16 @@
 import { FC } from 'react';
 import { Button } from '@gitroom/react/form/button';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
-import { ContentStudioDraft } from '@gitroom/frontend/components/content-studio/content-studio.api';
+import {
+  ContentStudioClaim,
+  ContentStudioDraft,
+} from '@gitroom/frontend/components/content-studio/content-studio.api';
 import { withThread } from '@gitroom/frontend/components/content-studio/content-studio.thread.editor';
 import { ContentStudioAIProposal } from '@gitroom/frontend/components/content-studio/content-studio.ai-writing';
+import {
+  contentPackageClaims,
+  replaceContentPackageItemClaims,
+} from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 
 // The suggested texts by item id
 const suggestedTexts = (proposal: ContentStudioAIProposal) =>
@@ -15,20 +22,37 @@ const suggestedTexts = (proposal: ContentStudioAIProposal) =>
       : proposal.proposal.items.map((entry) => [entry.itemId, entry.text])
   );
 
+// The suggested claims of the items it changes; a claim of any other item
+// is never taken
+const suggestedClaims = (proposal: ContentStudioAIProposal) => {
+  const texts = suggestedTexts(proposal);
+  return (proposal.grounding?.claims || []).filter((claim) =>
+    texts.has(claim.threadItemId)
+  );
+};
+
 // The draft with the suggested texts in place. Only texts change: every
-// item keeps its id, position and media, and none is added or removed
+// item keeps its id, position and media, and none is added or removed. The
+// claims of the replaced items go with their old text and the suggestion's
+// claims take their place; the claims of other items stay. Without
+// suggested claims a v1 draft stays v1
 export const applyContentStudioAIProposal = (
   draft: ContentStudioDraft,
   proposal: ContentStudioAIProposal
 ): ContentStudioDraft => {
   const texts = suggestedTexts(proposal);
-  return withThread(draft, (thread) =>
+  const withTexts = withThread(draft, (thread) =>
     thread.map((item) =>
       texts.has(item.id)
         ? { ...item, text: texts.get(item.id) as string }
         : item
     )
   );
+  return replaceContentPackageItemClaims(
+    withTexts,
+    [...texts.keys()],
+    suggestedClaims(proposal)
+  ) as ContentStudioDraft;
 };
 
 // A suggestion fits the draft only while the draft is exactly the saved one
@@ -50,6 +74,35 @@ export const isContentStudioAIProposalCurrent = (
         proposal.proposal.items.every(
           (entry, index) => entry.itemId === ids[index]
         );
+};
+
+// What a suggestion claims for one item, with how many blocks support each:
+// shown so it can be judged before it is accepted
+const ProposalClaims: FC<{ claims: ContentStudioClaim[] }> = ({ claims }) => {
+  const t = useT();
+  if (!claims.length) {
+    return null;
+  }
+  return (
+    <div className="flex flex-col gap-[4px] text-[13px]">
+      <div className="font-[600]">
+        {t('content_studio_ai_grounded_claims', 'Grounded claims')}
+      </div>
+      <ul className="flex flex-col gap-[2px]">
+        {claims.map((claim) => (
+          <li
+            key={claim.id}
+            className="break-words whitespace-pre-wrap"
+            data-proposal-claim={claim.id}
+          >
+            {claim.text} ·{' '}
+            {t('content_studio_grounding_evidence_count', 'Evidence')}:{' '}
+            {claim.evidence.length}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 };
 
 const TextPanel: FC<{ title: string; text: string }> = ({ title, text }) => (
@@ -109,6 +162,7 @@ export const ContentStudioAIProposalReview: FC<{
 }> = ({ proposal, draft, current, busy, onAccept, onDiscard }) => {
   const t = useT();
   const texts = suggestedTexts(proposal);
+  const claims = suggestedClaims(proposal);
   const items = draft.copy.global.thread
     .map((item, index) => ({
       item,
@@ -136,6 +190,16 @@ export const ContentStudioAIProposalReview: FC<{
         </div>
       )}
       <ProposalSources proposal={proposal} />
+      {contentPackageClaims(draft).some((claim) =>
+        texts.has(claim.threadItemId)
+      ) && (
+        <div className="text-[13px] text-textItemBlur">
+          {t(
+            'content_studio_ai_replaces_claims',
+            'Accepting replaces the grounded claims of the posts it changes.'
+          )}
+        </div>
+      )}
       {items.map(({ item, label }) => (
         <div
           key={item.id}
@@ -155,6 +219,9 @@ export const ContentStudioAIProposalReview: FC<{
               text={texts.get(item.id) as string}
             />
           </div>
+          <ProposalClaims
+            claims={claims.filter((claim) => claim.threadItemId === item.id)}
+          />
         </div>
       ))}
       <div className="flex flex-wrap gap-[8px]">

@@ -17,6 +17,10 @@ import {
   PACKAGE_UNIQUE_MEDIA_MAX,
   THREAD_ITEMS_MAX,
 } from '@gitroom/frontend/components/content-studio/content-studio.api';
+import {
+  contentPackageClaims,
+  withoutContentPackageItemClaims,
+} from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 
 // Media ids are tokens, never paths or URLs (the API checks the same)
 const MEDIA_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -47,6 +51,18 @@ const withItem = (
   withThread(draft, (thread) =>
     thread.map((item) => (item.id === itemId ? update(item) : item))
   );
+
+// Grounded claims hold for the text they were made for. Editing an item's
+// text or removing the item removes its claims: evidence is never kept for
+// text it was not found for (the server refuses a draft that keeps them)
+export const withoutItemClaims = (
+  draft: ContentStudioDraft,
+  itemIds: string[]
+) => withoutContentPackageItemClaims(draft, itemIds) as ContentStudioDraft;
+
+export const itemClaimCount = (draft: ContentStudioDraft, itemId: string) =>
+  contentPackageClaims(draft).filter((claim) => claim.threadItemId === itemId)
+    .length;
 
 // One Media of a draft or revision, from the server's preview map (or the
 // picker's answer until the next reload). Never a URL built from an id
@@ -250,7 +266,10 @@ export const ContentStudioThreadEditor: FC<{
     edit((latest) =>
       latest.copy.global.thread.length <= 1
         ? latest
-        : withThread(latest, (items) => items.filter((i) => i.id !== itemId))
+        : withoutItemClaims(
+            withThread(latest, (items) => items.filter((i) => i.id !== itemId)),
+            [itemId]
+          )
     );
 
   return (
@@ -260,6 +279,7 @@ export const ContentStudioThreadEditor: FC<{
           index === 0
             ? t('content_studio_main_post', 'Post')
             : `${t('content_studio_followup', 'Follow-up')} ${index}`;
+        const claims = itemClaimCount(draft, item.id);
         return (
           <section
             key={item.id}
@@ -293,11 +313,38 @@ export const ContentStudioThreadEditor: FC<{
               disabled={disabled}
               onChange={(e) => {
                 const text = e.target.value;
-                edit((latest) =>
-                  withItem(latest, item.id, (i) => ({ ...i, text }))
-                );
+                const grounded = itemClaimCount(draft, item.id) > 0;
+                if (
+                  edit((latest) =>
+                    withoutItemClaims(
+                      withItem(latest, item.id, (i) => ({ ...i, text })),
+                      [item.id]
+                    )
+                  ) &&
+                  grounded
+                ) {
+                  toaster.show(
+                    t(
+                      'content_studio_grounding_removed_on_edit',
+                      'The grounded claims of this post were removed because its text changed.'
+                    ),
+                    'warning'
+                  );
+                }
               }}
             />
+            {claims > 0 && (
+              <div
+                className="text-[12px] text-textItemBlur"
+                data-item-claims={claims}
+              >
+                {t(
+                  'content_studio_grounding_item_hint',
+                  'This post has grounded claims. Editing its text removes them.'
+                )}{' '}
+                ({claims})
+              </div>
+            )}
             <div className="flex flex-wrap gap-[12px] items-start">
               {item.mediaIds.map((mediaId, mediaIndex) => (
                 <div

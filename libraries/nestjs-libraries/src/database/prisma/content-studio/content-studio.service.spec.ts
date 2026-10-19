@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.repository';
 import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.service';
 import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
+import { ContentStudioGroundingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.grounding.service';
 import { parseContentPackageDraft } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 import * as canonical from '@gitroom/nestjs-libraries/content-studio/canonical.json';
 
@@ -130,11 +131,15 @@ const setup = () => {
     getPreviewMap: jest.fn(async () => ({})),
     resolveForHandoff: jest.fn(),
   };
+  const grounding = {
+    verifyDraftGrounding: jest.fn(async () => undefined),
+  };
   const service = new ContentStudioService(
     repository as unknown as ContentStudioRepository,
-    media as unknown as ContentStudioMediaService
+    media as unknown as ContentStudioMediaService,
+    grounding as unknown as ContentStudioGroundingService
   );
-  return { repository, media, service };
+  return { repository, media, grounding, service };
 };
 
 // Content Studio answers with plain HttpExceptions only: never the 403

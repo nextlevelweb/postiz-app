@@ -4,11 +4,17 @@ import { randomBytes } from 'crypto';
 import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.repository';
 import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
 import {
+  ContentStudioGroundingError,
+  ContentStudioGroundingService,
+} from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.grounding.service';
+import {
   assertContentPackagePublishable,
-  CONTENT_PACKAGE_SCHEMA_VERSION,
+  ContentPackageDraft,
   ContentPackageDraftError,
+  contentPackageClaims,
   emptyContentPackageDraft,
   parseContentPackageDraft,
+  staleContentPackageClaimIds,
 } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 import {
   canonicalJson,
@@ -71,6 +77,35 @@ const draftConflict = (currentDraftVersion: number) =>
       currentDraftVersion,
     },
     409
+  );
+// The grounding of a draft names evidence that is not exactly in the source
+// version it names, or a version this organization does not have: the same
+// answer for both, and never which one
+const groundingInvalid = () =>
+  new HttpException(
+    {
+      msg: 'The grounding evidence of this draft does not match its sources',
+      code: 'CS_DRAFT_GROUNDING_INVALID',
+    },
+    400
+  );
+// A claim kept from the saved draft although the text it was made for
+// changed or it moved to another item
+const groundingStale = () =>
+  new HttpException(
+    {
+      msg: 'A grounded claim no longer matches the text it was made for',
+      code: 'CS_DRAFT_GROUNDING_STALE',
+    },
+    400
+  );
+const groundingSourceIntegrityError = () =>
+  new HttpException(
+    {
+      msg: 'A source version used as evidence could not be verified',
+      code: 'CS_GROUNDING_SOURCE_INTEGRITY_ERROR',
+    },
+    500
   );
 const storedDraftInvalid = () =>
   new HttpException(
@@ -170,7 +205,8 @@ export class ContentStudioService {
 
   constructor(
     private _contentStudioRepository: ContentStudioRepository,
-    private _contentStudioMediaService: ContentStudioMediaService
+    private _contentStudioMediaService: ContentStudioMediaService,
+    private _contentStudioGroundingService: ContentStudioGroundingService
   ) {}
 
   listProjects(organizationId: string, archived: boolean) {
@@ -364,14 +400,18 @@ export class ContentStudioService {
   }
 
   // Saves only over the version the editor started from. The draft is
-  // validated and stored in its normalized form, never as it was sent
+  // validated and stored in its normalized form, never as it was sent. A
+  // draft with claims is checked against the draft it replaces (no claim
+  // kept for changed text) and every piece of its evidence against the exact
+  // source version it names, before anything is written; the compare-and-swap
+  // then only replaces that same saved draft
   async saveDraft(input: {
     organizationId: string;
     packageId: string;
     baseDraftVersion: number;
     draft: unknown;
   }) {
-    let draft;
+    let draft: ContentPackageDraft;
     try {
       draft = parseContentPackageDraft(input.draft);
     } catch (err) {
@@ -379,6 +419,9 @@ export class ContentStudioService {
         throw err.code === 'DRAFT_TOO_LARGE' ? draftTooLarge() : draftInvalid();
       }
       throw err;
+    }
+    if (contentPackageClaims(draft).length) {
+      await this.assertGroundingSavable(input, draft);
     }
 
     const { count } =
@@ -443,6 +486,9 @@ export class ContentStudioService {
       }
       throw err;
     }
+    // checked again here, not only when the draft was saved: what becomes
+    // immutable must hold exactly the evidence it names
+    await this.verifyGrounding(input.organizationId, draft);
     // The stored content is exactly the hashed text. A parsed draft is plain
     // JSON data, so canonicalJson failing means the draft itself is broken
     let content: string;
@@ -482,7 +528,7 @@ export class ContentStudioService {
           packageId: input.packageId,
           expectedDraftVersion: row.draftVersion,
           expectedLatestRevisionNumber: row.latestRevisionNumber,
-          schemaVersion: CONTENT_PACKAGE_SCHEMA_VERSION,
+          schemaVersion: draft.schemaVersion,
           content,
           contentHash,
           origin: input.origin ?? 'manual',
@@ -560,6 +606,55 @@ export class ContentStudioService {
         content
       ),
     };
+  }
+
+  // The saved draft at exactly baseDraftVersion: a draft saved since is the
+  // usual conflict, before any grounding is judged
+  private async assertGroundingSavable(
+    input: {
+      organizationId: string;
+      packageId: string;
+      baseDraftVersion: number;
+    },
+    draft: ContentPackageDraft
+  ) {
+    const row = await this._contentStudioRepository.getPackageForOrganization(
+      input.organizationId,
+      input.packageId
+    );
+    if (!row) {
+      throw notFound();
+    }
+    if (row.archivedAt) {
+      throw packageArchived();
+    }
+    if (row.draftVersion !== input.baseDraftVersion) {
+      throw draftConflict(row.draftVersion);
+    }
+    const saved = this.parseStoredDraft(row.id, row.draft);
+    if (staleContentPackageClaimIds(saved, draft).length) {
+      throw groundingStale();
+    }
+    await this.verifyGrounding(input.organizationId, draft);
+  }
+
+  private async verifyGrounding(
+    organizationId: string,
+    draft: ContentPackageDraft
+  ) {
+    try {
+      await this._contentStudioGroundingService.verifyDraftGrounding(
+        organizationId,
+        draft
+      );
+    } catch (err) {
+      if (err instanceof ContentStudioGroundingError) {
+        throw err.code === 'INTEGRITY'
+          ? groundingSourceIntegrityError()
+          : groundingInvalid();
+      }
+      throw err;
+    }
   }
 
   private async getProject(organizationId: string, id: string) {

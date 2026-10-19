@@ -10,7 +10,7 @@ import {
   ContentStudioMediaUnavailableError,
 } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
 import {
-  ContentPackageDraftV1,
+  ContentPackageDraft,
   parseContentPackageDraft,
 } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 import {
@@ -62,7 +62,7 @@ const DRAFT_A = draftOf(
 const DRAFT_B = draftOf({ text: 'Rewritten draft' });
 
 const revisionRow = (
-  draft: ContentPackageDraftV1 = DRAFT_A,
+  draft: ContentPackageDraft = DRAFT_A,
   overrides: Partial<{
     content: string;
     contentHash: string;
@@ -101,7 +101,7 @@ const handoffRow = (
   ...overrides,
 });
 // every Media ready, with the path from its (database) row
-const readyMedia = async (_org: string, draft: ContentPackageDraftV1) =>
+const readyMedia = async (_org: string, draft: ContentPackageDraft) =>
   draft.copy.global.thread.map((item) =>
     item.mediaIds.map((id) => ({ id, path: `/db/${id}.png` }))
   );

@@ -118,22 +118,45 @@ export const useContentStudioPackages = (filters: ContentStudioFilters) => {
   return useSWR(packagesPath(filters), load, swrOptions);
 };
 
-// The package draft (schema v1) as the API sends it: plain text and Media ids
-// only. Paths never live in a draft
+// The package draft as the API sends it: plain text and Media ids only.
+// Paths never live in a draft. Schema v1 is the copy alone; v2 adds
+// grounding (P3-11): claims of thread items, each with evidence naming one
+// block of one exact source version. Grounding never changes the copy
 export interface ContentStudioThreadItem {
   id: string;
   text: string;
   mediaIds: string[];
 }
 
-export interface ContentStudioDraft {
-  schemaVersion: 1;
-  copy: {
-    global: {
-      thread: ContentStudioThreadItem[];
-    };
+export interface ContentStudioClaimEvidence {
+  sourceId: string;
+  versionId: string;
+  versionNumber: number;
+  contentHash: string;
+  blockId: string;
+  quote: string | null;
+}
+
+export interface ContentStudioClaim {
+  id: string;
+  threadItemId: string;
+  text: string;
+  evidence: ContentStudioClaimEvidence[];
+}
+
+interface ContentStudioCopy {
+  global: {
+    thread: ContentStudioThreadItem[];
   };
 }
+
+export type ContentStudioDraft =
+  | { schemaVersion: 1; copy: ContentStudioCopy }
+  | {
+      schemaVersion: 2;
+      copy: ContentStudioCopy;
+      grounding: { claims: ContentStudioClaim[] };
+    };
 
 // The current state of a Media the draft refers to; null when it is missing,
 // deleted or not the organization's

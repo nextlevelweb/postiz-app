@@ -1,5 +1,7 @@
 import {
-  ContentPackageDraftV1,
+  ContentPackageClaimV2,
+  ContentPackageDraft,
+  contentPackageClaims,
   parseContentPackageDraft,
 } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 import {
@@ -22,8 +24,8 @@ export function parseVerifiedContentPackageRevision(revision: {
   content: string;
   contentHash: string;
   schemaVersion: number;
-}): ContentPackageDraftV1 {
-  let content: ContentPackageDraftV1;
+}): ContentPackageDraft {
+  let content: ContentPackageDraft;
   try {
     content = parseContentPackageDraft(JSON.parse(revision.content));
   } catch {
@@ -38,3 +40,26 @@ export function parseVerifiedContentPackageRevision(revision: {
   }
   return content;
 }
+
+// What a later review of a revision reads as its claims: exactly the claims
+// stored in that verified revision, in their order, as copies. A v1 revision
+// has none. Nothing else is consulted: not the draft, a newer revision, an AI
+// operation or the current state of a source. Throws
+// ContentPackageRevisionIntegrityError like the parse above
+export function getReviewableClaimsFromContentPackageRevision(revision: {
+  content: string;
+  contentHash: string;
+  schemaVersion: number;
+}): ContentPackageClaimV2[] {
+  return contentPackageClaims(
+    parseVerifiedContentPackageRevision(revision)
+  ).map((claim) => ({
+    ...claim,
+    evidence: claim.evidence.map((entry) => ({ ...entry })),
+  }));
+}
+
+// The SHA-256 of one claim's canonical JSON: id, item, text and evidence.
+// A claim that changed in any of them hashes differently
+export const hashContentPackageClaim = (claim: ContentPackageClaimV2) =>
+  sha256Hex(canonicalJson(claim));

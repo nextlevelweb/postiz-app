@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { MediaService } from '@gitroom/nestjs-libraries/database/prisma/media/media.service';
-import { ContentPackageDraftV1 } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
+import { ContentPackageDraft } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 
 export interface ContentStudioMediaPreview {
   id: string;
@@ -68,7 +68,7 @@ export class ContentStudioMediaService {
   // null for a Media that is missing, deleted or of another organization
   async getPreviewMap(
     organizationId: string,
-    draft: ContentPackageDraftV1
+    draft: ContentPackageDraft
   ): Promise<Record<string, ContentStudioMediaPreview | null>> {
     const media = await this.lookUp(organizationId, draft);
 
@@ -94,7 +94,7 @@ export class ContentStudioMediaService {
   // is reported in one ContentStudioMediaUnavailableError
   async resolveForHandoff(
     organizationId: string,
-    draft: ContentPackageDraftV1
+    draft: ContentPackageDraft
   ): Promise<ContentStudioResolvedMedia[][]> {
     const media = await this.lookUp(organizationId, draft);
 
@@ -122,7 +122,7 @@ export class ContentStudioMediaService {
   }
 
   // One scoped lookup per distinct id, in the order the ids first appear
-  private async lookUp(organizationId: string, draft: ContentPackageDraftV1) {
+  private async lookUp(organizationId: string, draft: ContentPackageDraft) {
     const ids = [
       ...new Set(draft.copy.global.thread.flatMap((item) => item.mediaIds)),
     ];

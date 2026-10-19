@@ -10,7 +10,7 @@ import {
   ContentPackageRevisionIntegrityError,
   parseVerifiedContentPackageRevision,
 } from '@gitroom/nestjs-libraries/content-studio/content.package.revision';
-import { ContentPackageDraftV1 } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
+import { ContentPackageDraft } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 import { contentStudioTextToComposerHtml } from '@gitroom/nestjs-libraries/content-studio/handoff.html';
 
 export const CONTENT_STUDIO_HANDOFF_TTL_MS = 24 * 60 * 60 * 1000;
@@ -254,7 +254,7 @@ export class ContentStudioHandoffService {
   // "unavailable" and propagate
   private async resolveMedia(
     organizationId: string,
-    content: ContentPackageDraftV1
+    content: ContentPackageDraft
   ) {
     try {
       return await this._contentStudioMediaService.resolveForHandoff(

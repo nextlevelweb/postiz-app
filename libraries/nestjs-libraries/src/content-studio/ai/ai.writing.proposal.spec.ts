@@ -1,6 +1,9 @@
 import fs from 'fs';
 import path from 'path';
 import {
+  ContentStudioAIGroundingError,
+  parseContentStudioAIGroundedItemProposal,
+  parseContentStudioAIGroundedThreadProposal,
   parseContentStudioAIItemProposal,
   parseContentStudioAIThreadProposal,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.writing.proposal';
@@ -265,5 +268,150 @@ describe('AI writing proposal source', () => {
       /```|replace\(|slice\(|substring\(|(return|=)[^;\n]*\.trim\(\)/
     );
     expect(text).not.toMatch(/console\.|Logger|prisma|Repository/);
+  });
+});
+
+// P3-11: with source material the answer also lists claims. Their shape is
+// checked here; what their references and quotes point at is the caller's
+describe('grounded AI answers (P3-11)', () => {
+  const groundingRefused = (run: () => unknown) => {
+    let error: unknown;
+    try {
+      run();
+    } catch (err) {
+      error = err;
+    }
+    expect(error).toBeInstanceOf(ContentStudioAIGroundingError);
+    expect((error as ContentStudioAIGroundingError).code).toBe(
+      'INVALID_RESPONSE'
+    );
+    expect(String(error)).not.toContain(RESULT);
+  };
+  const claim = { text: 'Claim.', evidence: [{ ref: 'S1-B1', quote: null }] };
+
+  it('reads an item answer with its claims as written', () => {
+    expect(
+      parseContentStudioAIGroundedItemProposal(
+        JSON.stringify({
+          text: `${RESULT} text`,
+          claims: [
+            claim,
+            { text: 'Two.', evidence: [{ ref: 'S2-B4', quote: 'q' }] },
+          ],
+        })
+      )
+    ).toEqual({
+      text: `${RESULT} text`,
+      claims: [
+        claim,
+        { text: 'Two.', evidence: [{ ref: 'S2-B4', quote: 'q' }] },
+      ],
+    });
+  });
+
+  it("reads a thread answer with each item's claims, in the draft order", () => {
+    expect(
+      parseContentStudioAIGroundedThreadProposal(
+        answer([
+          { itemId: 'f2', text: 'c', claims: [] },
+          { itemId: 'main', text: 'a', claims: [claim] },
+          { itemId: 'f1', text: 'b', claims: [] },
+        ]),
+        IDS
+      )
+    ).toEqual([
+      { itemId: 'main', text: 'a', claims: [claim] },
+      { itemId: 'f1', text: 'b', claims: [] },
+      { itemId: 'f2', text: 'c', claims: [] },
+    ]);
+  });
+
+  it('an ungrounded thread answer keeps exactly {itemId, text}', () => {
+    expect(
+      parseContentStudioAIThreadProposal(
+        answer(IDS.map((itemId) => ({ itemId, text: itemId }))),
+        IDS
+      )
+    ).toEqual(IDS.map((itemId) => ({ itemId, text: itemId })));
+    // claims are not part of the ungrounded shape
+    refused(() =>
+      parseContentStudioAIThreadProposal(
+        answer(IDS.map((itemId) => ({ itemId, text: itemId, claims: [] }))),
+        IDS
+      )
+    );
+  });
+
+  it.each([
+    ['plain text', `${RESULT} text`],
+    ['no claims key', JSON.stringify({ text: `${RESULT} text` })],
+    ['an extra key', JSON.stringify({ text: 'x', claims: [], sources: [] })],
+    ['an empty text', JSON.stringify({ text: ' ', claims: [] })],
+  ])('refuses an item answer with %s as an unexpected response', (_l, raw) => {
+    refused(() => parseContentStudioAIGroundedItemProposal(raw));
+  });
+
+  it('refuses a grounded thread item without claims as an unexpected response', () => {
+    refused(() =>
+      parseContentStudioAIGroundedThreadProposal(
+        answer(IDS.map((itemId) => ({ itemId, text: itemId }))),
+        IDS
+      )
+    );
+  });
+
+  it.each([
+    ['claims that are not a list', { claims: {} }],
+    [
+      'more than 200 claims',
+      { claims: Array.from({ length: 201 }, () => claim) },
+    ],
+    ['a claim that is not an object', { claims: ['Claim.'] }],
+    ['a claim without evidence', { claims: [{ text: 'x', evidence: [] }] }],
+    [
+      'more than 20 pieces of evidence',
+      {
+        claims: [
+          {
+            text: 'x',
+            evidence: Array.from({ length: 21 }, (_, i) => ({
+              ref: `S1-B${i + 1}`,
+              quote: null,
+            })),
+          },
+        ],
+      },
+    ],
+    [
+      'a claim text that is not a string',
+      { claims: [{ text: 1, evidence: claim.evidence }] },
+    ],
+    ['an extra key on a claim', { claims: [{ ...claim, confidence: 1 }] }],
+    [
+      'an extra key on evidence',
+      {
+        claims: [
+          { text: 'x', evidence: [{ ref: 'S1-B1', quote: null, url: 'u' }] },
+        ],
+      },
+    ],
+    [
+      'evidence without a quote key',
+      { claims: [{ text: 'x', evidence: [{ ref: 'S1-B1' }] }] },
+    ],
+    [
+      'a reference that is not a string',
+      { claims: [{ text: 'x', evidence: [{ ref: 3, quote: null }] }] },
+    ],
+    [
+      'a quote that is not a string or null',
+      { claims: [{ text: 'x', evidence: [{ ref: 'S1-B1', quote: 5 }] }] },
+    ],
+  ])('refuses %s as a grounding error', (_label, extra) => {
+    groundingRefused(() =>
+      parseContentStudioAIGroundedItemProposal(
+        JSON.stringify({ text: `${RESULT} text`, ...extra })
+      )
+    );
   });
 });

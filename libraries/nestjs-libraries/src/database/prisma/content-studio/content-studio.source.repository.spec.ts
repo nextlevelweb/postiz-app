@@ -56,6 +56,9 @@ const matches = (row: Row, where: Row = {}) =>
     if (value && typeof value === 'object' && 'not' in (value as Row)) {
       return row[key] !== (value as Row).not;
     }
+    if (value && typeof value === 'object' && 'in' in (value as Row)) {
+      return ((value as Row).in as unknown[]).includes(row[key]);
+    }
     return row[key] === value;
   });
 
@@ -421,6 +424,7 @@ describe('ContentStudioSourceRepository: sources', () => {
       'getVersionByNumber',
       'getVersionDetailByNumber',
       'getVersionForSource',
+      'getVersionsByIdsForOrganization',
       'listSourcesForOrganization',
       'listVersionsForSource',
       'restoreSource',
@@ -830,5 +834,29 @@ describe('ContentStudioSource schema', () => {
     expect(block('User')).toMatch(
       /contentStudioSourceVersions\s+ContentStudioSourceVersion\[\]\s+@relation\("ContentStudioSourceVersionCreatedBy"\)/
     );
+  });
+});
+
+// P3-11: the versions a package's grounding names, by exact id, in one query
+describe('ContentStudioSourceRepository: grounding evidence versions', () => {
+  it('reads exactly the named versions of this organization, with their content and source', async () => {
+    const { repository, version } = setup();
+    await create(repository);
+    await append(repository, 0, 'one');
+    await append(repository, 1, 'two');
+    const ids = ['version-1-one', 'version-9-missing'];
+    const rows = await repository.getVersionsByIdsForOrganization(ORG, ids);
+    expect(version.findMany.mock.calls.at(-1)?.[0]).toEqual({
+      where: { organizationId: ORG, id: { in: ids } },
+      select: { ...VERSION_FIELDS, content: true, sourceId: true },
+    });
+    // the named version only: never the latest one of its source
+    expect(
+      rows.map((row) => [row.id, row.versionNumber, row.sourceId])
+    ).toEqual([['version-1-one', 1, SOURCE]]);
+    expect(rows[0].content).toBe(capture('one').content);
+    expect(
+      await repository.getVersionsByIdsForOrganization(OTHER_ORG, ids)
+    ).toEqual([]);
   });
 });
