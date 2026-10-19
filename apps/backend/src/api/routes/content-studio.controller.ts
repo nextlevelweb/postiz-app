@@ -43,6 +43,7 @@ import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries
 import { ContentStudioDesignLayoutPatternService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-layout-pattern.service';
 import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-page-set.service';
 import { ContentStudioDesignBlockService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-block.service';
+import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -137,6 +138,10 @@ import {
   UpdateContentStudioDesignBlockDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-block.dto';
 import {
+  CreateContentStudioReviewDto,
+  ListContentStudioReviewsDto,
+} from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.review.dto';
+import {
   RenderAllContentStudioDesignDto,
   RenderContentStudioDesignDto,
   UploadContentStudioRenderFontDto,
@@ -187,7 +192,8 @@ export class ContentStudioController {
     private _contentStudioDesignStylePresetService: ContentStudioDesignStylePresetService,
     private _contentStudioDesignLayoutPatternService: ContentStudioDesignLayoutPatternService,
     private _contentStudioDesignPageSetService: ContentStudioDesignPageSetService,
-    private _contentStudioDesignBlockService: ContentStudioDesignBlockService
+    private _contentStudioDesignBlockService: ContentStudioDesignBlockService,
+    private _contentStudioReviewService: ContentStudioReviewService
   ) {}
 
   @Get('/projects')
@@ -1444,6 +1450,102 @@ export class ContentStudioController {
     @Param('id') id: string
   ) {
     return this._contentStudioDesignBlockService.restoreBlock(org.id, id);
+  }
+
+  // Reviews (P5-01) of exactly one immutable revision: a Content Package
+  // revision or a Design revision. Every member may request one and move it
+  // on. The organization, the user, the hash and every state come from the
+  // request and the server only; a state change reads no body (no state,
+  // comment or reason). A review is not an approval and gates nothing; none
+  // is deleted
+  @Get('/reviews')
+  listReviews(
+    @GetOrgFromRequest() org: Organization,
+    @Query() query: ListContentStudioReviewsDto
+  ) {
+    return this._contentStudioReviewService.listReviews({
+      organizationId: org.id,
+      targetType: query.targetType,
+      targetRevisionId: query.targetRevisionId,
+      state: query.state,
+      page: query.page,
+    });
+  }
+
+  @Post('/reviews')
+  requestReview(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Body() body: CreateContentStudioReviewDto
+  ) {
+    return this._contentStudioReviewService.requestReview({
+      organizationId: org.id,
+      userId: user.id,
+      targetType: body.targetType,
+      targetRevisionId: body.targetRevisionId,
+    });
+  }
+
+  @Post('/reviews/:id/start')
+  @HttpCode(200)
+  startReview(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioReviewService.transitionReview({
+      organizationId: org.id,
+      userId: user.id,
+      id,
+      action: 'start',
+    });
+  }
+
+  // Only the state: the revision request that says why is P5-02
+  @Post('/reviews/:id/request-changes')
+  @HttpCode(200)
+  requestReviewChanges(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioReviewService.transitionReview({
+      organizationId: org.id,
+      userId: user.id,
+      id,
+      action: 'request-changes',
+    });
+  }
+
+  // Ready for the approval stage, not approved
+  @Post('/reviews/:id/ready-for-approval')
+  @HttpCode(200)
+  markReviewReadyForApproval(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioReviewService.transitionReview({
+      organizationId: org.id,
+      userId: user.id,
+      id,
+      action: 'ready-for-approval',
+    });
+  }
+
+  @Post('/reviews/:id/cancel')
+  @HttpCode(200)
+  cancelReview(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioReviewService.transitionReview({
+      organizationId: org.id,
+      userId: user.id,
+      id,
+      action: 'cancel',
+    });
   }
 
   // Renders one page of exactly the revision asked for (never the latest) to

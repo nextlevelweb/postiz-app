@@ -97,6 +97,8 @@ import { ContentStudioDesignPageSetRepository } from '@gitroom/nestjs-libraries/
 import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-page-set.service';
 import { ContentStudioDesignBlockRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-block.repository';
 import { ContentStudioDesignBlockService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-block.service';
+import { ContentStudioReviewRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.repository';
+import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 
 @Global()
 @Module({
@@ -199,6 +201,8 @@ import { ContentStudioDesignBlockService } from '@gitroom/nestjs-libraries/datab
     ContentStudioDesignPageSetService,
     ContentStudioDesignBlockRepository,
     ContentStudioDesignBlockService,
+    ContentStudioReviewRepository,
+    ContentStudioReviewService,
   ],
   get exports() {
     return this.providers;

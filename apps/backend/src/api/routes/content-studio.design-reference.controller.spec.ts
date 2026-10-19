@@ -29,6 +29,7 @@ import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries
 import { ContentStudioDesignLayoutPatternService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-layout-pattern.service';
 import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-page-set.service';
 import { ContentStudioDesignBlockService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-block.service';
+import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 
 // The real MediaService pulls in uploads, Redis and Temporal at import time;
 // the composer serializer needs a DOM. Neither is used by these routes
@@ -79,7 +80,8 @@ const setup = () => {
     {} as ContentStudioDesignStylePresetService,
     {} as ContentStudioDesignLayoutPatternService,
     {} as ContentStudioDesignPageSetService,
-    {} as ContentStudioDesignBlockService
+    {} as ContentStudioDesignBlockService,
+    {} as ContentStudioReviewService
   );
   return { controller, references, result };
 };

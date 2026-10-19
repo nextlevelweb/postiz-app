@@ -13,9 +13,11 @@ import {
 } from '@gitroom/frontend/components/content-studio/content-studio.api';
 import { ContentStudioPager } from '@gitroom/frontend/components/content-studio/content-studio.package.list';
 import { ContentStudioMediaTile } from '@gitroom/frontend/components/content-studio/content-studio.thread.editor';
+import { ContentStudioReviewStatus } from '@gitroom/frontend/components/content-studio/content-studio.review.status';
 
 // One revision, read-only: its text as plain text and its Media as they are
-// now. Nothing here can change a revision
+// now, and the review of exactly this version (P5-01), never of the draft.
+// Nothing here can change a revision
 const RevisionView: FC<{
   packageId: string;
   revision: ContentStudioRevisionSummary;
@@ -43,6 +45,11 @@ const RevisionView: FC<{
           {t('content_studio_restore_revision', 'Restore to draft')}
         </Button>
       </div>
+      <ContentStudioReviewStatus
+        targetType="PACKAGE_REVISION"
+        revisionId={revision.id}
+        revisionNumber={revision.revisionNumber}
+      />
       {detail.error ? (
         <div>
           {t('content_studio_load_error', 'Could not load Content Studio.')}

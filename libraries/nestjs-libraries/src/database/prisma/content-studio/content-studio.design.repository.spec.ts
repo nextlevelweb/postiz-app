@@ -611,6 +611,8 @@ describe('ContentStudioDesignProject schema', () => {
       renders: 'ContentStudioDesignRender[]',
       // P4-06: render-all batches of this exact revision point to it
       renderBatches: 'ContentStudioDesignRenderBatch[]',
+      // P5-01: a review of this exact revision points to it
+      reviews: 'ContentStudioReview[]',
     });
   });
 

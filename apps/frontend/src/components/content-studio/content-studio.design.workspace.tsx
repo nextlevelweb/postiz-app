@@ -83,6 +83,7 @@ import { ContentStudioDesignCanvas } from '@gitroom/frontend/components/content-
 import { SaveAsTemplateForm } from '@gitroom/frontend/components/content-studio/content-studio.design-templates';
 import { DesignStylePresets } from '@gitroom/frontend/components/content-studio/content-studio.design-style-presets';
 import { DesignCreativeLibrary } from '@gitroom/frontend/components/content-studio/content-studio.design-library';
+import { ContentStudioReviewStatus } from '@gitroom/frontend/components/content-studio/content-studio.review.status';
 
 // The Creative Studio workspace of one design: its pages and layers, a live
 // structural preview, an inspector, the revision history, and server renders
@@ -1395,9 +1396,10 @@ const NotLoaded: FC<{ children: ReactNode; retry?: () => void }> = ({
   );
 };
 
-// One design: its current revision (or an opened older one), read-only, and
-// its history. An archived design stays readable and renderable; only its
-// rename is gone until it is restored
+// One design: its current revision (or an opened older one), read-only, the
+// review of exactly that saved revision (P5-01), and its history. An
+// archived design stays readable and renderable; only its rename is gone
+// until it is restored
 export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
   designId,
 }) => {
@@ -1631,6 +1633,14 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
           )}
         </div>
       )}
+
+      {/* the review of the shown saved revision (P5-01), never of the draft */}
+      <ContentStudioReviewStatus
+        targetType="DESIGN_REVISION"
+        revisionId={shown.id}
+        revisionNumber={shown.revisionNumber}
+        unsaved={editing && editor.dirty}
+      />
 
       {!shown.historical ? (
         <DesignRevisionView

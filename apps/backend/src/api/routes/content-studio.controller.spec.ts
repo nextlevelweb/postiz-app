@@ -33,6 +33,7 @@ import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries
 import { ContentStudioDesignLayoutPatternService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-layout-pattern.service';
 import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-page-set.service';
 import { ContentStudioDesignBlockService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-block.service';
+import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -112,7 +113,8 @@ const setup = () => {
     {} as ContentStudioDesignStylePresetService,
     {} as ContentStudioDesignLayoutPatternService,
     {} as ContentStudioDesignPageSetService,
-    {} as ContentStudioDesignBlockService
+    {} as ContentStudioDesignBlockService,
+    {} as ContentStudioReviewService
   );
   return { service, handoffs, controller, result };
 };
@@ -297,7 +299,7 @@ describe('ContentStudioController wiring', () => {
     expect(types('listRevisions')[2]).toBe(ListContentPackageRevisionsDto);
   });
 
-  it('exposes exactly the project, package, draft, revision, handoff, AI connection, profile, AI writing, source, Brand Kit, design, design render and render font routes', () => {
+  it('exposes exactly the project, package, draft, revision, handoff, AI connection, profile, AI writing, source, Brand Kit, design, design render, render font and review routes', () => {
     expect(Reflect.getMetadata(PATH_METADATA, ContentStudioController)).toBe(
       '/content-studio'
     );
@@ -352,6 +354,7 @@ describe('ContentStudioController wiring', () => {
       'GET /packages/:id/revisions/:revisionId',
       'GET /projects',
       'GET /render-fonts',
+      'GET /reviews',
       'GET /sources',
       'GET /sources/:id',
       'GET /sources/:id/versions',
@@ -426,6 +429,11 @@ describe('ContentStudioController wiring', () => {
       'POST /render-fonts/:id/disable',
       'POST /render-fonts/:id/enable',
       'POST /render-fonts/upload',
+      'POST /reviews',
+      'POST /reviews/:id/cancel',
+      'POST /reviews/:id/ready-for-approval',
+      'POST /reviews/:id/request-changes',
+      'POST /reviews/:id/start',
       'POST /sources',
       'POST /sources/:id/archive',
       'POST /sources/:id/refresh',
@@ -555,6 +563,7 @@ describe('ContentStudioController handoffs', () => {
       ContentStudioDesignLayoutPatternService,
       ContentStudioDesignPageSetService,
       ContentStudioDesignBlockService,
+      ContentStudioReviewService,
     ]);
   });
 });

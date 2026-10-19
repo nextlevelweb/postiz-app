@@ -76,6 +76,8 @@ model Organization {
   contentStudioDesignLayoutPatterns      ContentStudioDesignLayoutPattern[]
   contentStudioDesignPageSets            ContentStudioDesignPageSet[]
   contentStudioDesignBlocks              ContentStudioDesignBlock[]
+  contentStudioReviews                   ContentStudioReview[]
+  contentStudioReviewStateEvents         ContentStudioReviewStateEvent[]
 
   @@index([apiKey])
   @@index([streakSince])
@@ -178,6 +180,8 @@ model User {
   contentStudioDesignLayoutPatterns      ContentStudioDesignLayoutPattern[]      @relation("ContentStudioDesignLayoutPatternCreatedBy")
   contentStudioDesignPageSets            ContentStudioDesignPageSet[]            @relation("ContentStudioDesignPageSetCreatedBy")
   contentStudioDesignBlocks              ContentStudioDesignBlock[]              @relation("ContentStudioDesignBlockCreatedBy")
+  contentStudioReviews                   ContentStudioReview[]                   @relation("ContentStudioReviewRequestedBy")
+  contentStudioReviewStateEvents         ContentStudioReviewStateEvent[]         @relation("ContentStudioReviewStateEventActor")
 
   @@unique([email, providerName])
   @@index([lastReadNotifications])
@@ -1959,6 +1963,7 @@ model ContentPackageRevision {
   package            ContentPackage         @relation(fields: [packageId, organizationId], references: [id, organizationId])
   createdBy          User                   @relation("ContentPackageRevisionCreatedBy", fields: [createdById], references: [id])
   handoffs           ContentStudioHandoff[]
+  reviews            ContentStudioReview[]
 
   @@unique([packageId, revisionNumber])
   @@unique([id, organizationId])
@@ -2383,6 +2388,7 @@ model ContentStudioDesignRevision {
   createdBy       User                             @relation("ContentStudioDesignRevisionCreatedBy", fields: [createdById], references: [id])
   renders         ContentStudioDesignRender[]
   renderBatches   ContentStudioDesignRenderBatch[]
+  reviews         ContentStudioReview[]
 
   @@unique([designProjectId, revisionNumber])
   @@unique([id, organizationId])
@@ -2548,6 +2554,61 @@ model ContentStudioDesignBlock {
   @@unique([id, organizationId])
   @@index([organizationId, archivedAt])
   @@index([createdById])
+}
+
+// A review (P5-01) of exactly one immutable revision: a Content Package
+// revision or a Design revision, never both and never neither (the service
+// writes and reads only one), never a package, a design or "the latest".
+// targetContentHash is that revision's stored contentHash, read by the server
+// when the review was requested; it never changes and is never repaired. A
+// revision has at most one review, and a newer revision none until one is
+// requested for it. state is a review state of review.state.ts, version the
+// number of its state events. Not an approval: nothing here gates a handoff
+// or publishing. Never deleted
+model ContentStudioReview {
+  id                String                          @id @default(uuid())
+  organizationId    String
+  packageRevisionId String?
+  designRevisionId  String?
+  targetContentHash String
+  state             String
+  version           Int                             @default(1)
+  requestedById     String
+  createdAt         DateTime                        @default(now())
+  updatedAt         DateTime                        @updatedAt
+  organization      Organization                    @relation(fields: [organizationId], references: [id])
+  requestedBy       User                            @relation("ContentStudioReviewRequestedBy", fields: [requestedById], references: [id])
+  packageRevision   ContentPackageRevision?         @relation(fields: [packageRevisionId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
+  designRevision    ContentStudioDesignRevision?    @relation(fields: [designRevisionId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
+  stateEvents       ContentStudioReviewStateEvent[]
+
+  @@unique([organizationId, packageRevisionId])
+  @@unique([organizationId, designRevisionId])
+  @@unique([id, organizationId])
+  @@index([organizationId, createdAt])
+  @@index([requestedById])
+}
+
+// The state history of a review: one event per state it reached, sequence 1
+// (from nothing to REQUESTED), 2, 3... in the same transaction as the state
+// change. Only ever created, never updated or deleted. Transition facts
+// only: no comment, reason or request metadata
+model ContentStudioReviewStateEvent {
+  id             String              @id @default(uuid())
+  organizationId String
+  reviewId       String
+  sequence       Int
+  fromState      String?
+  toState        String
+  actorUserId    String
+  createdAt      DateTime            @default(now())
+  organization   Organization        @relation(fields: [organizationId], references: [id])
+  review         ContentStudioReview @relation(fields: [reviewId, organizationId], references: [id, organizationId])
+  actorUser      User                @relation("ContentStudioReviewStateEventActor", fields: [actorUserId], references: [id])
+
+  @@unique([reviewId, sequence])
+  @@index([organizationId])
+  @@index([actorUserId])
 }
 
 // One render font file as uploaded: the exact bytes of a single TrueType or

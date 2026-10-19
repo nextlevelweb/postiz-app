@@ -1691,13 +1691,18 @@ describe('Creative Studio: Brand Kit revision', () => {
     expect(facts()).toMatchObject({ Font: 'Brand font unavailable.' });
   });
 
+  // P5-01: the review of the shown revision is the only other request
   it('BR-UI8 loads no web font', async () => {
     await renderWorkspace();
     expect(document.querySelectorAll('link, style')).toHaveLength(0);
     expect(document.body.innerHTML).not.toMatch(/@font-face|url\(/);
     expect(
-      calls().every((c) =>
-        /^\/content-studio\/(designs|brand-kit\/revisions)\//.test(c.url)
+      calls().every(
+        (c) =>
+          /^\/content-studio\/(designs|brand-kit\/revisions)\//.test(c.url) ||
+          /^\/content-studio\/reviews\?targetType=DESIGN_REVISION&targetRevisionId=[0-9a-f-]+$/.test(
+            c.url
+          )
       )
     ).toBe(true);
   });
