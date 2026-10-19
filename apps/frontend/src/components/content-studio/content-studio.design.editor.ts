@@ -28,6 +28,7 @@ import {
   ContentStudioDesignStylePresetContentV1,
   designStylePresetKindOf,
 } from '@gitroom/nestjs-libraries/content-studio/design/design.style.preset';
+import type { ContentStudioDesignBlockContentV1 } from '@gitroom/nestjs-libraries/content-studio/design/design.block';
 import {
   ContentStudioDesignPageSetContentV1,
   instantiateContentStudioDesignPageSet,
@@ -64,7 +65,9 @@ export type ContentStudioDesignEditorErrorCode =
   | 'LAYOUT_BRAND_UNAVAILABLE'
   | 'INVALID_TARGET_SIZE'
   | 'VARIANT_OUT_OF_LIMITS'
-  | 'PAGE_SET_OUT_OF_LIMITS';
+  | 'PAGE_SET_OUT_OF_LIMITS'
+  | 'BLOCK_BRAND_UNAVAILABLE'
+  | 'BLOCK_OUT_OF_LIMITS';
 
 // A code only: the UI shows its own fixed text for it
 export class ContentStudioDesignEditorError extends Error {
@@ -1509,6 +1512,52 @@ export const insertContentStudioDesignLayoutPattern = (
     document: withLayers(document, index, [...page.layers, ...layers]),
     layerIds: layers.map((layer) => layer.id),
   };
+};
+
+// ---------------------------------------------------------------------------
+// Design blocks (P4-18)
+// ---------------------------------------------------------------------------
+
+// A design block's layers copied onto a page exactly as a layout pattern's
+// are (the same layer snapshot): in front of the others, centered, every
+// layer under a new id, nothing of the block kept in the design, and the
+// same refusals as a whole (layer limits, coordinate limits, a Brand Kit
+// token the design's exact revision does not have: BLOCK_BRAND_UNAVAILABLE).
+// The whole result must also be valid Design Document v1, or nothing is
+// inserted (BLOCK_OUT_OF_LIMITS). Whether the images still belong to the
+// organization is the caller's check, before this is called
+export const insertContentStudioDesignBlock = (
+  document: ContentStudioDesignDocumentV1,
+  pageId: string,
+  content: ContentStudioDesignBlockContentV1,
+  brand: ContentStudioBrandKitContentV1 | null
+) => {
+  let inserted: ReturnType<typeof insertContentStudioDesignLayoutPattern>;
+  try {
+    inserted = insertContentStudioDesignLayoutPattern(
+      document,
+      pageId,
+      content,
+      brand
+    );
+  } catch (err) {
+    if (
+      err instanceof ContentStudioDesignEditorError &&
+      err.code === 'LAYOUT_BRAND_UNAVAILABLE'
+    ) {
+      throw fail('BLOCK_BRAND_UNAVAILABLE');
+    }
+    throw err;
+  }
+  try {
+    parseContentStudioDesignDocument(inserted.document);
+  } catch (err) {
+    if (err instanceof ContentStudioDesignDocumentError) {
+      throw fail('BLOCK_OUT_OF_LIMITS');
+    }
+    throw err;
+  }
+  return inserted;
 };
 
 // The literal colors the document uses (backgrounds, text and fills), each

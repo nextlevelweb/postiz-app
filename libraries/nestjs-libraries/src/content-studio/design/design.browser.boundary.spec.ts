@@ -15,8 +15,10 @@ const ALIASES: Array<[string, string]> = [
   ['@gitroom/react/', 'libraries/react-shared-libraries/src/'],
   ['@gitroom/helpers/', 'libraries/helpers/src/'],
 ];
+// P4-18: the hyphenated Creative Studio files (templates, style presets,
+// layouts, page sets, blocks, the library) are followed too
 const CREATIVE_STUDIO =
-  /^apps\/frontend\/src\/components\/content-studio\/content-studio\.(designs(\.api)?|design\.[a-z]+|api)\.tsx?$/;
+  /^apps\/frontend\/src\/components\/content-studio\/content-studio\.(designs(\.api)?|design[.-][a-z-]+(\.api)?|api)\.tsx?$/;
 
 const read = (file: string) =>
   fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
@@ -132,6 +134,9 @@ describe('design modules: browser-safe boundary', () => {
     expect(library).toEqual([
       'libraries/nestjs-libraries/src/content-studio/brand/brand.kit.ts',
       'libraries/nestjs-libraries/src/content-studio/content.package.draft.ts',
+      // P4-18: the design block names for the shared layer snapshot; its
+      // storage and hashing stay server-side
+      'libraries/nestjs-libraries/src/content-studio/design/design.block.ts',
       'libraries/nestjs-libraries/src/content-studio/design/design.document.ts',
       // P4-15: the pure Layout Pattern v1 parser, extraction and placement;
       // its hashing and built-ins stay server-side
@@ -142,6 +147,9 @@ describe('design modules: browser-safe boundary', () => {
       // P4-13: the pure Style Preset v1 parser, extraction and apply; its
       // hashing and built-ins stay server-side
       'libraries/nestjs-libraries/src/content-studio/design/design.style.preset.ts',
+      // P4-12, reached once the template files are followed (P4-18): the
+      // pure guidance parser and customization
+      'libraries/nestjs-libraries/src/content-studio/design/design.template.guidance.ts',
       'libraries/nestjs-libraries/src/content-studio/editorial/writing.profile.ts',
     ]);
     for (const file of files) {

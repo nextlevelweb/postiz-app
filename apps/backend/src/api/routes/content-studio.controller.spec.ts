@@ -32,6 +32,7 @@ import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/da
 import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-style-preset.service';
 import { ContentStudioDesignLayoutPatternService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-layout-pattern.service';
 import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-page-set.service';
+import { ContentStudioDesignBlockService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-block.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -110,7 +111,8 @@ const setup = () => {
     {} as ContentStudioDesignTemplateService,
     {} as ContentStudioDesignStylePresetService,
     {} as ContentStudioDesignLayoutPatternService,
-    {} as ContentStudioDesignPageSetService
+    {} as ContentStudioDesignPageSetService,
+    {} as ContentStudioDesignBlockService
   );
   return { service, handoffs, controller, result };
 };
@@ -323,6 +325,7 @@ describe('ContentStudioController wiring', () => {
       'GET /brand-kit/revisions',
       'GET /brand-kit/revisions/:revisionId',
       'GET /brand-kit/revisions/:revisionId/design-ref',
+      'GET /design-blocks',
       'GET /design-layout-patterns',
       'GET /design-page-sets',
       'GET /design-style-presets',
@@ -359,6 +362,7 @@ describe('ContentStudioController wiring', () => {
       'GET /writing-profiles/:id/revisions/:revisionId',
       'PATCH /ai/connections/:id',
       'PATCH /audience-profiles/:id',
+      'PATCH /design-blocks/:id',
       'PATCH /design-layout-patterns/:id',
       'PATCH /design-page-sets/:id',
       'PATCH /design-style-presets/:id',
@@ -379,6 +383,9 @@ describe('ContentStudioController wiring', () => {
       'POST /audience-profiles/:id/restore',
       'POST /audience-profiles/:id/revisions',
       'POST /brand-kit/revisions',
+      'POST /design-blocks',
+      'POST /design-blocks/:id/archive',
+      'POST /design-blocks/:id/restore',
       'POST /design-layout-patterns',
       'POST /design-layout-patterns/:id/archive',
       'POST /design-layout-patterns/:id/restore',
@@ -547,6 +554,7 @@ describe('ContentStudioController handoffs', () => {
       ContentStudioDesignStylePresetService,
       ContentStudioDesignLayoutPatternService,
       ContentStudioDesignPageSetService,
+      ContentStudioDesignBlockService,
     ]);
   });
 });

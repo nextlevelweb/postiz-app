@@ -1474,9 +1474,13 @@ describe('Design Document P4-02 persistence boundary', () => {
         )
         .sort()
     ).toEqual([
+      // P4-18: blocks are copied out of and into the draft document, and the
+      // library hands the draft on; neither saves a design revision
+      `${CS}/content-studio.design-blocks.tsx`,
       // P4-15: layouts are copied out of and into the draft document; they
       // save no design revision
       `${CS}/content-studio.design-layout-patterns.tsx`,
+      `${CS}/content-studio.design-library.tsx`,
       // P4-17: page sets are read from and added to the draft document; they
       // save no design revision
       `${CS}/content-studio.design-page-sets.tsx`,

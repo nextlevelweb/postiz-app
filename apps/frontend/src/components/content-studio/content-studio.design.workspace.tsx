@@ -82,8 +82,7 @@ import {
 import { ContentStudioDesignCanvas } from '@gitroom/frontend/components/content-studio/content-studio.design.canvas';
 import { SaveAsTemplateForm } from '@gitroom/frontend/components/content-studio/content-studio.design-templates';
 import { DesignStylePresets } from '@gitroom/frontend/components/content-studio/content-studio.design-style-presets';
-import { DesignLayoutPatterns } from '@gitroom/frontend/components/content-studio/content-studio.design-layout-patterns';
-import { DesignPageSets } from '@gitroom/frontend/components/content-studio/content-studio.design-page-sets';
+import { DesignCreativeLibrary } from '@gitroom/frontend/components/content-studio/content-studio.design-library';
 
 // The Creative Studio workspace of one design: its pages and layers, a live
 // structural preview, an inspector, the revision history, and server renders
@@ -1311,28 +1310,22 @@ export const DesignRevisionView: FC<{
               brand={brand.content}
             />
           )}
-          {/* layout patterns (P4-15): insert onto this page, or save the
-              chosen layers; the inserted layers become the selection */}
+          {/* the Creative Library (P4-18): blocks and layouts (P4-15) insert
+              copied layers, which become the selection; page sets (P4-17)
+              add blank pages, the first of which opens with nothing
+              selected; templates start a new design; Media adds an image */}
           {edit && (
-            <DesignLayoutPatterns
+            <DesignCreativeLibrary
               editor={edit.editor}
               document={document}
               page={page}
               layerIds={chosen}
               brand={brand.content}
-              onInserted={(ids) => {
+              onLayersInserted={(ids) => {
                 setChosenIds(ids);
                 setPrimaryId(ids[ids.length - 1] ?? null);
               }}
-            />
-          )}
-          {/* page sets (P4-17): add blank pages from one, or save this
-              structure; the first added page opens with nothing selected */}
-          {edit && (
-            <DesignPageSets
-              editor={edit.editor}
-              document={document}
-              onAdded={(ids) => {
+              onPagesAdded={(ids) => {
                 setPageId(ids[0]);
                 setLayerId(null);
               }}

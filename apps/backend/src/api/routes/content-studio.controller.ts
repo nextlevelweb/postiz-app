@@ -42,6 +42,7 @@ import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/da
 import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-style-preset.service';
 import { ContentStudioDesignLayoutPatternService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-layout-pattern.service';
 import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-page-set.service';
+import { ContentStudioDesignBlockService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-block.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -131,6 +132,11 @@ import {
   UpdateContentStudioDesignPageSetDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-page-set.dto';
 import {
+  CreateContentStudioDesignBlockDto,
+  ListContentStudioDesignBlocksDto,
+  UpdateContentStudioDesignBlockDto,
+} from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-block.dto';
+import {
   RenderAllContentStudioDesignDto,
   RenderContentStudioDesignDto,
   UploadContentStudioRenderFontDto,
@@ -180,7 +186,8 @@ export class ContentStudioController {
     private _contentStudioDesignTemplateService: ContentStudioDesignTemplateService,
     private _contentStudioDesignStylePresetService: ContentStudioDesignStylePresetService,
     private _contentStudioDesignLayoutPatternService: ContentStudioDesignLayoutPatternService,
-    private _contentStudioDesignPageSetService: ContentStudioDesignPageSetService
+    private _contentStudioDesignPageSetService: ContentStudioDesignPageSetService,
+    private _contentStudioDesignBlockService: ContentStudioDesignBlockService
   ) {}
 
   @Get('/projects')
@@ -1374,6 +1381,69 @@ export class ContentStudioController {
     @Param('id') id: string
   ) {
     return this._contentStudioDesignPageSetService.restorePageSet(org.id, id);
+  }
+
+  // Design blocks: the organization's own reusable creative assets, styled
+  // layers the editor copies into a page under new ids (there are no
+  // built-in blocks). Every member may read, create, change, archive and
+  // restore them. The organization and the user come from the request only;
+  // none touches a design, none is applied here, and none deletes
+  @Get('/design-blocks')
+  listDesignBlocks(
+    @GetOrgFromRequest() org: Organization,
+    @Query() query: ListContentStudioDesignBlocksDto
+  ) {
+    return this._contentStudioDesignBlockService.listBlocks({
+      organizationId: org.id,
+      archived: query.archived,
+      page: query.page,
+    });
+  }
+
+  @Post('/design-blocks')
+  createDesignBlock(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Body() body: CreateContentStudioDesignBlockDto
+  ) {
+    return this._contentStudioDesignBlockService.createBlock({
+      organizationId: org.id,
+      userId: user.id,
+      name: body.name,
+      description: body.description,
+      content: body.content,
+    });
+  }
+
+  @Patch('/design-blocks/:id')
+  updateDesignBlock(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Body() body: UpdateContentStudioDesignBlockDto
+  ) {
+    return this._contentStudioDesignBlockService.updateBlock(org.id, id, {
+      name: body.name,
+      description: body.description,
+      content: body.content,
+    });
+  }
+
+  @Post('/design-blocks/:id/archive')
+  @HttpCode(200)
+  archiveDesignBlock(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioDesignBlockService.archiveBlock(org.id, id);
+  }
+
+  @Post('/design-blocks/:id/restore')
+  @HttpCode(200)
+  restoreDesignBlock(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioDesignBlockService.restoreBlock(org.id, id);
   }
 
   // Renders one page of exactly the revision asked for (never the latest) to

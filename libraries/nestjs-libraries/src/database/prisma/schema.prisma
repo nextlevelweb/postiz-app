@@ -75,6 +75,7 @@ model Organization {
   contentStudioDesignStylePresets        ContentStudioDesignStylePreset[]
   contentStudioDesignLayoutPatterns      ContentStudioDesignLayoutPattern[]
   contentStudioDesignPageSets            ContentStudioDesignPageSet[]
+  contentStudioDesignBlocks              ContentStudioDesignBlock[]
 
   @@index([apiKey])
   @@index([streakSince])
@@ -176,6 +177,7 @@ model User {
   contentStudioDesignStylePresets        ContentStudioDesignStylePreset[]        @relation("ContentStudioDesignStylePresetCreatedBy")
   contentStudioDesignLayoutPatterns      ContentStudioDesignLayoutPattern[]      @relation("ContentStudioDesignLayoutPatternCreatedBy")
   contentStudioDesignPageSets            ContentStudioDesignPageSet[]            @relation("ContentStudioDesignPageSetCreatedBy")
+  contentStudioDesignBlocks              ContentStudioDesignBlock[]              @relation("ContentStudioDesignBlockCreatedBy")
 
   @@unique([email, providerName])
   @@index([lastReadNotifications])
@@ -2515,6 +2517,33 @@ model ContentStudioDesignPageSet {
   updatedAt      DateTime     @updatedAt
   organization   Organization @relation(fields: [organizationId], references: [id])
   createdBy      User         @relation("ContentStudioDesignPageSetCreatedBy", fields: [createdById], references: [id])
+
+  @@unique([id, organizationId])
+  @@index([organizationId, archivedAt])
+  @@index([createdById])
+}
+
+// A reusable design block of one organization (P4-18): some styled layers
+// of one page saved as a creative asset, in the shared layer snapshot
+// format of layout patterns (a box and its layers without ids), as
+// canonical JSON with its SHA-256. Using one copies its layers into a page
+// under new ids: no design or revision refers to a block, and changing or
+// archiving one reaches no design that used it before. Archiving hides it
+// from the library; there is no delete
+model ContentStudioDesignBlock {
+  id             String       @id @default(uuid())
+  organizationId String
+  name           String
+  description    String?
+  schemaVersion  Int
+  content        String
+  contentHash    String
+  archivedAt     DateTime?
+  createdById    String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdBy      User         @relation("ContentStudioDesignBlockCreatedBy", fields: [createdById], references: [id])
 
   @@unique([id, organizationId])
   @@index([organizationId, archivedAt])

@@ -473,7 +473,22 @@ export const DesignLayoutPatterns: FC<{
   layerIds: string[];
   brand: ContentStudioBrandKitContentV1 | null;
   onInserted: (layerIds: string[]) => void;
-}> = ({ editor, document, page, layerIds, brand, onInserted }) => {
+  // the Creative Library's search and source filter (P4-18): which entries
+  // are shown; every entry when left out
+  matches?: (entry: {
+    name: string;
+    description: string | null;
+    source: 'system' | 'organization';
+  }) => boolean;
+}> = ({
+  editor,
+  document,
+  page,
+  layerIds,
+  brand,
+  onInserted,
+  matches = () => true,
+}) => {
   const t = useT();
   const modals = useModals();
   const toaster = useToaster();
@@ -618,7 +633,7 @@ export const DesignLayoutPatterns: FC<{
               {t('content_studio_layouts_built_in', 'Built-in')}
             </h3>
             {rows(
-              list.data.system,
+              list.data.system.filter(matches),
               `${t('content_studio_layouts_built_in', 'Built-in')} · ${t(
                 'content_studio_layouts',
                 'Layouts'
@@ -629,7 +644,9 @@ export const DesignLayoutPatterns: FC<{
             </h3>
             {list.data.results.length ? (
               rows(
-                list.data.results.filter((pattern) => !pattern.archivedAt),
+                list.data.results.filter(
+                  (pattern) => !pattern.archivedAt && matches(pattern)
+                ),
                 `${t(
                   'content_studio_layouts_organization',
                   'Organization'

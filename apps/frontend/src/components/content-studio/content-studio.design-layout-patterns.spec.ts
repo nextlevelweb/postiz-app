@@ -565,8 +565,13 @@ const type = async (element: HTMLElement, value: string) => {
   await flush();
 };
 const toolbar = () => screen.getByRole('toolbar', { name: 'Design editor' });
-const layouts = () =>
-  screen.getByRole('region', { name: 'Layouts' }) as HTMLElement;
+// P4-18: layouts live in the Creative Library, under their own category
+const layouts = () => {
+  if (!screen.queryByRole('region', { name: 'Layouts' })) {
+    fireEvent.click(screen.getByRole('button', { name: 'Layouts' }));
+  }
+  return screen.getByRole('region', { name: 'Layouts' }) as HTMLElement;
+};
 const compose = () =>
   screen.getByRole('group', { name: 'Composition' }) as HTMLElement;
 const row = async (name: string, options: Plain = {}) => {
@@ -1212,9 +1217,13 @@ describe('Layout and composition frontend boundaries', () => {
     expect(code('content-studio.design-layout-patterns.api.ts')).not.toMatch(
       /brand-kit|BrandKit|latest/i
     );
+    // P4-18: the workspace hands it to the Creative Library, which hands it on
     const workspace = code('content-studio.design.workspace.tsx');
-    const use = workspace.slice(workspace.indexOf('<DesignLayoutPatterns'));
+    const use = workspace.slice(workspace.indexOf('<DesignCreativeLibrary'));
     expect(use.slice(0, use.indexOf('/>'))).toContain('brand={brand.content}');
+    const library = code('content-studio.design-library.tsx');
+    const inner = library.slice(library.indexOf('<DesignLayoutPatterns'));
+    expect(inner.slice(0, inner.indexOf('/>'))).toContain('brand={brand}');
   });
 
   it('P415-14 Media is checked through the existing design reference before an insert, never loaded or shown', () => {
@@ -1234,8 +1243,12 @@ describe('Layout and composition frontend boundaries', () => {
     expect(panel).toContain(
       'useContentStudioDesignLayoutPatterns(open, false, listPage)'
     );
+    // P4-18: only while editing, and only when its library category is open
     const workspace = code('content-studio.design.workspace.tsx');
-    expect(workspace).toMatch(/\{edit && \(\s*<DesignLayoutPatterns/);
+    expect(workspace).toMatch(/\{edit && \(\s*<DesignCreativeLibrary/);
+    expect(code('content-studio.design-library.tsx')).toMatch(
+      /\{category === 'layouts' && \(\s*<DesignLayoutPatterns/
+    );
   });
 
   it('P415-16 no component system, constraints, auto-layout, grouping or AI generation', () => {

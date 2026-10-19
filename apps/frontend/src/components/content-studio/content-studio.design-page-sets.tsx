@@ -544,7 +544,14 @@ export const DesignPageSets: FC<{
   editor: ContentStudioDesignEditor;
   document: ContentStudioDesignDocumentV1;
   onAdded: (pageIds: string[]) => void;
-}> = ({ editor, document, onAdded }) => {
+  // the Creative Library's search and source filter (P4-18): which entries
+  // are shown; every entry when left out
+  matches?: (entry: {
+    name: string;
+    description: string | null;
+    source: 'system' | 'organization';
+  }) => boolean;
+}> = ({ editor, document, onAdded, matches = () => true }) => {
   const t = useT();
   const modals = useModals();
   // the catalog loads only once it is opened
@@ -642,7 +649,7 @@ export const DesignPageSets: FC<{
               {t('content_studio_page_sets_built_in', 'Built-in')}
             </h3>
             {rows(
-              list.data.system,
+              list.data.system.filter(matches),
               `${t('content_studio_page_sets_built_in', 'Built-in')} · ${t(
                 'content_studio_page_sets',
                 'Page sets'
@@ -653,7 +660,9 @@ export const DesignPageSets: FC<{
             </h3>
             {list.data.results.length ? (
               rows(
-                list.data.results.filter((pageSet) => !pageSet.archivedAt),
+                list.data.results.filter(
+                  (pageSet) => !pageSet.archivedAt && matches(pageSet)
+                ),
                 `${t(
                   'content_studio_page_sets_organization',
                   'Organization'

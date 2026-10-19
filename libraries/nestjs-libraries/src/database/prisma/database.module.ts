@@ -95,6 +95,8 @@ import { ContentStudioDesignLayoutPatternRepository } from '@gitroom/nestjs-libr
 import { ContentStudioDesignLayoutPatternService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-layout-pattern.service';
 import { ContentStudioDesignPageSetRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-page-set.repository';
 import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-page-set.service';
+import { ContentStudioDesignBlockRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-block.repository';
+import { ContentStudioDesignBlockService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-block.service';
 
 @Global()
 @Module({
@@ -195,6 +197,8 @@ import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/dat
     ContentStudioDesignLayoutPatternService,
     ContentStudioDesignPageSetRepository,
     ContentStudioDesignPageSetService,
+    ContentStudioDesignBlockRepository,
+    ContentStudioDesignBlockService,
   ],
   get exports() {
     return this.providers;

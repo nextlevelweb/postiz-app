@@ -34,6 +34,7 @@ import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/da
 import { ContentStudioDesignStylePresetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-style-preset.service';
 import { ContentStudioDesignLayoutPatternService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-layout-pattern.service';
 import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-page-set.service';
+import { ContentStudioDesignBlockService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-block.service';
 import {
   CreateContentStudioDesignDto,
   CreateContentStudioDesignRevisionDto,
@@ -114,7 +115,8 @@ const setup = () => {
     {} as ContentStudioDesignTemplateService,
     {} as ContentStudioDesignStylePresetService,
     {} as ContentStudioDesignLayoutPatternService,
-    {} as ContentStudioDesignPageSetService
+    {} as ContentStudioDesignPageSetService,
+    {} as ContentStudioDesignBlockService
   );
   return { designs, controller, result };
 };
@@ -148,12 +150,14 @@ describe('ContentStudioController design routes', () => {
       // P4-11: so do the design template routes (template controller spec),
       // P4-13: and the style preset routes (style preset controller spec),
       // P4-15: and the layout pattern routes (layout pattern controller spec),
-      // P4-17: and the page set routes (page set controller spec)
+      // P4-17: and the page set routes (page set controller spec),
+      // P4-18: and the design block routes (design block controller spec)
       .filter((name) => !/DesignReference$/.test(name))
       .filter((name) => !/Template/.test(name))
       .filter((name) => !/StylePreset/.test(name))
       .filter((name) => !/LayoutPattern/.test(name))
-      .filter((name) => !/PageSet/.test(name));
+      .filter((name) => !/PageSet/.test(name))
+      .filter((name) => !/DesignBlock/.test(name));
     expect(names.map(route).sort()).toEqual([
       'GET /designs',
       'GET /designs/:id',
@@ -205,6 +209,8 @@ describe('ContentStudioController design routes', () => {
           // P4-15: the layout pattern routes, pinned by the layout pattern
           // controller spec (none touches a design, renders or applies)
           !/^(GET|POST|PATCH) \/design-layout-patterns/.test(r) &&
+          // P4-18: the design block routes, pinned by their controller spec
+          !/^(GET|POST|PATCH) \/design-blocks/.test(r) &&
           /design/i.test(r) &&
           (/^(DELETE|PUT) /.test(r) ||
             /render|preview|export|duplicate|copy|clone|template|generate|ai\b|media|upload|image|font|layout|thumbnail/i.test(

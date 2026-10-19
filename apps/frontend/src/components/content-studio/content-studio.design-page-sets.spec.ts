@@ -479,8 +479,13 @@ const submit = async (root: HTMLElement) => {
   fireEvent.submit(root.querySelector('form') as HTMLFormElement);
   await flush();
 };
-const panel = () =>
-  screen.getByRole('region', { name: 'Page sets' }) as HTMLElement;
+// P4-18: page sets live in the Creative Library, under their own category
+const panel = () => {
+  if (!screen.queryByRole('region', { name: 'Page sets' })) {
+    fireEvent.click(screen.getByRole('button', { name: 'Page sets' }));
+  }
+  return screen.getByRole('region', { name: 'Page sets' }) as HTMLElement;
+};
 const row = async (name: string, options: Plain = {}) => {
   const entry = Array.from(document.querySelectorAll('[data-layer-row]')).find(
     (element) => (element.textContent ?? '').includes(name)

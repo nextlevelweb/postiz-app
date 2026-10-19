@@ -196,6 +196,21 @@ export const designEditorErrorMessage = (t: Translate, error: unknown) => {
         'content_studio_design_variant_out_of_limits',
         'At that size this page would be outside the design limits. Nothing was created.'
       );
+    case 'BLOCK_BRAND_UNAVAILABLE':
+      return t(
+        'content_studio_block_brand_unavailable',
+        'This block uses Brand Kit colors or typography that this design’s Brand Kit revision does not have. Nothing was inserted.'
+      );
+    case 'BLOCK_OUT_OF_LIMITS':
+      return t(
+        'content_studio_block_out_of_limits',
+        'With this block the design would be outside its limits. Nothing was inserted.'
+      );
+    case 'PAGE_SET_OUT_OF_LIMITS':
+      return t(
+        'content_studio_page_set_out_of_limits',
+        'With these pages the design would be outside its limits. Nothing was added.'
+      );
     case 'LAYOUT_BRAND_UNAVAILABLE':
       return t(
         'content_studio_layout_brand_unavailable',
