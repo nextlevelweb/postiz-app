@@ -138,8 +138,13 @@ import {
   UpdateContentStudioDesignBlockDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-block.dto';
 import {
+  CreateContentStudioReviewCommentDto,
   CreateContentStudioReviewDto,
+  ListContentStudioReviewCommentsDto,
   ListContentStudioReviewsDto,
+  RequestContentStudioReviewChangesDto,
+  ResolveContentStudioReviewRevisionRequestDto,
+  UpdateContentStudioReviewCommentDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.review.dto';
 import {
   RenderAllContentStudioDesignDto,
@@ -1455,9 +1460,9 @@ export class ContentStudioController {
   // Reviews (P5-01) of exactly one immutable revision: a Content Package
   // revision or a Design revision. Every member may request one and move it
   // on. The organization, the user, the hash and every state come from the
-  // request and the server only; a state change reads no body (no state,
-  // comment or reason). A review is not an approval and gates nothing; none
-  // is deleted
+  // request and the server only; a state change reads no body (no state),
+  // except request changes, whose body is its revision request (P5-02). A
+  // review is not an approval and gates nothing; none is deleted
   @Get('/reviews')
   listReviews(
     @GetOrgFromRequest() org: Organization,
@@ -1501,19 +1506,21 @@ export class ContentStudioController {
     });
   }
 
-  // Only the state: the revision request that says why is P5-02
+  // The state together with the formal revision request that says what
+  // must change: its plain text only (P5-02)
   @Post('/reviews/:id/request-changes')
   @HttpCode(200)
   requestReviewChanges(
     @GetOrgFromRequest() org: Organization,
     @GetUserFromRequest() user: User,
-    @Param('id') id: string
+    @Param('id') id: string,
+    @Body() body: RequestContentStudioReviewChangesDto
   ) {
-    return this._contentStudioReviewService.transitionReview({
+    return this._contentStudioReviewService.requestChanges({
       organizationId: org.id,
       userId: user.id,
       id,
-      action: 'request-changes',
+      body: body.body,
     });
   }
 
@@ -1545,6 +1552,84 @@ export class ContentStudioController {
       userId: user.id,
       id,
       action: 'cancel',
+    });
+  }
+
+  // The discussion of a review (P5-02): flat plain-text comments by any
+  // member, edited by their author only, never deleted; and the one revision
+  // request, resolved by naming a newer saved revision of the same package
+  // or design. The review comes from the path; the organization, the author
+  // and the resolver from the request; the resolving revision's type and
+  // hash from the server. Nothing here changes a review's state
+  @Get('/reviews/:id/comments')
+  listReviewComments(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Query() query: ListContentStudioReviewCommentsDto
+  ) {
+    return this._contentStudioReviewService.listComments({
+      organizationId: org.id,
+      reviewId: id,
+      page: query.page,
+    });
+  }
+
+  @Post('/reviews/:id/comments')
+  addReviewComment(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Body() body: CreateContentStudioReviewCommentDto
+  ) {
+    return this._contentStudioReviewService.addComment({
+      organizationId: org.id,
+      userId: user.id,
+      reviewId: id,
+      body: body.body,
+    });
+  }
+
+  @Patch('/reviews/:id/comments/:commentId')
+  editReviewComment(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Param('commentId') commentId: string,
+    @Body() body: UpdateContentStudioReviewCommentDto
+  ) {
+    return this._contentStudioReviewService.editComment({
+      organizationId: org.id,
+      userId: user.id,
+      reviewId: id,
+      commentId,
+      body: body.body,
+    });
+  }
+
+  @Get('/reviews/:id/revision-request')
+  getReviewRevisionRequest(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioReviewService.getRevisionRequest({
+      organizationId: org.id,
+      reviewId: id,
+    });
+  }
+
+  @Post('/reviews/:id/revision-request/resolve')
+  @HttpCode(200)
+  resolveReviewRevisionRequest(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Body() body: ResolveContentStudioReviewRevisionRequestDto
+  ) {
+    return this._contentStudioReviewService.resolveRevisionRequest({
+      organizationId: org.id,
+      userId: user.id,
+      reviewId: id,
+      resolutionRevisionId: body.resolutionRevisionId,
     });
   }
 

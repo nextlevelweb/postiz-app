@@ -14,13 +14,18 @@ import {
   parseVerifiedContentStudioDesignRevision,
 } from '@gitroom/nestjs-libraries/content-studio/design/design.document.revision';
 import {
+  CONTENT_STUDIO_REVIEW_COMMENT_MAX,
+  CONTENT_STUDIO_REVISION_REQUEST_MAX,
   ContentStudioReviewAction,
   ContentStudioReviewState,
   ContentStudioReviewTargetType,
   ContentStudioReviewTransitionError,
+  isContentStudioReviewDiscussionOpen,
   isContentStudioReviewHistoryIntact,
   isContentStudioReviewState,
   isContentStudioReviewTargetType,
+  isContentStudioReviewText,
+  isContentStudioRevisionRequestStatus,
   transitionContentStudioReviewState,
 } from '@gitroom/nestjs-libraries/content-studio/review/review.state';
 
@@ -69,6 +74,75 @@ const conflict = () =>
     },
     409
   );
+const reviewCancelled = () =>
+  new HttpException(
+    {
+      msg: 'This review was cancelled: its discussion is closed.',
+      code: 'CS_REVIEW_CANCELLED',
+    },
+    409
+  );
+const commentInvalid = () =>
+  new HttpException(
+    {
+      msg: 'A comment needs text and must stay within its length limit.',
+      code: 'CS_REVIEW_COMMENT_INVALID',
+    },
+    400
+  );
+const commentNotFound = () =>
+  new HttpException(
+    { msg: 'Comment not found.', code: 'CS_REVIEW_COMMENT_NOT_FOUND' },
+    404
+  );
+const commentForbidden = () =>
+  new HttpException(
+    {
+      msg: 'Only its author can edit a comment.',
+      code: 'CS_REVIEW_COMMENT_FORBIDDEN',
+    },
+    403
+  );
+const revisionRequestInvalid = () =>
+  new HttpException(
+    {
+      msg: 'Requesting changes needs a description of what must change, within its length limit.',
+      code: 'CS_REVIEW_REVISION_REQUEST_INVALID',
+    },
+    400
+  );
+const revisionRequestNotFound = () =>
+  new HttpException(
+    {
+      msg: 'This review has no revision request.',
+      code: 'CS_REVIEW_REVISION_REQUEST_NOT_FOUND',
+    },
+    404
+  );
+const revisionRequestExists = () =>
+  new HttpException(
+    {
+      msg: 'This review already has a revision request.',
+      code: 'CS_REVIEW_REVISION_REQUEST_ALREADY_EXISTS',
+    },
+    409
+  );
+const invalidResolution = () =>
+  new HttpException(
+    {
+      msg: 'A revision request is resolved by a newer saved revision of the same package or design.',
+      code: 'CS_REVIEW_REVISION_REQUEST_INVALID_RESOLUTION',
+    },
+    400
+  );
+const revisionRequestConflict = () =>
+  new HttpException(
+    {
+      msg: 'This revision request was already resolved.',
+      code: 'CS_REVIEW_REVISION_REQUEST_CONFLICT',
+    },
+    409
+  );
 const integrityError = () =>
   new HttpException(
     {
@@ -78,7 +152,8 @@ const integrityError = () =>
     500
   );
 
-// A second review of the same revision: the unique target refuses it
+// A second review of the same revision, or a second revision request of the
+// same review: the unique constraint refuses it
 const isUniqueConstraintError = (err: unknown) =>
   err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
 
@@ -99,6 +174,14 @@ interface TargetRevision {
   contentHash: string;
 }
 
+interface PackageRevisionRef extends TargetRevision {
+  packageId: string;
+}
+
+interface DesignRevisionRef extends TargetRevision {
+  designProjectId: string;
+}
+
 interface ReviewRow {
   id: string;
   packageRevisionId: string | null;
@@ -109,8 +192,8 @@ interface ReviewRow {
   createdAt: Date;
   updatedAt: Date;
   requestedBy: Person;
-  packageRevision: TargetRevision | null;
-  designRevision: TargetRevision | null;
+  packageRevision: PackageRevisionRef | null;
+  designRevision: DesignRevisionRef | null;
   stateEvents: {
     sequence: number;
     fromState: string | null;
@@ -120,11 +203,49 @@ interface ReviewRow {
   }[];
 }
 
+interface CommentRow {
+  id: string;
+  body: string;
+  createdAt: Date;
+  editedAt: Date | null;
+  author: Person;
+}
+
+interface RevisionRequestRow {
+  id: string;
+  body: string;
+  status: string;
+  createdAt: Date;
+  resolvedByUserId: string | null;
+  resolvedAt: Date | null;
+  resolvedByPackageRevisionId: string | null;
+  resolvedByDesignRevisionId: string | null;
+  resolvedByContentHash: string | null;
+  requestedBy: Person;
+  resolvedBy: Person | null;
+  resolvedByPackageRevision: PackageRevisionRef | null;
+  resolvedByDesignRevision: DesignRevisionRef | null;
+}
+
 // The exact revision a review is about, as the stored row binds it
 interface ReviewTarget {
   targetType: ContentStudioReviewTargetType;
   revisionId: string;
 }
+
+// A revision with the package or design it belongs to, by one name
+interface ParentedRevision extends TargetRevision {
+  parentId: string;
+}
+const parented = (
+  revision: PackageRevisionRef | DesignRevisionRef
+): ParentedRevision => ({
+  id: revision.id,
+  revisionNumber: revision.revisionNumber,
+  contentHash: revision.contentHash,
+  parentId:
+    'packageId' in revision ? revision.packageId : revision.designProjectId,
+});
 
 // Reviews (P5-01): the workflow of looking at exactly one immutable revision,
 // a Content Package revision or a Design revision, before the approval stage.
@@ -137,7 +258,17 @@ interface ReviewTarget {
 // state appends its event in the same transaction, only from the state and
 // version it was read at. A review is not an approval: READY_FOR_APPROVAL
 // gates no handoff and no publishing, and nothing here touches a package, a
-// design, a render, Media or AI
+// design, a render, Media or AI.
+//
+// The discussion (P5-02) belongs to the review, and so to its exact
+// revision: flat plain-text comments, each edited by its author only and
+// never deleted, and the one formal revision request that IN_REVIEW ->
+// CHANGES_REQUESTED always writes in the same transaction. The request is
+// resolved by naming an exact newer saved revision of the same package or
+// design; the server finds it inside the organization, verifies it and keeps
+// its stored hash. The review stays CHANGES_REQUESTED and the resolving
+// revision gets no review of its own until one is requested. A cancelled
+// review is frozen. No comment changes a state
 @Injectable()
 export class ContentStudioReviewService {
   private readonly _logger = new Logger(ContentStudioReviewService.name);
@@ -211,9 +342,10 @@ export class ContentStudioReviewService {
       targetType: input.targetType,
       revisionId: input.targetRevisionId,
     };
-    const contentHash = await this.verifiedTargetHash(
+    const { contentHash } = await this.verifiedRevision(
       input.organizationId,
-      target
+      target,
+      targetNotFound
     );
     const id = randomUUID();
     try {
@@ -236,15 +368,59 @@ export class ContentStudioReviewService {
     return this.reviewDetail(await this.getRow(input.organizationId, id));
   }
 
-  // One step of the state machine, by the request user. The target must
-  // still be the revision with the hash the review was requested for; a
-  // concurrent change wins or loses as a whole
+  // One step of the state machine, by the request user, other than request
+  // changes: that one always comes with its revision request
+  // (requestChanges)
   async transitionReview(input: {
     organizationId: string;
     userId: string;
     id: string;
     action: ContentStudioReviewAction;
   }) {
+    if (input.action === 'request-changes') {
+      throw revisionRequestInvalid();
+    }
+    return this.changeState(input);
+  }
+
+  // IN_REVIEW -> CHANGES_REQUESTED and the formal revision request that says
+  // what must change, by the request user: both or neither
+  async requestChanges(input: {
+    organizationId: string;
+    userId: string;
+    id: string;
+    body: unknown;
+  }) {
+    if (
+      !isContentStudioReviewText(
+        input.body,
+        CONTENT_STUDIO_REVISION_REQUEST_MAX
+      )
+    ) {
+      throw revisionRequestInvalid();
+    }
+    return this.changeState(
+      {
+        organizationId: input.organizationId,
+        userId: input.userId,
+        id: input.id,
+        action: 'request-changes',
+      },
+      input.body
+    );
+  }
+
+  // The target must still be the revision with the hash the review was
+  // requested for; a concurrent change wins or loses as a whole
+  private async changeState(
+    input: {
+      organizationId: string;
+      userId: string;
+      id: string;
+      action: ContentStudioReviewAction;
+    },
+    revisionRequestBody?: string
+  ) {
     const row = await this.getRow(input.organizationId, input.id);
     const review = this.reviewDetail(row);
     let toState: ContentStudioReviewState;
@@ -256,45 +432,262 @@ export class ContentStudioReviewService {
       }
       throw err;
     }
-    const contentHash = await this.verifiedTargetHash(
-      input.organizationId,
-      {
-        targetType: review.targetType,
-        revisionId: review.targetRevisionId,
-      },
-      true
-    );
-    if (contentHash !== review.targetContentHash) {
-      this._logger.error(`Content Studio review target changed: ${review.id}`);
-      throw integrityError();
+    await this.verifiedReviewedRevision(input.organizationId, review);
+    let transitioned: boolean;
+    try {
+      transitioned =
+        await this._contentStudioReviewRepository.transitionReviewWithCompareAndSwap(
+          {
+            organizationId: input.organizationId,
+            reviewId: review.id,
+            expectedState: review.state,
+            expectedVersion: review.version,
+            toState,
+            actorUserId: input.userId,
+            revisionRequest:
+              revisionRequestBody === undefined
+                ? undefined
+                : { id: randomUUID(), body: revisionRequestBody },
+          }
+        );
+    } catch (err) {
+      if (isUniqueConstraintError(err)) {
+        throw revisionRequestExists();
+      }
+      throw err;
     }
-    const transitioned =
-      await this._contentStudioReviewRepository.transitionReviewWithCompareAndSwap(
-        {
-          organizationId: input.organizationId,
-          reviewId: review.id,
-          expectedState: review.state,
-          expectedVersion: review.version,
-          toState,
-          actorUserId: input.userId,
-        }
-      );
     if (!transitioned) {
       throw conflict();
     }
     return this.reviewDetail(await this.getRow(input.organizationId, row.id));
   }
 
-  // The stored hash of the exact revision of the organization, after proving
-  // the revision is still exactly what was written. A missing or foreign
-  // revision is a 404 when a review is requested; once a review exists, its
-  // revision must be there
-  private async verifiedTargetHash(
+  // --- the discussion (P5-02) ---
+
+  // One page of the review's comments, oldest first
+  async listComments(input: {
+    organizationId: string;
+    reviewId: string;
+    page: number;
+  }) {
+    const review = this.reviewDetail(
+      await this.getRow(input.organizationId, input.reviewId)
+    );
+    const filter = {
+      organizationId: input.organizationId,
+      reviewId: review.id,
+    };
+    const [rows, count] = await Promise.all([
+      this._contentStudioReviewRepository.listCommentsForReview({
+        ...filter,
+        skip: (input.page - 1) * PAGE_SIZE,
+        take: PAGE_SIZE,
+      }),
+      this._contentStudioReviewRepository.countCommentsForReview(filter),
+    ]);
+    return {
+      pages: Math.ceil(count / PAGE_SIZE),
+      results: rows.map((row) => this.commentDetail(row)),
+    };
+  }
+
+  // A comment by the request user on a review that is not cancelled. It
+  // never changes the review's state
+  async addComment(input: {
+    organizationId: string;
+    userId: string;
+    reviewId: string;
+    body: unknown;
+  }) {
+    if (
+      !isContentStudioReviewText(input.body, CONTENT_STUDIO_REVIEW_COMMENT_MAX)
+    ) {
+      throw commentInvalid();
+    }
+    const review = this.reviewDetail(
+      await this.getRow(input.organizationId, input.reviewId)
+    );
+    if (!isContentStudioReviewDiscussionOpen(review.state)) {
+      throw reviewCancelled();
+    }
+    const id = randomUUID();
+    const created = await this._contentStudioReviewRepository.createComment({
+      id,
+      organizationId: input.organizationId,
+      reviewId: review.id,
+      authorUserId: input.userId,
+      body: input.body,
+    });
+    if (!created) {
+      throw reviewCancelled();
+    }
+    return this.commentDetail(
+      await this.getCommentRow(input.organizationId, review.id, id)
+    );
+  }
+
+  // Only the author edits a comment, and only while the review is not
+  // cancelled: another member reads it but cannot change it
+  async editComment(input: {
+    organizationId: string;
+    userId: string;
+    reviewId: string;
+    commentId: string;
+    body: unknown;
+  }) {
+    if (
+      !isContentStudioReviewText(input.body, CONTENT_STUDIO_REVIEW_COMMENT_MAX)
+    ) {
+      throw commentInvalid();
+    }
+    const review = this.reviewDetail(
+      await this.getRow(input.organizationId, input.reviewId)
+    );
+    const comment = await this.getCommentRow(
+      input.organizationId,
+      review.id,
+      input.commentId
+    );
+    if (comment.author.id !== input.userId) {
+      throw commentForbidden();
+    }
+    if (!isContentStudioReviewDiscussionOpen(review.state)) {
+      throw reviewCancelled();
+    }
+    const edited =
+      await this._contentStudioReviewRepository.editCommentOfAuthor({
+        organizationId: input.organizationId,
+        reviewId: review.id,
+        id: comment.id,
+        authorUserId: input.userId,
+        body: input.body,
+        editedAt: new Date(),
+      });
+    if (!edited) {
+      throw reviewCancelled();
+    }
+    return this.commentDetail(
+      await this.getCommentRow(input.organizationId, review.id, comment.id)
+    );
+  }
+
+  async getRevisionRequest(input: {
+    organizationId: string;
+    reviewId: string;
+  }) {
+    const row = await this.getRow(input.organizationId, input.reviewId);
+    // a malformed review fails closed before its request is looked for
+    this.reviewDetail(row);
+    const request = await this.getRevisionRequestRow(input.organizationId, row);
+    return this.revisionRequestDetail(request, row);
+  }
+
+  // OPEN -> RESOLVED by the request user, naming the exact newer saved
+  // revision that made the changes: of the same package (package review) or
+  // the same design (design review), found inside the organization by its
+  // id alone (the type follows from the review), still exactly what was
+  // stored. Its hash is the one it has stored, never one from the request.
+  // The review itself does not change, and the resolving revision is not
+  // reviewed by this
+  async resolveRevisionRequest(input: {
+    organizationId: string;
+    userId: string;
+    reviewId: string;
+    resolutionRevisionId: unknown;
+  }) {
+    const row = await this.getRow(input.organizationId, input.reviewId);
+    const review = this.reviewDetail(row);
+    const request = this.revisionRequestDetail(
+      await this.getRevisionRequestRow(input.organizationId, row),
+      row
+    );
+    if (request.status !== 'OPEN') {
+      throw revisionRequestConflict();
+    }
+    if (
+      typeof input.resolutionRevisionId !== 'string' ||
+      !UUID.test(input.resolutionRevisionId)
+    ) {
+      throw invalidResolution();
+    }
+    const reviewed = await this.verifiedReviewedRevision(
+      input.organizationId,
+      review
+    );
+    const resolution = await this.verifiedRevision(
+      input.organizationId,
+      {
+        targetType: review.targetType,
+        revisionId: input.resolutionRevisionId,
+      },
+      invalidResolution
+    );
+    if (
+      resolution.parentId !== reviewed.parentId ||
+      resolution.revisionNumber <= reviewed.revisionNumber
+    ) {
+      throw invalidResolution();
+    }
+    const resolved =
+      await this._contentStudioReviewRepository.resolveRevisionRequestWithCompareAndSwap(
+        {
+          organizationId: input.organizationId,
+          reviewId: review.id,
+          id: request.id,
+          resolvedByUserId: input.userId,
+          resolvedAt: new Date(),
+          resolvedByPackageRevisionId:
+            review.targetType === 'PACKAGE_REVISION' ? resolution.id : null,
+          resolvedByDesignRevisionId:
+            review.targetType === 'DESIGN_REVISION' ? resolution.id : null,
+          resolvedByContentHash: resolution.contentHash,
+        }
+      );
+    if (!resolved) {
+      throw revisionRequestConflict();
+    }
+    return this.revisionRequestDetail(
+      await this.getRevisionRequestRow(input.organizationId, row),
+      row
+    );
+  }
+
+  // The reviewed revision, re-verified: still exactly what was stored, with
+  // the hash the review was requested for
+  private async verifiedReviewedRevision(
+    organizationId: string,
+    review: {
+      id: string;
+      targetType: ContentStudioReviewTargetType;
+      targetRevisionId: string;
+      targetContentHash: string;
+    }
+  ) {
+    const revision = await this.verifiedRevision(
+      organizationId,
+      {
+        targetType: review.targetType,
+        revisionId: review.targetRevisionId,
+      },
+      integrityError
+    );
+    if (revision.contentHash !== review.targetContentHash) {
+      this._logger.error(`Content Studio review target changed: ${review.id}`);
+      throw integrityError();
+    }
+    return revision;
+  }
+
+  // The exact revision of the organization, with its package or design and
+  // its stored hash, after proving the revision is still exactly what was
+  // written. What a missing or foreign revision is depends on the caller: a
+  // 404 when a review is requested, an invalid resolution when a revision
+  // request is resolved; once a review exists, its revision must be there
+  private async verifiedRevision(
     organizationId: string,
     target: ReviewTarget,
-    reviewed = false
-  ) {
-    const missing = reviewed ? integrityError : targetNotFound;
+    missing: () => HttpException
+  ): Promise<ParentedRevision> {
     if (!UUID.test(target.revisionId)) {
       throw missing();
     }
@@ -329,7 +722,41 @@ export class ContentStudioReviewService {
       }
       throw err;
     }
-    return revision.contentHash;
+    return parented(revision);
+  }
+
+  private async getCommentRow(
+    organizationId: string,
+    reviewId: string,
+    id: string
+  ) {
+    if (typeof id !== 'string' || !UUID.test(id)) {
+      throw commentNotFound();
+    }
+    const row = await this._contentStudioReviewRepository.getCommentForReview(
+      organizationId,
+      reviewId,
+      id
+    );
+    if (!row) {
+      throw commentNotFound();
+    }
+    return row;
+  }
+
+  private async getRevisionRequestRow(
+    organizationId: string,
+    review: ReviewRow
+  ) {
+    const row =
+      await this._contentStudioReviewRepository.getRevisionRequestForReview(
+        organizationId,
+        review.id
+      );
+    if (!row) {
+      throw revisionRequestNotFound();
+    }
+    return row;
   }
 
   private async getRow(organizationId: string, id: string) {
@@ -381,6 +808,119 @@ export class ContentStudioReviewService {
         actor: { id: event.actorUser.id, name: event.actorUser.name },
         createdAt: event.createdAt,
       })),
+    };
+  }
+
+  // Plain text as stored, its author, and when it was written and last
+  // edited: no organization or review id
+  private commentDetail(row: CommentRow) {
+    if (
+      typeof row.body !== 'string' ||
+      !row.author ||
+      !(row.createdAt instanceof Date) ||
+      (row.editedAt !== null && !(row.editedAt instanceof Date))
+    ) {
+      this._logger.error(
+        `Stored Content Studio review comment is invalid: ${row.id}`
+      );
+      throw integrityError();
+    }
+    return {
+      id: row.id,
+      body: row.body,
+      author: { id: row.author.id, name: row.author.name },
+      createdAt: row.createdAt,
+      editedAt: row.editedAt,
+    };
+  }
+
+  // A revision request only exists for a review that reached
+  // CHANGES_REQUESTED. OPEN has no resolution field at all; RESOLVED has
+  // every one of them, and they agree: the user and time, exactly the one
+  // revision field of the review's target type, that revision through its
+  // relation in the organization, of the same package or design as the
+  // reviewed revision, newer than it, with the stored hash the request kept.
+  // Anything else is reported, never repaired
+  private revisionRequestDetail(row: RevisionRequestRow, reviewRow: ReviewRow) {
+    const review = this.reviewDetail(reviewRow);
+    const reviewed = parented(this.binding(reviewRow)!.revision);
+    const open =
+      row.status === 'OPEN' &&
+      row.resolvedByUserId === null &&
+      row.resolvedBy === null &&
+      row.resolvedAt === null &&
+      row.resolvedByPackageRevisionId === null &&
+      row.resolvedByDesignRevisionId === null &&
+      row.resolvedByContentHash === null;
+    const resolution =
+      row.status === 'RESOLVED'
+        ? this.resolution(row, review.targetType)
+        : null;
+    if (
+      review.state !== 'CHANGES_REQUESTED' ||
+      !isContentStudioRevisionRequestStatus(row.status) ||
+      typeof row.body !== 'string' ||
+      !(open || resolution) ||
+      (resolution &&
+        (resolution.revision.parentId !== reviewed.parentId ||
+          resolution.revision.revisionNumber <= reviewed.revisionNumber))
+    ) {
+      this._logger.error(
+        `Stored Content Studio revision request is invalid: ${row.id}`
+      );
+      throw integrityError();
+    }
+    return {
+      id: row.id,
+      body: row.body,
+      status: row.status,
+      requestedBy: { id: row.requestedBy.id, name: row.requestedBy.name },
+      createdAt: row.createdAt,
+      resolution: resolution && {
+        revisionId: resolution.revision.id,
+        revisionNumber: resolution.revision.revisionNumber,
+        contentHash: resolution.revision.contentHash,
+        resolvedBy: {
+          id: resolution.resolvedBy.id,
+          name: resolution.resolvedBy.name,
+        },
+        resolvedAt: resolution.resolvedAt,
+      },
+    };
+  }
+
+  // Every resolution field of a RESOLVED request, or null when one is
+  // missing or disagrees
+  private resolution(
+    row: RevisionRequestRow,
+    targetType: ContentStudioReviewTargetType
+  ) {
+    const reference =
+      targetType === 'PACKAGE_REVISION'
+        ? row.resolvedByDesignRevisionId === null &&
+          row.resolvedByPackageRevision?.id === row.resolvedByPackageRevisionId
+          ? row.resolvedByPackageRevision
+          : null
+        : row.resolvedByPackageRevisionId === null &&
+          row.resolvedByDesignRevision?.id === row.resolvedByDesignRevisionId
+        ? row.resolvedByDesignRevision
+        : null;
+    if (
+      !reference ||
+      !row.resolvedBy ||
+      row.resolvedByUserId === null ||
+      row.resolvedBy.id !== row.resolvedByUserId ||
+      !(row.resolvedAt instanceof Date) ||
+      row.resolvedByContentHash === null ||
+      !SHA256.test(row.resolvedByContentHash) ||
+      reference.contentHash !== row.resolvedByContentHash
+    ) {
+      return null;
+    }
+    return {
+      revision: parented(reference),
+      resolvedBy: row.resolvedBy,
+      resolvedAt: row.resolvedAt,
     };
   }
 

@@ -17,14 +17,23 @@ import { ContentStudioReviewStatus } from '@gitroom/frontend/components/content-
 
 // One revision, read-only: its text as plain text and its Media as they are
 // now, and the review of exactly this version (P5-01), never of the draft.
-// Nothing here can change a revision
+// A revision request of that review is resolved by one of the newest saved
+// versions of this package (P5-02). Nothing here can change a revision
 const RevisionView: FC<{
   packageId: string;
   revision: ContentStudioRevisionSummary;
+  newerRevisions: ContentStudioRevisionSummary[];
   canRestore: boolean;
   onBack: () => void;
   onRestore: (content: ContentStudioDraft) => void;
-}> = ({ packageId, revision, canRestore, onBack, onRestore }) => {
+}> = ({
+  packageId,
+  revision,
+  newerRevisions,
+  canRestore,
+  onBack,
+  onRestore,
+}) => {
   const t = useT();
   const detail = useContentStudioRevision(packageId, revision.id);
   const media = new Map(Object.entries(detail.data?.media || {}));
@@ -49,6 +58,7 @@ const RevisionView: FC<{
         targetType="PACKAGE_REVISION"
         revisionId={revision.id}
         revisionNumber={revision.revisionNumber}
+        newerRevisions={newerRevisions}
       />
       {detail.error ? (
         <div>
@@ -102,6 +112,9 @@ export const ContentStudioRevisionHistory: FC<{
     null
   );
   const list = useContentStudioRevisions(packageId, page);
+  // the newest saved versions (the same request as the list on page 1): the
+  // ones a revision request can be resolved by
+  const newest = useContentStudioRevisions(packageId, 1);
 
   const restore = async (revisionId: string, content?: ContentStudioDraft) => {
     if (await onRestore(revisionId, content)) {
@@ -114,6 +127,7 @@ export const ContentStudioRevisionHistory: FC<{
       <RevisionView
         packageId={packageId}
         revision={viewing}
+        newerRevisions={newest.data?.results ?? []}
         canRestore={canRestore}
         onBack={() => setViewing(null)}
         onRestore={(content) => restore(viewing.id, content)}

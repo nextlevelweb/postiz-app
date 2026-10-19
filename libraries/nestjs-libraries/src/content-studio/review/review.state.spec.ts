@@ -3,12 +3,18 @@ import { join } from 'path';
 import {
   canTransitionContentStudioReview,
   CONTENT_STUDIO_REVIEW_ACTIONS,
+  CONTENT_STUDIO_REVIEW_COMMENT_MAX,
   CONTENT_STUDIO_REVIEW_STATES,
   CONTENT_STUDIO_REVIEW_TARGET_TYPES,
+  CONTENT_STUDIO_REVISION_REQUEST_MAX,
+  CONTENT_STUDIO_REVISION_REQUEST_STATUSES,
   contentStudioReviewActions,
   ContentStudioReviewTransitionError,
+  isContentStudioReviewDiscussionOpen,
   isContentStudioReviewHistoryIntact,
   isContentStudioReviewState,
+  isContentStudioReviewText,
+  isContentStudioRevisionRequestStatus,
   transitionContentStudioReviewState,
 } from '@gitroom/nestjs-libraries/content-studio/review/review.state';
 
@@ -292,6 +298,60 @@ describe('Content Studio review state history', () => {
   });
 });
 
+// The discussion (P5-02): which states take comments, the two revision
+// request statuses and the plain-text rule
+describe('Content Studio review discussion rules', () => {
+  it('C1-C5/40 every state but CANCELLED is open for discussion; nothing unknown is', () => {
+    expect(ALL.filter(isContentStudioReviewDiscussionOpen)).toEqual([
+      'REQUESTED',
+      'IN_REVIEW',
+      'CHANGES_REQUESTED',
+      'READY_FOR_APPROVAL',
+    ]);
+    for (const state of ['CANCELLED', 'cancelled', 'APPROVED', '', null, 1]) {
+      expect(isContentStudioReviewDiscussionOpen(state)).toBe(false);
+    }
+  });
+
+  it('a revision request is OPEN or RESOLVED, nothing else', () => {
+    expect(CONTENT_STUDIO_REVISION_REQUEST_STATUSES).toEqual([
+      'OPEN',
+      'RESOLVED',
+    ]);
+    for (const status of [
+      'REJECTED',
+      'APPROVED',
+      'CANCELLED',
+      'open',
+      '',
+      null,
+      'constructor',
+    ]) {
+      expect(isContentStudioRevisionRequestStatus(status)).toBe(false);
+    }
+  });
+
+  it('C6/C7/C8/RR2/RR3 text is kept as written, never empty once trimmed, never over its limit', () => {
+    expect(CONTENT_STUDIO_REVIEW_COMMENT_MAX).toBe(10_000);
+    expect(CONTENT_STUDIO_REVISION_REQUEST_MAX).toBe(20_000);
+    expect(isContentStudioReviewText('  a\n\n  b  ', 10)).toBe(true);
+    expect(isContentStudioReviewText('x'.repeat(10), 10)).toBe(true);
+    for (const value of [
+      '',
+      '   ',
+      '\n\t\r ',
+      'x'.repeat(11),
+      'a\0b',
+      null,
+      undefined,
+      5,
+      ['a'],
+    ]) {
+      expect(isContentStudioReviewText(value, 10)).toBe(false);
+    }
+  });
+});
+
 describe('Content Studio review state module boundary', () => {
   const source = readFileSync(join(__dirname, 'review.state.ts'), 'utf8');
 
@@ -300,8 +360,10 @@ describe('Content Studio review state module boundary', () => {
     expect(source).not.toMatch(/require\(|Date|Math\.random|process\.|fetch/);
   });
 
-  it('P501-4/P501-5 names no approval, comment or reason', () => {
+  it('P501-4/P501-5/P502-1 names no approval, reason, mention or attachment', () => {
     const code = source.replace(/\/\/.*$/gm, '');
-    expect(code).not.toMatch(/approved|approval[A-Z]|comment|reason/i);
+    expect(code).not.toMatch(
+      /approved|approval[A-Z]|reason|mention|attachment|REJECTED/i
+    );
   });
 });

@@ -37,8 +37,13 @@ import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/dat
 import { ContentStudioDesignBlockService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-block.service';
 import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 import {
+  CreateContentStudioReviewCommentDto,
   CreateContentStudioReviewDto,
+  ListContentStudioReviewCommentsDto,
   ListContentStudioReviewsDto,
+  RequestContentStudioReviewChangesDto,
+  ResolveContentStudioReviewRevisionRequestDto,
+  UpdateContentStudioReviewCommentDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.review.dto';
 
 // The real MediaService pulls in uploads, Redis and Temporal at import time;
@@ -56,6 +61,7 @@ jest.mock('@gitroom/nestjs-libraries/content-studio/handoff.html', () => ({
 const MARKER = 'REVIEW_ROUTE_PRIVATE_MARKER_456';
 const ID = '44444444-4444-4444-8444-444444444444';
 const REVISION = '55555555-5555-4555-8555-555555555555';
+const COMMENT = '66666666-6666-4666-8666-666666666666';
 const ORG = {
   id: 'org-a',
   users: [{ disabled: false, role: 'USER' }],
@@ -70,6 +76,12 @@ const setup = () => {
     listReviews: jest.fn().mockResolvedValue(result),
     requestReview: jest.fn().mockResolvedValue(result),
     transitionReview: jest.fn().mockResolvedValue(result),
+    requestChanges: jest.fn().mockResolvedValue(result),
+    listComments: jest.fn().mockResolvedValue(result),
+    addComment: jest.fn().mockResolvedValue(result),
+    editComment: jest.fn().mockResolvedValue(result),
+    getRevisionRequest: jest.fn().mockResolvedValue(result),
+    resolveRevisionRequest: jest.fn().mockResolvedValue(result),
   };
   const controller = new ContentStudioController(
     {} as ContentStudioService,
@@ -111,6 +123,12 @@ const withExtras = <T extends object>(dto: T) =>
     packageId: 'package-b',
     designId: 'design-b',
     reason: MARKER,
+    reviewId: 'review-b',
+    authorUserId: 'user-b',
+    resolvedByUserId: 'user-b',
+    resolvedAt: new Date(0),
+    resolvedByContentHash: 'd'.repeat(64),
+    status: 'RESOLVED',
   });
 
 const handler = (name: string) =>
@@ -131,49 +149,67 @@ const types = (method: string) =>
     ContentStudioController.prototype,
     method
   );
+// The state changes that read no body; request changes reads its revision
+// request (P5-02)
 const TRANSITIONS = [
   ['startReview', 'start'],
-  ['requestReviewChanges', 'request-changes'],
   ['markReviewReadyForApproval', 'ready-for-approval'],
   ['cancelReview', 'cancel'],
 ] as const;
 
-// Reviews (P5-01): the six routes, the request organization and user only,
-// the strict DTOs, state changes without a body. The service has its own spec
+// Reviews (P5-01) and their discussion (P5-02): the eleven routes, the
+// request organization and user only, the strict DTOs. The service has its
+// own spec
 describe('ContentStudioController review routes', () => {
-  it('RE8/P501-13 declares exactly these six routes (122 -> 128): no delete, edit, event, approval or comment route', () => {
+  it('RE8/P501-13/C16/P502-6 declares exactly these eleven routes (122 -> 128 -> 133): no delete, event, approval or reopen route', () => {
     const names = Object.getOwnPropertyNames(
       ContentStudioController.prototype
     ).filter((name) => /Review(?!sion)/.test(name));
     expect(names.map(route).sort()).toEqual([
       'GET /reviews',
+      'GET /reviews/:id/comments',
+      'GET /reviews/:id/revision-request',
+      'PATCH /reviews/:id/comments/:commentId',
       'POST /reviews',
       'POST /reviews/:id/cancel',
+      'POST /reviews/:id/comments',
       'POST /reviews/:id/ready-for-approval',
       'POST /reviews/:id/request-changes',
+      'POST /reviews/:id/revision-request/resolve',
       'POST /reviews/:id/start',
     ]);
-    for (const [name] of TRANSITIONS) {
+    for (const name of [
+      ...TRANSITIONS.map(([name]) => name),
+      'requestReviewChanges',
+      'resolveReviewRevisionRequest',
+    ]) {
       expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler(name))).toBe(200);
     }
     // created: the default 201
-    expect(
-      Reflect.getMetadata(HTTP_CODE_METADATA, handler('requestReview'))
-    ).toBeUndefined();
+    for (const name of ['requestReview', 'addReviewComment']) {
+      expect(
+        Reflect.getMetadata(HTTP_CODE_METADATA, handler(name))
+      ).toBeUndefined();
+    }
     const all = allRoutes();
-    expect(all).toHaveLength(128);
+    expect(all).toHaveLength(133);
     expect(
       all.filter(
         (r) =>
           /review/i.test(r) &&
-          /^(DELETE|PUT|PATCH) |events|approve|approval(?!$)|comment|reason|assign|reopen|latest/i.test(
+          /^(DELETE|PUT) |events|approve|approval(?!$)|reason|assign|reopen|latest|mention|attachment|reaction|annotation|layer|claim|source/i.test(
             r.replace('ready-for-approval', '')
           )
       )
     ).toEqual([]);
-    expect(all.filter((r) => /approv|comment|claim/i.test(r))).toEqual([
+    // the only edit is a comment's own body
+    expect(all.filter((r) => /review/i.test(r) && /^PATCH /.test(r))).toEqual([
+      'PATCH /reviews/:id/comments/:commentId',
+    ]);
+    expect(all.filter((r) => /approv|claim/i.test(r))).toEqual([
       'POST /reviews/:id/ready-for-approval',
     ]);
+    expect(all.filter((r) => /^DELETE .*comment/i.test(r))).toEqual([]);
   });
 
   it('RA10/RSEC3 lists for the request organization only, with the declared filters', async () => {
@@ -239,6 +275,137 @@ describe('ContentStudioController review routes', () => {
     }
   );
 
+  it('RR1/RR7 request changes forwards the request organization and user and the revision request text only', async () => {
+    const { controller, reviews } = setup();
+    await controller.requestReviewChanges(
+      ORG,
+      USER,
+      ID,
+      withExtras(
+        Object.assign(new RequestContentStudioReviewChangesDto(), {
+          body: 'Change the CTA.',
+        })
+      )
+    );
+    expect(reviews.requestChanges).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      userId: 'user-1',
+      id: ID,
+      body: 'Change the CTA.',
+    });
+    expect(reviews.transitionReview).not.toHaveBeenCalled();
+    expect(types('requestReviewChanges')).toEqual([
+      Object,
+      Object,
+      String,
+      RequestContentStudioReviewChangesDto,
+    ]);
+  });
+
+  it('C9/C10/C11/CSEC1/CSEC2 comments are listed and posted for the request organization, by the request user, on the path review', async () => {
+    const { controller, reviews } = setup();
+    await controller.listReviewComments(
+      ORG,
+      ID,
+      Object.assign(withExtras(new ListContentStudioReviewCommentsDto()), {
+        page: 3,
+      })
+    );
+    expect(reviews.listComments).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      reviewId: ID,
+      page: 3,
+    });
+    await controller.addReviewComment(
+      ORG,
+      USER,
+      ID,
+      withExtras(
+        Object.assign(new CreateContentStudioReviewCommentDto(), {
+          body: 'Looks good.',
+        })
+      )
+    );
+    expect(reviews.addComment).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      userId: 'user-1',
+      reviewId: ID,
+      body: 'Looks good.',
+    });
+    expect(types('listReviewComments')).toEqual([
+      Object,
+      String,
+      ListContentStudioReviewCommentsDto,
+    ]);
+    expect(types('addReviewComment')).toEqual([
+      Object,
+      Object,
+      String,
+      CreateContentStudioReviewCommentDto,
+    ]);
+  });
+
+  it('C12/C14/CSEC3 a comment edit names the path review and comment and the request user as its author', async () => {
+    const { controller, reviews } = setup();
+    await controller.editReviewComment(
+      ORG,
+      USER,
+      ID,
+      COMMENT,
+      withExtras(
+        Object.assign(new UpdateContentStudioReviewCommentDto(), {
+          body: 'Edited',
+        })
+      )
+    );
+    expect(reviews.editComment).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      userId: 'user-1',
+      reviewId: ID,
+      commentId: COMMENT,
+      body: 'Edited',
+    });
+    expect(types('editReviewComment')).toEqual([
+      Object,
+      Object,
+      String,
+      String,
+      UpdateContentStudioReviewCommentDto,
+    ]);
+  });
+
+  it('CSEC4/CSEC5/CSEC8-CSEC10 the revision request is read and resolved for the request organization and user, by a revision id only', async () => {
+    const { controller, reviews } = setup();
+    await controller.getReviewRevisionRequest(ORG, ID);
+    expect(reviews.getRevisionRequest).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      reviewId: ID,
+    });
+    await controller.resolveReviewRevisionRequest(
+      ORG,
+      USER,
+      ID,
+      withExtras(
+        Object.assign(new ResolveContentStudioReviewRevisionRequestDto(), {
+          resolutionRevisionId: REVISION,
+        })
+      )
+    );
+    expect(reviews.resolveRevisionRequest).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      userId: 'user-1',
+      reviewId: ID,
+      resolutionRevisionId: REVISION,
+    });
+    expect(types('getReviewRevisionRequest')).toEqual([Object, String]);
+    expect(types('resolveReviewRevisionRequest')).toEqual([
+      Object,
+      Object,
+      String,
+      ResolveContentStudioReviewRevisionRequestDto,
+    ]);
+  });
+
   it('RA1 declares the strict DTOs and adds no role, policy, billing, AI, render or handoff gate', () => {
     expect(types('listReviews')[1]).toBe(ListContentStudioReviewsDto);
     expect(types('requestReview')[2]).toBe(CreateContentStudioReviewDto);
@@ -250,10 +417,11 @@ describe('ContentStudioController review routes', () => {
       text.indexOf('// Renders one page of exactly the revision')
     );
     expect(block).toContain('cancelReview');
+    expect(block).toContain('resolveReviewRevisionRequest');
     expect(block).not.toMatch(
-      /AIConnection|AIWriting|Role\.|users|render|Handoff|@Delete|CheckPolicies|BrandKit|Media|@Body\(\) body: (?!CreateContentStudioReviewDto)/
+      /AIConnection|AIWriting|Role\.|users|render|Handoff|@Delete|CheckPolicies|BrandKit|Media|isAdmin|ADMIN|@Body\(\) body: (?!(CreateContentStudioReview|RequestContentStudioReviewChanges|CreateContentStudioReviewComment|UpdateContentStudioReviewComment|ResolveContentStudioReviewRevisionRequest)Dto\b)/
     );
-    expect(block.match(/@Body\(\)/g)).toHaveLength(1);
+    expect(block.match(/@Body\(\)/g)).toHaveLength(5);
   });
 });
 
@@ -401,6 +569,142 @@ describe('Review DTO validation', () => {
   });
 });
 
+describe('Review discussion DTO validation (P5-02)', () => {
+  it('C8/RR4 accepts plain text as sent, line breaks and spaces included', async () => {
+    const text = '  Change the CTA.\n\n  Remove the claim.  ';
+    for (const dto of [
+      RequestContentStudioReviewChangesDto,
+      CreateContentStudioReviewCommentDto,
+      UpdateContentStudioReviewCommentDto,
+    ]) {
+      expect({ ...(await run(dto, { body: text })) }).toEqual({ body: text });
+    }
+    expect({
+      ...(await run(ResolveContentStudioReviewRevisionRequestDto, {
+        resolutionRevisionId: REVISION,
+      })),
+    }).toEqual({ resolutionRevisionId: REVISION });
+    expect({
+      ...(await run(
+        ListContentStudioReviewCommentsDto,
+        { page: '2' },
+        'query'
+      )),
+    }).toEqual({ page: 2 });
+    expect({
+      ...(await run(ListContentStudioReviewCommentsDto, {}, 'query')),
+    }).toEqual({ page: 1 });
+  });
+
+  it('C7/RR3 a comment is at most 10,000 characters and a revision request 20,000', async () => {
+    await run(CreateContentStudioReviewCommentDto, {
+      body: 'x'.repeat(10_000),
+    });
+    await rejected(CreateContentStudioReviewCommentDto, {
+      body: 'x'.repeat(10_001),
+    });
+    await rejected(UpdateContentStudioReviewCommentDto, {
+      body: 'x'.repeat(10_001),
+    });
+    await run(RequestContentStudioReviewChangesDto, {
+      body: 'x'.repeat(20_000),
+    });
+    await rejected(RequestContentStudioReviewChangesDto, {
+      body: 'x'.repeat(20_001),
+    });
+  });
+
+  const textFields = [
+    'organizationId',
+    'userId',
+    'authorUserId',
+    'requestedByUserId',
+    'reviewId',
+    'createdAt',
+    'editedAt',
+    'state',
+    'status',
+    'parentId',
+    'threadId',
+    'mentions',
+    'attachments',
+    'layerId',
+    'pageId',
+    'sourceId',
+    'claimId',
+    'revisionId',
+    'contentHash',
+  ];
+  it.each([
+    ...[
+      RequestContentStudioReviewChangesDto,
+      CreateContentStudioReviewCommentDto,
+      UpdateContentStudioReviewCommentDto,
+    ].flatMap((dto) => [
+      [`${dto.name} without a body`, dto, {}],
+      [`${dto.name} with a number`, dto, { body: 5 }],
+      [`${dto.name} with a list`, dto, { body: ['a'] }],
+      [`${dto.name} with an object`, dto, { body: { text: MARKER } }],
+      ...textFields.map(
+        (field) =>
+          [
+            `${dto.name} with a ${field}`,
+            dto,
+            { body: 'text', [field]: MARKER },
+          ] as [string, unknown, Record<string, unknown>]
+      ),
+    ]),
+  ] as [string, ArgumentMetadata['metatype'], Record<string, unknown>][])(
+    'RR1/C6/CSEC6/CSEC7/CSEC9 refuses %s',
+    async (_name, dto, body) => {
+      await rejected(dto, body);
+    }
+  );
+
+  it.each([
+    ['no revision', {}],
+    ['"latest"', { resolutionRevisionId: 'latest' }],
+    ['a package id that is not a uuid', { resolutionRevisionId: MARKER }],
+    ['a list', { resolutionRevisionId: [REVISION] }],
+    ...[
+      'organizationId',
+      'userId',
+      'resolvedByUserId',
+      'resolvedAt',
+      'status',
+      'resolutionContentHash',
+      'resolvedByContentHash',
+      'contentHash',
+      'targetType',
+      'resolvedByPackageRevisionId',
+      'resolvedByDesignRevisionId',
+      'revisionNumber',
+      'state',
+    ].map(
+      (field) =>
+        [`a ${field}`, { resolutionRevisionId: REVISION, [field]: MARKER }] as [
+          string,
+          Record<string, unknown>
+        ]
+    ),
+  ])(
+    'CSEC8/CSEC9/CSEC10/M15 the resolution refuses %s',
+    async (_name, body) => {
+      await rejected(ResolveContentStudioReviewRevisionRequestDto, body);
+    }
+  );
+
+  it.each([
+    [{ page: '0' }],
+    [{ page: 'x' }],
+    [{ order: 'desc' }],
+    [{ take: '500' }],
+    [{ organizationId: 'org-b' }],
+  ])('C11 refuses the comment query %p', async (query) => {
+    await rejected(ListContentStudioReviewCommentsDto, query, 'query');
+  });
+});
+
 // What P5-01 leaves exactly as it was
 describe('Review boundaries (P5-01)', () => {
   const schema = read(
@@ -412,7 +716,7 @@ describe('Review boundaries (P5-01)', () => {
   };
   const code = (file: string) => read(file).replace(/\/\/.*$/gm, '');
 
-  it('P501-4/P501-5/P501-6 adds exactly the review and state event models: no approval, comment, claim or revision request model', () => {
+  it('P501-4/P501-5/P501-6/P502-1/51 adds exactly the review, state event, comment and revision request models: no approval, claim or annotation model', () => {
     const models = Array.from(
       schema.matchAll(/^model (ContentStudio\w*) \{/gm),
       (m) => m[1]
@@ -420,10 +724,12 @@ describe('Review boundaries (P5-01)', () => {
     expect(models.filter((m) => /Review/.test(m))).toEqual([
       'ContentStudioReview',
       'ContentStudioReviewStateEvent',
+      'ContentStudioReviewComment',
+      'ContentStudioReviewRevisionRequest',
     ]);
     expect(
       models.filter((m) =>
-        /Approval|Comment|Claim|RevisionRequest|Annotation|Reviewer|Signature/.test(
+        /Approval|Claim|Annotation|Reviewer|Signature|Mention|Attachment|Reaction|Notification/.test(
           m
         )
       )
@@ -444,7 +750,12 @@ describe('Review boundaries (P5-01)', () => {
     expect(review).toMatch(/version +Int +@default\(1\)/);
     // no package, design, project, template or content of its own
     expect(review).not.toMatch(
-      /packageId|designProjectId|projectId|templateId|content +String|Json|approv|comment|reason|assigned|dueAt|metadata/i
+      /packageId|designProjectId|projectId|templateId|content +String|Json|approv|reason|assigned|dueAt|metadata/i
+    );
+    // P5-02 adds only the two discussion relations
+    expect(review).toMatch(/comments +ContentStudioReviewComment\[\]/);
+    expect(review).toMatch(
+      /revisionRequest +ContentStudioReviewRevisionRequest\?/
     );
     const event = model('ContentStudioReviewStateEvent');
     expect(event).toContain('@@unique([reviewId, sequence])');
@@ -483,6 +794,82 @@ describe('Review boundaries (P5-01)', () => {
     }
     const handoff = model('ContentStudioHandoff');
     expect(handoff).not.toMatch(/review|approv/i);
+  });
+
+  it('P502-3/P502-7/P502-9/44 a comment is plain text on the review only: no target, hash, thread, attachment or annotation', () => {
+    const comment = model('ContentStudioReviewComment');
+    const fields = Array.from(
+      comment.matchAll(/^ {2}(\w+) +\S/gm),
+      (m) => m[1]
+    );
+    expect(fields).toEqual([
+      'id',
+      'organizationId',
+      'reviewId',
+      'authorUserId',
+      'body',
+      'createdAt',
+      'editedAt',
+      'organization',
+      'review',
+      'author',
+    ]);
+    expect(comment).toMatch(
+      /review +ContentStudioReview +@relation\(fields: \[reviewId, organizationId\], references: \[id, organizationId\]\)/
+    );
+    expect(comment).toMatch(/editedAt +DateTime\?/);
+    for (const index of [
+      '@@unique([id, organizationId])',
+      '@@index([reviewId, createdAt])',
+      '@@index([organizationId, createdAt])',
+      '@@index([authorUserId])',
+    ]) {
+      expect(comment).toContain(index);
+    }
+    expect(comment).not.toMatch(
+      /Json|parent|thread|mention|attach|reaction|layer|page|coordinate|source|claim|contentHash|packageRevision|designRevision|updatedAt|deletedAt/i
+    );
+  });
+
+  it('13/25/51 one revision request per review, resolved by exactly one org-scoped revision with its hash', () => {
+    const request = model('ContentStudioReviewRevisionRequest');
+    const fields = Array.from(
+      request.matchAll(/^ {2}(\w+) +\S/gm),
+      (m) => m[1]
+    );
+    expect(fields).toEqual([
+      'id',
+      'organizationId',
+      'reviewId',
+      'requestedByUserId',
+      'body',
+      'status',
+      'resolvedByUserId',
+      'resolvedAt',
+      'resolvedByPackageRevisionId',
+      'resolvedByDesignRevisionId',
+      'resolvedByContentHash',
+      'createdAt',
+      'organization',
+      'review',
+      'requestedBy',
+      'resolvedBy',
+      'resolvedByPackageRevision',
+      'resolvedByDesignRevision',
+    ]);
+    expect(request).toContain('@@unique([reviewId, organizationId])');
+    expect(request).toContain('@@unique([id, organizationId])');
+    expect(request).toMatch(
+      /resolvedByPackageRevision +ContentPackageRevision\? +@relation\(fields: \[resolvedByPackageRevisionId, organizationId\], references: \[id, organizationId\], onDelete: Restrict, onUpdate: Restrict\)/
+    );
+    expect(request).toMatch(
+      /resolvedByDesignRevision +ContentStudioDesignRevision\? +@relation\(fields: \[resolvedByDesignRevisionId, organizationId\], references: \[id, organizationId\], onDelete: Restrict, onUpdate: Restrict\)/
+    );
+    expect(request).toMatch(/resolvedByContentHash +String\?/);
+    expect(request).not.toMatch(
+      /Json|approv|reject|updatedAt|deletedAt|metadata/i
+    );
+    expect(schema).not.toMatch(/^enum ContentStudio/m);
   });
 
   it('P501-14 adds no dependency', () => {

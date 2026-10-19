@@ -16,7 +16,9 @@ import { TextEncoder as NodeTextEncoder } from 'util';
 // revision (state in words, the actions of that state, Request review), the
 // requests it sends (target type and revision id only, a fixed action, no
 // body), the package version view, and the design workspace (the shown saved
-// revision, never the unsaved draft). A .spec.ts without JSX, like the other
+// revision, never the unsaved draft). P5-02: the discussion (comments on
+// demand, the author's own edit), Request changes with its required text,
+// the revision request and its resolution by a saved newer revision only. A .spec.ts without JSX, like the other
 // Content Studio frontend specs: components are required, not imported. The
 // Fabric adapter is an inert stand-in
 if (typeof (globalThis as any).TextEncoder === 'undefined') {
@@ -53,6 +55,10 @@ const mockFetch = jest.fn();
 jest.mock('@gitroom/helpers/utils/custom.fetch', () => ({
   useFetch: () => mockFetch,
 }));
+// the signed-in member: user-1 (Ann)
+jest.mock('@gitroom/frontend/components/layout/user.context', () => ({
+  useUser: () => ({ id: 'user-1' }),
+}));
 const mockToast = jest.fn();
 jest.mock('@gitroom/react/toaster/toaster', () => ({
   useToaster: () => ({ show: mockToast }),
@@ -81,7 +87,8 @@ type Reply = { ok: boolean; status: number; json: () => Promise<unknown> };
 const reply = (status: number, body: unknown): Reply => ({
   ok: status >= 200 && status < 300,
   status,
-  json: async () => body,
+  // a copy, as a real response is: never the server's own object
+  json: async () => JSON.parse(JSON.stringify(body)),
 });
 const SECRET = 'REVIEW_UI_SERVER_SECRET_789';
 const T0 = '2026-10-19T10:00:00.000Z';
@@ -89,6 +96,7 @@ const SHA = (seed: string) => seed.repeat(64).slice(0, 64);
 const uuid = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const PACKAGE = uuid(1);
+const PKG_REV_3 = uuid(3);
 const PKG_REV_4 = uuid(4);
 const PKG_REV_5 = uuid(5);
 const DESIGN = uuid(2);
@@ -99,6 +107,9 @@ const DESIGN_REV_2 = uuid(12);
 let reviews: Plain[];
 let counter: number;
 let failNext: { status: number; code: string } | null;
+let comments: Record<string, Plain[]>;
+let revisionRequests: Record<string, Plain>;
+let extraDesignRevisions: Plain[];
 const NEXT: Record<string, Record<string, string>> = {
   REQUESTED: { start: 'IN_REVIEW', cancel: 'CANCELLED' },
   IN_REVIEW: {
@@ -134,6 +145,7 @@ const reviewOf = (
   ],
 });
 const numberOf: Record<string, number> = {
+  [PKG_REV_3]: 3,
   [PKG_REV_4]: 4,
   [PKG_REV_5]: 5,
   [DESIGN_REV_1]: 1,
@@ -157,6 +169,7 @@ const doc = (color: string) => ({
 const designRevisions = () => [
   { id: DESIGN_REV_1, revisionNumber: 1, content: doc('#ffffff') },
   { id: DESIGN_REV_2, revisionNumber: 2, content: doc('#000000') },
+  ...extraDesignRevisions,
 ];
 const designMeta = (r: Plain) => ({
   id: r.id,
@@ -173,6 +186,15 @@ const packageRevision = (id: string, n: number) => ({
   sourceDraftVersion: n,
   createdAt: T0,
   createdBy: { id: 'user-1', name: 'Ann' },
+});
+
+const openRequest = (text: string) => ({
+  id: uuid(900 + ++counter),
+  body: text,
+  status: 'OPEN',
+  requestedBy: { id: 'user-2', name: 'Bo' },
+  createdAt: T0,
+  resolution: null,
 });
 
 const server = (method: string, url: string, body: any): Reply => {
@@ -210,6 +232,70 @@ const server = (method: string, url: string, body: any): Reply => {
     reviews.push(created);
     return reply(201, created);
   }
+  // the discussion (P5-02)
+  const cm = pathname.match(
+    /^\/content-studio\/reviews\/([^/]+)\/comments(?:\/([^/]+))?$/
+  );
+  if (cm) {
+    if (failNext) {
+      const failure = failNext;
+      failNext = null;
+      return reply(failure.status, { msg: SECRET, code: failure.code });
+    }
+    const list = (comments[cm[1]] = comments[cm[1]] ?? []);
+    if (method === 'GET') {
+      return reply(200, { pages: 1, results: list });
+    }
+    if (method === 'POST') {
+      const created = {
+        id: uuid(500 + ++counter),
+        body: body.body,
+        author: { id: 'user-1', name: 'Ann' },
+        createdAt: T0,
+        editedAt: null,
+      };
+      list.push(created);
+      return reply(201, created);
+    }
+    const comment = list.find((c) => c.id === cm[2]);
+    if (!comment) {
+      return reply(404, { msg: SECRET, code: 'CS_REVIEW_COMMENT_NOT_FOUND' });
+    }
+    if (comment.author.id !== 'user-1') {
+      return reply(403, { msg: SECRET, code: 'CS_REVIEW_COMMENT_FORBIDDEN' });
+    }
+    comment.body = body.body;
+    comment.editedAt = T0;
+    return reply(200, comment);
+  }
+  const qm = pathname.match(
+    /^\/content-studio\/reviews\/([^/]+)\/revision-request(\/resolve)?$/
+  );
+  if (qm) {
+    if (failNext) {
+      const failure = failNext;
+      failNext = null;
+      return reply(failure.status, { msg: SECRET, code: failure.code });
+    }
+    const current = revisionRequests[qm[1]];
+    if (!current) {
+      return reply(404, {
+        msg: SECRET,
+        code: 'CS_REVIEW_REVISION_REQUEST_NOT_FOUND',
+      });
+    }
+    if (method === 'POST') {
+      current.status = 'RESOLVED';
+      current.resolution = {
+        revisionId: body.resolutionRevisionId,
+        revisionNumber: numberOf[body.resolutionRevisionId] ?? 3,
+        contentHash: SHA('e'),
+        resolvedBy: { id: 'user-2', name: 'Bo' },
+        resolvedAt: T0,
+      };
+    }
+    return reply(200, current);
+  }
   const rm = pathname.match(/^\/content-studio\/reviews\/([^/]+)\/([a-z-]+)$/);
   if (rm && method === 'POST') {
     if (failNext) {
@@ -235,13 +321,20 @@ const server = (method: string, url: string, body: any): Reply => {
     ];
     review.state = next;
     review.version += 1;
+    if (rm[2] === 'request-changes') {
+      revisionRequests[review.id] = openRequest(body.body);
+    }
     return reply(200, review);
   }
   // package versions
   if (pathname === `/content-studio/packages/${PACKAGE}/revisions`) {
     return reply(200, {
       pages: 1,
-      results: [packageRevision(PKG_REV_5, 5), packageRevision(PKG_REV_4, 4)],
+      results: [
+        packageRevision(PKG_REV_5, 5),
+        packageRevision(PKG_REV_4, 4),
+        packageRevision(PKG_REV_3, 3),
+      ],
     });
   }
   const pm = pathname.match(
@@ -298,6 +391,9 @@ beforeEach(() => {
   reviews = [];
   counter = 0;
   failNext = null;
+  comments = {};
+  revisionRequests = {};
+  extraDesignRevisions = [];
   mockFetch.mockReset();
   mockFetch.mockImplementation(async (url: string, init: RequestInit = {}) =>
     server(
@@ -336,10 +432,12 @@ const click = async (element: HTMLElement) => {
 };
 const card = () =>
   screen.getByRole('region', { name: 'Review' }) as HTMLElement;
+// the review actions: the discussion toggle (P5-02) is not one of them
 const buttons = () =>
   within(card())
     .queryAllByRole('button')
-    .map((b) => b.textContent);
+    .map((b) => b.textContent)
+    .filter((name) => !/^(Show|Hide) discussion$/.test(name ?? ''));
 const button = (name: string) =>
   within(card()).getByRole('button', { name }) as HTMLButtonElement;
 const state = () => within(card()).getByRole('status').textContent;
@@ -352,6 +450,15 @@ const calls = () =>
 const reviewCalls = () =>
   calls().filter((c) => c.url.startsWith('/content-studio/reviews'));
 const writes = () => reviewCalls().filter((c) => c.method !== 'GET');
+const textbox = (name: string) =>
+  within(card()).getByRole('textbox', { name }) as HTMLTextAreaElement;
+const type = (name: string, value: string) =>
+  fireEvent.change(textbox(name), { target: { value } });
+// fills in the Request changes form and sends it
+const ask = async (text: string) => {
+  type('What needs to change?', text);
+  await click(button('Send revision request'));
+};
 const showCard = (props: Plain = {}) =>
   show(
     h(ContentStudioReviewStatus, {
@@ -473,6 +580,7 @@ describe('Review card', () => {
     await showCard();
     await click(button('Start review'));
     await click(button('Request changes'));
+    await ask('Shorter intro.');
     const items = Array.from(card().querySelectorAll('details li')).map(
       (li) => li.textContent
     );
@@ -657,15 +765,25 @@ describe('Review UI boundaries', () => {
       api.matchAll(/body: JSON\.stringify\(\{([^}]*)\}\)/g),
       (m) => m[1].replace(/\s+/g, ' ').trim()
     );
-    expect(bodies).toEqual(['targetType, targetRevisionId: revisionId,']);
+    expect(bodies).toEqual([
+      'targetType, targetRevisionId: revisionId,',
+      'body',
+      'body',
+      'body',
+      'resolutionRevisionId',
+    ]);
     const writes = api.slice(
       api.indexOf('export const useContentStudioReviewActions'),
       api.indexOf('export const reviewErrorMessage')
     );
     expect(writes).toContain("method: 'POST'");
     expect(writes).not.toMatch(
-      /organization|userId|user:|contentHash|state|version|latest/i
+      /organization|userId|user:|authorUserId|resolvedBy|contentHash|state|status|version|latest|DELETE/i
     );
+    // P502-6 the only edit is PATCH of a comment; there is no delete
+    expect(api.match(/method: '(PATCH|PUT|DELETE)'/g)).toEqual([
+      "method: 'PATCH'",
+    ]);
   });
 
   it('M23 the actions offered come from the shared state machine, not from the component', () => {
@@ -681,5 +799,544 @@ describe('Review UI boundaries', () => {
     expect(read('content-studio.design.workspace.tsx')).toMatch(
       /targetType="DESIGN_REVISION"\s+revisionId=\{shown\.id\}\s+revisionNumber=\{shown\.revisionNumber\}\s+unsaved=\{editing && editor\.dirty\}/
     );
+  });
+});
+
+// --- P5-02: the discussion in the browser ---
+
+const seedReview = (
+  state: string,
+  targetType = 'DESIGN_REVISION',
+  revisionId = DESIGN_REV_1,
+  revisionNumber = 1
+) => {
+  const review = reviewOf(targetType, revisionId, revisionNumber, state);
+  reviews.push(review);
+  return review;
+};
+const comment = (id: number, author: Plain, text: string, edited = false) => ({
+  id: uuid(700 + id),
+  body: text,
+  author,
+  createdAt: T0,
+  editedAt: edited ? T0 : null,
+});
+const ANN = { id: 'user-1', name: 'Ann' };
+const BO = { id: 'user-2', name: 'Bo' };
+const discussionCalls = () =>
+  reviewCalls().filter((c) => /\/comments/.test(c.url));
+const panel = () =>
+  within(card()).getByRole('region', { name: 'Revision request' });
+const radios = () =>
+  within(card())
+    .queryAllByRole('radio')
+    .map((r) => (r.closest('label') as HTMLElement).textContent);
+
+describe('Review discussion', () => {
+  it('FC1 comments load only for an existing review, and only once the discussion is opened', async () => {
+    await showCard();
+    expect(
+      within(card()).queryByRole('button', { name: 'Show discussion' })
+    ).toBeNull();
+    expect(discussionCalls()).toEqual([]);
+    cleanup();
+    const review = seedReview('IN_REVIEW');
+    await showCard();
+    expect(discussionCalls()).toEqual([]);
+    const toggle = button('Show discussion');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    await click(toggle);
+    expect(discussionCalls()).toEqual([
+      {
+        method: 'GET',
+        url: `/content-studio/reviews/${review.id}/comments?page=1`,
+        body: undefined,
+      },
+    ]);
+    expect(button('Hide discussion').getAttribute('aria-expanded')).toBe(
+      'true'
+    );
+    expect(card().textContent).toContain('No comments yet.');
+  });
+
+  it('FC2/FC3 a comment shows its author, its text with line breaks kept, its time and "edited"', async () => {
+    const review = seedReview('IN_REVIEW');
+    comments[review.id] = [
+      comment(1, BO, 'First line\n\n  indented second <b>line</b>'),
+      comment(2, ANN, 'Fixed it', true),
+    ];
+    await showCard();
+    await click(button('Show discussion'));
+    const items = Array.from(
+      card().querySelectorAll('[data-review-comment]')
+    ) as HTMLElement[];
+    expect(items).toHaveLength(2);
+    expect(items[0].textContent).toContain('Bo');
+    expect(items[0].textContent).toContain('Oct 19, 2026');
+    const text = items[0].querySelector('[data-comment-body]') as HTMLElement;
+    expect(text.textContent).toBe(
+      'First line\n\n  indented second <b>line</b>'
+    );
+    expect(text.className).toContain('whitespace-pre-wrap');
+    // plain text, never markup
+    expect(text.querySelector('b')).toBeNull();
+    expect(items[0].querySelector('[data-comment-edited]')).toBeNull();
+    expect(items[1].querySelector('[data-comment-edited]')!.textContent).toBe(
+      'edited'
+    );
+  });
+
+  it('FC4 posting sends the text only; empty text cannot be posted; a comment moves no state', async () => {
+    const review = seedReview('READY_FOR_APPROVAL');
+    await showCard();
+    await click(button('Show discussion'));
+    expect(button('Post comment').disabled).toBe(true);
+    type('Add a comment', '   \n ');
+    expect(button('Post comment').disabled).toBe(true);
+    type('Add a comment', 'Looks good.\nShip it.');
+    await click(button('Post comment'));
+    expect(writes()).toEqual([
+      {
+        method: 'POST',
+        url: `/content-studio/reviews/${review.id}/comments`,
+        body: JSON.stringify({ body: 'Looks good.\nShip it.' }),
+      },
+    ]);
+    expect(textbox('Add a comment').value).toBe('');
+    expect(card().textContent).toContain('Looks good.');
+    expect(state()).toBe('Ready for approval');
+    expect(reviews[0].state).toBe('READY_FOR_APPROVAL');
+  });
+
+  it('FC5 the author edits their own comment in place, sending the text only', async () => {
+    const review = seedReview('IN_REVIEW');
+    comments[review.id] = [comment(1, ANN, 'Frist')];
+    await showCard();
+    await click(button('Show discussion'));
+    await click(button('Edit comment'));
+    expect(textbox('Edit comment').value).toBe('Frist');
+    type('Edit comment', 'First');
+    await click(button('Save comment'));
+    expect(writes()).toEqual([
+      {
+        method: 'PATCH',
+        url: `/content-studio/reviews/${review.id}/comments/${uuid(701)}`,
+        body: JSON.stringify({ body: 'First' }),
+      },
+    ]);
+    const item = card().querySelector('[data-review-comment]') as HTMLElement;
+    expect(item.querySelector('[data-comment-body]')!.textContent).toBe(
+      'First'
+    );
+    expect(item.querySelector('[data-comment-edited]')).not.toBeNull();
+  });
+
+  it("FC6/FC7 another member's comment has no Edit, and nothing can be deleted", async () => {
+    const review = seedReview('IN_REVIEW');
+    comments[review.id] = [comment(1, BO, 'Theirs'), comment(2, ANN, 'Mine')];
+    await showCard();
+    await click(button('Show discussion'));
+    const items = Array.from(
+      card().querySelectorAll('[data-review-comment]')
+    ) as HTMLElement[];
+    expect(within(items[0]).queryByRole('button')).toBeNull();
+    expect(
+      within(items[1]).getByRole('button', { name: 'Edit comment' })
+    ).toBeTruthy();
+    expect(
+      within(card()).queryAllByRole('button', { name: /delete|remove/i })
+    ).toEqual([]);
+  });
+
+  it('FC8/40 a cancelled review shows its discussion read-only: no form, no edit', async () => {
+    const review = seedReview('CANCELLED');
+    comments[review.id] = [comment(1, ANN, 'Before the cancel')];
+    await showCard();
+    await click(button('Show discussion'));
+    expect(card().textContent).toContain('Before the cancel');
+    expect(within(card()).queryByRole('textbox')).toBeNull();
+    expect(
+      within(card()).queryByRole('button', { name: 'Edit comment' })
+    ).toBeNull();
+    expect(card().querySelector('[data-comments-closed]')!.textContent).toBe(
+      'This review was cancelled: its discussion is closed.'
+    );
+  });
+
+  it.each([
+    [
+      'CS_REVIEW_COMMENT_INVALID',
+      400,
+      'Write a comment of at most 10,000 characters.',
+    ],
+    ['CS_REVIEW_COMMENT_FORBIDDEN', 403, 'Only its author can edit a comment.'],
+    [
+      'CS_REVIEW_CANCELLED',
+      409,
+      'This review was cancelled: its discussion is closed.',
+    ],
+    ['CS_SOMETHING', 500, 'The review action could not be completed.'],
+  ])(
+    '67 a failed comment (%s) shows a fixed message and keeps the text',
+    async (code, status, message) => {
+      seedReview('IN_REVIEW');
+      await showCard();
+      await click(button('Show discussion'));
+      type('Add a comment', 'Keep me');
+      failNext = { status, code };
+      await click(button('Post comment'));
+      expect(mockToast).toHaveBeenCalledWith(message, 'warning');
+      expect(textbox('Add a comment').value).toBe('Keep me');
+    }
+  );
+});
+
+describe('Request changes and the revision request', () => {
+  it('FR1/FR2 Request changes opens a form that needs the text first; nothing is sent before', async () => {
+    seedReview('IN_REVIEW');
+    await showCard();
+    await click(button('Request changes'));
+    expect(button('Request changes').getAttribute('aria-expanded')).toBe(
+      'true'
+    );
+    expect(textbox('What needs to change?').value).toBe('');
+    expect(button('Send revision request').disabled).toBe(true);
+    expect(card().textContent).toContain(
+      'Describe what needs to change before sending the request.'
+    );
+    type('What needs to change?', '  \n\t ');
+    expect(button('Send revision request').disabled).toBe(true);
+    fireEvent.submit(
+      card().querySelector('[data-request-changes-form]') as HTMLFormElement
+    );
+    await flush();
+    expect(writes()).toEqual([]);
+    // the other actions wait while the form is open
+    expect(button('Ready for approval').disabled).toBe(true);
+    await click(button('Cancel'));
+    expect(card().querySelector('[data-request-changes-form]')).toBeNull();
+    expect(writes()).toEqual([]);
+  });
+
+  it('FR3/FR4/FR5 sending it is one request with the text only; the review shows Changes requested and the open request', async () => {
+    const review = seedReview('IN_REVIEW');
+    await showCard();
+    await click(button('Request changes'));
+    type(
+      'What needs to change?',
+      'Change CTA to "Book a call".\nRemove the claim.'
+    );
+    await click(button('Send revision request'));
+    expect(writes()).toEqual([
+      {
+        method: 'POST',
+        url: `/content-studio/reviews/${review.id}/request-changes`,
+        body: JSON.stringify({
+          body: 'Change CTA to "Book a call".\nRemove the claim.',
+        }),
+      },
+    ]);
+    expect(state()).toBe('Changes requested');
+    expect(card().querySelector('[data-request-changes-form]')).toBeNull();
+    expect(panel().getAttribute('data-revision-request')).toBe('OPEN');
+    expect(
+      panel().querySelector('[data-revision-request-body]')!.textContent
+    ).toBe('Change CTA to "Book a call".\nRemove the claim.');
+    expect(
+      panel().querySelector('[data-revision-request-status]')!.textContent
+    ).toBe('Open');
+    expect(panel().textContent).toContain('Bo');
+    expect(panel().textContent).toContain('Oct 19, 2026');
+  });
+
+  it('a review with no recorded request says so; one of another state loads none', async () => {
+    seedReview('CHANGES_REQUESTED');
+    await showCard();
+    expect(panel().textContent).toContain(
+      'No revision request was recorded for this review.'
+    );
+    cleanup();
+    reviews = [];
+    seedReview('READY_FOR_APPROVAL');
+    const before = calls().length;
+    await showCard();
+    expect(
+      within(card()).queryByRole('region', { name: 'Revision request' })
+    ).toBeNull();
+    expect(
+      calls()
+        .slice(before)
+        .filter((c) => /revision-request/.test(c.url))
+    ).toHaveLength(0);
+  });
+
+  it('FR7/DD1 without a saved newer revision there is nothing to resolve by, and unsaved changes do not count', async () => {
+    const review = seedReview('CHANGES_REQUESTED');
+    revisionRequests[review.id] = openRequest('Fix it');
+    await showCard({ newerRevisions: [], unsaved: true });
+    expect(panel().querySelector('[data-resolve-none]')!.textContent).toBe(
+      'Create and save a newer revision before resolving this request.'
+    );
+    expect(panel().querySelector('[data-resolve-unsaved]')).not.toBeNull();
+    expect(
+      within(panel()).queryAllByRole('button', { name: /resolved/ })
+    ).toEqual([]);
+    expect(radios()).toEqual([]);
+  });
+
+  it('FR6/M26 only newer saved revisions are offered: never the reviewed one or an older one', async () => {
+    const review = seedReview(
+      'CHANGES_REQUESTED',
+      'DESIGN_REVISION',
+      DESIGN_REV_2,
+      4
+    );
+    revisionRequests[review.id] = openRequest('Fix it');
+    await showCard({
+      revisionId: DESIGN_REV_2,
+      revisionNumber: 4,
+      newerRevisions: [
+        { id: uuid(60), revisionNumber: 6 },
+        { id: DESIGN_REV_2, revisionNumber: 4 },
+        { id: uuid(30), revisionNumber: 3 },
+        { id: uuid(50), revisionNumber: 5 },
+      ],
+    });
+    expect(radios()).toEqual(['Revision 5', 'Revision 6']);
+    expect(button('Mark resolved').disabled).toBe(true);
+  });
+
+  it('FR8/FR9/FR10 resolving sends the chosen revision id only; the request shows it, the review stays Changes requested', async () => {
+    const review = seedReview(
+      'CHANGES_REQUESTED',
+      'PACKAGE_REVISION',
+      PKG_REV_4,
+      4
+    );
+    revisionRequests[review.id] = openRequest('Fix it');
+    await showCard({
+      targetType: 'PACKAGE_REVISION',
+      revisionId: PKG_REV_4,
+      revisionNumber: 4,
+      newerRevisions: [{ id: PKG_REV_5, revisionNumber: 5 }],
+    });
+    const radio = within(panel()).getByRole('radio', {
+      name: 'Version 5',
+    }) as HTMLInputElement;
+    await click(radio);
+    expect(radio.checked).toBe(true);
+    await click(button('Mark resolved by Version 5'));
+    expect(writes()).toEqual([
+      {
+        method: 'POST',
+        url: `/content-studio/reviews/${review.id}/revision-request/resolve`,
+        body: JSON.stringify({ resolutionRevisionId: PKG_REV_5 }),
+      },
+    ]);
+    expect(panel().getAttribute('data-revision-request')).toBe('RESOLVED');
+    expect(
+      panel().querySelector('[data-revision-request-resolution]')!.textContent
+    ).toMatch(/^Resolved by Version 5 · Bo · Oct 19, 2026 \d\d:\d\d$/);
+    expect(radios()).toEqual([]);
+    expect(state()).toBe('Changes requested');
+    // no review is requested for version 5 by this
+    expect(writes().filter((c) => c.url === '/content-studio/reviews')).toEqual(
+      []
+    );
+    expect(reviews).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      'CS_REVIEW_REVISION_REQUEST_INVALID_RESOLUTION',
+      400,
+      'Choose a newer saved revision of the same package or design.',
+    ],
+    [
+      'CS_REVIEW_REVISION_REQUEST_CONFLICT',
+      409,
+      'This revision request has changed. Check its current state and try again.',
+    ],
+    [
+      'CS_REVIEW_INTEGRITY_ERROR',
+      500,
+      'Stored review data could not be read safely.',
+    ],
+  ])(
+    '67 a failed resolution (%s) shows a fixed message',
+    async (code, status, message) => {
+      const review = seedReview('CHANGES_REQUESTED');
+      revisionRequests[review.id] = openRequest('Fix it');
+      await showCard({
+        newerRevisions: [{ id: DESIGN_REV_2, revisionNumber: 2 }],
+      });
+      await click(within(panel()).getByRole('radio', { name: 'Revision 2' }));
+      failNext = { status, code };
+      await click(button('Mark resolved by Revision 2'));
+      expect(mockToast).toHaveBeenCalledWith(message, 'warning');
+    }
+  );
+
+  it('67 a failed request for changes keeps the form and the text', async () => {
+    seedReview('IN_REVIEW');
+    await showCard();
+    await click(button('Request changes'));
+    type('What needs to change?', 'Keep me');
+    mockFetch.mockImplementationOnce(async () =>
+      reply(400, { msg: SECRET, code: 'CS_REVIEW_REVISION_REQUEST_INVALID' })
+    );
+    await click(button('Send revision request'));
+    expect(mockToast).toHaveBeenCalledWith(
+      'Describe what needs to change, in at most 20,000 characters.',
+      'warning'
+    );
+    expect(textbox('What needs to change?').value).toBe('Keep me');
+  });
+});
+
+describe('Resolution from the package versions and the design workspace', () => {
+  const history = () =>
+    show(
+      h(ContentStudioRevisionHistory, {
+        packageId: PACKAGE,
+        canRestore: true,
+        onRestore: async () => true,
+        close: () => undefined,
+      })
+    );
+
+  it('FR6/DD1 a package version offers the newer saved versions from the history, no new request', async () => {
+    const review = seedReview(
+      'CHANGES_REQUESTED',
+      'PACKAGE_REVISION',
+      PKG_REV_3,
+      3
+    );
+    revisionRequests[review.id] = openRequest('Fix it');
+    await history();
+    const before = calls().length;
+    await click(screen.getByRole('button', { name: 'View 3' }));
+    expect(radios()).toEqual(['Version 4', 'Version 5']);
+    // the versions come from the history already loaded: no second list
+    expect(
+      calls()
+        .slice(before)
+        .filter((c) => /\/packages\/[^/]+\/revisions\?/.test(c.url))
+    ).toEqual([]);
+    await click(within(panel()).getByRole('radio', { name: 'Version 5' }));
+    await click(button('Mark resolved by Version 5'));
+    expect(JSON.parse(writes()[0].body!)).toEqual({
+      resolutionRevisionId: PKG_REV_5,
+    });
+  });
+
+  it('FR7 the newest package version has nothing newer to be resolved by', async () => {
+    const review = seedReview(
+      'CHANGES_REQUESTED',
+      'PACKAGE_REVISION',
+      PKG_REV_5,
+      5
+    );
+    revisionRequests[review.id] = openRequest('Fix it');
+    await history();
+    await click(screen.getByRole('button', { name: 'View 5' }));
+    expect(panel().querySelector('[data-resolve-none]')).not.toBeNull();
+  });
+
+  const open = () =>
+    show(h(ContentStudioDesignWorkspace, { designId: DESIGN }));
+
+  it('DD2/DD3 a dirty design draft is never a resolution, and comments stay on the reviewed revision', async () => {
+    const review = seedReview(
+      'CHANGES_REQUESTED',
+      'DESIGN_REVISION',
+      DESIGN_REV_2,
+      2
+    );
+    revisionRequests[review.id] = openRequest('Fix it');
+    await open();
+    await click(screen.getByRole('button', { name: 'Edit design' }));
+    await click(screen.getByRole('button', { name: 'Add text' }));
+    expect(card().getAttribute('data-review-revision')).toBe(DESIGN_REV_2);
+    expect(panel().querySelector('[data-resolve-unsaved]')).not.toBeNull();
+    expect(panel().querySelector('[data-resolve-none]')).not.toBeNull();
+    expect(radios()).toEqual([]);
+    await click(button('Show discussion'));
+    type('Add a comment', 'About revision 2');
+    await click(button('Post comment'));
+    expect(writes()).toEqual([
+      {
+        method: 'POST',
+        url: `/content-studio/reviews/${review.id}/comments`,
+        body: JSON.stringify({ body: 'About revision 2' }),
+      },
+    ]);
+  });
+
+  it("DD4 once a newer revision is saved, the older revision's request can be resolved by it", async () => {
+    const review = seedReview(
+      'CHANGES_REQUESTED',
+      'DESIGN_REVISION',
+      DESIGN_REV_2,
+      2
+    );
+    revisionRequests[review.id] = openRequest('Fix it');
+    const DESIGN_REV_3 = uuid(13);
+    extraDesignRevisions = [
+      { id: DESIGN_REV_3, revisionNumber: 3, content: doc('#123456') },
+    ];
+    numberOf[DESIGN_REV_3] = 3;
+    await open();
+    await click(screen.getByRole('button', { name: 'View Revision 2' }));
+    expect(card().getAttribute('data-review-revision')).toBe(DESIGN_REV_2);
+    expect(radios()).toEqual(['Revision 3']);
+    await click(within(panel()).getByRole('radio', { name: 'Revision 3' }));
+    await click(button('Mark resolved by Revision 3'));
+    expect(JSON.parse(writes()[0].body!)).toEqual({
+      resolutionRevisionId: DESIGN_REV_3,
+    });
+    expect(panel().textContent).toContain('Resolved by Revision 3');
+    delete numberOf[DESIGN_REV_3];
+  });
+});
+
+describe('Review discussion UI boundaries (P5-02)', () => {
+  const read = (file: string) =>
+    readFileSync(join(__dirname, file), 'utf8').replace(/\/\/.*$/gm, '');
+
+  it('P502-7/P502-8/P502-9 no mention, attachment, annotation, markdown or delete', () => {
+    const ui = read('content-studio.review.discussion.tsx');
+    expect(ui).not.toMatch(
+      /dangerouslySetInnerHTML|markdown|mention|attachment|upload|layerId|annotation|delete|remove/i
+    );
+    expect(ui).toContain('whitespace-pre-wrap');
+  });
+
+  it('M27 resolution choices are only saved revisions passed by the page, newer than the reviewed one', () => {
+    const ui = read('content-studio.review.discussion.tsx');
+    expect(ui).toMatch(
+      /revision\.revisionNumber > review\.targetRevisionNumber &&\s+revision\.id !== review\.targetRevisionId/
+    );
+    expect(ui).toMatch(
+      /actions\.resolveRevisionRequest\(review\.id, selected\.id\)/
+    );
+    expect(read('content-studio.revision.history.tsx')).toMatch(
+      /newerRevisions=\{newest\.data\?\.results \?\? \[\]\}/
+    );
+    expect(read('content-studio.design.workspace.tsx')).toMatch(
+      /newerRevisions=\{\[\s+currentRevision,\s+\.\.\.\(history\.data\?\.results \?\? \[\]\)/
+    );
+  });
+
+  it('P502-2 the discussion gates no handoff, approval or publishing', () => {
+    for (const file of [
+      'content-studio.review.discussion.tsx',
+      'content-studio.review.status.tsx',
+      'content-studio.reviews.api.ts',
+    ]) {
+      expect(read(file)).not.toMatch(
+        /handoff|publish|approve\(|approval[A-Z]|signature/i
+      );
+    }
   });
 });

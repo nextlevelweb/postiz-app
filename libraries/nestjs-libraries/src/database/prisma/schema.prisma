@@ -78,6 +78,8 @@ model Organization {
   contentStudioDesignBlocks              ContentStudioDesignBlock[]
   contentStudioReviews                   ContentStudioReview[]
   contentStudioReviewStateEvents         ContentStudioReviewStateEvent[]
+  contentStudioReviewComments            ContentStudioReviewComment[]
+  contentStudioReviewRevisionRequests    ContentStudioReviewRevisionRequest[]
 
   @@index([apiKey])
   @@index([streakSince])
@@ -182,6 +184,9 @@ model User {
   contentStudioDesignBlocks              ContentStudioDesignBlock[]              @relation("ContentStudioDesignBlockCreatedBy")
   contentStudioReviews                   ContentStudioReview[]                   @relation("ContentStudioReviewRequestedBy")
   contentStudioReviewStateEvents         ContentStudioReviewStateEvent[]         @relation("ContentStudioReviewStateEventActor")
+  contentStudioReviewComments            ContentStudioReviewComment[]            @relation("ContentStudioReviewCommentAuthor")
+  contentStudioRevisionRequests          ContentStudioReviewRevisionRequest[]    @relation("ContentStudioRevisionRequestRequestedBy")
+  contentStudioRevisionRequestsResolved  ContentStudioReviewRevisionRequest[]    @relation("ContentStudioRevisionRequestResolvedBy")
 
   @@unique([email, providerName])
   @@index([lastReadNotifications])
@@ -1948,7 +1953,7 @@ model ContentPackage {
 // package is referenced together with organizationId, so a revision can only
 // belong to a package of its own organization
 model ContentPackageRevision {
-  id                 String                 @id @default(uuid())
+  id                 String                               @id @default(uuid())
   organizationId     String
   packageId          String
   revisionNumber     Int
@@ -1958,12 +1963,13 @@ model ContentPackageRevision {
   origin             String
   sourceDraftVersion Int
   createdById        String
-  createdAt          DateTime               @default(now())
-  organization       Organization           @relation(fields: [organizationId], references: [id])
-  package            ContentPackage         @relation(fields: [packageId, organizationId], references: [id, organizationId])
-  createdBy          User                   @relation("ContentPackageRevisionCreatedBy", fields: [createdById], references: [id])
+  createdAt          DateTime                             @default(now())
+  organization       Organization                         @relation(fields: [organizationId], references: [id])
+  package            ContentPackage                       @relation(fields: [packageId, organizationId], references: [id, organizationId])
+  createdBy          User                                 @relation("ContentPackageRevisionCreatedBy", fields: [createdById], references: [id])
   handoffs           ContentStudioHandoff[]
   reviews            ContentStudioReview[]
+  resolvedRequests   ContentStudioReviewRevisionRequest[]
 
   @@unique([packageId, revisionNumber])
   @@unique([id, organizationId])
@@ -2374,21 +2380,22 @@ model ContentStudioDesignProject {
 }
 
 model ContentStudioDesignRevision {
-  id              String                           @id @default(uuid())
-  organizationId  String
-  designProjectId String
-  revisionNumber  Int
-  schemaVersion   Int
-  content         String
-  contentHash     String
-  createdById     String
-  createdAt       DateTime                         @default(now())
-  organization    Organization                     @relation(fields: [organizationId], references: [id])
-  designProject   ContentStudioDesignProject       @relation(fields: [designProjectId, organizationId], references: [id, organizationId])
-  createdBy       User                             @relation("ContentStudioDesignRevisionCreatedBy", fields: [createdById], references: [id])
-  renders         ContentStudioDesignRender[]
-  renderBatches   ContentStudioDesignRenderBatch[]
-  reviews         ContentStudioReview[]
+  id               String                               @id @default(uuid())
+  organizationId   String
+  designProjectId  String
+  revisionNumber   Int
+  schemaVersion    Int
+  content          String
+  contentHash      String
+  createdById      String
+  createdAt        DateTime                             @default(now())
+  organization     Organization                         @relation(fields: [organizationId], references: [id])
+  designProject    ContentStudioDesignProject           @relation(fields: [designProjectId, organizationId], references: [id, organizationId])
+  createdBy        User                                 @relation("ContentStudioDesignRevisionCreatedBy", fields: [createdById], references: [id])
+  renders          ContentStudioDesignRender[]
+  renderBatches    ContentStudioDesignRenderBatch[]
+  reviews          ContentStudioReview[]
+  resolvedRequests ContentStudioReviewRevisionRequest[]
 
   @@unique([designProjectId, revisionNumber])
   @@unique([id, organizationId])
@@ -2566,21 +2573,23 @@ model ContentStudioDesignBlock {
 // number of its state events. Not an approval: nothing here gates a handoff
 // or publishing. Never deleted
 model ContentStudioReview {
-  id                String                          @id @default(uuid())
+  id                String                              @id @default(uuid())
   organizationId    String
   packageRevisionId String?
   designRevisionId  String?
   targetContentHash String
   state             String
-  version           Int                             @default(1)
+  version           Int                                 @default(1)
   requestedById     String
-  createdAt         DateTime                        @default(now())
-  updatedAt         DateTime                        @updatedAt
-  organization      Organization                    @relation(fields: [organizationId], references: [id])
-  requestedBy       User                            @relation("ContentStudioReviewRequestedBy", fields: [requestedById], references: [id])
-  packageRevision   ContentPackageRevision?         @relation(fields: [packageRevisionId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
-  designRevision    ContentStudioDesignRevision?    @relation(fields: [designRevisionId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
+  createdAt         DateTime                            @default(now())
+  updatedAt         DateTime                            @updatedAt
+  organization      Organization                        @relation(fields: [organizationId], references: [id])
+  requestedBy       User                                @relation("ContentStudioReviewRequestedBy", fields: [requestedById], references: [id])
+  packageRevision   ContentPackageRevision?             @relation(fields: [packageRevisionId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
+  designRevision    ContentStudioDesignRevision?        @relation(fields: [designRevisionId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
   stateEvents       ContentStudioReviewStateEvent[]
+  comments          ContentStudioReviewComment[]
+  revisionRequest   ContentStudioReviewRevisionRequest?
 
   @@unique([organizationId, packageRevisionId])
   @@unique([organizationId, designRevisionId])
@@ -2609,6 +2618,67 @@ model ContentStudioReviewStateEvent {
   @@unique([reviewId, sequence])
   @@index([organizationId])
   @@index([actorUserId])
+}
+
+// The discussion of a review (P5-02): one plain-text comment by its author,
+// bound to the review only (and through it to the exact revision reviewed),
+// never to a package, a design, a page, a layer, a source or a claim. The
+// author may replace the body while the review is not cancelled: editedAt
+// says when it last was, createdAt never changes. Never deleted; no thread,
+// mention, reaction, attachment or metadata
+model ContentStudioReviewComment {
+  id             String              @id @default(uuid())
+  organizationId String
+  reviewId       String
+  authorUserId   String
+  body           String
+  createdAt      DateTime            @default(now())
+  editedAt       DateTime?
+  organization   Organization        @relation(fields: [organizationId], references: [id])
+  review         ContentStudioReview @relation(fields: [reviewId, organizationId], references: [id, organizationId])
+  author         User                @relation("ContentStudioReviewCommentAuthor", fields: [authorUserId], references: [id])
+
+  @@unique([id, organizationId])
+  @@index([reviewId, createdAt])
+  @@index([organizationId, createdAt])
+  @@index([authorUserId])
+}
+
+// The formal revision request of a review (P5-02): what the exact revision
+// reviewed must change, written in the same transaction that moved the
+// review from IN_REVIEW to CHANGES_REQUESTED, so a review has at most one.
+// status is OPEN or RESOLVED. OPEN: no resolution field is set. RESOLVED:
+// the user and time, and exactly one newer revision of the same package
+// (package review) or the same design (design review) with the contentHash
+// the server read from it. The review stays CHANGES_REQUESTED either way,
+// and the resolving revision gets no review until one is requested for it.
+// Never deleted, and never changed once resolved
+model ContentStudioReviewRevisionRequest {
+  id                          String                       @id @default(uuid())
+  organizationId              String
+  reviewId                    String
+  requestedByUserId           String
+  body                        String
+  status                      String
+  resolvedByUserId            String?
+  resolvedAt                  DateTime?
+  resolvedByPackageRevisionId String?
+  resolvedByDesignRevisionId  String?
+  resolvedByContentHash       String?
+  createdAt                   DateTime                     @default(now())
+  organization                Organization                 @relation(fields: [organizationId], references: [id])
+  review                      ContentStudioReview          @relation(fields: [reviewId, organizationId], references: [id, organizationId])
+  requestedBy                 User                         @relation("ContentStudioRevisionRequestRequestedBy", fields: [requestedByUserId], references: [id])
+  resolvedBy                  User?                        @relation("ContentStudioRevisionRequestResolvedBy", fields: [resolvedByUserId], references: [id])
+  resolvedByPackageRevision   ContentPackageRevision?      @relation(fields: [resolvedByPackageRevisionId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
+  resolvedByDesignRevision    ContentStudioDesignRevision? @relation(fields: [resolvedByDesignRevisionId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([reviewId, organizationId])
+  @@unique([id, organizationId])
+  @@index([requestedByUserId])
+  @@index([resolvedByUserId])
+  @@index([resolvedByPackageRevisionId])
+  @@index([resolvedByDesignRevisionId])
 }
 
 // One render font file as uploaded: the exact bytes of a single TrueType or

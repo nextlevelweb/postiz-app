@@ -713,13 +713,13 @@ describe('Size variant boundaries', () => {
   });
 
   // P4-17 adds the 5 page set routes: still no variant route
-  it('P416-8/P416-14 no variant route: the API keeps its routes (112; 117 with page sets, 122 with blocks, 128 with reviews)', () => {
+  it('P416-8/P416-14 no variant route: the API keeps its routes (112; 117 with page sets, 122 with blocks, 128 with reviews, 133 with review discussion)', () => {
     const controller = code(
       'apps/backend/src/api/routes/content-studio.controller.ts'
     );
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(128);
+    ).toHaveLength(133);
     expect(controller).not.toMatch(/variant|campaign|resize|responsive/i);
   });
 

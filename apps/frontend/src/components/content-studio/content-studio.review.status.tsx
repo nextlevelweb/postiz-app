@@ -18,6 +18,12 @@ import {
   useContentStudioReviewForRevision,
 } from '@gitroom/frontend/components/content-studio/content-studio.reviews.api';
 import { designErrorCode } from '@gitroom/frontend/components/content-studio/content-studio.designs.api';
+import {
+  ContentStudioRequestChangesForm,
+  ContentStudioReviewDiscussion,
+  ContentStudioReviewRevisionChoice,
+  ContentStudioRevisionRequestPanel,
+} from '@gitroom/frontend/components/content-studio/content-studio.review.discussion';
 
 type Translate = (key: string, fallback: string) => string;
 
@@ -58,19 +64,31 @@ const actionLabel = (t: Translate, action: ContentStudioReviewAction) => {
 // shared state machine), or "Request review" when it has none. Unsaved
 // changes are never part of it: requesting one waits until they are saved,
 // and the card says so. The review loads when the card is shown, for this
-// revision only. A review is not an approval; nothing here hands off,
-// publishes or approves
+// revision only. Its discussion (P5-02) is part of it: Request changes asks
+// what must change first, a review that asked for changes shows its
+// revision request, resolved by one of the saved newer revisions the page
+// passes (never an unsaved draft), and the comments open on demand. A review
+// is not an approval; nothing here hands off, publishes or approves
 export const ContentStudioReviewStatus: FC<{
   targetType: ContentStudioReviewTargetType;
   revisionId: string;
   revisionNumber: number;
   unsaved?: boolean;
-}> = ({ targetType, revisionId, revisionNumber, unsaved = false }) => {
+  newerRevisions?: ContentStudioReviewRevisionChoice[];
+}> = ({
+  targetType,
+  revisionId,
+  revisionNumber,
+  unsaved = false,
+  newerRevisions = [],
+}) => {
   const t = useT();
   const toaster = useToaster();
   const review = useContentStudioReviewForRevision(targetType, revisionId);
   const actions = useContentStudioReviewActions();
   const [busy, setBusy] = useState<string | null>(null);
+  // the review the Request changes form is open for, if any
+  const [askingFor, setAskingFor] = useState<string | null>(null);
   const revision =
     targetType === 'PACKAGE_REVISION'
       ? `${t('content_studio_revision', 'Version')} ${revisionNumber}`
@@ -103,6 +121,8 @@ export const ContentStudioReviewStatus: FC<{
 
   const current = review.data ?? null;
   const open = current ? contentStudioReviewActions(current.state) : [];
+  const askingChanges =
+    !!current && askingFor === current.id && open.includes('request-changes');
 
   return (
     <section
@@ -158,15 +178,28 @@ export const ContentStudioReviewStatus: FC<{
               key={action}
               secondary={action !== open[0]}
               loading={busy === action}
-              disabled={!!busy}
+              disabled={!!busy || askingChanges}
+              aria-expanded={
+                action === 'request-changes' ? askingChanges : undefined
+              }
               onClick={() =>
-                run(action, () => actions.transitionReview(current.id, action))
+                action === 'request-changes'
+                  ? setAskingFor(current.id)
+                  : run(action, () =>
+                      actions.transitionReview(current.id, action)
+                    )
               }
             >
               {actionLabel(t, action)}
             </Button>
           ))}
       </div>
+      {current && askingChanges && (
+        <ContentStudioRequestChangesForm
+          review={current}
+          close={() => setAskingFor(null)}
+        />
+      )}
       <div className="text-[12px] text-textItemBlur">
         {applies} {revisionNumber}.
         {current?.state === 'READY_FOR_APPROVAL' &&
@@ -183,6 +216,14 @@ export const ContentStudioReviewStatus: FC<{
           )}
         </div>
       )}
+      {current?.state === 'CHANGES_REQUESTED' && (
+        <ContentStudioRevisionRequestPanel
+          review={current}
+          newerRevisions={newerRevisions}
+          unsaved={unsaved}
+        />
+      )}
+      {current && <ContentStudioReviewDiscussion review={current} />}
       {!!current?.events.length && (
         <details className="text-[12px]">
           <summary className="cursor-pointer text-textItemBlur">

@@ -613,6 +613,8 @@ describe('ContentStudioDesignProject schema', () => {
       renderBatches: 'ContentStudioDesignRenderBatch[]',
       // P5-01: a review of this exact revision points to it
       reviews: 'ContentStudioReview[]',
+      // P5-02: a revision request resolved by this exact revision points to it
+      resolvedRequests: 'ContentStudioReviewRevisionRequest[]',
     });
   });
 

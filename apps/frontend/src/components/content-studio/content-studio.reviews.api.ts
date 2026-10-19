@@ -7,6 +7,7 @@ import type {
   ContentStudioReviewAction,
   ContentStudioReviewState,
   ContentStudioReviewTargetType,
+  ContentStudioRevisionRequestStatus,
 } from '@gitroom/nestjs-libraries/content-studio/review/review.state';
 import {
   ContentStudioRequestError,
@@ -19,7 +20,11 @@ import { designErrorCode } from '@gitroom/frontend/components/content-studio/con
 // package or a design. The browser loads the review of the revision it shows
 // (by its type and id, never "the latest"), requests one, and moves it on
 // with a fixed action. It never sends an organization, a user, a hash or a
-// state: the server reads all of them itself. A review is not an approval
+// state: the server reads all of them itself. A review is not an approval.
+// Its discussion (P5-02) is the review's own: comments, loaded only for a
+// review that exists, and the formal revision request, loaded only once the
+// review asked for changes. A request is resolved by the id of a saved newer
+// revision, nothing else
 
 interface ContentStudioReviewPerson {
   id: string;
@@ -46,7 +51,35 @@ export interface ContentStudioReview {
   }[];
 }
 
+export interface ContentStudioReviewComment {
+  id: string;
+  body: string;
+  author: ContentStudioReviewPerson;
+  createdAt: string;
+  editedAt: string | null;
+}
+
+export interface ContentStudioRevisionRequest {
+  id: string;
+  body: string;
+  status: ContentStudioRevisionRequestStatus;
+  requestedBy: ContentStudioReviewPerson;
+  createdAt: string;
+  resolution: null | {
+    revisionId: string;
+    revisionNumber: number;
+    contentHash: string;
+    resolvedBy: ContentStudioReviewPerson;
+    resolvedAt: string;
+  };
+}
+
 export const REVIEWS_PATH = '/content-studio/reviews';
+const reviewPath = (id: string) => `${REVIEWS_PATH}/${encodeURIComponent(id)}`;
+export const reviewCommentsPath = (id: string, page: number) =>
+  `${reviewPath(id)}/comments?page=${page}`;
+export const reviewRevisionRequestPath = (id: string) =>
+  `${reviewPath(id)}/revision-request`;
 export const reviewForRevisionPath = (
   targetType: ContentStudioReviewTargetType,
   revisionId: string
@@ -88,8 +121,55 @@ export const useContentStudioReviewForRevision = (
   );
 };
 
+// One page of the review's comments, oldest first; nothing without a review
+export const useContentStudioReviewComments = (
+  reviewId: string | null,
+  page: number
+) => {
+  const fetch = useFetch();
+  const load = useCallback(
+    (path: string) =>
+      request<{ pages: number; results: ContentStudioReviewComment[] }>(
+        fetch,
+        path
+      ),
+    [fetch]
+  );
+  return useSWR(
+    reviewId ? reviewCommentsPath(reviewId, page) : null,
+    load,
+    swrOptions
+  );
+};
+
+// The formal revision request of a review that asked for changes, or null
+// when that review has none (one from before revision requests existed)
+export const useContentStudioReviewRevisionRequest = (
+  reviewId: string | null
+) => {
+  const fetch = useFetch();
+  const load = useCallback(
+    async (path: string) => {
+      try {
+        return await request<ContentStudioRevisionRequest>(fetch, path);
+      } catch (err) {
+        if (designErrorCode(err) === 'CS_REVIEW_REVISION_REQUEST_NOT_FOUND') {
+          return null;
+        }
+        throw err;
+      }
+    },
+    [fetch]
+  );
+  return useSWR(
+    reviewId ? reviewRevisionRequestPath(reviewId) : null,
+    load,
+    swrOptions
+  );
+};
+
 // Review writes: one request each, never retried; each reloads the reviews
-// shown. Nothing is edited in the cache by hand
+// shown and their discussion. Nothing is edited in the cache by hand
 export const useContentStudioReviewActions = () => {
   const fetch = useFetch();
   const { mutate } = useSWRConfig();
@@ -97,7 +177,10 @@ export const useContentStudioReviewActions = () => {
   const refresh = useCallback(
     () =>
       mutate(
-        (key) => typeof key === 'string' && key.startsWith(`${REVIEWS_PATH}?`)
+        (key) =>
+          typeof key === 'string' &&
+          (key.startsWith(`${REVIEWS_PATH}?`) ||
+            key.startsWith(`${REVIEWS_PATH}/`))
       ),
     [mutate]
   );
@@ -120,18 +203,67 @@ export const useContentStudioReviewActions = () => {
         await refresh();
         return review;
       },
-      // the route is the action; there is no body
+      // the route is the action; there is no body. Request changes is not
+      // one of these: it always sends its revision request
       transitionReview: async (
         id: string,
-        action: ContentStudioReviewAction
+        action: Exclude<ContentStudioReviewAction, 'request-changes'>
       ) => {
         const review = await request<ContentStudioReview>(
           fetch,
-          `${REVIEWS_PATH}/${encodeURIComponent(id)}/${action}`,
+          `${reviewPath(id)}/${action}`,
           { method: 'POST' }
         );
         await refresh();
         return review;
+      },
+      // what must change, as plain text only
+      requestChanges: async (id: string, body: string) => {
+        const review = await request<ContentStudioReview>(
+          fetch,
+          `${reviewPath(id)}/request-changes`,
+          { method: 'POST', body: JSON.stringify({ body }) }
+        );
+        await refresh();
+        return review;
+      },
+      postComment: async (reviewId: string, body: string) => {
+        const comment = await request<ContentStudioReviewComment>(
+          fetch,
+          `${reviewPath(reviewId)}/comments`,
+          { method: 'POST', body: JSON.stringify({ body }) }
+        );
+        await refresh();
+        return comment;
+      },
+      editComment: async (
+        reviewId: string,
+        commentId: string,
+        body: string
+      ) => {
+        const comment = await request<ContentStudioReviewComment>(
+          fetch,
+          `${reviewPath(reviewId)}/comments/${encodeURIComponent(commentId)}`,
+          { method: 'PATCH', body: JSON.stringify({ body }) }
+        );
+        await refresh();
+        return comment;
+      },
+      // the exact saved revision, by its id only: the server knows its type
+      resolveRevisionRequest: async (
+        reviewId: string,
+        resolutionRevisionId: string
+      ) => {
+        const revisionRequest = await request<ContentStudioRevisionRequest>(
+          fetch,
+          `${reviewRevisionRequestPath(reviewId)}/resolve`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ resolutionRevisionId }),
+          }
+        );
+        await refresh();
+        return revisionRequest;
       },
     }),
     [fetch, refresh]
@@ -154,6 +286,43 @@ export const reviewErrorMessage = (t: Translate, error: unknown) => {
       return t(
         'content_studio_review_error_state',
         'This review has changed. Check its current state and try again.'
+      );
+    case 'CS_REVIEW_CANCELLED':
+      return t(
+        'content_studio_review_error_cancelled',
+        'This review was cancelled: its discussion is closed.'
+      );
+    case 'CS_REVIEW_COMMENT_INVALID':
+      return t(
+        'content_studio_review_error_comment_invalid',
+        'Write a comment of at most 10,000 characters.'
+      );
+    case 'CS_REVIEW_COMMENT_FORBIDDEN':
+      return t(
+        'content_studio_review_error_comment_forbidden',
+        'Only its author can edit a comment.'
+      );
+    case 'CS_REVIEW_COMMENT_NOT_FOUND':
+      return t(
+        'content_studio_review_error_comment_missing',
+        'This comment is no longer available.'
+      );
+    case 'CS_REVIEW_REVISION_REQUEST_INVALID':
+      return t(
+        'content_studio_review_error_request_invalid',
+        'Describe what needs to change, in at most 20,000 characters.'
+      );
+    case 'CS_REVIEW_REVISION_REQUEST_INVALID_RESOLUTION':
+      return t(
+        'content_studio_review_error_resolution',
+        'Choose a newer saved revision of the same package or design.'
+      );
+    case 'CS_REVIEW_REVISION_REQUEST_CONFLICT':
+    case 'CS_REVIEW_REVISION_REQUEST_ALREADY_EXISTS':
+    case 'CS_REVIEW_REVISION_REQUEST_NOT_FOUND':
+      return t(
+        'content_studio_review_error_request_state',
+        'This revision request has changed. Check its current state and try again.'
       );
     case 'CS_REVIEW_TARGET_NOT_FOUND':
       return t(

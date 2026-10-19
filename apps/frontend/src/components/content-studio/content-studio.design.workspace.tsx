@@ -1634,12 +1634,20 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
         </div>
       )}
 
-      {/* the review of the shown saved revision (P5-01), never of the draft */}
+      {/* the review of the shown saved revision (P5-01), never of the draft;
+          its revision request is resolved by a saved newer revision of this
+          design: the current one or one of the history shown (P5-02) */}
       <ContentStudioReviewStatus
         targetType="DESIGN_REVISION"
         revisionId={shown.id}
         revisionNumber={shown.revisionNumber}
         unsaved={editing && editor.dirty}
+        newerRevisions={[
+          currentRevision,
+          ...(history.data?.results ?? []).filter(
+            (revision) => revision.id !== currentRevision.id
+          ),
+        ]}
       />
 
       {!shown.historical ? (
