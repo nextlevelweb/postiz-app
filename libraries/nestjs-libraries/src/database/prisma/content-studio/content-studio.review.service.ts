@@ -54,6 +54,7 @@ import {
   ContentStudioApprovalDecision,
   ContentStudioApprovalState,
   contentStudioApprovalStatus,
+  ContentStudioHandoffApprovalAuthorization,
   contentStudioReviewStatesOfBindingStates,
   ContentStudioRevisionApprovalState,
   deriveContentStudioRevisionApprovalBindingState,
@@ -333,6 +334,7 @@ interface ReviewRow {
   version: number;
   createdAt: Date;
   updatedAt: Date;
+  requestedById: string;
   requestedBy: Person;
   packageRevision: PackageRevisionRef | null;
   designRevision: DesignRevisionRef | null;
@@ -341,6 +343,7 @@ interface ReviewRow {
     fromState: string | null;
     toState: string;
     createdAt: Date;
+    actorUserId: string;
     actorUser: Person;
   }[];
 }
@@ -1383,7 +1386,10 @@ export class ContentStudioReviewService {
   // The same answer for a caller that may only go on with an approved
   // revision (the handoff gate of P5-07, its only caller): the status of an
   // approved revision, CS_APPROVAL_REQUIRED for every revision that is not
-  // approved now, and the integrity errors as they are. Read only
+  // approved now, and the integrity errors as they are. Where the approval
+  // is used, the evidence of an approved package revision's claims is
+  // checked too (P5-08): every exact source version and block it names,
+  // still exactly what was stored, or an integrity error. Read only
   async requireApprovedRevision(input: {
     organizationId: string;
     targetType: unknown;
@@ -1393,7 +1399,70 @@ export class ContentStudioReviewService {
     if (!status.approved) {
       throw approvalRequired();
     }
+    if (status.targetType === 'PACKAGE_REVISION') {
+      const review = {
+        id: status.reviewId as string,
+        targetRevisionId: status.targetRevisionId,
+        targetContentHash: status.targetContentHash,
+      };
+      await this.resolvedEvidence(
+        input.organizationId,
+        review.id,
+        await this.reviewedClaims(input.organizationId, review)
+      );
+    }
     return status;
+  }
+
+  // What a handoff says authorized it when it was created (P5-08): nothing
+  // to check unless it was approved; then that approval must still be in
+  // the stored history: its review, intact, of this organization and about
+  // exactly this package revision with this hash, and at that sequence of
+  // its intact approval history an APPROVED decision. A record of the past:
+  // whether the revision is approved now is not asked, so a later
+  // withdrawal or refusal is no error. Anything that does not agree is an
+  // integrity error. Read only
+  async verifyHandoffApprovalAuthorization(input: {
+    organizationId: string;
+    packageRevisionId: string;
+    authorization: ContentStudioHandoffApprovalAuthorization;
+  }) {
+    const { authorization } = input;
+    if (authorization.status !== 'APPROVED') {
+      return;
+    }
+    const row = UUID.test(authorization.reviewId)
+      ? await this._contentStudioReviewRepository.getReviewForOrganization(
+          input.organizationId,
+          authorization.reviewId
+        )
+      : null;
+    const review = row && this.reviewDetail(row);
+    if (
+      !review ||
+      review.targetType !== 'PACKAGE_REVISION' ||
+      review.targetRevisionId !== input.packageRevisionId ||
+      review.targetContentHash !== authorization.targetContentHash ||
+      !isContentStudioApprovalAvailable(review.state)
+    ) {
+      this._logger.error(
+        `Stored Content Studio handoff approval is invalid: ${authorization.reviewId}`
+      );
+      throw approvalIntegrityError();
+    }
+    const { rows } = this.approvalHistory(
+      review,
+      await this._contentStudioReviewRepository.listApprovalsForReview(
+        input.organizationId,
+        review.id
+      )
+    );
+    if (rows[authorization.approvalSequence - 1]?.decision !== 'APPROVED') {
+      this._logger.error(
+        `Stored Content Studio handoff approval is invalid: ${review.id}`
+      );
+      throw approvalIntegrityError();
+    }
   }
 
   // Where each revision of one page of history stands, by id: whether it is
@@ -1885,21 +1954,11 @@ export class ContentStudioReviewService {
         review.id
       )
     );
-    let evidence;
-    try {
-      evidence = await this._contentStudioGroundingService.resolveEvidence(
-        organizationId,
-        claims.flatMap((entry) => entry.claim.evidence)
-      );
-    } catch (err) {
-      if (err instanceof ContentStudioGroundingError) {
-        this._logger.error(
-          `Content Studio review claim evidence is invalid: ${review.id}`
-        );
-        throw integrityError();
-      }
-      throw err;
-    }
+    const evidence = await this.resolvedEvidence(
+      organizationId,
+      review.id,
+      claims
+    );
     let at = 0;
     return {
       reviewId: review.id,
@@ -1944,6 +2003,30 @@ export class ContentStudioReviewService {
         };
       }),
     };
+  }
+
+  // The evidence of every claim, in order, each from the exact source
+  // version and block it names, verified; evidence that no longer matches is
+  // corruption of the review's grounding, never a missing claim
+  private async resolvedEvidence(
+    organizationId: string,
+    reviewId: string,
+    claims: ReviewedClaim[]
+  ) {
+    try {
+      return await this._contentStudioGroundingService.resolveEvidence(
+        organizationId,
+        claims.flatMap((entry) => entry.claim.evidence)
+      );
+    } catch (err) {
+      if (err instanceof ContentStudioGroundingError) {
+        this._logger.error(
+          `Content Studio review claim evidence is invalid: ${reviewId}`
+        );
+        throw integrityError();
+      }
+      throw err;
+    }
   }
 
   // The reviewed revision, re-verified: still exactly what was stored, with
@@ -2085,7 +2168,8 @@ export class ContentStudioReviewService {
 
   // Built field by field: no organization leaves. The row must bind exactly
   // one revision, with the hash that revision still has stored, a known
-  // state, and a state history that leads to exactly that state and version;
+  // state, and a state history that leads to exactly that state and version,
+  // the requester and every event naming the user it was written with;
   // anything else is reported, never repaired
   private reviewDetail(row: ReviewRow) {
     const binding = this.binding(row);
@@ -2094,7 +2178,13 @@ export class ContentStudioReviewService {
       !SHA256.test(row.targetContentHash) ||
       binding.revision.contentHash !== row.targetContentHash ||
       !isContentStudioReviewState(row.state) ||
-      !isContentStudioReviewHistoryIntact(row, row.stateEvents)
+      !isContentStudioReviewHistoryIntact(row, row.stateEvents) ||
+      row.requestedBy?.id !== row.requestedById ||
+      row.stateEvents.some(
+        (event) =>
+          event.actorUser?.id !== event.actorUserId ||
+          !(event.createdAt instanceof Date)
+      )
     ) {
       this._logger.error(`Stored Content Studio review is invalid: ${row.id}`);
       throw integrityError();

@@ -309,6 +309,7 @@ const createDb = () => {
     version: row.version,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    requestedById: row.requestedById,
     requestedBy: person(row.requestedById),
     packageRevision: revisionRef(
       tables.packageRevision,
@@ -332,6 +333,7 @@ const createDb = () => {
         fromState: event.fromState,
         toState: event.toState,
         createdAt: event.createdAt,
+        actorUserId: event.actorUserId,
         actorUser: person(event.actorUserId),
       })),
   });
@@ -638,6 +640,12 @@ const createDb = () => {
         return tables.approval.filter((entry) => matches(entry, args.where))
           .length;
       },
+      // P5-08: the decision an approved handoff keeps as its authorization
+      findFirst: async (args: Row) => {
+        log.push({ op: 'approval.findFirst', where: args.where });
+        const row = tables.approval.find((entry) => matches(entry, args.where));
+        return row ? pick(row, args.select) : null;
+      },
       create: async (args: Row) => {
         log.push({ op: 'approval.create', data: args.data });
         const data = args.data;
@@ -659,15 +667,37 @@ const createDb = () => {
         return { id: 'approval' };
       },
     },
-    // P5-07: a handoff is only ever created here
+    // P5-07: a handoff is created here; P5-08: and opened
     contentStudioHandoff: {
       create: async (args: Row) => {
         log.push({ op: 'handoff.create', data: args.data });
         if (faults.handoffCreate) {
           throw faults.handoffCreate;
         }
-        tables.handoff.push({ ...args.data, createdAt: now() });
+        tables.handoff.push({
+          openedAt: null,
+          revokedAt: null,
+          ...args.data,
+          createdAt: now(),
+        });
         return pick(args.data, args.select);
+      },
+      findFirst: async (args: Row) => {
+        log.push({ op: 'handoff.findFirst', where: args.where });
+        const row = tables.handoff.find((entry) => matches(entry, args.where));
+        return row ? pick(row, args.select) : null;
+      },
+      updateMany: async (args: Row) => {
+        log.push({
+          op: 'handoff.updateMany',
+          where: args.where,
+          data: args.data,
+        });
+        const rows = tables.handoff.filter((entry) =>
+          matches(entry, args.where)
+        );
+        update(rows, args.data);
+        return { count: rows.length };
       },
     },
     contentStudioReviewStateEvent: {
@@ -1744,10 +1774,25 @@ describe('ContentStudioReviewService boundaries', () => {
       'content-studio.review.service.ts',
       'content-studio.review.repository.ts',
     ]) {
-      expect(code(file)).not.toMatch(
+      // P5-08: the review service checks what a handoff says authorized it
+      // against its own history; it never reads or writes a handoff
+      expect(
+        code(file).replace(
+          /verifyHandoffApprovalAuthorization|ContentStudioHandoffApprovalAuthorization|Stored Content Studio handoff approval is invalid/g,
+          ''
+        )
+      ).not.toMatch(
         /render|sharp|media|handoff|publish|integration|\bai\b|openai|anthropic|fetch\(/i
       );
     }
+    // the import, its type, the method and its two log lines
+    expect(
+      code('content-studio.review.service.ts').match(/handoff/gi)
+    ).toHaveLength(5);
+    expect(code('content-studio.review.service.ts')).not.toMatch(
+      /contentStudioHandoff\b|HandoffRepository|HandoffService/
+    );
+    expect(code('content-studio.review.repository.ts')).not.toMatch(/handoff/i);
   });
 
   it('M18-M20 every repository query names the organization', () => {
@@ -5544,8 +5589,11 @@ describe('ContentStudioReviewService approval boundaries (P5-04)', () => {
       /decideApproval|appendApproval|\.contentStudioApproval\.|\.contentStudioReview\./
     );
     const repository = source('content-studio.handoff.repository.ts');
+    // P5-08: and reads the one APPROVED decision it keeps as its
+    // authorization, under the same hold
     expect(repository.match(/contentStudioApproval\.\w+/g)).toEqual([
       'contentStudioApproval.count',
+      'contentStudioApproval.findFirst',
     ]);
     expect(repository.match(/contentStudioReview\.\w+/g)).toEqual([
       'contentStudioReview.findFirst',
@@ -6711,7 +6759,16 @@ describe('ContentStudioReviewService approval binding boundaries (P5-05)', () =>
       'utf8'
     );
     expect(posts).not.toMatch(/approv|content-studio/i);
-    expect(schema).not.toMatch(
+    // P5-08: the one approvalRequired column is the handoff's record of what
+    // the policy required when it was created, not a policy or a gate
+    const handoffModel = schema.slice(
+      schema.indexOf('model ContentStudioHandoff {'),
+      schema.indexOf('}', schema.indexOf('model ContentStudioHandoff {'))
+    );
+    expect(handoffModel).toMatch(/approvalRequiredAtCreation +Boolean\?\n/);
+    expect(
+      schema.replace(handoffModel, '').replace(/^\/\/.*$/gm, '')
+    ).not.toMatch(
       /approvalRequired|requireApproval|approvalPolicy|approvalMode/i
     );
     expect(binding()).not.toMatch(/process\.env|setting|policy|config/i);
@@ -7827,7 +7884,15 @@ describe('Handoff where approval is not required (P5-07)', () => {
           packageId: `package-${ORG_A}`,
           packageRevisionId: PKG_REV_4,
           expiresAt: handoff.expiresAt,
+          openedAt: null,
+          revokedAt: null,
           createdAt: expect.any(Date),
+          // HAS1/AHO6 (P5-08): known not required, no approval metadata,
+          // whatever the revision's approval is
+          approvalRequiredAtCreation: false,
+          approvalReviewId: null,
+          approvalSequence: null,
+          approvalContentHash: null,
         },
       ]);
       // the revision and the handoff, as before P5-07: no review, approval
@@ -7876,9 +7941,24 @@ describe('Handoff where approval is required (P5-07)', () => {
           packageId: `package-${ORG_A}`,
           packageRevisionId: PKG_REV_4,
           expiresAt: handoff.expiresAt,
+          openedAt: null,
+          revokedAt: null,
           createdAt: expect.any(Date),
+          // HAS2-HAS4 (P5-08): exactly the review, its APPROVED decision in
+          // force (approve, withdraw, approve again: the third) and its hash
+          approvalRequiredAtCreation: true,
+          approvalReviewId: reviewOf(db).id,
+          approvalSequence: state === 'RE_APPROVED' ? 3 : 1,
+          approvalContentHash: reviewOf(db).targetContentHash,
         },
       ]);
+      expect(
+        db.tables.approval.find(
+          (row) =>
+            row.reviewId === reviewOf(db).id &&
+            row.sequence === db.tables.handoff[0].approvalSequence
+        )
+      ).toMatchObject({ decision: 'APPROVED', packageRevisionId: PKG_REV_4 });
       expect(db.requireApprovedRevision.mock.calls).toEqual([
         [
           {
@@ -8243,22 +8323,47 @@ describe('Handoff approval boundaries (P5-07)', () => {
     expect(create.match(/requireApprovedRevision\(/g)).toHaveLength(2);
     expect(create).toMatch(/isApprovalRequiredForHandoff\(/);
     // opening or revoking an existing handoff never asks again: a handoff
-    // made while approved stays usable after a withdrawal
-    expect(service.slice(service.indexOf('async resolveHandoff('))).not.toMatch(
-      /approv|_contentStudioReviewService|_contentStudioEditorialPolicyService/i
+    // made while approved stays usable after a withdrawal. P5-08: opening
+    // checks only what authorized it when it was created, against the
+    // stored history, never the approval of now or the policy
+    const after = service.slice(service.indexOf('async resolveHandoff('));
+    expect(after).not.toMatch(
+      /requireApproved|getRevisionApprovalStatus|isApprovalRequiredForHandoff|_contentStudioEditorialPolicyService/
     );
+    expect(after.match(/_contentStudioReviewService\.\w+/g)).toEqual([
+      '_contentStudioReviewService.verifyHandoffApprovalAuthorization',
+    ]);
+    expect(
+      service
+        .slice(
+          service.indexOf('async revokeHandoff('),
+          service.indexOf('private async getHandoff(')
+        )
+        .match(/approv/gi)
+    ).toBeNull();
   });
 
   it('P507-5/M19 the handoff has no approval logic of its own: no decision, state or hash rule', () => {
-    for (const file of [HANDOFF_SERVICE, HANDOFF_REPOSITORY]) {
-      expect(read(file)).not.toMatch(
-        /contentStudioApprovalStatus|deriveContentStudio|isContentStudioRevisionApproved|\.decision|decision:|'APPROVED'|'WITHDRAWN'|'REFUSED'|targetContentHash|contentHash|claim|approved:\s*(true|false)/i
-      );
-    }
+    expect(read(HANDOFF_SERVICE)).not.toMatch(
+      /contentStudioApprovalStatus|deriveContentStudio|isContentStudioRevisionApproved|\.decision|decision:|'APPROVED'|'WITHDRAWN'|'REFUSED'|targetContentHash|contentHash|claim|approved:\s*(true|false)/i
+    );
     // the hold only confirms the history the predicate judged
     const repository = read(HANDOFF_REPOSITORY);
     expect(repository).toMatch(/decisions !== input\.approvalVersion/);
     expect(repository).toMatch(/state: 'READY_FOR_APPROVAL'/);
+    expect(repository).not.toMatch(
+      /contentStudioApprovalStatus|deriveContentStudio|isContentStudioRevisionApproved|\.decision\b|'WITHDRAWN'|'REFUSED'|claim|approved:\s*(true|false)/i
+    );
+    // P5-08: it judges no history either; it only reads, under the hold, the
+    // last decision of the judged one, which must be its APPROVED one about
+    // this revision and the held review's hash, and keeps it
+    expect(repository.match(/'APPROVED'/g)).toHaveLength(1);
+    expect(repository).toMatch(
+      /sequence: input\.approvalVersion,\s*decision: 'APPROVED',\s*packageRevisionId: input\.packageRevisionId,\s*designRevisionId: null,\s*targetContentHash: read\.targetContentHash,/
+    );
+    expect(repository).toMatch(
+      /approvalRequiredAtCreation: true,\s*approvalReviewId: input\.reviewId,\s*approvalSequence: authorizing\.sequence,\s*approvalContentHash: authorizing\.targetContentHash,/
+    );
   });
 
   it('P507-6 the exact revision handed off is the one judged: never the package, the latest or a hash', () => {
@@ -8387,5 +8492,945 @@ describe('Handoff approval boundaries (P5-07)', () => {
     ]) {
       expect(read(file)).not.toMatch(/approv|handoffPolicy|workflow/i);
     }
+  });
+});
+
+// --- Phase 5 audit (P5-08): the whole chain from an exact revision to its
+// handoff, on the same stand-in, with stored rows corrupted behind the
+// service. Every corruption fails closed with its integrity error on every
+// operation that relies on it, never as a normal lifecycle answer, never with
+// an id, a hash or text in the body ---
+
+const openHandoff = (db: Db, handoffId: string, org = ORG_A) =>
+  db.handoffs.resolveHandoff({
+    organizationId: org,
+    userId: org === ORG_A ? USER_A : USER_B,
+    handoffId,
+  });
+// a grounded package revision, verified, ready and approved, required for
+// handoff, and handed off once while approved
+const approvedGrounded = async () => {
+  const { db, review } = await readyClaimed();
+  await decide(db, review.id, 'approve');
+  db.policy.required.add(ORG_A);
+  const handoff = await handOff(db, PKG_REV_G);
+  return { db, reviewId: review.id, handoffId: handoff.id };
+};
+// the code a promise fails with ('ok' when it does not), its body checked
+// to name nothing of what is stored
+const outcome = async (promise: Promise<unknown>) => {
+  try {
+    await promise;
+    return 'ok';
+  } catch (err) {
+    if (!(err instanceof HttpException)) {
+      return `UNEXPECTED ${String(err)}`;
+    }
+    const body = JSON.stringify(err.getResponse());
+    expect(body).not.toMatch(
+      /[0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-|REVIEW_PRIVATE|org-|user-|Sales|Report|prisma|P20/i
+    );
+    return (err.getResponse() as Row).code as string;
+  }
+};
+const P508_OPERATIONS = {
+  // the review as listed for its exact revision
+  review: (db: Db) =>
+    db.service.listReviews({
+      organizationId: ORG_A,
+      targetType: 'PACKAGE_REVISION',
+      targetRevisionId: PKG_REV_G,
+      page: 1,
+    }),
+  approval: (db: Db, reviewId: string) => approvalOf(db, reviewId),
+  binding: (db: Db) => bindingOf(db, 'PACKAGE_REVISION', PKG_REV_G),
+  queue: (db: Db) =>
+    db.service.listReviews({
+      organizationId: ORG_A,
+      queue: 'APPROVED',
+      page: 1,
+    }),
+  handoff: (db: Db) => handOff(db, PKG_REV_G),
+  // the handoff made before the corruption, opened
+  open: (db: Db, _reviewId: string, handoffId: string) =>
+    openHandoff(db, handoffId),
+};
+const reviewRowOf = (db: Db, id: string) =>
+  db.tables.review.find((row) => row.id === id)!;
+const eventsOf = (db: Db, id: string) =>
+  db.tables.event
+    .filter((row) => row.reviewId === id)
+    .sort((a, b) => a.sequence - b.sequence);
+const approvalsOf = (db: Db, id: string) =>
+  db.tables.approval
+    .filter((row) => row.reviewId === id)
+    .sort((a, b) => a.sequence - b.sequence);
+const claimRowsOf = (db: Db, id: string) =>
+  db.tables.claim.filter((row) => row.reviewId === id);
+const R = 'CS_REVIEW_INTEGRITY_ERROR';
+const A = 'CS_APPROVAL_INTEGRITY_ERROR';
+const OPEN_OK = 'ok';
+
+// [id, what is corrupted, how, review, approval, binding, queue, handoff, open]
+const P508_MATRIX: [string, (db: Db, reviewId: string) => void, string[]][] = [
+  // the review and its state history (ARV)
+  [
+    'ARV1 both review targets set',
+    (db, id) => (reviewRowOf(db, id).designRevisionId = DESIGN_REV_7),
+    [R, R, R, R, R, R],
+  ],
+  [
+    'ARV2 review target hash differs from the revision',
+    (db, id) => (reviewRowOf(db, id).targetContentHash = 'e'.repeat(64)),
+    [R, R, R, R, R, R],
+  ],
+  [
+    'ARV3 state event sequence gap',
+    (db, id) => (eventsOf(db, id)[1].sequence = 7),
+    [R, R, R, R, R, R],
+  ],
+  [
+    // only the numbering is off: every transition and the count still agree
+    'ARV3 state event sequence gap at the end (1, 2, 4)',
+    (db, id) => (eventsOf(db, id)[2].sequence = 4),
+    [R, R, R, R, R, R],
+  ],
+  [
+    'ARV4 wrong fromState',
+    (db, id) => (eventsOf(db, id)[1].fromState = 'IN_REVIEW'),
+    [R, R, R, R, R, R],
+  ],
+  [
+    'ARV5 illegal transition (REQUESTED -> READY_FOR_APPROVAL)',
+    (db, id) => (eventsOf(db, id)[1].toState = 'READY_FOR_APPROVAL'),
+    [R, R, R, R, R, R],
+  ],
+  [
+    'ARV6 state event actor missing',
+    (db, id) => (eventsOf(db, id)[1].actorUserId = 'ghost'),
+    [R, R, R, R, R, R],
+  ],
+  [
+    'ARV6 requester missing',
+    (db, id) => (reviewRowOf(db, id).requestedById = 'ghost'),
+    [R, R, R, R, R, R],
+  ],
+  [
+    'ARV7 state and version disagree with the history',
+    (db, id) => (reviewRowOf(db, id).version = 9),
+    [R, R, R, R, R, R],
+  ],
+  [
+    // the Approved queue narrows on the review states that can be approved
+    // in the database first, so this one is not in it at all (it is never
+    // shown as approved); every read of it fails
+    'ARV7 unknown review state',
+    (db, id) => (reviewRowOf(db, id).state = 'APPROVED'),
+    [R, R, R, 'ok', R, R],
+  ],
+  // claim assessments and evidence (ACL): the historical open does not
+  // depend on them, the claims froze with the review before it was approved
+  [
+    'ACL1 orphan assessment',
+    (db, id) => (claimRowsOf(db, id)[0].claimId = 'c_claim000000000099'),
+    [R, R, R, R, R, OPEN_OK],
+  ],
+  [
+    // every claim of the revision still verified, one more of no claim
+    'ACL1 an extra assessment of a claim the revision does not have',
+    (db, id) =>
+      db.tables.claim.push({
+        ...claimRowsOf(db, id)[0],
+        id: 'claim-row-orphan',
+        claimId: 'c_claim000000000099',
+      }),
+    [R, R, R, R, R, OPEN_OK],
+  ],
+  [
+    'ACL2 claim hash mismatch',
+    (db, id) => (claimRowsOf(db, id)[0].claimContentHash = 'e'.repeat(64)),
+    [R, R, R, R, R, OPEN_OK],
+  ],
+  [
+    'ACL3 unknown claim status',
+    (db, id) => (claimRowsOf(db, id)[0].status = 'verified'),
+    [R, R, R, R, R, OPEN_OK],
+  ],
+  [
+    'ACL4 UNREVIEWED with a reviewer',
+    (db, id) =>
+      Object.assign(claimRowsOf(db, id)[0], {
+        status: 'UNREVIEWED',
+        finding: null,
+      }),
+    [R, R, R, R, R, OPEN_OK],
+  ],
+  [
+    'ACL5 VERIFIED without a reviewer',
+    (db, id) => (claimRowsOf(db, id)[0].reviewedByUserId = null),
+    [R, R, R, R, R, OPEN_OK],
+  ],
+  [
+    'ACL5 VERIFIED without a time',
+    (db, id) => (claimRowsOf(db, id)[0].reviewedAt = null),
+    [R, R, R, R, R, OPEN_OK],
+  ],
+  [
+    'ACL6 NEEDS_REVISION without a finding',
+    (db, id) =>
+      Object.assign(claimRowsOf(db, id)[0], {
+        status: 'NEEDS_REVISION',
+        finding: null,
+      }),
+    [R, R, R, R, R, OPEN_OK],
+  ],
+  [
+    'ACL8 the source version the evidence names no longer has its hash',
+    (db) => (db.tables.sourceVersion[0].contentHash = 'e'.repeat(64)),
+    ['ok', 'ok', 'ok', 'ok', R, OPEN_OK],
+  ],
+  [
+    'ACL8 the source version content was rewritten',
+    (db) =>
+      (db.tables.sourceVersion[0].content =
+        db.tables.sourceVersion[0].content.replace('Sales', 'Costs')),
+    ['ok', 'ok', 'ok', 'ok', R, OPEN_OK],
+  ],
+  // the approval history (AAP)
+  [
+    'AAP1 history starts at sequence 2',
+    (db, id) => (approvalsOf(db, id)[0].sequence = 2),
+    [A, A, A, A, A, A],
+  ],
+  [
+    'AAP2 sequence gap',
+    (db, id) =>
+      db.tables.approval.push({
+        ...approvalsOf(db, id)[0],
+        id: uuid(8801),
+        sequence: 3,
+      }),
+    [A, A, A, A, A, A],
+  ],
+  [
+    'AAP3 the same decision twice (APPROVED, APPROVED)',
+    (db, id) =>
+      db.tables.approval.push({
+        ...approvalsOf(db, id)[0],
+        id: uuid(8802),
+        sequence: 2,
+      }),
+    [A, A, A, A, A, A],
+  ],
+  [
+    'AAP4 APPROVED -> REFUSED without a withdrawal',
+    (db, id) =>
+      db.tables.approval.push({
+        ...approvalsOf(db, id)[0],
+        id: uuid(8803),
+        sequence: 2,
+        decision: 'REFUSED',
+        note: REFUSAL,
+      }),
+    [A, A, A, A, A, A],
+  ],
+  [
+    'AAP5 a withdrawal of nothing',
+    (db, id) =>
+      Object.assign(approvalsOf(db, id)[0], {
+        decision: 'WITHDRAWN',
+        note: WITHDRAWAL,
+      }),
+    [A, A, A, A, A, A],
+  ],
+  [
+    'AAP6 decision about another revision',
+    (db, id) => (approvalsOf(db, id)[0].packageRevisionId = PKG_REV_G_NEXT),
+    [A, A, A, A, A, A],
+  ],
+  [
+    'AAP7 decision about another hash',
+    (db, id) => (approvalsOf(db, id)[0].targetContentHash = 'e'.repeat(64)),
+    [A, A, A, A, A, A],
+  ],
+  [
+    'AAP8 decision naming both targets',
+    (db, id) => (approvalsOf(db, id)[0].designRevisionId = DESIGN_REV_7),
+    [A, A, A, A, A, A],
+  ],
+  [
+    'AAP9 decision naming no target',
+    (db, id) => (approvalsOf(db, id)[0].packageRevisionId = null),
+    [A, A, A, A, A, A],
+  ],
+  [
+    'AAP10 decision actor missing',
+    (db, id) => (approvalsOf(db, id)[0].actorUserId = 'ghost'),
+    [A, A, A, A, A, A],
+  ],
+  [
+    'AAP unknown decision',
+    (db, id) => (approvalsOf(db, id)[0].decision = 'approved'),
+    [A, A, A, A, A, A],
+  ],
+];
+
+describe('Phase 5 audit: the fail-closed matrix (P5-08)', () => {
+  it.each(P508_MATRIX)(
+    '%s: review, approval, binding, queue, enforced handoff and the historical open each fail closed as pinned',
+    async (_name, corrupt, expected) => {
+      const results: string[] = [];
+      for (const [operation, run] of Object.entries(P508_OPERATIONS)) {
+        const { db, reviewId, handoffId } = await approvedGrounded();
+        corrupt(db, reviewId);
+        const result = await outcome(run(db, reviewId, handoffId));
+        results.push(result);
+        // only a handoff that goes through writes a row; a refused one
+        // writes nothing, so the one made before stays alone
+        expect(db.tables.handoff).toHaveLength(
+          operation === 'handoff' && result === 'ok' ? 2 : 1
+        );
+      }
+      expect(results).toEqual(expected);
+    }
+  );
+
+  it('ARV7 a review of unknown state is in no queue as approved, and the full list fails closed', async () => {
+    const { db, reviewId } = await approvedGrounded();
+    reviewRowOf(db, reviewId).state = 'APPROVED';
+    expect((await P508_OPERATIONS.queue(db)).results).toEqual([]);
+    expect(
+      await outcome(db.service.listReviews({ organizationId: ORG_A, page: 1 }))
+    ).toBe(R);
+  });
+
+  it('corruption is never a normal lifecycle answer: no row of the matrix is "approval required" or "unavailable"', () => {
+    for (const [, , expected] of P508_MATRIX) {
+      for (const result of expected) {
+        expect([R, A, 'ok']).toContain(result);
+      }
+    }
+    // and the matrix covers every operation
+    expect(Object.keys(P508_OPERATIONS)).toEqual([
+      'review',
+      'approval',
+      'binding',
+      'queue',
+      'handoff',
+      'open',
+    ]);
+  });
+
+  it('the intact chain passes every operation, as a baseline for the matrix', async () => {
+    for (const run of Object.values(P508_OPERATIONS)) {
+      const { db, reviewId, handoffId } = await approvedGrounded();
+      expect(await outcome(run(db, reviewId, handoffId))).toBe('ok');
+    }
+  });
+
+  it('ARV1/ARV8/TEN1 a review detached from its revision (no target, or one outside the organization) is found from neither: its own reads fail closed, the revision reads as unreviewed and is never handed off', async () => {
+    for (const detach of [
+      (row: Row) => (row.packageRevisionId = null),
+      // another organization's revision: the composite relation finds none
+      // (PostgreSQL refuses the row itself, PA8)
+      (row: Row) => (row.packageRevisionId = PKG_REV_B),
+    ]) {
+      const { db, reviewId, handoffId } = await approvedGrounded();
+      detach(reviewRowOf(db, reviewId));
+      expect(await outcome(approvalOf(db, reviewId))).toBe(R);
+      expect(await outcome(P508_OPERATIONS.queue(db))).toBe(R);
+      expect(await outcome(openHandoff(db, handoffId))).toBe(R);
+      expect((await P508_OPERATIONS.review(db)).results).toEqual([]);
+      expect(await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_G)).toMatchObject({
+        approved: false,
+        state: 'NOT_REVIEWED',
+      });
+      // known limitation: from the revision there is no review to find, so
+      // the refusal is the lifecycle one; nothing is ever handed off
+      expect(await outcome(handOff(db, PKG_REV_G))).toBe(
+        'CS_APPROVAL_REQUIRED'
+      );
+      expect(db.tables.handoff).toHaveLength(1);
+    }
+  });
+
+  it("TEN2 a design review pointing at another organization's design revision binds nothing and fails closed", async () => {
+    const { db, review } = await readyDesign();
+    await decide(db, review.id, 'approve');
+    reviewRowOf(db, review.id).designRevisionId = DESIGN_REV_B;
+    expect(await outcome(approvalOf(db, review.id))).toBe(R);
+    expect(await outcome(decide(db, review.id, 'withdraw', WITHDRAWAL))).toBe(
+      R
+    );
+    expect(
+      await outcome(
+        db.service.listReviews({
+          organizationId: ORG_A,
+          queue: 'APPROVED',
+          page: 1,
+        })
+      )
+    ).toBe(R);
+    expect(await bindingOf(db, 'DESIGN_REVISION', DESIGN_REV_7)).toMatchObject({
+      approved: false,
+      state: 'NOT_REVIEWED',
+    });
+  });
+});
+
+describe('Phase 5 audit: revision request integrity (P5-08)', () => {
+  const changesRequested = async (resolved: boolean) => {
+    const db = discussion();
+    db.policy.required.add(ORG_A);
+    const review = await reviewIn(db, 'CHANGES_REQUESTED');
+    if (resolved) {
+      await resolve(db, review.id, PKG_REV_5);
+    }
+    return { db, reviewId: review.id, request: db.tables.revisionRequest[0] };
+  };
+  it.each<[string, boolean, (request: Row, db: Db) => void]>([
+    ['ARR1 OPEN with a resolver', false, (r) => (r.resolvedByUserId = USER_A)],
+    ['ARR1 OPEN with a time', false, (r) => (r.resolvedAt = new Date())],
+    [
+      'ARR1 OPEN with a resolving revision',
+      false,
+      (r) => (r.resolvedByPackageRevisionId = PKG_REV_5),
+    ],
+    [
+      'ARR1 OPEN with a hash',
+      false,
+      (r) => (r.resolvedByContentHash = 'e'.repeat(64)),
+    ],
+    [
+      'ARR2 RESOLVED without its resolver',
+      true,
+      (r) => (r.resolvedByUserId = null),
+    ],
+    ['ARR3 RESOLVED without its time', true, (r) => (r.resolvedAt = null)],
+    [
+      'ARR4 resolved by the same revision',
+      true,
+      (r, db) =>
+        Object.assign(r, {
+          resolvedByPackageRevisionId: PKG_REV_4,
+          resolvedByContentHash: hashOf(db, PKG_REV_4),
+        }),
+    ],
+    [
+      'ARR4 resolved by an older revision',
+      true,
+      (r, db) =>
+        Object.assign(r, {
+          resolvedByPackageRevisionId: PKG_REV_3,
+          resolvedByContentHash: hashOf(db, PKG_REV_3),
+        }),
+    ],
+    [
+      'ARR5 resolved by a revision of another package',
+      true,
+      (r, db) =>
+        Object.assign(r, {
+          resolvedByPackageRevisionId: PKG_REV_OTHER,
+          resolvedByContentHash: hashOf(db, PKG_REV_OTHER),
+        }),
+    ],
+    [
+      'ARR6 resolution hash mismatch',
+      true,
+      (r) => (r.resolvedByContentHash = 'e'.repeat(64)),
+    ],
+    [
+      'ARR7 a design revision resolving a package review',
+      true,
+      (r) => (r.resolvedByDesignRevisionId = DESIGN_REV_9),
+    ],
+    [
+      "TEN5 resolved by another organization's revision",
+      true,
+      (r, db) =>
+        Object.assign(r, {
+          resolvedByPackageRevisionId: PKG_REV_B,
+          resolvedByContentHash: hashOf(db, PKG_REV_B),
+        }),
+    ],
+    ['an unknown status', false, (r) => (r.status = 'open')],
+  ])(
+    '%s fails closed wherever it is read; the review stays CHANGES_REQUESTED and is never handed off',
+    async (_name, resolved, corrupt) => {
+      const { db, reviewId, request } = await changesRequested(resolved);
+      corrupt(request, db);
+      expect(
+        await outcome(
+          db.service.getRevisionRequest({ organizationId: ORG_A, reviewId })
+        )
+      ).toBe(R);
+      expect(
+        await outcome(
+          db.service.listReviews({ organizationId: ORG_A, page: 1 })
+        )
+      ).toBe(R);
+      // the binding does not read requests: CHANGES_REQUESTED is final and
+      // never approved, so nothing is handed off whatever the request says
+      expect(await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4)).toMatchObject({
+        approved: false,
+        state: 'CHANGES_REQUESTED',
+      });
+      expect(await outcome(handOff(db, PKG_REV_4))).toBe(
+        'CS_APPROVAL_REQUIRED'
+      );
+      expect(reviewRowOf(db, reviewId).state).toBe('CHANGES_REQUESTED');
+    }
+  );
+
+  it("ARR resolving again, or with another organization's revision, changes nothing", async () => {
+    const { db, reviewId, request } = await changesRequested(true);
+    const before = JSON.stringify(request);
+    expect(await outcome(resolve(db, reviewId, PKG_REV_6))).not.toBe('ok');
+    const fresh = await changesRequested(false);
+    expect(await outcome(resolve(fresh.db, fresh.reviewId, PKG_REV_B))).toBe(
+      'CS_REVIEW_REVISION_REQUEST_INVALID_RESOLUTION'
+    );
+    expect(fresh.request.status).toBe('OPEN');
+    expect(JSON.stringify(request)).toBe(before);
+  });
+});
+
+describe('Phase 5 audit: claim review integrity (P5-08)', () => {
+  it('ACL7 a design review has no claim assessment: none can be read or written', async () => {
+    const { db, review } = await readyDesign();
+    const started = discussion();
+    const inReview = await reviewIn(
+      started,
+      'IN_REVIEW',
+      'DESIGN_REVISION',
+      DESIGN_REV_7
+    );
+    for (const [on, id] of [
+      [db, review.id],
+      [started, inReview.id],
+    ] as const) {
+      expect(await outcome(listClaims(on, id))).toBe(
+        'CS_REVIEW_CLAIMS_UNAVAILABLE'
+      );
+      expect(await outcome(assess(on, id, C1, 'VERIFIED'))).toBe(
+        'CS_REVIEW_CLAIMS_UNAVAILABLE'
+      );
+      expect(on.tables.claim).toEqual([]);
+    }
+  });
+
+  it.each<[string, Row]>([
+    ['ACL6 NEEDS_REVISION without a finding', { finding: null }],
+    ['ACL5 NEEDS_REVISION without a reviewer', { reviewedByUserId: null }],
+    ['ACL5 NEEDS_REVISION without a time', { reviewedAt: null }],
+    [
+      'ACL4 UNREVIEWED with a finding',
+      { status: 'UNREVIEWED', reviewedByUserId: null, reviewedAt: null },
+    ],
+  ])(
+    '%s while IN_REVIEW is an integrity error on every read, never a claim that needs revision',
+    async (_name, corruption) => {
+      const { db, review } = await claimed();
+      await assess(db, review.id, C1, 'NEEDS_REVISION', 'Not supported.');
+      Object.assign(claimRowsOf(db, review.id)[0], corruption);
+      expect(await outcome(listClaims(db, review.id))).toBe(R);
+      expect(
+        await outcome(
+          db.service.listReviews({ organizationId: ORG_A, page: 1 })
+        )
+      ).toBe(R);
+      expect(await outcome(act(db, review.id, 'ready-for-approval'))).toBe(R);
+    }
+  );
+
+  it('ACL no assessment changes once the review left IN_REVIEW, and the gate saw them under its hold', async () => {
+    const { db, review } = await readyClaimed();
+    const before = JSON.stringify(db.tables.claim);
+    expect(
+      await outcome(assess(db, review.id, C1, 'NEEDS_REVISION', 'No.'))
+    ).toBe('CS_REVIEW_CLAIM_MUTATION_FORBIDDEN');
+    expect(JSON.stringify(db.tables.claim)).toBe(before);
+  });
+
+  it('TEN6 an assessment stored under another organization is never read for this review', async () => {
+    const { db, reviewId } = await approvedGrounded();
+    db.tables.claim.push({
+      ...claimRowsOf(db, reviewId)[0],
+      id: 'claim-row-foreign',
+      organizationId: ORG_B,
+      status: 'NEEDS_REVISION',
+      finding: 'Foreign finding.',
+    });
+    expect(await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_G)).toMatchObject({
+      approved: true,
+    });
+    const claims = await listClaims(db, reviewId);
+    expect(JSON.stringify(claims)).not.toMatch(/Foreign finding/);
+    expect(await outcome(listClaims(db, reviewId, ORG_B))).toBe('CS_NOT_FOUND');
+  });
+});
+
+describe('Phase 5 audit: what authorized a handoff (P5-08)', () => {
+  const authorizationOf = async (db: Db, handoffId: string) =>
+    (await openHandoff(db, handoffId)).approvalAuthorization;
+  const rowOf = (db: Db, handoffId: string) =>
+    db.tables.handoff.find((row) => row.id === handoffId)!;
+
+  it('HAS6/PA7 a withdrawal after the handoff changes nothing of it: still authorized by its APPROVED decision, while the revision is no longer approved', async () => {
+    const { db, reviewId, handoffId } = await approvedGrounded();
+    const before = JSON.stringify(rowOf(db, handoffId));
+    await decide(db, reviewId, 'withdraw', WITHDRAWAL);
+    expect(JSON.stringify(rowOf(db, handoffId))).toBe(before);
+    // both are true at once: the past and now
+    expect(await authorizationOf(db, handoffId)).toStrictEqual({
+      status: 'APPROVED',
+      reviewId,
+      approvalSequence: 1,
+      targetContentHash: hashOf(db, PKG_REV_G),
+    });
+    expect(await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_G)).toMatchObject({
+      approved: false,
+      state: 'PENDING_APPROVAL',
+    });
+    // spec 34: the withdrawal revokes nothing, and a new handoff is refused
+    expect(rowOf(db, handoffId).revokedAt).toBeNull();
+    expect(await outcome(handOff(db, PKG_REV_G))).toBe('CS_APPROVAL_REQUIRED');
+  });
+
+  it('HAS7/M20 approved again later: a new handoff has the new decision, the old one keeps its own', async () => {
+    const { db, reviewId, handoffId } = await approvedGrounded();
+    await decide(db, reviewId, 'withdraw', WITHDRAWAL);
+    await decide(db, reviewId, 'approve');
+    const second = await handOff(db, PKG_REV_G);
+    expect(rowOf(db, handoffId).approvalSequence).toBe(1);
+    expect(rowOf(db, second.id).approvalSequence).toBe(3);
+    expect((await authorizationOf(db, handoffId)) as Row).toMatchObject({
+      approvalSequence: 1,
+    });
+    expect((await authorizationOf(db, second.id)) as Row).toMatchObject({
+      approvalSequence: 3,
+    });
+  });
+
+  it('HAS10 opening reads the review and its history only: never the policy, never whether it is approved now', async () => {
+    const { db, handoffId } = await approvedGrounded();
+    db.policy.required.delete(ORG_A);
+    db.requireApprovedRevision.mockClear();
+    db.policy.isApprovalRequiredForHandoff.mockClear();
+    db.log.length = 0;
+    await openHandoff(db, handoffId);
+    expect(db.requireApprovedRevision).not.toHaveBeenCalled();
+    expect(db.policy.isApprovalRequiredForHandoff).not.toHaveBeenCalled();
+    expect(ops(db)).toEqual([
+      'handoff.findFirst',
+      'packageRevision.findFirst',
+      'review.findFirst',
+      'approval.findMany',
+      'handoff.updateMany',
+    ]);
+  });
+
+  it('HAS1/HAS8/M21 a handoff without the requirement is NOT_REQUIRED and one from before P5-08 is LEGACY_UNKNOWN: neither reads a review or an approval', async () => {
+    const db = discussion();
+    const handoff = await handOff(db);
+    db.tables.handoff.push({
+      ...rowOf(db, handoff.id),
+      id: 'b'.repeat(64),
+      approvalRequiredAtCreation: null,
+      approvalReviewId: null,
+      approvalSequence: null,
+      approvalContentHash: null,
+    });
+    // a review approved now changes neither: nothing is reconstructed
+    const review = await reviewIn(db, 'READY_FOR_APPROVAL');
+    await decide(db, review.id, 'approve');
+    db.policy.required.add(ORG_A);
+    db.log.length = 0;
+    expect(await authorizationOf(db, handoff.id)).toStrictEqual({
+      status: 'NOT_REQUIRED',
+    });
+    expect(await authorizationOf(db, 'b'.repeat(64))).toStrictEqual({
+      status: 'LEGACY_UNKNOWN',
+    });
+    expect(ops(db).filter((op) => /review|approval|claim/.test(op))).toEqual(
+      []
+    );
+  });
+
+  it.each<[string, (row: Row, db: Db, reviewId: string) => void]>([
+    [
+      'the WITHDRAWN decision after it',
+      (row, db, reviewId) => {
+        row.approvalSequence = 2;
+        db.tables.approval.push({
+          ...approvalsOf(db, reviewId)[0],
+          id: uuid(8811),
+          sequence: 2,
+          decision: 'WITHDRAWN',
+          note: WITHDRAWAL,
+        });
+      },
+    ],
+    ['a sequence beyond the history', (row) => (row.approvalSequence = 5)],
+    ['another hash', (row) => (row.approvalContentHash = 'e'.repeat(64))],
+    ['a review that does not exist', (row) => (row.approvalReviewId = MISSING)],
+    [
+      "TEN9 another organization's review",
+      (row, db) => {
+        const foreign: Row = {
+          ...db.tables.review[0],
+          id: uuid(8812),
+          organizationId: ORG_B,
+        };
+        db.tables.review.push(foreign);
+        row.approvalReviewId = foreign.id;
+      },
+    ],
+    [
+      'the review of another revision',
+      (row, db) => (row.packageRevisionId = PKG_REV_G_NEXT),
+    ],
+  ])(
+    'HAS9 a record that names %s is an integrity error on open, and nothing is opened',
+    async (_name, corrupt) => {
+      const { db, reviewId, handoffId } = await approvedGrounded();
+      corrupt(rowOf(db, handoffId), db, reviewId);
+      expect(await outcome(openHandoff(db, handoffId))).toMatch(
+        /^CS_(APPROVAL|REVIEW)_INTEGRITY_ERROR$|^CS_STORED_HANDOFF_INVALID$/
+      );
+      expect(rowOf(db, handoffId).openedAt).toBeNull();
+    }
+  );
+
+  it('spec 34: revoking an approved handoff changes no approval, and it can no longer be opened', async () => {
+    const { db, reviewId, handoffId } = await approvedGrounded();
+    const before = snapshot(db);
+    await db.handoffs.revokeHandoff({
+      organizationId: ORG_A,
+      userId: USER_A,
+      handoffId,
+    });
+    expect(snapshot(db)).toBe(before);
+    expect(approvalsOf(db, reviewId).map((row) => row.decision)).toEqual([
+      'APPROVED',
+    ]);
+    expect(await outcome(openHandoff(db, handoffId))).toBe('CS_HANDOFF_GONE');
+    expect(rowOf(db, handoffId).approvalSequence).toBe(1);
+  });
+});
+
+describe('Phase 5 audit: the tenant graph (P5-08)', () => {
+  // organization B with its own approved review and handoff, and every id of
+  // organization A tried from B, and B's injected into A
+  const twoOrganizations = async () => {
+    const a = await approvedGrounded();
+    const { db } = a;
+    const reviewB = await request(
+      db,
+      'PACKAGE_REVISION',
+      PKG_REV_B,
+      ORG_B,
+      USER_B
+    );
+    await act(db, reviewB.id, 'start', ORG_B, USER_B);
+    await act(db, reviewB.id, 'ready-for-approval', ORG_B, USER_B);
+    await decide(db, reviewB.id, 'approve', undefined, USER_B, ORG_B);
+    await say(db, a.reviewId, `A private remark ${SECRET}`);
+    return { ...a, reviewB: reviewB.id };
+  };
+
+  it('every organization A id read or acted on from organization B is a plain not-found, naming nothing of A', async () => {
+    const { db, reviewId, handoffId } = await twoOrganizations();
+    const comment = db.tables.comment[0];
+    const B = { organizationId: ORG_B, userId: USER_B };
+    const attempts = [
+      () => db.service.getApproval({ organizationId: ORG_B, reviewId }),
+      () => decide(db, reviewId, 'withdraw', WITHDRAWAL, USER_B, ORG_B),
+      () => listClaims(db, reviewId, ORG_B),
+      () => assess(db, reviewId, C1, 'NEEDS_REVISION', 'x', USER_B, ORG_B),
+      () => comments(db, reviewId, 1, ORG_B),
+      () => edit(db, reviewId, comment.id, 'Rewritten by B', ORG_B, USER_B),
+      () => db.service.getRevisionRequest({ organizationId: ORG_B, reviewId }),
+      () => act(db, reviewId, 'cancel', ORG_B, USER_B),
+      () => bindingOf(db, 'PACKAGE_REVISION', PKG_REV_G, ORG_B),
+      () => requireApproved(db, 'PACKAGE_REVISION', PKG_REV_G, ORG_B),
+      () =>
+        db.handoffs.createHandoff({
+          ...B,
+          packageId: `package-${ORG_A}`,
+          revisionId: PKG_REV_G,
+        }),
+      () => db.handoffs.resolveHandoff({ ...B, handoffId }),
+      () => db.handoffs.revokeHandoff({ ...B, handoffId }),
+    ];
+    for (const attempt of attempts) {
+      expect(await outcome(attempt())).toBe('CS_NOT_FOUND');
+    }
+    // TEN4: the comment and everything of A unchanged
+    expect(comment.body).toBe(`A private remark ${SECRET}`);
+    expect(approvalsOf(db, reviewId).map((row) => row.decision)).toEqual([
+      'APPROVED',
+    ]);
+    expect(db.tables.handoff.filter((row) => row.revokedAt)).toEqual([]);
+    // and B's queue holds B's review only
+    const queueB = await db.service.listReviews({
+      organizationId: ORG_B,
+      page: 1,
+    });
+    expect(JSON.stringify(queueB)).not.toMatch(/REVIEW_PRIVATE|Summer Launch/);
+    expect(queueB.results).toHaveLength(1);
+  });
+
+  it('TEN3/TEN7 an actor of another organization written behind the service is shown as a person (id and name) and nothing more', async () => {
+    const { db, reviewId } = await twoOrganizations();
+    eventsOf(db, reviewId)[1].actorUserId = USER_B;
+    approvalsOf(db, reviewId)[0].actorUserId = USER_B;
+    const approval = await approvalOf(db, reviewId);
+    expect(Object.keys(approval.history[0].actor).sort()).toEqual([
+      'id',
+      'name',
+    ]);
+    const [listed] = (await P508_OPERATIONS.review(db)).results;
+    for (const event of (listed as Row).review?.events ?? []) {
+      expect(Object.keys(event.actor).sort()).toEqual(['id', 'name']);
+    }
+    expect(JSON.stringify(approval)).not.toMatch(
+      /email|password|organization/i
+    );
+  });
+
+  it("TEN8 a decision of A naming B's revision fails closed", async () => {
+    const { db, reviewId } = await twoOrganizations();
+    approvalsOf(db, reviewId)[0].packageRevisionId = PKG_REV_B;
+    expect(await outcome(approvalOf(db, reviewId))).toBe(A);
+    expect(await outcome(handOff(db, PKG_REV_G))).toBe(A);
+  });
+
+  it("TEN6/TEN8 B's decisions and assessments copied under A's review are never read for A", async () => {
+    const { db, reviewId, reviewB } = await twoOrganizations();
+    // B's withdrawal, stored with B's organization but A's review id
+    db.tables.approval.push({
+      ...approvalsOf(db, reviewB)[0],
+      id: uuid(8821),
+      reviewId,
+      sequence: 2,
+      decision: 'WITHDRAWN',
+      note: WITHDRAWAL,
+    });
+    expect(await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_G)).toMatchObject({
+      approved: true,
+      approvalVersion: 1,
+    });
+  });
+
+  it("TEN10 another organization's policy never affects a handoff, and its record says so", async () => {
+    const db = discussion();
+    db.policy.required.add(ORG_B);
+    const handoff = await handOff(db);
+    expect(db.policy.isApprovalRequiredForHandoff.mock.calls).toEqual([
+      [ORG_A],
+    ]);
+    expect(
+      db.tables.handoff.find((row) => row.id === handoff.id)
+    ).toMatchObject({ approvalRequiredAtCreation: false });
+  });
+});
+
+describe('Phase 5 audit: policy and handoff (P5-08)', () => {
+  it.each(['NOT_REVIEWED', 'PENDING_APPROVAL'] as const)(
+    'AHO2 policy on and %s: refused, nothing written',
+    async (state) => {
+      const db = await revisionIn(state);
+      db.policy.required.add(ORG_A);
+      expect(await outcome(handOff(db))).toBe('CS_APPROVAL_REQUIRED');
+      expect(db.tables.handoff).toEqual([]);
+    }
+  );
+
+  it('AHO3 policy on and approved: handed off with exactly what authorized it', async () => {
+    const db = await revisionIn('APPROVED');
+    db.policy.required.add(ORG_A);
+    await handOff(db);
+    expect(db.tables.handoff[0]).toMatchObject({
+      approvalRequiredAtCreation: true,
+      approvalReviewId: reviewOf(db).id,
+      approvalSequence: 1,
+    });
+  });
+
+  it.each(['WITHDRAWN', 'REFUSED'] as const)(
+    'AHO4/AHO5 policy on and %s: refused',
+    async (state) => {
+      const db = await revisionIn(state);
+      db.policy.required.add(ORG_A);
+      expect(await outcome(handOff(db))).toBe('CS_APPROVAL_REQUIRED');
+    }
+  );
+
+  it('AHO6 policy off: approval is not consulted at all, by design, and the record says not required', async () => {
+    const db = await revisionIn('REFUSED');
+    db.log.length = 0;
+    await handOff(db);
+    expect(ops(db)).toEqual(['packageRevision.findFirst', 'handoff.create']);
+    expect(db.tables.handoff[0]).toMatchObject({
+      approvalRequiredAtCreation: false,
+      approvalReviewId: null,
+    });
+  });
+
+  it('AHO7/M11 nothing a client could add turns the requirement off or forges a record', async () => {
+    const db = await revisionIn('NOT_REVIEWED');
+    db.policy.required.add(ORG_A);
+    expect(
+      await outcome(
+        db.handoffs.createHandoff({
+          organizationId: ORG_A,
+          userId: USER_A,
+          packageId: `package-${ORG_A}`,
+          revisionId: PKG_REV_4,
+          ...({
+            requireApproval: false,
+            approvalRequiredAtCreation: false,
+            approvalSequence: 1,
+            force: true,
+            bypass: true,
+          } as object),
+        })
+      )
+    ).toBe('CS_APPROVAL_REQUIRED');
+    expect(db.tables.handoff).toEqual([]);
+  });
+
+  it('AHO8 a newer revision with the same hash inherits nothing', async () => {
+    const db = await revisionIn('APPROVED');
+    db.policy.required.add(ORG_A);
+    const same = {
+      ...packageRevision(uuid(77), ORG_A, 7, `v4 ${SECRET}`),
+    };
+    db.tables.packageRevision.push(same);
+    expect(same.contentHash).toBe(hashOf(db, PKG_REV_4));
+    expect(await outcome(handOff(db, same.id))).toBe('CS_APPROVAL_REQUIRED');
+    await handOff(db, PKG_REV_4);
+    expect(db.tables.handoff.map((row) => row.packageRevisionId)).toEqual([
+      PKG_REV_4,
+    ]);
+  });
+
+  it("AHO9 another organization's approval is never used", async () => {
+    const db = await revisionIn('APPROVED');
+    db.policy.required.add(ORG_B);
+    expect(
+      await outcome(handOff(db, PKG_REV_4, ORG_B, `package-${ORG_A}`))
+    ).toBe('CS_NOT_FOUND');
+    expect(await outcome(handOff(db, PKG_REV_B, ORG_B))).toBe(
+      'CS_APPROVAL_REQUIRED'
+    );
+  });
+
+  it('AHO10 corrupt approval history is an integrity error, never merely "approval required"', async () => {
+    const db = await revisionIn('APPROVED');
+    db.policy.required.add(ORG_A);
+    db.tables.approval[0].targetContentHash = 'e'.repeat(64);
+    expect(await outcome(handOff(db))).toBe(A);
   });
 });

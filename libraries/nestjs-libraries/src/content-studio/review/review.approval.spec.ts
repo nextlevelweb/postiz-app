@@ -9,6 +9,7 @@ import {
   contentStudioApprovalActions,
   contentStudioApprovalStateAfter,
   contentStudioApprovalStatus,
+  contentStudioHandoffApprovalAuthorization,
   contentStudioReviewStatesOfBindingStates,
   CONTENT_STUDIO_REVISION_APPROVAL_STATES,
   deriveContentStudioRevisionApprovalBindingState,
@@ -500,4 +501,90 @@ describe('Review & Approval queues (P5-06)', () => {
       )
     ).toBe(false);
   });
+});
+
+describe('what authorized a handoff (P5-08)', () => {
+  const REVIEW = '3b241101-e2bb-4255-8caf-4136c566a962';
+  const HASH = 'a'.repeat(64);
+  const stored = (row: Record<string, unknown> = {}) => ({
+    approvalRequiredAtCreation: null,
+    approvalReviewId: null,
+    approvalSequence: null,
+    approvalContentHash: null,
+    ...row,
+  });
+  const APPROVED = {
+    approvalRequiredAtCreation: true,
+    approvalReviewId: REVIEW,
+    approvalSequence: 2,
+    approvalContentHash: HASH,
+  };
+
+  it('HAS8/M21 nothing recorded is LEGACY_UNKNOWN: never not required, never approved', () => {
+    expect(contentStudioHandoffApprovalAuthorization(stored())).toStrictEqual({
+      status: 'LEGACY_UNKNOWN',
+    });
+  });
+
+  it('HAS1 not required is known, with no approval field at all', () => {
+    expect(
+      contentStudioHandoffApprovalAuthorization(
+        stored({ approvalRequiredAtCreation: false })
+      )
+    ).toStrictEqual({ status: 'NOT_REQUIRED' });
+  });
+
+  it('HAS2-HAS4 approved names exactly the review, the decision sequence and the reviewed hash', () => {
+    expect(contentStudioHandoffApprovalAuthorization(APPROVED)).toStrictEqual({
+      status: 'APPROVED',
+      reviewId: REVIEW,
+      approvalSequence: 2,
+      targetContentHash: HASH,
+    });
+  });
+
+  it.each([
+    ['M22 approved without a review', { ...APPROVED, approvalReviewId: null }],
+    [
+      'M22 approved without a sequence',
+      { ...APPROVED, approvalSequence: null },
+    ],
+    ['M22 approved without a hash', { ...APPROVED, approvalContentHash: null }],
+    ['sequence 0', { ...APPROVED, approvalSequence: 0 }],
+    ['a negative sequence', { ...APPROVED, approvalSequence: -1 }],
+    ['a fractional sequence', { ...APPROVED, approvalSequence: 1.5 }],
+    ['a sequence as text', { ...APPROVED, approvalSequence: '2' }],
+    ['an uppercase hash', { ...APPROVED, approvalContentHash: 'A'.repeat(64) }],
+    ['a short hash', { ...APPROVED, approvalContentHash: 'a'.repeat(63) }],
+    ['a review id that is no uuid', { ...APPROVED, approvalReviewId: 'r1' }],
+    [
+      'the requirement as text',
+      { ...APPROVED, approvalRequiredAtCreation: 'true' },
+    ],
+    [
+      'not required with a review',
+      stored({ approvalRequiredAtCreation: false, approvalReviewId: REVIEW }),
+    ],
+    [
+      'not required with a sequence',
+      stored({ approvalRequiredAtCreation: false, approvalSequence: 1 }),
+    ],
+    [
+      'not required with a hash',
+      stored({ approvalRequiredAtCreation: false, approvalContentHash: HASH }),
+    ],
+    ['unknown with a review', stored({ approvalReviewId: REVIEW })],
+    ['unknown with a sequence', stored({ approvalSequence: 1 })],
+    ['unknown with a hash', stored({ approvalContentHash: HASH })],
+    ['fields missing altogether', {}],
+  ])(
+    'HAS9 %s is no authorization at all (null), never a partial one',
+    (_name, row) => {
+      expect(
+        contentStudioHandoffApprovalAuthorization(
+          row as Parameters<typeof contentStudioHandoffApprovalAuthorization>[0]
+        )
+      ).toBeNull();
+    }
+  );
 });

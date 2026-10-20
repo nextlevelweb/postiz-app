@@ -91,6 +91,10 @@ const handoffRow = (
     expiresAt: Date;
     openedAt: Date | null;
     revokedAt: Date | null;
+    approvalRequiredAtCreation: boolean | null;
+    approvalReviewId: string | null;
+    approvalSequence: number | null;
+    approvalContentHash: string | null;
   }> = {}
 ) => ({
   id: HANDOFF_ID,
@@ -100,6 +104,11 @@ const handoffRow = (
   openedAt: null as Date | null,
   revokedAt: null as Date | null,
   createdAt: NOW,
+  // a handoff made before P5-08 recorded what authorized it
+  approvalRequiredAtCreation: null as boolean | null,
+  approvalReviewId: null as string | null,
+  approvalSequence: null as number | null,
+  approvalContentHash: null as string | null,
   ...overrides,
 });
 // every Media ready, with the path from its (database) row
@@ -142,6 +151,8 @@ const setup = () => {
   };
   const reviews = {
     requireApprovedRevision: jest.fn(),
+    // P5-08: the stored history still has what a handoff says authorized it
+    verifyHandoffApprovalAuthorization: jest.fn().mockResolvedValue(undefined),
   };
   const service = new ContentStudioHandoffService(
     repository as unknown as ContentStudioRepository,
@@ -584,6 +595,7 @@ describe('ContentStudioHandoffService.resolveHandoff', () => {
       revisionId: REVISION_ID,
       revisionNumber: 3,
       expiresAt: LATER,
+      approvalAuthorization: { status: 'LEGACY_UNKNOWN' },
       onlyValues: ONLY_VALUES_A,
     });
     expect(repository.getRevisionForPackage).toHaveBeenCalledWith(
@@ -850,5 +862,167 @@ describe('ContentStudioHandoffService.revokeHandoff', () => {
     for (const fn of [...Object.values(repository), ...Object.values(media)]) {
       expect(fn).not.toHaveBeenCalled();
     }
+  });
+});
+
+// P5-08: every handoff keeps what authorized it when it was created, and
+// opening one says so. A record of the past, never the approval of now
+describe('ContentStudioHandoffService: what authorized a handoff (P5-08)', () => {
+  const REVIEW_ID = '3b241101-e2bb-4255-8caf-4136c566a962';
+  const HASH = 'c'.repeat(64);
+  const APPROVED_ROW = {
+    approvalRequiredAtCreation: true,
+    approvalReviewId: REVIEW_ID,
+    approvalSequence: 3,
+    approvalContentHash: HASH,
+  };
+  const opened = (row: Parameters<typeof handoffRow>[0]) => {
+    const s = setup();
+    s.handoffs.getHandoffForOrganizationAndUser.mockResolvedValue(
+      handoffRow(row)
+    );
+    s.repository.getRevisionForPackage.mockResolvedValue(revisionRow());
+    return s;
+  };
+  const open = (service: ContentStudioHandoffService) =>
+    service.resolveHandoff({
+      organizationId: ORG,
+      userId: USER,
+      handoffId: HANDOFF_ID,
+    });
+
+  it('HAS8/M21 a handoff made before it was recorded is LEGACY_UNKNOWN: nothing is guessed, nothing else is read', async () => {
+    const { service, policy, reviews } = opened({});
+    expect((await open(service)).approvalAuthorization).toStrictEqual({
+      status: 'LEGACY_UNKNOWN',
+    });
+    // never reconstructed from a policy or an approval
+    expect(policy.isApprovalRequiredForHandoff).not.toHaveBeenCalled();
+    expect(reviews.requireApprovedRevision).not.toHaveBeenCalled();
+    expect(reviews.verifyHandoffApprovalAuthorization.mock.calls).toEqual([
+      [
+        {
+          organizationId: ORG,
+          packageRevisionId: REVISION_ID,
+          authorization: { status: 'LEGACY_UNKNOWN' },
+        },
+      ],
+    ]);
+  });
+
+  it('HAS1 a handoff the policy did not require approval for says so, and reads no approval', async () => {
+    const { service, reviews } = opened({ approvalRequiredAtCreation: false });
+    expect((await open(service)).approvalAuthorization).toStrictEqual({
+      status: 'NOT_REQUIRED',
+    });
+    expect(
+      reviews.verifyHandoffApprovalAuthorization.mock.calls[0][0].authorization
+    ).toStrictEqual({ status: 'NOT_REQUIRED' });
+  });
+
+  it('HAS2-HAS4/HAS10 an approved handoff says which review, decision and hash authorized it, checked against the stored history only', async () => {
+    const { service, policy, reviews, handoffs } = opened(APPROVED_ROW);
+    expect((await open(service)).approvalAuthorization).toStrictEqual({
+      status: 'APPROVED',
+      reviewId: REVIEW_ID,
+      approvalSequence: 3,
+      targetContentHash: HASH,
+    });
+    expect(reviews.verifyHandoffApprovalAuthorization.mock.calls).toEqual([
+      [
+        {
+          organizationId: ORG,
+          packageRevisionId: REVISION_ID,
+          authorization: {
+            status: 'APPROVED',
+            reviewId: REVIEW_ID,
+            approvalSequence: 3,
+            targetContentHash: HASH,
+          },
+        },
+      ],
+    ]);
+    // HAS10/HAS6: whether it is approved now is never asked
+    expect(reviews.requireApprovedRevision).not.toHaveBeenCalled();
+    expect(policy.isApprovalRequiredForHandoff).not.toHaveBeenCalled();
+    expect(handoffs.markOpenedIfNeeded).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['M22 no review', { ...APPROVED_ROW, approvalReviewId: null }],
+    ['M22 no sequence', { ...APPROVED_ROW, approvalSequence: null }],
+    ['M22 no hash', { ...APPROVED_ROW, approvalContentHash: null }],
+    ['sequence 0', { ...APPROVED_ROW, approvalSequence: 0 }],
+    ['a fractional sequence', { ...APPROVED_ROW, approvalSequence: 1.5 }],
+    ['a malformed hash', { ...APPROVED_ROW, approvalContentHash: 'abc' }],
+    ['a malformed review id', { ...APPROVED_ROW, approvalReviewId: 'r-1' }],
+    [
+      'not required, with a review',
+      { approvalRequiredAtCreation: false, approvalReviewId: REVIEW_ID },
+    ],
+    ['legacy, with a sequence', { approvalSequence: 1 }],
+    ['legacy, with a hash', { approvalContentHash: HASH }],
+  ])(
+    'HAS9 a partial or malformed record (%s) is a stored handoff that is not intact: 500, nothing opened',
+    async (_name, row) => {
+      const { service, reviews, handoffs, media } = opened(row);
+      const result = await rejection(open(service));
+      expect(result).toEqual({
+        status: 500,
+        body: {
+          msg: 'Stored Content Studio handoff is invalid',
+          code: 'CS_STORED_HANDOFF_INVALID',
+        },
+      });
+      expectRedacted(result);
+      expect(JSON.stringify(result)).not.toContain(HASH);
+      expect(reviews.verifyHandoffApprovalAuthorization).not.toHaveBeenCalled();
+      expect(media.resolveForHandoff).not.toHaveBeenCalled();
+      expect(handoffs.markOpenedIfNeeded).not.toHaveBeenCalled();
+    }
+  );
+
+  it('HAS9 an approved record the stored history no longer has is an integrity error, and nothing is opened', async () => {
+    const { service, reviews, handoffs } = opened(APPROVED_ROW);
+    const integrity = new HttpException(
+      {
+        msg: 'Stored approval data is not intact.',
+        code: 'CS_APPROVAL_INTEGRITY_ERROR',
+      },
+      500
+    );
+    reviews.verifyHandoffApprovalAuthorization.mockRejectedValue(integrity);
+    await expect(open(service)).rejects.toBe(integrity);
+    expect(handoffs.markOpenedIfNeeded).not.toHaveBeenCalled();
+  });
+
+  it('a gone handoff is 410 before anything about its authorization is read', async () => {
+    const { service, reviews } = opened({
+      ...APPROVED_ROW,
+      revokedAt: new Date(NOW.getTime() - 1),
+    });
+    expect((await rejection(open(service))).status).toBe(410);
+    expect(reviews.verifyHandoffApprovalAuthorization).not.toHaveBeenCalled();
+  });
+
+  it('HAS6/HAS7 revoking reads no approval and writes nothing of the authorization', async () => {
+    const { service, reviews, handoffs } = opened(APPROVED_ROW);
+    await service.revokeHandoff({
+      organizationId: ORG,
+      userId: USER,
+      handoffId: HANDOFF_ID,
+    });
+    expect(reviews.verifyHandoffApprovalAuthorization).not.toHaveBeenCalled();
+    expect(reviews.requireApprovedRevision).not.toHaveBeenCalled();
+    expect(handoffs.revokeHandoff.mock.calls).toEqual([
+      [
+        {
+          organizationId: ORG,
+          userId: USER,
+          id: HANDOFF_ID,
+          revokedAt: NOW,
+        },
+      ],
+    ]);
   });
 });

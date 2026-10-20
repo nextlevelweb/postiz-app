@@ -25,6 +25,7 @@ const REVIEW = {
   version: true,
   createdAt: true,
   updatedAt: true,
+  requestedById: true,
   requestedBy: {
     select: {
       id: true,
@@ -56,6 +57,7 @@ const REVIEW = {
       fromState: true,
       toState: true,
       createdAt: true,
+      actorUserId: true,
       actorUser: {
         select: {
           id: true,

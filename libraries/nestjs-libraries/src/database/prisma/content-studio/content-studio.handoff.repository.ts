@@ -29,7 +29,9 @@ const HANDOFF_CREATED = {
 
 // A handoff belongs to one user of one organization: every query filters on
 // both, so another user's handoff reads exactly like a missing one. Rows are
-// only created and stamped (openedAt, revokedAt), never deleted
+// only created and stamped (openedAt, revokedAt), never deleted. What
+// authorized a handoff (P5-08) is written with it, by the same statement,
+// and never changed afterwards: no method here updates it
 @Injectable()
 export class ContentStudioHandoffRepository {
   constructor(
@@ -38,10 +40,17 @@ export class ContentStudioHandoffRepository {
   ) {}
 
   // The package and revision must already be checked against the
-  // organization by the caller
+  // organization by the caller. Only for a handoff the policy did not
+  // require approval for, and recorded as such (P5-08)
   createHandoff(input: NewHandoff) {
     return this._handoff.model.contentStudioHandoff.create({
-      data: handoffData(input),
+      data: {
+        ...handoffData(input),
+        approvalRequiredAtCreation: false,
+        approvalReviewId: null,
+        approvalSequence: null,
+        approvalContentHash: null,
+      },
       select: HANDOFF_CREATED,
     });
   }
@@ -55,7 +64,12 @@ export class ContentStudioHandoffRepository {
   // (nothing written). The hold changes nothing: it writes back the
   // updatedAt it matched, which every change of the review moves on. A
   // decision waiting on the hold is made after the handoff, on a history the
-  // handoff never changed
+  // handoff never changed.
+  //
+  // The handoff keeps what authorized it (P5-08), read under the same hold:
+  // the review, and the last decision of the judged history, which must be
+  // that review's APPROVED one about exactly this revision and the hash the
+  // review binds. Nothing of it comes from outside this transaction
   createHandoffWhileApproved(
     input: NewHandoff & { reviewId: string; approvalVersion: number }
   ) {
@@ -70,6 +84,7 @@ export class ContentStudioHandoffRepository {
         where: review,
         select: {
           updatedAt: true,
+          targetContentHash: true,
         },
       });
       if (!read) {
@@ -96,8 +111,32 @@ export class ContentStudioHandoffRepository {
       if (decisions !== input.approvalVersion) {
         return null;
       }
+      const authorizing = await tx.contentStudioApproval.findFirst({
+        where: {
+          organizationId: input.organizationId,
+          reviewId: input.reviewId,
+          sequence: input.approvalVersion,
+          decision: 'APPROVED',
+          packageRevisionId: input.packageRevisionId,
+          designRevisionId: null,
+          targetContentHash: read.targetContentHash,
+        },
+        select: {
+          sequence: true,
+          targetContentHash: true,
+        },
+      });
+      if (!authorizing) {
+        return null;
+      }
       return tx.contentStudioHandoff.create({
-        data: handoffData(input),
+        data: {
+          ...handoffData(input),
+          approvalRequiredAtCreation: true,
+          approvalReviewId: input.reviewId,
+          approvalSequence: authorizing.sequence,
+          approvalContentHash: authorizing.targetContentHash,
+        },
         select: HANDOFF_CREATED,
       });
     });
@@ -122,6 +161,10 @@ export class ContentStudioHandoffRepository {
         openedAt: true,
         revokedAt: true,
         createdAt: true,
+        approvalRequiredAtCreation: true,
+        approvalReviewId: true,
+        approvalSequence: true,
+        approvalContentHash: true,
       },
     });
   }

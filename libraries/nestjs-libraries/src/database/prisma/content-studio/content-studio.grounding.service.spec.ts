@@ -845,6 +845,11 @@ describe('handoff of a grounded revision (P3-11)', () => {
         packageRevisionId: 'revision-1',
         expiresAt: new Date(Date.now() + 60_000),
         revokedAt: null,
+        // made before P5-08 recorded what authorized it
+        approvalRequiredAtCreation: null,
+        approvalReviewId: null,
+        approvalSequence: null,
+        approvalContentHash: null,
       })),
       markOpenedIfNeeded: jest.fn(async () => ({ count: 1 })),
     };
@@ -855,9 +860,12 @@ describe('handoff of a grounded revision (P3-11)', () => {
       repository as unknown as ContentStudioRepository,
       handoffs as unknown as ContentStudioHandoffRepository,
       media as unknown as ContentStudioMediaService,
-      // opening a handoff never reads the policy or an approval
+      // opening a handoff never reads the policy or the approval of now;
+      // what authorized it (P5-08) is the review service's to check
       {} as ContentStudioEditorialPolicyService,
-      {} as ContentStudioReviewService
+      {
+        verifyHandoffApprovalAuthorization: async () => undefined,
+      } as unknown as ContentStudioReviewService
     ).resolveHandoff({
       organizationId: ORG,
       userId: USER,

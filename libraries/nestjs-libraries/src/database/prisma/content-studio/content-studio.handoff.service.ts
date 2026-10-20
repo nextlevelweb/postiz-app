@@ -14,6 +14,7 @@ import {
 } from '@gitroom/nestjs-libraries/content-studio/content.package.revision';
 import { ContentPackageDraft } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 import { contentStudioTextToComposerHtml } from '@gitroom/nestjs-libraries/content-studio/handoff.html';
+import { contentStudioHandoffApprovalAuthorization } from '@gitroom/nestjs-libraries/content-studio/review/review.approval';
 
 export const CONTENT_STUDIO_HANDOFF_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -100,7 +101,15 @@ interface HandoffRequest {
 // valid and can still be opened after a later withdrawal or refusal; only
 // new handoffs are refused. The policy is read once per request, so a change
 // of it applies from the next request on. Without the requirement nothing
-// about approval is read and a handoff is made exactly as before
+// about approval is read and a handoff is made exactly as before.
+//
+// Every handoff keeps what authorized it when it was created (P5-08),
+// written with it in the same statement and never changed: not required,
+// or approved by that review's decision at that sequence about that hash
+// (taken under the hold above). Opening a handoff says so, after checking
+// that the stored history still has exactly that decision; it never asks
+// whether the revision is approved now. A handoff made before this was
+// recorded is LEGACY_UNKNOWN, never guessed from a policy or an approval
 @Injectable()
 export class ContentStudioHandoffService {
   private readonly _logger = new Logger(ContentStudioHandoffService.name);
@@ -201,6 +210,10 @@ export class ContentStudioHandoffService {
       );
       throw storedHandoffInvalid();
     }
+    const approvalAuthorization = await this.verifiedAuthorization(
+      input.organizationId,
+      handoff
+    );
     const media = await this.resolveMedia(
       input.organizationId,
       revision.content
@@ -228,6 +241,7 @@ export class ContentStudioHandoffService {
       revisionId: handoff.packageRevisionId,
       revisionNumber: revision.revisionNumber,
       expiresAt: handoff.expiresAt,
+      approvalAuthorization,
       onlyValues,
     };
   }
@@ -282,6 +296,30 @@ export class ContentStudioHandoffService {
       throw notFound();
     }
     return handoff;
+  }
+
+  // What authorized the handoff when it was created, whole, and checked by
+  // the review service against the stored approval history (never the
+  // approval of now). A partial record is a stored handoff that is not intact
+  private async verifiedAuthorization(
+    organizationId: string,
+    handoff: { id: string; packageRevisionId: string } & Parameters<
+      typeof contentStudioHandoffApprovalAuthorization
+    >[0]
+  ) {
+    const authorization = contentStudioHandoffApprovalAuthorization(handoff);
+    if (!authorization) {
+      this._logger.error(
+        `Content Studio handoff authorization is invalid: ${handoff.id}`
+      );
+      throw storedHandoffInvalid();
+    }
+    await this._contentStudioReviewService.verifyHandoffApprovalAuthorization({
+      organizationId,
+      packageRevisionId: handoff.packageRevisionId,
+      authorization,
+    });
+    return authorization;
   }
 
   // One query scoped to organization, package and revision; null when there

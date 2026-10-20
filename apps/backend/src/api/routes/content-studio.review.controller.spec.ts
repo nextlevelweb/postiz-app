@@ -1131,7 +1131,8 @@ describe('Review boundaries (P5-01)', () => {
       expect(code(file)).not.toMatch(/\breview|READY_FOR_APPROVAL|approv/i);
     }
     // P5-07: where the policy requires it, the handoff asks
-    // requireApprovedRevision and nothing else of the review service
+    // requireApprovedRevision; P5-08: opening one has the review service
+    // check what authorized it, never the approval of now
     expect(
       code(
         'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.handoff.service.ts'
@@ -1141,6 +1142,7 @@ describe('Review boundaries (P5-01)', () => {
     ).toEqual([
       '_contentStudioReviewService.requireApprovedRevision',
       '_contentStudioReviewService.requireApprovedRevision',
+      '_contentStudioReviewService.verifyHandoffApprovalAuthorization',
     ]);
     // P5-05: the package and design revision views show whether exactly a
     // revision is approved, read from the review service; they gate nothing
@@ -1157,8 +1159,24 @@ describe('Review boundaries (P5-01)', () => {
         /READY_FOR_APPROVAL|requireApproved|CS_APPROVAL|\.approved\b/
       );
     }
+    // P5-08: a handoff keeps only what authorized it when it was created
+    // (the four approval fields and its review), never a gate or the
+    // approval of now
     const handoff = model('ContentStudioHandoff');
-    expect(handoff).not.toMatch(/review|approv/i);
+    expect(
+      Array.from(handoff.matchAll(/^ {2}(\w+) +\S/gm), (m) => m[1]).filter(
+        (field) => /review|approv/i.test(field)
+      )
+    ).toEqual([
+      'approvalRequiredAtCreation',
+      'approvalReviewId',
+      'approvalSequence',
+      'approvalContentHash',
+      'approvalReview',
+    ]);
+    expect(handoff).not.toMatch(
+      /\b(approved|currentApproval\w*|approvalState)\b/
+    );
   });
 
   it('P502-3/P502-7/P502-9/44 a comment is plain text on the review only: no target, hash, thread, attachment or annotation', () => {

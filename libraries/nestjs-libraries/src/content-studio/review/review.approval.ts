@@ -240,6 +240,65 @@ export const isContentStudioRevisionApprovalState = (
 export const isContentStudioRevisionApproved = (state: unknown) =>
   state === 'APPROVED';
 
+// What authorized a handoff when it was created (P5-08), from the fields it
+// was written with and never changed: NOT_REQUIRED (the policy did not
+// require approval), APPROVED (the review, the sequence of its APPROVED
+// decision in force and the reviewed hash) or LEGACY_UNKNOWN (made before
+// this was recorded: nothing is known, nothing is guessed). A record of the
+// past, never the current approval: a later withdrawal changes nothing here
+export type ContentStudioHandoffApprovalAuthorization =
+  | { status: 'LEGACY_UNKNOWN' }
+  | { status: 'NOT_REQUIRED' }
+  | {
+      status: 'APPROVED';
+      reviewId: string;
+      approvalSequence: number;
+      targetContentHash: string;
+    };
+
+const AUTHORIZATION_REVIEW_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const AUTHORIZATION_HASH = /^[0-9a-f]{64}$/;
+
+// The authorization of a stored handoff, or null when its fields do not
+// make one whole: never a partial snapshot, never an approval field without
+// the requirement, never a requirement without every one of them
+export const contentStudioHandoffApprovalAuthorization = (row: {
+  approvalRequiredAtCreation: unknown;
+  approvalReviewId: unknown;
+  approvalSequence: unknown;
+  approvalContentHash: unknown;
+}): ContentStudioHandoffApprovalAuthorization | null => {
+  const none =
+    row.approvalReviewId === null &&
+    row.approvalSequence === null &&
+    row.approvalContentHash === null;
+  if (row.approvalRequiredAtCreation === null) {
+    return none ? { status: 'LEGACY_UNKNOWN' } : null;
+  }
+  if (row.approvalRequiredAtCreation === false) {
+    return none ? { status: 'NOT_REQUIRED' } : null;
+  }
+  if (
+    row.approvalRequiredAtCreation !== true ||
+    typeof row.approvalReviewId !== 'string' ||
+    !AUTHORIZATION_REVIEW_ID.test(row.approvalReviewId) ||
+    typeof row.approvalSequence !== 'number' ||
+    !Number.isInteger(row.approvalSequence) ||
+    row.approvalSequence < 1 ||
+    typeof row.approvalContentHash !== 'string' ||
+    !AUTHORIZATION_HASH.test(row.approvalContentHash)
+  ) {
+    return null;
+  }
+  return {
+    status: 'APPROVED',
+    reviewId: row.approvalReviewId,
+    approvalSequence: row.approvalSequence,
+    targetContentHash: row.approvalContentHash,
+  };
+};
+
 // The Review & Approval queue (P5-06): the reviews of an organization by the
 // binding state their exact revision derives now, never by a stored status.
 // Each queue is a set of binding states; a review's own state decides the

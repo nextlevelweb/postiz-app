@@ -1655,88 +1655,114 @@ describe('PQ1-PQ8. The Review & Approval queue on the real database (P5-06)', ()
 });
 
 // ============================================================================
-describe('PH1-PH8. Handoff requiring an approved revision on the real database (P5-07)', () => {
-  const packages = () =>
-    new ContentStudioRepository(
-      new PrismaRepository<'contentStudioProject'>(prisma),
-      new PrismaRepository<'contentPackage'>(prisma),
-      new PrismaRepository<'contentPackageRevision'>(prisma),
+// --- the handoff (P5-07) on the real repositories, shared by PH and PA ---
+const packages = () =>
+  new ContentStudioRepository(
+    new PrismaRepository<'contentStudioProject'>(prisma),
+    new PrismaRepository<'contentPackage'>(prisma),
+    new PrismaRepository<'contentPackageRevision'>(prisma),
+    new PrismaTransaction(prisma)
+  );
+const policies = () =>
+  new ContentStudioEditorialPolicyService(
+    new ContentStudioEditorialPolicyRepository(
+      new PrismaRepository<'contentStudioEditorialPolicy'>(prisma),
+      new PrismaRepository<'contentStudioEditorialPolicyRevision'>(prisma),
       new PrismaTransaction(prisma)
-    );
-  const policies = () =>
-    new ContentStudioEditorialPolicyService(
-      new ContentStudioEditorialPolicyRepository(
-        new PrismaRepository<'contentStudioEditorialPolicy'>(prisma),
-        new PrismaRepository<'contentStudioEditorialPolicyRevision'>(prisma),
-        new PrismaTransaction(prisma)
-      )
-    );
-  // the real handoff service on the real repositories and policy; its
-  // transaction may be hooked. Every Media is ready (there are none)
-  const handoffService = (
-    hooks: Record<string, () => Promise<void>> = {},
-    reviews = service
-  ) =>
-    new ContentStudioHandoffService(
-      packages(),
-      new ContentStudioHandoffRepository(
-        new PrismaRepository<'contentStudioHandoff'>(prisma),
-        hookedTransaction(hooks).transaction
-      ),
-      {
-        resolveForHandoff: async (
-          _org: string,
-          draft: { copy: { global: { thread: unknown[] } } }
-        ) => draft.copy.global.thread.map(() => []),
-      } as unknown as ContentStudioMediaService,
-      policies(),
-      reviews
-    );
-  // the organization's policy as saved through its real service: a new
-  // revision each time, the switch on or off
-  const requireApproval = async (organizationId: string, on: boolean) => {
-    const policy = policies();
-    const { latestRevisionNumber } = await policy.getPolicy(organizationId);
-    await policy.createRevision({
-      organizationId,
-      userId: OWNER[organizationId],
-      baseRevisionNumber: latestRevisionNumber,
-      content: {
-        ...emptyContentStudioEditorialPolicyContent(),
-        principles: [`Version ${latestRevisionNumber + 1}`],
-        ...(on ? { workflow: { requireApprovalForHandoff: true } } : {}),
-      },
-    });
-  };
-  const packageOf = async (revisionId: string) =>
-    (
-      await client.contentPackageRevision.findUniqueOrThrow({
-        where: { id: revisionId },
-        select: { packageId: true },
-      })
-    ).packageId;
-  const handOff = async (
-    revisionId: string,
-    organizationId = ORG_A,
-    on = handoffService()
-  ) =>
-    on.createHandoff({
-      organizationId,
-      userId: OWNER[organizationId],
-      packageId: await packageOf(revisionId),
-      revisionId,
-    });
-  const handoffsOf = (revisionId: string) =>
-    client.contentStudioHandoff.findMany({
-      where: { packageRevisionId: revisionId },
-      select: { id: true, organizationId: true, userId: true },
-    });
-  const approvedPackage = async () => {
-    const { reviewId, revision } = await reviewOf('package');
-    await decide(reviewId, 'approve');
-    return { reviewId, revision };
-  };
+    )
+  );
+// The real client with `hooks[model.method]` awaited right before that
+// call, outside any transaction (P5-08)
+const hookedClient = (hooks: Record<string, () => Promise<void>>) =>
+  new Proxy(client, {
+    get(target, model, receiver) {
+      const value = Reflect.get(target, model, receiver);
+      if (typeof model !== 'string' || !value || typeof value !== 'object') {
+        return value;
+      }
+      return new Proxy(value, {
+        get(delegate, method, delegateReceiver) {
+          const original = Reflect.get(delegate, method, delegateReceiver);
+          if (typeof original !== 'function') {
+            return original;
+          }
+          return async (args: unknown) => {
+            await hooks[`${model}.${String(method)}`]?.();
+            return original.call(delegate, args);
+          };
+        },
+      });
+    },
+  }) as unknown as PrismaService;
+// the real handoff service on the real repositories and policy; its
+// transaction may be hooked, and (P5-08) its statements outside the
+// transaction too. Every Media is ready (there are none)
+const handoffService = (
+  hooks: Record<string, () => Promise<void>> = {},
+  reviews = service,
+  outside: Record<string, () => Promise<void>> = {}
+) =>
+  new ContentStudioHandoffService(
+    packages(),
+    new ContentStudioHandoffRepository(
+      new PrismaRepository<'contentStudioHandoff'>(hookedClient(outside)),
+      hookedTransaction(hooks).transaction
+    ),
+    {
+      resolveForHandoff: async (
+        _org: string,
+        draft: { copy: { global: { thread: unknown[] } } }
+      ) => draft.copy.global.thread.map(() => []),
+    } as unknown as ContentStudioMediaService,
+    policies(),
+    reviews
+  );
+// the organization's policy as saved through its real service: a new
+// revision each time, the switch on or off
+const requireApproval = async (organizationId: string, on: boolean) => {
+  const policy = policies();
+  const { latestRevisionNumber } = await policy.getPolicy(organizationId);
+  await policy.createRevision({
+    organizationId,
+    userId: OWNER[organizationId],
+    baseRevisionNumber: latestRevisionNumber,
+    content: {
+      ...emptyContentStudioEditorialPolicyContent(),
+      principles: [`Version ${latestRevisionNumber + 1}`],
+      ...(on ? { workflow: { requireApprovalForHandoff: true } } : {}),
+    },
+  });
+};
+const packageOf = async (revisionId: string) =>
+  (
+    await client.contentPackageRevision.findUniqueOrThrow({
+      where: { id: revisionId },
+      select: { packageId: true },
+    })
+  ).packageId;
+const handOff = async (
+  revisionId: string,
+  organizationId = ORG_A,
+  on = handoffService()
+) =>
+  on.createHandoff({
+    organizationId,
+    userId: OWNER[organizationId],
+    packageId: await packageOf(revisionId),
+    revisionId,
+  });
+const handoffsOf = (revisionId: string) =>
+  client.contentStudioHandoff.findMany({
+    where: { packageRevisionId: revisionId },
+    select: { id: true, organizationId: true, userId: true },
+  });
+const approvedPackage = async () => {
+  const { reviewId, revision } = await reviewOf('package');
+  await decide(reviewId, 'approve');
+  return { reviewId, revision };
+};
 
+describe('PH1-PH8. Handoff requiring an approved revision on the real database (P5-07)', () => {
   it('PH1 policy off: an unreviewed and a refused revision are handed off exactly as before', async () => {
     const unreviewed = await packageRevision();
     await handOff(unreviewed.id);
@@ -1978,5 +2004,544 @@ describe('PH1-PH8. Handoff requiring an approved revision on the real database (
     expect(await handoffsOf(revision.id)).toEqual([]);
     expect(await handoffsOf(own.id)).toEqual([]);
     expect(await handoffsOf(unreviewed.id)).toHaveLength(1);
+  });
+});
+
+// ============================================================================
+// P5-08: what authorized a handoff, and the Phase 5 audit guarantees, on the
+// real database: the snapshot written in the transaction that holds the
+// review, the serialized winner it records, what PostgreSQL itself refuses
+// and what the application detects
+const handoffRow = (id: string) =>
+  client.contentStudioHandoff.findUniqueOrThrow({ where: { id } });
+const opened = (id: string, organizationId = ORG_A) =>
+  handoffService().resolveHandoff({
+    organizationId,
+    userId: OWNER[organizationId],
+    handoffId: id,
+  });
+const contiguous = (rows: { sequence: number }[]) =>
+  rows.every((row, index) => row.sequence === index + 1);
+
+describe('PA1-PA11. Phase 5 audit guarantees on the real database (P5-08)', () => {
+  it('PA1 review transitions racing each other keep a contiguous, legal state history', async () => {
+    for (let round = 0; round < 4; round += 1) {
+      const revision = await packageRevision();
+      const review = await requestReview('PACKAGE_REVISION', revision.id);
+      const hold = atHold();
+      const [one, two] = await Promise.all([
+        outcome(move(review.id, 'start', hold().service)),
+        outcome(move(review.id, 'cancel', hold().service)),
+      ]);
+      expect([one, two].sort()).toEqual(['CS_REVIEW_CONFLICT', 'ok']);
+      const events = await eventsOf(review.id);
+      const row = await reviewState(review.id);
+      expect(contiguous(events)).toBe(true);
+      expect(events).toHaveLength(row.version);
+      expect(events.map((event) => event.fromState)).toEqual([
+        null,
+        'REQUESTED',
+      ]);
+      expect(events[1].toState).toBe(row.state);
+      // and the service reads it as intact
+      expect(
+        (
+          await service.listReviews({
+            organizationId: ORG_A,
+            targetType: 'PACKAGE_REVISION',
+            targetRevisionId: revision.id,
+            page: 1,
+          })
+        ).results
+      ).toHaveLength(1);
+    }
+  });
+
+  it('PA2 rounds of concurrent decisions keep the approval sequence 1, 2, 3... and the history legal', async () => {
+    const { reviewId } = await reviewOf('package');
+    for (let round = 0; round < 3; round += 1) {
+      const hold = atHold();
+      const results = await Promise.all([
+        outcome(decide(reviewId, 'approve', hold().service)),
+        outcome(decide(reviewId, 'refuse', hold().service)),
+      ]);
+      expect(results.filter((result) => result === 'ok')).toHaveLength(1);
+      await decide(reviewId, 'withdraw');
+    }
+    const rows = await approvalRows(reviewId);
+    expect(contiguous(rows)).toBe(true);
+    expect(rows).toHaveLength(6);
+    expect((await service.getApproval({ ...A1, reviewId })).state).toBe(
+      'PENDING'
+    );
+  });
+
+  it('PA3 READY_FOR_APPROVAL against a claim assessment: never ready with a claim that is not verified, and frozen after', async () => {
+    for (let round = 0; round < 3; round += 1) {
+      const { reviewId } = await reviewOf('grounded', 'IN_REVIEW');
+      for (const claimId of [C1, C2]) {
+        await service.assessClaim({
+          ...A2,
+          reviewId,
+          claimId,
+          status: 'VERIFIED',
+          finding: null,
+        });
+      }
+      const hold = atHold();
+      await Promise.all([
+        outcome(move(reviewId, 'ready-for-approval', hold().service)),
+        outcome(
+          hold().service.assessClaim({
+            ...A2,
+            reviewId,
+            claimId: C1,
+            status: 'NEEDS_REVISION',
+            finding: 'Not supported.',
+          })
+        ),
+      ]);
+      const { state } = await reviewState(reviewId);
+      const claims = await client.contentStudioReviewClaim.findMany({
+        where: { reviewId },
+      });
+      if (state === 'READY_FOR_APPROVAL') {
+        expect(claims.every((row) => row.status === 'VERIFIED')).toBe(true);
+        expect(
+          await failure(
+            service.assessClaim({
+              ...A2,
+              reviewId,
+              claimId: C2,
+              status: 'NEEDS_REVISION',
+              finding: 'Too late.',
+            })
+          )
+        ).toBe('CS_REVIEW_CLAIM_MUTATION_FORBIDDEN');
+        expect(
+          await client.contentStudioReviewClaim.findMany({
+            where: { reviewId },
+          })
+        ).toEqual(claims);
+      } else {
+        expect(state).toBe('IN_REVIEW');
+      }
+    }
+  });
+
+  it('PA4 an approval racing a handoff of a pending revision: either refused, or authorized by exactly that approval', async () => {
+    await requireApproval(ORG_A, true);
+    for (let round = 0; round < 4; round += 1) {
+      const { reviewId, revision } = await reviewOf('package');
+      const [handed] = await Promise.all([
+        outcome(handOff(revision.id)),
+        outcome(decide(reviewId, 'approve')),
+      ]);
+      const rows = await client.contentStudioHandoff.findMany({
+        where: { packageRevisionId: revision.id },
+      });
+      if (handed === 'ok') {
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          approvalRequiredAtCreation: true,
+          approvalReviewId: reviewId,
+          approvalSequence: 1,
+        });
+      } else {
+        expect(handed).toBe('CS_APPROVAL_REQUIRED');
+        expect(rows).toEqual([]);
+      }
+    }
+  });
+
+  it('PA5/HAS2-HAS4 the handoff holds the review first: it keeps the APPROVED decision it was judged on, the withdrawal follows it', async () => {
+    await requireApproval(ORG_A, true);
+    const { reviewId, revision } = await approvedPackage();
+    let withdrawal: Promise<string> | undefined;
+    let release!: () => void;
+    const reached = new Promise<void>((resolve) => (release = resolve));
+    const withdrawing = hookedService({
+      'contentStudioReview.updateMany': async () => release(),
+    });
+    // M16/M20: anything the handoff reads or writes of it outside its
+    // transaction only comes after the withdrawal committed
+    const on = handoffService(
+      {
+        'contentStudioApproval.findFirst': async () => {
+          withdrawal = outcome(
+            decide(reviewId, 'withdraw', withdrawing.service)
+          );
+          await reached;
+        },
+      },
+      service,
+      {
+        'contentStudioApproval.findFirst': async () => {
+          await withdrawal;
+        },
+        'contentStudioApproval.findMany': async () => {
+          await withdrawal;
+        },
+        'contentStudioHandoff.updateMany': async () => {
+          await withdrawal;
+        },
+      }
+    );
+    const handoff = await handOff(revision.id, ORG_A, on);
+    expect(await withdrawal).toBe('ok');
+    expect(await handoffRow(handoff.id)).toMatchObject({
+      approvalRequiredAtCreation: true,
+      approvalReviewId: reviewId,
+      approvalSequence: 1,
+      approvalContentHash: revision.contentHash,
+    });
+    expect((await approvalRows(reviewId)).map((row) => row.decision)).toEqual([
+      'APPROVED',
+      'WITHDRAWN',
+    ]);
+    expect((await opened(handoff.id)).approvalAuthorization).toEqual({
+      status: 'APPROVED',
+      reviewId,
+      approvalSequence: 1,
+      targetContentHash: revision.contentHash,
+    });
+  });
+
+  it('PA5 racing at the hold: every handoff written records the APPROVED decision before the withdrawal, never a later one', async () => {
+    await requireApproval(ORG_A, true);
+    for (let round = 0; round < 5; round += 1) {
+      const { reviewId, revision } = await approvedPackage();
+      const both = latch(2);
+      const [handed, withdrawn] = await Promise.all([
+        outcome(
+          handOff(
+            revision.id,
+            ORG_A,
+            handoffService({ 'contentStudioReview.updateMany': () => both() })
+          )
+        ),
+        outcome(
+          decide(
+            reviewId,
+            'withdraw',
+            hookedService({ 'contentStudioReview.updateMany': () => both() })
+              .service
+          )
+        ),
+      ]);
+      expect(withdrawn).toBe('ok');
+      const rows = await client.contentStudioHandoff.findMany({
+        where: { packageRevisionId: revision.id },
+      });
+      if (handed === 'ok') {
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          approvalReviewId: reviewId,
+          approvalSequence: 1,
+        });
+      } else {
+        expect(handed).toBe('CS_APPROVAL_REQUIRED');
+        expect(rows).toEqual([]);
+      }
+    }
+  });
+
+  it('PA6 simultaneous handoffs of one approved revision all record the same exact authorization', async () => {
+    await requireApproval(ORG_A, true);
+    const { reviewId, revision } = await approvedPackage();
+    await decide(reviewId, 'withdraw');
+    await decide(reviewId, 'approve');
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => outcome(handOff(revision.id)))
+    );
+    // a handoff never changes the review, so none of them conflicts
+    expect(results).toEqual(['ok', 'ok', 'ok', 'ok', 'ok']);
+    const rows = await client.contentStudioHandoff.findMany({
+      where: { packageRevisionId: revision.id },
+    });
+    expect(rows).toHaveLength(5);
+    for (const row of rows) {
+      expect(row).toMatchObject({
+        approvalRequiredAtCreation: true,
+        approvalReviewId: reviewId,
+        approvalSequence: 3,
+        approvalContentHash: revision.contentHash,
+      });
+    }
+  });
+
+  it('PA7/HAS6/HAS7/M20 a withdrawal after a committed handoff changes nothing of it; a later approval is its own', async () => {
+    await requireApproval(ORG_A, true);
+    const { reviewId, revision } = await approvedPackage();
+    const first = await handOff(revision.id);
+    const before = await handoffRow(first.id);
+    await decide(reviewId, 'withdraw');
+    expect(await handoffRow(first.id)).toEqual(before);
+    expect((await opened(first.id)).approvalAuthorization).toMatchObject({
+      status: 'APPROVED',
+      approvalSequence: 1,
+    });
+    expect(await failure(handOff(revision.id))).toBe('CS_APPROVAL_REQUIRED');
+    await decide(reviewId, 'approve');
+    const second = await handOff(revision.id);
+    // opening either never rewrites what authorized it
+    await opened(first.id);
+    await opened(second.id);
+    expect((await handoffRow(first.id)).approvalSequence).toBe(1);
+    expect((await handoffRow(second.id)).approvalSequence).toBe(3);
+    expect({
+      ...(await handoffRow(first.id)),
+      openedAt: null,
+    }).toEqual({ ...before, openedAt: null });
+    // spec 34: the withdrawal revoked nothing; revoking changes no approval
+    expect((await handoffRow(first.id)).revokedAt).toBeNull();
+    const decisions = await approvalRows(reviewId);
+    await handoffService().revokeHandoff({
+      ...A1,
+      handoffId: first.id,
+    });
+    expect(await approvalRows(reviewId)).toEqual(decisions);
+    expect((await handoffRow(first.id)).approvalSequence).toBe(1);
+  });
+
+  it('PA8/TEN9 the snapshot review is bound inside the organization by PostgreSQL itself', async () => {
+    await requireApproval(ORG_A, true);
+    const { reviewId, revision } = await approvedPackage();
+    const handoff = await handOff(revision.id);
+    const row = await handoffRow(handoff.id);
+    const other = await packageRevision(ORG_B);
+    const reviewB = await service.requestReview({
+      organizationId: ORG_B,
+      userId: USER_B1,
+      targetType: 'PACKAGE_REVISION',
+      targetRevisionId: other.id,
+    });
+    const prismaCode = async (promise: Promise<unknown>) => {
+      try {
+        await promise;
+      } catch (err) {
+        return (err as Prisma.PrismaClientKnownRequestError).code;
+      }
+      return 'accepted';
+    };
+    // a handoff of A naming B's review
+    expect(
+      await prismaCode(
+        client.contentStudioHandoff.create({
+          data: { ...row, id: 'f'.repeat(64), approvalReviewId: reviewB.id },
+        })
+      )
+    ).toBe('P2003');
+    // a review that does not exist
+    expect(
+      await prismaCode(
+        client.contentStudioHandoff.update({
+          where: { id: handoff.id },
+          data: { approvalReviewId: randomUUID() },
+        })
+      )
+    ).toBe('P2003');
+    // and a review a handoff names cannot be deleted
+    expect(
+      await prismaCode(
+        client.contentStudioReview.delete({ where: { id: reviewId } })
+      )
+    ).toBe('P2003');
+    expect(await handoffRow(handoff.id)).toEqual(row);
+  });
+
+  it('PA8 what PostgreSQL does not refuse, the application does: a partial or wrong snapshot fails closed on open', async () => {
+    await requireApproval(ORG_A, true);
+    const { reviewId, revision } = await approvedPackage();
+    await decide(reviewId, 'withdraw');
+    await decide(reviewId, 'approve');
+    for (const [data, code] of [
+      [{ approvalContentHash: null }, 'CS_STORED_HANDOFF_INVALID'],
+      [{ approvalRequiredAtCreation: null }, 'CS_STORED_HANDOFF_INVALID'],
+      [{ approvalRequiredAtCreation: false }, 'CS_STORED_HANDOFF_INVALID'],
+      [{ approvalSequence: 0 }, 'CS_STORED_HANDOFF_INVALID'],
+      // HAS9: the WITHDRAWN decision, one beyond the history, another hash
+      [{ approvalSequence: 2 }, 'CS_APPROVAL_INTEGRITY_ERROR'],
+      [{ approvalSequence: 9 }, 'CS_APPROVAL_INTEGRITY_ERROR'],
+      [{ approvalContentHash: 'e'.repeat(64) }, 'CS_APPROVAL_INTEGRITY_ERROR'],
+    ] as const) {
+      const handoff = await handOff(revision.id);
+      await client.contentStudioHandoff.update({
+        where: { id: handoff.id },
+        data,
+      });
+      expect(await failure(opened(handoff.id))).toBe(code);
+      expect((await handoffRow(handoff.id)).openedAt).toBeNull();
+    }
+  });
+
+  it('PA9 approval history rewritten behind the service: binding, the enforced handoff and the historical open fail closed', async () => {
+    await requireApproval(ORG_A, true);
+    const { reviewId, revision } = await approvedPackage();
+    const handoff = await handOff(revision.id);
+    await client.contentStudioApproval.updateMany({
+      where: { reviewId },
+      data: { targetContentHash: 'e'.repeat(64) },
+    });
+    for (const run of [
+      () =>
+        service.getRevisionApprovalStatus({
+          organizationId: ORG_A,
+          targetType: 'PACKAGE_REVISION',
+          targetRevisionId: revision.id,
+        }),
+      () => handOff(revision.id),
+      () => opened(handoff.id),
+    ]) {
+      expect(await failure(run())).toBe('CS_APPROVAL_INTEGRITY_ERROR');
+    }
+    expect(await handoffsOf(revision.id)).toHaveLength(1);
+    // a gap: the first decision renumbered
+    const gap = await approvedPackage();
+    await client.contentStudioApproval.updateMany({
+      where: { reviewId: gap.reviewId },
+      data: { sequence: 2 },
+    });
+    expect(await failure(handOff(gap.revision.id))).toBe(
+      'CS_APPROVAL_INTEGRITY_ERROR'
+    );
+  });
+
+  it('PA10 review history rewritten behind the service: binding, the enforced handoff and the historical open fail closed', async () => {
+    await requireApproval(ORG_A, true);
+    for (const corrupt of [
+      (reviewId: string) =>
+        client.contentStudioReviewStateEvent.updateMany({
+          where: { reviewId, sequence: 2 },
+          data: { fromState: 'IN_REVIEW' },
+        }),
+      (reviewId: string) =>
+        client.contentStudioReviewStateEvent.deleteMany({
+          where: { reviewId, sequence: 2 },
+        }),
+      (reviewId: string) =>
+        client.contentStudioReview.update({
+          where: { id: reviewId },
+          data: { targetContentHash: 'e'.repeat(64) },
+        }),
+      // ARV1: both targets (PostgreSQL has no check for exactly one)
+      async (reviewId: string) => {
+        const design = await designRevision();
+        await client.contentStudioReview.update({
+          where: { id: reviewId },
+          data: { designRevisionId: design.id },
+        });
+      },
+    ]) {
+      const { reviewId, revision } = await approvedPackage();
+      const handoff = await handOff(revision.id);
+      await corrupt(reviewId);
+      for (const run of [
+        () =>
+          service.getRevisionApprovalStatus({
+            organizationId: ORG_A,
+            targetType: 'PACKAGE_REVISION',
+            targetRevisionId: revision.id,
+          }),
+        () => handOff(revision.id),
+        () => opened(handoff.id),
+      ]) {
+        expect(await failure(run())).toBe('CS_REVIEW_INTEGRITY_ERROR');
+      }
+      expect(await handoffsOf(revision.id)).toHaveLength(1);
+    }
+  });
+
+  it('PA10/ARV8 a review can only bind a revision of its own organization: PostgreSQL refuses another one', async () => {
+    const { reviewId } = await approvedPackage();
+    const foreign = await packageRevision(ORG_B);
+    await expect(
+      client.contentStudioReview.update({
+        where: { id: reviewId },
+        data: { packageRevisionId: foreign.id },
+      })
+    ).rejects.toMatchObject({ code: 'P2003' });
+  });
+
+  it('PA9/ACL8 evidence rewritten behind the service: the enforced handoff fails closed as an integrity error', async () => {
+    await requireApproval(ORG_A, true);
+    const { reviewId, revision } = await reviewOf('grounded');
+    await decide(reviewId, 'approve');
+    const handoff = await handOff(revision.id);
+    await client.contentStudioSourceVersion.updateMany({
+      where: { organizationId: ORG_A },
+      data: { contentHash: 'e'.repeat(64) },
+    });
+    expect(await failure(handOff(revision.id))).toBe(
+      'CS_REVIEW_INTEGRITY_ERROR'
+    );
+    // what authorized the earlier one is unchanged history
+    expect((await opened(handoff.id)).approvalAuthorization).toMatchObject({
+      status: 'APPROVED',
+      approvalSequence: 1,
+    });
+  });
+
+  it('PA11/HAS1 policy off: a handoff with no review records NOT_REQUIRED and no approval metadata', async () => {
+    const unreviewed = await packageRevision();
+    const handoff = await handOff(unreviewed.id);
+    expect(await handoffRow(handoff.id)).toMatchObject({
+      approvalRequiredAtCreation: false,
+      approvalReviewId: null,
+      approvalSequence: null,
+      approvalContentHash: null,
+    });
+    expect((await opened(handoff.id)).approvalAuthorization).toEqual({
+      status: 'NOT_REQUIRED',
+    });
+    // an approved revision handed off with the policy off says the same:
+    // approval was not what allowed it
+    const { revision } = await approvedPackage();
+    const approved = await handOff(revision.id);
+    expect((await handoffRow(approved.id)).approvalRequiredAtCreation).toBe(
+      false
+    );
+  });
+
+  it('HAS8/M21 a handoff stored before P5-08 is LEGACY_UNKNOWN, even for an approved revision under a policy that requires approval', async () => {
+    const { revision } = await approvedPackage();
+    await requireApproval(ORG_A, true);
+    const id = 'd'.repeat(64);
+    // the row as P5-07 wrote it: no authorization column set
+    await client.contentStudioHandoff.create({
+      data: {
+        id,
+        organizationId: ORG_A,
+        userId: USER_A1,
+        packageId: await packageOf(revision.id),
+        packageRevisionId: revision.id,
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    expect(await handoffRow(id)).toMatchObject({
+      approvalRequiredAtCreation: null,
+      approvalReviewId: null,
+      approvalSequence: null,
+      approvalContentHash: null,
+    });
+    expect((await opened(id)).approvalAuthorization).toEqual({
+      status: 'LEGACY_UNKNOWN',
+    });
+    // still unknown after opening: nothing was filled in
+    expect((await handoffRow(id)).approvalRequiredAtCreation).toBeNull();
+  });
+
+  it('TEN10/TEN9 another organization never opens, revokes or authorizes a handoff of this one', async () => {
+    await requireApproval(ORG_A, true);
+    const { revision } = await approvedPackage();
+    const handoff = await handOff(revision.id);
+    const B = { organizationId: ORG_B, userId: USER_B1, handoffId: handoff.id };
+    expect(await failure(handoffService().resolveHandoff(B))).toBe(
+      'CS_NOT_FOUND'
+    );
+    expect(await failure(handoffService().revokeHandoff(B))).toBe(
+      'CS_NOT_FOUND'
+    );
+    expect((await handoffRow(handoff.id)).revokedAt).toBeNull();
   });
 });

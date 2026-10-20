@@ -11,6 +11,7 @@ const ORG = 'org-a';
 const USER = 'user-1';
 const ID = 'a'.repeat(64);
 const AT = new Date('2026-10-12T10:00:00.000Z');
+const HASH = 'f'.repeat(64);
 
 const setup = () => {
   const handoff = {
@@ -34,11 +35,19 @@ const setup = () => {
     });
   const tx = {
     contentStudioReview: {
-      findFirst: tracked('review.findFirst', { updatedAt: AT }),
+      findFirst: tracked('review.findFirst', {
+        updatedAt: AT,
+        targetContentHash: HASH,
+      }),
       updateMany: tracked('review.updateMany', { count: 1 }),
     },
     contentStudioApproval: {
       count: tracked('approval.count', 3),
+      // P5-08: the APPROVED decision the handoff keeps
+      findFirst: tracked('approval.findFirst', {
+        sequence: 3,
+        targetContentHash: HASH,
+      }),
     },
     contentStudioHandoff: {
       create: tracked('handoff.create', { id: ID, expiresAt: AT }),
@@ -126,6 +135,11 @@ describe('ContentStudioHandoffRepository', () => {
         packageId: 'package-1',
         packageRevisionId: 'revision-1',
         expiresAt: AT,
+        // HAS1 (P5-08): known not required, with no approval field at all
+        approvalRequiredAtCreation: false,
+        approvalReviewId: null,
+        approvalSequence: null,
+        approvalContentHash: null,
       },
       select: { id: true, expiresAt: true },
     });
@@ -153,6 +167,11 @@ describe('ContentStudioHandoffRepository', () => {
         openedAt: true,
         revokedAt: true,
         createdAt: true,
+        // P5-08: what authorized it, as stored
+        approvalRequiredAtCreation: true,
+        approvalReviewId: true,
+        approvalSequence: true,
+        approvalContentHash: true,
       },
     });
   });
@@ -267,7 +286,7 @@ describe('ContentStudioHandoffRepository: an approved handoff (P5-07)', () => {
     state: 'READY_FOR_APPROVAL',
   };
 
-  it('WR2/AT4 holds the review without changing it, confirms the history, then creates the handoff, in one transaction', async () => {
+  it('WR2/AT4/HAS2-HAS4 holds the review without changing it, confirms the history and its APPROVED decision, then creates the handoff with them, in one transaction', async () => {
     const { handoff, repository, transaction, log } = setup();
     await expect(
       repository.createHandoffWhileApproved(APPROVED_HANDOFF)
@@ -276,7 +295,10 @@ describe('ContentStudioHandoffRepository: an approved handoff (P5-07)', () => {
     expect(log).toEqual([
       {
         call: 'review.findFirst',
-        args: { where: REVIEW_WHERE, select: { updatedAt: true } },
+        args: {
+          where: REVIEW_WHERE,
+          select: { updatedAt: true, targetContentHash: true },
+        },
       },
       {
         call: 'review.updateMany',
@@ -291,8 +313,25 @@ describe('ContentStudioHandoffRepository: an approved handoff (P5-07)', () => {
         args: { where: { organizationId: ORG, reviewId: 'review-1' } },
       },
       {
+        // the last decision of exactly the judged history: the APPROVED one
+        // about this revision and the hash the held review binds
+        call: 'approval.findFirst',
+        args: {
+          where: {
+            organizationId: ORG,
+            reviewId: 'review-1',
+            sequence: 3,
+            decision: 'APPROVED',
+            packageRevisionId: 'revision-1',
+            designRevisionId: null,
+            targetContentHash: HASH,
+          },
+          select: { sequence: true, targetContentHash: true },
+        },
+      },
+      {
         call: 'handoff.create',
-        // the review and the approval never reach the handoff row
+        // what authorized it, read under the hold, written with the row
         args: {
           data: {
             id: ID,
@@ -301,6 +340,10 @@ describe('ContentStudioHandoffRepository: an approved handoff (P5-07)', () => {
             packageId: 'package-1',
             packageRevisionId: 'revision-1',
             expiresAt: AT,
+            approvalRequiredAtCreation: true,
+            approvalReviewId: 'review-1',
+            approvalSequence: 3,
+            approvalContentHash: HASH,
           },
           select: { id: true, expiresAt: true },
         },
@@ -343,10 +386,62 @@ describe('ContentStudioHandoffRepository: an approved handoff (P5-07)', () => {
     }
   );
 
+  it('HAS3/M8/M16 a last decision that is not the APPROVED one about this revision and hash writes nothing', async () => {
+    const { repository, tx } = setup();
+    tx.contentStudioApproval.findFirst.mockResolvedValueOnce(null);
+    await expect(
+      repository.createHandoffWhileApproved(APPROVED_HANDOFF)
+    ).resolves.toBeNull();
+    expect(tx.contentStudioHandoff.create).not.toHaveBeenCalled();
+  });
+
+  it('HAS5 nothing of the snapshot comes from the caller: extra input never reaches the row', async () => {
+    const { repository, tx } = setup();
+    await repository.createHandoffWhileApproved({
+      ...APPROVED_HANDOFF,
+      ...({
+        approvalSequence: 1,
+        approvalContentHash: 'e'.repeat(64),
+        approvalRequiredAtCreation: false,
+        approvalReviewId: 'review-forged',
+      } as object),
+    });
+    expect(
+      (tx.contentStudioHandoff.create as jest.Mock).mock.calls[0][0].data
+    ).toMatchObject({
+      approvalRequiredAtCreation: true,
+      approvalReviewId: 'review-1',
+      approvalSequence: 3,
+      approvalContentHash: HASH,
+    });
+    const { repository: plain, handoff } = setup();
+    await plain.createHandoff({
+      id: ID,
+      organizationId: ORG,
+      userId: USER,
+      packageId: 'package-1',
+      packageRevisionId: 'revision-1',
+      expiresAt: AT,
+      ...({ approvalRequiredAtCreation: true, approvalSequence: 2 } as object),
+    });
+    expect(onlyCall(handoff.create).data).toMatchObject({
+      approvalRequiredAtCreation: false,
+      approvalSequence: null,
+    });
+  });
+
+  it('HAS6/HAS7/M20 opening and revoking never write what authorized a handoff', async () => {
+    const { handoff, repository } = setup();
+    await callEveryMethod(repository);
+    for (const [args] of handoff.updateMany.mock.calls) {
+      expect(Object.keys(args.data).join()).not.toMatch(/approval/i);
+    }
+  });
+
   it('M13 every statement of the transaction names the organization', async () => {
     const { repository, log } = setup();
     await repository.createHandoffWhileApproved(APPROVED_HANDOFF);
-    expect(log).toHaveLength(4);
+    expect(log).toHaveLength(5);
     for (const { args } of log) {
       expect(args.where ?? args.data).toMatchObject({ organizationId: ORG });
     }
