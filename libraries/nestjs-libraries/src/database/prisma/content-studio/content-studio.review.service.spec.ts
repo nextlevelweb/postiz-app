@@ -123,6 +123,8 @@ const createDb = () => {
     // names
     claim: [] as Row[],
     sourceVersion: [] as Row[],
+    // P5-04: approval decisions
+    approval: [] as Row[],
     user: [
       { id: USER_A, name: 'Ann' },
       { id: USER_A2, name: 'Bo' },
@@ -204,6 +206,18 @@ const createDb = () => {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     reviewedBy: person(row.reviewedByUserId ?? null),
+  });
+  const approvalView = (row: Row) => ({
+    id: row.id,
+    sequence: row.sequence,
+    decision: row.decision,
+    packageRevisionId: row.packageRevisionId,
+    designRevisionId: row.designRevisionId,
+    targetContentHash: row.targetContentHash,
+    actorUserId: row.actorUserId,
+    note: row.note,
+    createdAt: row.createdAt,
+    actorUser: person(row.actorUserId),
   });
   const update = (rows: Row[], data: Row) => {
     for (const row of rows) {
@@ -453,6 +467,36 @@ const createDb = () => {
         return { id: 'claim-row' };
       },
     },
+    contentStudioApproval: {
+      findMany: async (args: Row) => {
+        log.push({ op: 'approval.findMany', where: args.where });
+        expect(args.orderBy).toEqual({ sequence: 'asc' });
+        return tables.approval
+          .filter((entry) => matches(entry, args.where))
+          .sort((a, b) => a.sequence - b.sequence)
+          .map(approvalView);
+      },
+      create: async (args: Row) => {
+        log.push({ op: 'approval.create', data: args.data });
+        const data = args.data;
+        // unique (reviewId, sequence)
+        if (
+          tables.approval.some(
+            (entry) =>
+              entry.reviewId === data.reviewId &&
+              entry.sequence === data.sequence
+          )
+        ) {
+          throw uniqueError();
+        }
+        tables.approval.push({
+          id: uuid(9000 + tables.approval.length),
+          ...data,
+          createdAt: now(),
+        });
+        return { id: 'approval' };
+      },
+    },
     contentStudioReviewStateEvent: {
       create: async (args: Row) => {
         log.push({ op: 'event.create', data: args.data });
@@ -528,6 +572,7 @@ const createDb = () => {
     {
       model: prisma,
     } as unknown as PrismaRepository<'contentStudioReviewClaim'>,
+    { model: prisma } as unknown as PrismaRepository<'contentStudioApproval'>,
     { model: prisma } as unknown as PrismaTransaction
   );
   // the real grounding service, on stored source versions only: the one
@@ -637,6 +682,7 @@ const snapshot = (db: ReturnType<typeof createDb>) =>
     comment: db.tables.comment,
     revisionRequest: db.tables.revisionRequest,
     claim: db.tables.claim,
+    approval: db.tables.approval,
   });
 
 describe('ContentStudioReviewService: requesting a review', () => {
@@ -1443,13 +1489,13 @@ describe('ContentStudioReviewService boundaries', () => {
     expect(repository).toMatch(/packageRevisionId: input\.packageRevisionId/);
   });
 
-  it('P501-4/P501-5/M28/P502-1/P502-8 no approval, reason, reviewer, due date, mention or notification', () => {
+  it('P501-4/P501-5/M28/P502-1/P502-8/P504-9/P504-10 no approver, reason, reviewer, due date, mention or notification (approval decisions are P5-04)', () => {
     for (const file of [
       'content-studio.review.service.ts',
       'content-studio.review.repository.ts',
     ]) {
       expect(code(file)).not.toMatch(
-        /approved|approvedBy|signature|reason|assign|reviewer|dueAt|deadline|notif|email|slack|mention|reaction|attachment|parentCommentId|replyTo|threadId/i
+        /approvedBy|approver|quorum|signature|reason|assign|reviewer|dueAt|deadline|notif|email|slack|mention|reaction|attachment|parentCommentId|replyTo|threadId/i
       );
     }
   });
@@ -1471,8 +1517,9 @@ describe('ContentStudioReviewService boundaries', () => {
       .split(/\.(?:findFirst|findMany|count|updateMany|create)\(/)
       .slice(1);
     // P5-03B: the claim reads (one inside the READY transition), the hold
-    // and the assessment write
-    expect(queries.length).toBe(23);
+    // and the assessment write; P5-04: the approval history read, the hold,
+    // the history read inside it and the append
+    expect(queries.length).toBe(27);
     for (const query of queries) {
       expect(query.slice(0, 400)).toMatch(/organizationId/);
     }
@@ -3977,7 +4024,7 @@ describe('ContentStudioReviewService claim review boundaries (P5-03B)', () => {
   const root = join(__dirname, '..', '..', '..', '..', '..', '..');
   const schema = readFileSync(join(__dirname, '..', 'schema.prisma'), 'utf8');
 
-  it('P503B-1/P503B-4/P503B-5 one new model only: no approval, source review or claim event model', () => {
+  it('P503B-1/P503B-4/P503B-5 one claim model only: no source review or claim event model (the approval decisions are P5-04)', () => {
     const models = (schema.match(/^model \w+/gm) ?? []).filter((model) =>
       /Review|Approval|Claim/.test(model)
     );
@@ -3987,9 +4034,13 @@ describe('ContentStudioReviewService claim review boundaries (P5-03B)', () => {
       'model ContentStudioReviewComment',
       'model ContentStudioReviewRevisionRequest',
       'model ContentStudioReviewClaim',
+      'model ContentStudioApproval',
     ]);
-    // the existing APPROVED_SUBMIT_FOR_ORDER enum of posts is not an approval
-    expect(schema).not.toMatch(/approvedBy|rejectedBy|approvedAt|\bAPPROVED\b/);
+    // the existing APPROVED_SUBMIT_FOR_ORDER enum of posts is not an
+    // approval; decisions are plain strings checked in code, not columns
+    expect(schema.replace(/\/\/.*$/gm, '')).not.toMatch(
+      /approvedBy|rejectedBy|approvedAt|\bAPPROVED\b/
+    );
   });
 
   it('the assessment row holds no claim text, item, evidence or source', () => {
@@ -4066,5 +4117,1253 @@ describe('ContentStudioReviewService claim review boundaries (P5-03B)', () => {
     );
     expect(design).toMatch(/export const DESIGN_DOCUMENT_SCHEMA_VERSION = 1;/);
     expect(design).not.toMatch(/claim/i);
+  });
+});
+
+// --- approval decisions (P5-04) ---
+
+const decide = (
+  db: Db,
+  reviewId: string,
+  action: 'approve' | 'refuse' | 'withdraw',
+  note?: unknown,
+  user = USER_A2,
+  org = ORG_A
+) =>
+  db.service.decideApproval({
+    organizationId: org,
+    userId: user,
+    reviewId,
+    action,
+    note,
+  });
+const approvalOf = (db: Db, reviewId: string, org = ORG_A) =>
+  db.service.getApproval({ organizationId: org, reviewId });
+const readyPackage = async () => {
+  const db = discussion();
+  const review = await reviewIn(db, 'READY_FOR_APPROVAL');
+  return { db, review };
+};
+const readyDesign = async () => {
+  const db = discussion();
+  const review = await reviewIn(
+    db,
+    'READY_FOR_APPROVAL',
+    'DESIGN_REVISION',
+    DESIGN_REV_7
+  );
+  return { db, review };
+};
+// a grounded package review whose two claims are verified, made ready
+const readyClaimed = async () => {
+  const { db, review } = await claimed();
+  await assess(db, review.id, C1, 'VERIFIED');
+  await assess(db, review.id, C2, 'VERIFIED', 'Checked.');
+  const ready = await act(db, review.id, 'ready-for-approval');
+  return { db, review: ready };
+};
+const REFUSAL = 'The offer is not cleared by legal.';
+const WITHDRAWAL = 'Decided too early: legal is still checking.';
+const decisions = (db: Db) =>
+  db.tables.approval.map((row) => [row.sequence, row.decision]);
+
+describe('ContentStudioReviewService: approving (P5-04)', () => {
+  it('AC1/AC7 a READY package review is approved: decision 1, bound to its exact revision and hash', async () => {
+    const { db, review } = await readyPackage();
+    const stored = db.tables.packageRevision.find((r) => r.id === PKG_REV_4)!;
+    const approval = await decide(db, review.id, 'approve');
+    expect(approval).toEqual({
+      reviewId: review.id,
+      targetType: 'PACKAGE_REVISION',
+      targetRevisionId: PKG_REV_4,
+      targetRevisionNumber: 4,
+      targetContentHash: stored.contentHash,
+      state: 'APPROVED',
+      version: 1,
+      history: [
+        {
+          sequence: 1,
+          decision: 'APPROVED',
+          note: null,
+          actor: { id: USER_A2, name: 'Bo' },
+          createdAt: expect.any(Date),
+        },
+      ],
+    });
+    expect(db.tables.approval).toEqual([
+      {
+        id: expect.any(String),
+        organizationId: ORG_A,
+        reviewId: review.id,
+        sequence: 1,
+        decision: 'APPROVED',
+        packageRevisionId: PKG_REV_4,
+        designRevisionId: null,
+        targetContentHash: stored.contentHash,
+        actorUserId: USER_A2,
+        note: null,
+        createdAt: expect.any(Date),
+      },
+    ]);
+    // no content, no updatedAt: a decision is never changed
+    expect(JSON.stringify(db.tables.approval)).not.toContain(SECRET);
+    expect(JSON.stringify(approval)).not.toContain(SECRET);
+  });
+
+  it('AC2/AI2 a READY design review is approved the same way, bound to its design revision', async () => {
+    const { db, review } = await readyDesign();
+    const stored = db.tables.designRevision.find((r) => r.id === DESIGN_REV_7)!;
+    const approval = await decide(db, review.id, 'approve', 'On brand.');
+    expect(approval).toMatchObject({
+      targetType: 'DESIGN_REVISION',
+      targetRevisionId: DESIGN_REV_7,
+      targetRevisionNumber: 7,
+      targetContentHash: stored.contentHash,
+      state: 'APPROVED',
+      version: 1,
+    });
+    expect(db.tables.approval[0]).toMatchObject({
+      packageRevisionId: null,
+      designRevisionId: DESIGN_REV_7,
+      targetContentHash: stored.contentHash,
+      note: 'On brand.',
+    });
+  });
+
+  it('AC3 a READY package review is refused with its note, kept exactly', async () => {
+    const { db, review } = await readyPackage();
+    const note = '  Not on brand.\n\nSee the second post.  ';
+    const approval = await decide(db, review.id, 'refuse', note);
+    expect(approval.state).toBe('REFUSED');
+    expect(approval.history[0]).toMatchObject({ decision: 'REFUSED', note });
+    expect(db.tables.approval[0].note).toBe(note);
+  });
+
+  it('FA9/AC approving takes an optional note: none, null or blank is none, text is kept exactly', async () => {
+    for (const [note, stored] of [
+      [undefined, null],
+      [null, null],
+      ['', null],
+      ['  \n ', null],
+      [' Looks good. ', ' Looks good. '],
+    ]) {
+      const { db, review } = await readyPackage();
+      await decide(db, review.id, 'approve', note);
+      expect(db.tables.approval[0].note).toBe(stored);
+    }
+  });
+
+  it("AC4/AC5/AC6/AC10 the actor, hash, revision and sequence are the server's: nothing the caller adds is used", async () => {
+    const { db, review } = await readyPackage();
+    const stored = db.tables.packageRevision.find((r) => r.id === PKG_REV_4)!;
+    await db.service.decideApproval({
+      organizationId: ORG_A,
+      userId: USER_A2,
+      reviewId: review.id,
+      action: 'approve',
+      note: null,
+      ...({
+        actorUserId: USER_B,
+        targetContentHash: 'f'.repeat(64),
+        packageRevisionId: PKG_REV_5,
+        designRevisionId: DESIGN_REV_7,
+        sequence: 7,
+        decision: 'REFUSED',
+        state: 'APPROVED',
+      } as object),
+    });
+    expect(db.tables.approval).toEqual([
+      expect.objectContaining({
+        sequence: 1,
+        decision: 'APPROVED',
+        actorUserId: USER_A2,
+        packageRevisionId: PKG_REV_4,
+        designRevisionId: null,
+        targetContentHash: stored.contentHash,
+      }),
+    ]);
+  });
+
+  it('AC8/UCON6/P504 the review keeps its state, version and events; only its updatedAt may move', async () => {
+    const { db, review } = await readyPackage();
+    const before = reviewFacts(db);
+    await decide(db, review.id, 'approve');
+    await decide(db, review.id, 'withdraw', WITHDRAWAL);
+    await decide(db, review.id, 'refuse', REFUSAL);
+    expect(reviewFacts(db)).toBe(before);
+    expect(reviewRow(db, review.id)).toMatchObject({
+      state: 'READY_FOR_APPROVAL',
+      version: 3,
+    });
+  });
+
+  it.each([
+    ['REQUESTED'],
+    ['IN_REVIEW'],
+    ['CHANGES_REQUESTED'],
+    ['CANCELLED'],
+  ] as const)(
+    'AC9/P503R2/M8 a %s review has no approval: every decision and the read are CS_APPROVAL_UNAVAILABLE',
+    async (state) => {
+      const db = discussion();
+      const review = await reviewIn(db, state);
+      const before = snapshot(db);
+      for (const [action, note] of [
+        ['approve', undefined],
+        ['refuse', REFUSAL],
+        ['withdraw', WITHDRAWAL],
+      ] as const) {
+        expect(await code(decide(db, review.id, action, note))).toEqual({
+          status: 409,
+          code: 'CS_APPROVAL_UNAVAILABLE',
+        });
+      }
+      expect(await code(approvalOf(db, review.id))).toEqual({
+        status: 409,
+        code: 'CS_APPROVAL_UNAVAILABLE',
+      });
+      expect(snapshot(db)).toBe(before);
+    }
+  );
+
+  it('FA2 a READY review without decisions is PENDING at version 0', async () => {
+    const { db, review } = await readyPackage();
+    expect(await approvalOf(db, review.id)).toEqual({
+      reviewId: review.id,
+      targetType: 'PACKAGE_REVISION',
+      targetRevisionId: PKG_REV_4,
+      targetRevisionNumber: 4,
+      targetContentHash: review.targetContentHash,
+      state: 'PENDING',
+      version: 0,
+      history: [],
+    });
+  });
+
+  it('the requester and a reviewer of the review may decide too (no approver role yet)', async () => {
+    const { db, review } = await readyPackage();
+    // USER_A requested, started and readied it
+    expect((await decide(db, review.id, 'approve', null, USER_A)).state).toBe(
+      'APPROVED'
+    );
+  });
+});
+
+describe('ContentStudioReviewService: withdrawing a decision (P5-04)', () => {
+  it('AW1/AW5/AW6 APPROVED -> WITHDRAWN: decision 2, the approval is PENDING again', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    const approval = await decide(db, review.id, 'withdraw', WITHDRAWAL);
+    expect(approval.state).toBe('PENDING');
+    expect(approval.version).toBe(2);
+    expect(approval.history.map((h) => [h.sequence, h.decision])).toEqual([
+      [1, 'APPROVED'],
+      [2, 'WITHDRAWN'],
+    ]);
+    expect(approval.history[1].note).toBe(WITHDRAWAL);
+  });
+
+  it('AW2 REFUSED -> WITHDRAWN', async () => {
+    const { db, review } = await readyDesign();
+    await decide(db, review.id, 'refuse', REFUSAL);
+    expect((await decide(db, review.id, 'withdraw', WITHDRAWAL)).state).toBe(
+      'PENDING'
+    );
+    expect(decisions(db)).toEqual([
+      [1, 'REFUSED'],
+      [2, 'WITHDRAWN'],
+    ]);
+  });
+
+  it('AW3/M10 withdrawing needs a note with text; nothing is written without one', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    const before = snapshot(db);
+    for (const note of [undefined, null, '', '   ', '\n\t', 'a\u0000b', 5]) {
+      expect(await code(decide(db, review.id, 'withdraw', note))).toEqual({
+        status: 400,
+        code: 'CS_APPROVAL_NOTE_INVALID',
+      });
+    }
+    expect(snapshot(db)).toBe(before);
+  });
+
+  it('AW4/AH3/M11 earlier decisions are never changed: every later one is a new row', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve', 'First look.');
+    const first = JSON.stringify(db.tables.approval[0]);
+    await decide(db, review.id, 'withdraw', WITHDRAWAL);
+    const second = JSON.stringify(db.tables.approval[1]);
+    await decide(db, review.id, 'refuse', REFUSAL);
+    expect(JSON.stringify(db.tables.approval[0])).toBe(first);
+    expect(JSON.stringify(db.tables.approval[1])).toBe(second);
+    expect(db.tables.approval).toHaveLength(3);
+    // the history is appended, never updated
+    expect(
+      db.log.map((e) => e.op).filter((op) => /approval\./.test(op))
+    ).not.toContain('approval.updateMany');
+  });
+
+  it('AW7 approving after a withdrawal is decision 3', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'refuse', REFUSAL);
+    await decide(db, review.id, 'withdraw', WITHDRAWAL);
+    const approval = await decide(db, review.id, 'approve');
+    expect(approval).toMatchObject({ state: 'APPROVED', version: 3 });
+    expect(decisions(db)).toEqual([
+      [1, 'REFUSED'],
+      [2, 'WITHDRAWN'],
+      [3, 'APPROVED'],
+    ]);
+  });
+
+  it('AW8 refusing after a withdrawal is decision 3', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    await decide(db, review.id, 'withdraw', WITHDRAWAL);
+    expect((await decide(db, review.id, 'refuse', REFUSAL)).state).toBe(
+      'REFUSED'
+    );
+    expect(decisions(db)).toEqual([
+      [1, 'APPROVED'],
+      [2, 'WITHDRAWN'],
+      [3, 'REFUSED'],
+    ]);
+  });
+});
+
+describe('ContentStudioReviewService: refusing (P5-04)', () => {
+  it('AR1/M9 refusing needs a note with text; nothing is written without one', async () => {
+    const { db, review } = await readyPackage();
+    const before = snapshot(db);
+    for (const note of [undefined, null, '', '  ', 'x'.repeat(10_001)]) {
+      expect(await code(decide(db, review.id, 'refuse', note))).toEqual({
+        status: 400,
+        code: 'CS_APPROVAL_NOTE_INVALID',
+      });
+    }
+    expect(snapshot(db)).toBe(before);
+    // the limit itself is fine
+    const max = 'x'.repeat(10_000);
+    expect((await decide(db, review.id, 'refuse', max)).history[0].note).toBe(
+      max
+    );
+  });
+
+  it('a note over the limit or with NUL is refused for an approval too', async () => {
+    const { db, review } = await readyPackage();
+    for (const note of ['x'.repeat(10_001), ' '.repeat(10_001), 'a\u0000', 5]) {
+      expect((await code(decide(db, review.id, 'approve', note))).code).toBe(
+        'CS_APPROVAL_NOTE_INVALID'
+      );
+    }
+    expect(db.tables.approval).toEqual([]);
+  });
+
+  it('AR2/AR3/AR4/P502R1/M26 a refusal requests no changes: no revision request, no comment, the review unchanged', async () => {
+    const { db, review } = await readyPackage();
+    const before = reviewFacts(db);
+    db.log.length = 0;
+    await decide(db, review.id, 'refuse', REFUSAL);
+    expect(db.tables.revisionRequest).toEqual([]);
+    expect(db.tables.comment).toEqual([]);
+    expect(reviewFacts(db)).toBe(before);
+    expect(reviewRow(db, review.id).state).toBe('READY_FOR_APPROVAL');
+    // and no new revision, review or event either: one write only
+    expect(db.tables.review).toHaveLength(1);
+    expect(
+      db.log.map((e) => e.op).filter((op) => /create|updateMany/.test(op))
+    ).toEqual(['review.updateMany', 'approval.create']);
+  });
+
+  it('AR5/P503R3 decisions never touch the claim assessments', async () => {
+    const { db, review } = await readyClaimed();
+    const claims = JSON.stringify(db.tables.claim);
+    db.log.length = 0;
+    await decide(db, review.id, 'refuse', REFUSAL);
+    await decide(db, review.id, 'withdraw', WITHDRAWAL);
+    await decide(db, review.id, 'approve');
+    expect(JSON.stringify(db.tables.claim)).toBe(claims);
+    // read to check them, never written
+    expect(db.log.filter((e) => e.op === 'claim.findMany')).not.toEqual([]);
+    expect(
+      db.log.filter((e) => /^claim\.(updateMany|create)$/.test(e.op))
+    ).toEqual([]);
+  });
+});
+
+describe('ContentStudioReviewService: legal approval decisions (P5-04)', () => {
+  const invalid = async (
+    db: Db,
+    reviewId: string,
+    action: 'approve' | 'refuse' | 'withdraw'
+  ) => {
+    const before = snapshot(db);
+    expect(
+      await code(
+        decide(db, reviewId, action, action === 'approve' ? null : 'Because.')
+      )
+    ).toEqual({ status: 409, code: 'CS_APPROVAL_INVALID_DECISION' });
+    expect(snapshot(db)).toBe(before);
+  };
+
+  it('AD8/M1 PENDING cannot be withdrawn', async () => {
+    const { db, review } = await readyPackage();
+    await invalid(db, review.id, 'withdraw');
+  });
+
+  it('AD10/AD11/M2/M3 APPROVED is only withdrawn: no second approval, no direct refusal', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    await invalid(db, review.id, 'approve');
+    await invalid(db, review.id, 'refuse');
+  });
+
+  it('AD13 REFUSED is only withdrawn: no approval, no second refusal', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'refuse', REFUSAL);
+    await invalid(db, review.id, 'approve');
+    await invalid(db, review.id, 'refuse');
+  });
+
+  it('WITHDRAWN cannot be withdrawn again', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    await decide(db, review.id, 'withdraw', WITHDRAWAL);
+    await invalid(db, review.id, 'withdraw');
+  });
+
+  it('an unknown action decides nothing', async () => {
+    const { db, review } = await readyPackage();
+    await expect(
+      db.service.decideApproval({
+        organizationId: ORG_A,
+        userId: USER_A,
+        reviewId: review.id,
+        action: 'reject' as 'approve',
+        note: 'x',
+      })
+    ).rejects.toThrow();
+    expect(db.tables.approval).toEqual([]);
+  });
+});
+
+describe('ContentStudioReviewService: approval target integrity (P5-04)', () => {
+  const broken = async (
+    db: Db,
+    reviewId: string,
+    errorCode: string,
+    status = 500
+  ) => {
+    const before = snapshot(db);
+    expect(await code(approvalOf(db, reviewId))).toEqual({
+      status,
+      code: errorCode,
+    });
+    for (const [action, note] of [
+      ['approve', null],
+      ['refuse', REFUSAL],
+      ['withdraw', WITHDRAWAL],
+    ] as const) {
+      expect(await code(decide(db, reviewId, action, note))).toEqual({
+        status,
+        code: errorCode,
+      });
+    }
+    expect(snapshot(db)).toBe(before);
+  };
+
+  it('AI1 a package decision keeps the exact revision id and stored hash', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    const stored = db.tables.packageRevision.find((r) => r.id === PKG_REV_4)!;
+    expect(db.tables.approval[0]).toMatchObject({
+      packageRevisionId: PKG_REV_4,
+      designRevisionId: null,
+      targetContentHash: stored.contentHash,
+    });
+  });
+
+  it('AI9/M7 a reviewed revision that changed stops every approval read and decision', async () => {
+    const { db, review } = await readyPackage();
+    const stored = db.tables.packageRevision.find((r) => r.id === PKG_REV_4)!;
+    stored.content = stored.content.replace('v4', 'v9');
+    await broken(db, review.id, 'CS_REVIEW_INTEGRITY_ERROR');
+  });
+
+  it('AI9 a design revision whose hash no longer matches stops it too', async () => {
+    const { db, review } = await readyDesign();
+    const stored = db.tables.designRevision.find((r) => r.id === DESIGN_REV_7)!;
+    stored.content = stored.content.replace('#ffffff', '#fffffe');
+    await broken(db, review.id, 'CS_REVIEW_INTEGRITY_ERROR');
+  });
+
+  it('a review whose state history is broken has no approval', async () => {
+    const { db, review } = await readyPackage();
+    db.tables.event.pop();
+    await broken(db, review.id, 'CS_REVIEW_INTEGRITY_ERROR');
+  });
+
+  it('AI10/P503R4/M17 a package review whose claim assessments are corrupt has no approval', async () => {
+    for (const corrupt of [
+      // a claim no longer verified although the review is ready
+      (db: Db) => {
+        db.tables.claim[1].status = 'NEEDS_REVISION';
+        db.tables.claim[1].finding = 'Changed behind the service.';
+      },
+      // an assessment of another claim hash
+      (db: Db) => {
+        db.tables.claim[0].claimContentHash = 'e'.repeat(64);
+      },
+      // an assessment of no claim of the revision
+      (db: Db) => {
+        db.tables.claim[0].claimId = 'c_orphan000000000001';
+      },
+      // a claim without its assessment row
+      (db: Db) => {
+        db.tables.claim.pop();
+      },
+    ]) {
+      const { db, review } = await readyClaimed();
+      corrupt(db);
+      await broken(db, review.id, 'CS_REVIEW_INTEGRITY_ERROR');
+    }
+  });
+
+  it('a package review without claims, and a design review, need no claim assessment', async () => {
+    const { db, review } = await readyPackage();
+    expect((await decide(db, review.id, 'approve')).state).toBe('APPROVED');
+    const design = await readyDesign();
+    design.db.log.length = 0;
+    await decide(design.db, design.review.id, 'approve');
+    // AI2: a design approval reads no claim or source
+    expect(
+      design.db.log.filter((e) => /claim\.|sourceVersion\./.test(e.op))
+    ).toEqual([]);
+  });
+
+  it('M6 the exact reviewed revision is read, never the newer one of the same package', async () => {
+    const { db, review } = await readyPackage();
+    db.log.length = 0;
+    await decide(db, review.id, 'approve');
+    await approvalOf(db, review.id);
+    const reads = db.log.filter((e) => e.op === 'packageRevision.findFirst');
+    expect(reads.length).toBeGreaterThan(0);
+    for (const read of reads) {
+      expect(read.where).toEqual({ id: PKG_REV_4, organizationId: ORG_A });
+    }
+  });
+});
+
+describe('ContentStudioReviewService: stored approval history (P5-04)', () => {
+  // a valid row, then broken as each test needs
+  const row = (db: Db, review: { id: string }, overrides: Row = {}) => {
+    const stored = db.tables.packageRevision.find((r) => r.id === PKG_REV_4)!;
+    return {
+      id: uuid(9900 + db.tables.approval.length),
+      organizationId: ORG_A,
+      reviewId: review.id,
+      sequence: db.tables.approval.length + 1,
+      decision: 'APPROVED',
+      packageRevisionId: PKG_REV_4,
+      designRevisionId: null,
+      targetContentHash: stored.contentHash,
+      actorUserId: USER_A2,
+      note: null,
+      createdAt: new Date('2026-10-19T12:00:00.000Z'),
+      ...overrides,
+    };
+  };
+  const corrupt = async (rows: (db: Db, review: { id: string }) => Row[]) => {
+    const { db, review } = await readyPackage();
+    db.tables.approval.push(...rows(db, review));
+    const before = snapshot(db);
+    expect(await code(approvalOf(db, review.id))).toEqual({
+      status: 500,
+      code: 'CS_APPROVAL_INTEGRITY_ERROR',
+    });
+    for (const [action, note] of [
+      ['approve', null],
+      ['refuse', REFUSAL],
+      ['withdraw', WITHDRAWAL],
+    ] as const) {
+      expect((await code(decide(db, review.id, action, note))).code).toBe(
+        'CS_APPROVAL_INTEGRITY_ERROR'
+      );
+    }
+    expect(snapshot(db)).toBe(before);
+  };
+
+  it('a whole stored history reads back as written', async () => {
+    const { db, review } = await readyPackage();
+    db.tables.approval.push(row(db, review));
+    db.tables.approval.push(
+      row(db, review, { decision: 'WITHDRAWN', note: 'Why.' })
+    );
+    expect((await approvalOf(db, review.id)).state).toBe('PENDING');
+  });
+
+  it('AH2/AD14/M4 a history that does not start at 1 fails closed', async () => {
+    await corrupt((db, review) => [row(db, review, { sequence: 2 })]);
+  });
+
+  it('AH1/AD14/M4 a gap in the sequence fails closed', async () => {
+    await corrupt((db, review) => [
+      row(db, review),
+      row(db, review, { sequence: 3, decision: 'WITHDRAWN', note: 'Why.' }),
+    ]);
+  });
+
+  it('AH4 APPROVED followed directly by REFUSED fails closed', async () => {
+    await corrupt((db, review) => [
+      row(db, review),
+      { ...row(db, review), sequence: 2, decision: 'REFUSED', note: 'No.' },
+    ]);
+  });
+
+  it('AH5 two approvals in a row fail closed', async () => {
+    await corrupt((db, review) => [
+      row(db, review),
+      { ...row(db, review), sequence: 2 },
+    ]);
+  });
+
+  it('AH6 a withdrawal of nothing fails closed', async () => {
+    await corrupt((db, review) => [
+      row(db, review, { decision: 'WITHDRAWN', note: 'Why.' }),
+    ]);
+  });
+
+  it('AD15 an unknown decision fails closed', async () => {
+    await corrupt((db, review) => [row(db, review, { decision: 'REJECTED' })]);
+    await corrupt((db, review) => [row(db, review, { decision: 'approved' })]);
+  });
+
+  it('AI3/AH8 a decision with another hash fails closed', async () => {
+    await corrupt((db, review) => [
+      row(db, review, { targetContentHash: 'e'.repeat(64) }),
+    ]);
+  });
+
+  it('AI4 a decision about another package revision fails closed', async () => {
+    await corrupt((db, review) => [
+      row(db, review, { packageRevisionId: PKG_REV_5 }),
+    ]);
+  });
+
+  it('AI5 a decision about another design revision fails closed', async () => {
+    const { db, review } = await readyDesign();
+    const stored = db.tables.designRevision.find((r) => r.id === DESIGN_REV_7)!;
+    db.tables.approval.push({
+      ...row(db, review),
+      packageRevisionId: null,
+      designRevisionId: DESIGN_REV_8,
+      targetContentHash: stored.contentHash,
+    });
+    expect((await code(approvalOf(db, review.id))).code).toBe(
+      'CS_APPROVAL_INTEGRITY_ERROR'
+    );
+  });
+
+  it('AI6/AI7 a decision naming both revisions, or neither, fails closed', async () => {
+    await corrupt((db, review) => [
+      row(db, review, { designRevisionId: DESIGN_REV_7 }),
+    ]);
+    await corrupt((db, review) => [
+      row(db, review, { packageRevisionId: null }),
+    ]);
+  });
+
+  it('AH7 a decision whose actor is gone, or a stored note that is not whole, fails closed', async () => {
+    await corrupt((db, review) => [row(db, review, { actorUserId: 'ghost' })]);
+    await corrupt((db, review) => [
+      row(db, review, { decision: 'REFUSED', note: null }),
+    ]);
+    await corrupt((db, review) => [row(db, review, { note: '   ' })]);
+  });
+
+  it('AH7 the actor is told by id and name only', async () => {
+    const { db, review } = await readyPackage();
+    db.tables.user.find((u) => u.id === USER_A2)!.email = 'bo@example.com';
+    const approval = await decide(db, review.id, 'approve');
+    expect(Object.keys(approval.history[0].actor).sort()).toEqual([
+      'id',
+      'name',
+    ]);
+    expect(JSON.stringify(approval)).not.toMatch(/example\.com|org-a/);
+  });
+
+  it('decisions stored for a review that is not ready fail closed', async () => {
+    const db = discussion();
+    const review = await reviewIn(db, 'IN_REVIEW');
+    db.tables.approval.push(row(db, review));
+    expect(await code(approvalOf(db, review.id))).toEqual({
+      status: 500,
+      code: 'CS_APPROVAL_INTEGRITY_ERROR',
+    });
+  });
+
+  it('P502R4 a history entry has the decision, note, actor, time and sequence only', async () => {
+    const { db, review } = await readyPackage();
+    const approval = await decide(db, review.id, 'refuse', REFUSAL);
+    expect(Object.keys(approval).sort()).toEqual([
+      'history',
+      'reviewId',
+      'state',
+      'targetContentHash',
+      'targetRevisionId',
+      'targetRevisionNumber',
+      'targetType',
+      'version',
+    ]);
+    expect(Object.keys(approval.history[0]).sort()).toEqual([
+      'actor',
+      'createdAt',
+      'decision',
+      'note',
+      'sequence',
+    ]);
+  });
+});
+
+describe('ContentStudioReviewService: approval tenancy (P5-04)', () => {
+  it('ASEC1-ASEC4 another organization reads and decides nothing: a plain 404', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    const before = snapshot(db);
+    expect(await code(approvalOf(db, review.id, ORG_B))).toEqual({
+      status: 404,
+      code: 'CS_NOT_FOUND',
+    });
+    for (const [action, note] of [
+      ['approve', null],
+      ['refuse', REFUSAL],
+      ['withdraw', WITHDRAWAL],
+    ] as const) {
+      expect(
+        await code(decide(db, review.id, action, note, USER_B, ORG_B))
+      ).toEqual({ status: 404, code: 'CS_NOT_FOUND' });
+    }
+    expect(snapshot(db)).toBe(before);
+  });
+
+  it('M15/M16 every approval query names the organization', async () => {
+    const { db, review } = await readyClaimed();
+    db.log.length = 0;
+    await decide(db, review.id, 'approve');
+    await approvalOf(db, review.id);
+    const reads = db.log.filter((e) => e.where);
+    expect(reads.length).toBeGreaterThan(5);
+    for (const read of reads) {
+      expect(read.where!.organizationId).toBe(ORG_A);
+    }
+    expect(
+      db.log.filter((e) => e.op === 'approval.create')[0].data!.organizationId
+    ).toBe(ORG_A);
+  });
+
+  it('AI8 a decision row of another organization is not part of the history', async () => {
+    const { db, review } = await readyPackage();
+    db.tables.approval.push({
+      id: uuid(9990),
+      organizationId: ORG_B,
+      reviewId: review.id,
+      sequence: 1,
+      decision: 'APPROVED',
+      packageRevisionId: PKG_REV_4,
+      designRevisionId: null,
+      targetContentHash: review.targetContentHash,
+      actorUserId: USER_B,
+      note: null,
+      createdAt: new Date(),
+    });
+    expect((await approvalOf(db, review.id)).state).toBe('PENDING');
+  });
+});
+
+describe('ContentStudioReviewService: approval races (P5-04)', () => {
+  // the other request runs to completion exactly between this one's reads
+  // and its transaction
+  const between = (db: Db, other: () => Promise<unknown>) => {
+    const original = db.repository.appendApprovalDecision.bind(db.repository);
+    let ran = false;
+    db.repository.appendApprovalDecision = async (input) => {
+      if (!ran) {
+        ran = true;
+        await other();
+      }
+      return original(input);
+    };
+  };
+  const settle = async (...calls: Promise<unknown>[]) => {
+    const results = await Promise.allSettled(calls);
+    return results.map((result) =>
+      result.status === 'fulfilled'
+        ? 'ok'
+        : ((result.reason as HttpException).getResponse() as Row).code
+    );
+  };
+
+  it('UCON1 approve and refuse at once: one wins, the other is CS_APPROVAL_CONFLICT, one decision', async () => {
+    for (const first of ['approve', 'refuse'] as const) {
+      const { db, review } = await readyPackage();
+      const results = await settle(
+        first === 'approve'
+          ? decide(db, review.id, 'approve')
+          : decide(db, review.id, 'refuse', REFUSAL),
+        first === 'approve'
+          ? decide(db, review.id, 'refuse', REFUSAL, USER_A)
+          : decide(db, review.id, 'approve', null, USER_A)
+      );
+      expect(results).toEqual(['ok', 'CS_APPROVAL_CONFLICT']);
+      expect(db.tables.approval).toHaveLength(1);
+      expect((await approvalOf(db, review.id)).state).toBe(
+        first === 'approve' ? 'APPROVED' : 'REFUSED'
+      );
+    }
+  });
+
+  it("UCON1 a refusal that commits between an approval's read and its transaction wins", async () => {
+    const { db, review } = await readyPackage();
+    between(db, () => decide(db, review.id, 'refuse', REFUSAL, USER_A));
+    expect(await code(decide(db, review.id, 'approve'))).toEqual({
+      status: 409,
+      code: 'CS_APPROVAL_CONFLICT',
+    });
+    expect(decisions(db)).toEqual([[1, 'REFUSED']]);
+  });
+
+  it('UCON2 two approvals at once: one row', async () => {
+    const { db, review } = await readyDesign();
+    expect(
+      await settle(
+        decide(db, review.id, 'approve'),
+        decide(db, review.id, 'approve', null, USER_A)
+      )
+    ).toEqual(['ok', 'CS_APPROVAL_CONFLICT']);
+    expect(decisions(db)).toEqual([[1, 'APPROVED']]);
+  });
+
+  it('UCON3 two withdrawals at once: one WITHDRAWN row', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    expect(
+      await settle(
+        decide(db, review.id, 'withdraw', WITHDRAWAL),
+        decide(db, review.id, 'withdraw', 'Me too.', USER_A)
+      )
+    ).toEqual(['ok', 'CS_APPROVAL_CONFLICT']);
+    expect(decisions(db)).toEqual([
+      [1, 'APPROVED'],
+      [2, 'WITHDRAWN'],
+    ]);
+  });
+
+  it('UCON4/M14 a withdrawal decided on a stale history conflicts: it never withdraws the newer approval', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    // someone else withdraws and approves again in the meantime
+    between(db, async () => {
+      await decide(db, review.id, 'withdraw', 'Rechecking.', USER_A);
+      await decide(db, review.id, 'approve', 'Rechecked.', USER_A);
+    });
+    expect(await code(decide(db, review.id, 'withdraw', WITHDRAWAL))).toEqual({
+      status: 409,
+      code: 'CS_APPROVAL_CONFLICT',
+    });
+    expect(decisions(db)).toEqual([
+      [1, 'APPROVED'],
+      [2, 'WITHDRAWN'],
+      [3, 'APPROVED'],
+    ]);
+  });
+
+  it('UCON4 an approval decided on PENDING conflicts once the history moved on, even back to PENDING', async () => {
+    const { db, review } = await readyPackage();
+    between(db, async () => {
+      await decide(db, review.id, 'refuse', REFUSAL, USER_A);
+      await decide(db, review.id, 'withdraw', WITHDRAWAL, USER_A);
+    });
+    expect((await code(decide(db, review.id, 'approve'))).code).toBe(
+      'CS_APPROVAL_CONFLICT'
+    );
+    expect(decisions(db)).toEqual([
+      [1, 'REFUSED'],
+      [2, 'WITHDRAWN'],
+    ]);
+  });
+
+  it('PG9 a refusal asked for while APPROVED is never reinterpreted after a withdrawal', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    // the withdrawal commits right after the refusal read APPROVED
+    const repository = db.repository as unknown as Record<
+      string,
+      (...args: unknown[]) => Promise<unknown>
+    >;
+    const original = repository.listApprovalsForReview.bind(db.repository);
+    let ran = false;
+    repository.listApprovalsForReview = async (...args) => {
+      const rows = await original(...args);
+      if (!ran) {
+        ran = true;
+        await decide(db, review.id, 'withdraw', WITHDRAWAL, USER_A);
+      }
+      return rows;
+    };
+    expect((await code(decide(db, review.id, 'refuse', REFUSAL))).code).toBe(
+      'CS_APPROVAL_INVALID_DECISION'
+    );
+    expect(decisions(db)).toEqual([
+      [1, 'APPROVED'],
+      [2, 'WITHDRAWN'],
+    ]);
+  });
+
+  it('UCON5 many decisions at once: the sequence stays 1, 2, 3... without a gap or a duplicate', async () => {
+    const { db, review } = await readyPackage();
+    for (let round = 0; round < 3; round += 1) {
+      await settle(
+        decide(db, review.id, 'approve'),
+        decide(db, review.id, 'refuse', REFUSAL, USER_A),
+        decide(db, review.id, 'approve', null, USER_A)
+      );
+      await settle(
+        decide(db, review.id, 'withdraw', WITHDRAWAL),
+        decide(db, review.id, 'withdraw', WITHDRAWAL, USER_A)
+      );
+    }
+    expect(db.tables.approval.map((r) => r.sequence)).toEqual([
+      1, 2, 3, 4, 5, 6,
+    ]);
+    expect(db.tables.approval.map((r) => r.decision)).toEqual([
+      expect.stringMatching(/^(APPROVED|REFUSED)$/),
+      'WITHDRAWN',
+      expect.stringMatching(/^(APPROVED|REFUSED)$/),
+      'WITHDRAWN',
+      expect.stringMatching(/^(APPROVED|REFUSED)$/),
+      'WITHDRAWN',
+    ]);
+    expect((await approvalOf(db, review.id)).state).toBe('PENDING');
+  });
+
+  it('M12/M13 the decision is appended inside one transaction after the review row is held and the history read again', async () => {
+    const { db, review } = await readyPackage();
+    db.log.length = 0;
+    await decide(db, review.id, 'approve');
+    const ops = db.log.map((e) => e.op);
+    const hold = ops.lastIndexOf('review.updateMany');
+    expect(ops.slice(hold)).toEqual([
+      'review.updateMany',
+      'approval.findMany',
+      'approval.create',
+      // the answer
+      'approval.findMany',
+    ]);
+    expect(db.log[hold]).toMatchObject({
+      where: {
+        id: review.id,
+        organizationId: ORG_A,
+        state: 'READY_FOR_APPROVAL',
+        version: 3,
+      },
+      data: { version: { increment: 0 } },
+    });
+  });
+
+  it('a held review that is no longer ready at that version writes nothing', async () => {
+    const { db, review } = await readyPackage();
+    between(db, async () => {
+      reviewRow(db, review.id).version = 4;
+    });
+    expect((await code(decide(db, review.id, 'approve'))).code).toBe(
+      'CS_APPROVAL_CONFLICT'
+    );
+    expect(db.tables.approval).toEqual([]);
+  });
+
+  it('M27 a decision whose sequence is already taken is a conflict, never a second current decision', async () => {
+    const { db, review } = await readyPackage();
+    db.tables.approval.push({
+      id: uuid(9991),
+      organizationId: ORG_A,
+      reviewId: review.id,
+      sequence: 1,
+      decision: 'REFUSED',
+      packageRevisionId: PKG_REV_4,
+      designRevisionId: null,
+      targetContentHash: review.targetContentHash,
+      actorUserId: USER_A,
+      note: REFUSAL,
+      createdAt: new Date(),
+    });
+    // every history read misses it, as if nothing serialized the decisions:
+    // the unique (reviewId, sequence) still refuses the second decision 1
+    (db.repository as any)._transaction.model.contentStudioApproval.findMany =
+      async () => [];
+    expect((await code(decide(db, review.id, 'approve'))).code).toBe(
+      'CS_APPROVAL_CONFLICT'
+    );
+    expect(decisions(db)).toEqual([[1, 'REFUSED']]);
+  });
+});
+
+describe('ContentStudioReviewService: no approval carry-over (P5-04)', () => {
+  it('P504-8/M22 the review of a newer revision starts with no decision, even when the older one is approved', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    const next = await reviewIn(
+      db,
+      'READY_FOR_APPROVAL',
+      'PACKAGE_REVISION',
+      PKG_REV_5
+    );
+    expect(await approvalOf(db, next.id)).toMatchObject({
+      targetRevisionId: PKG_REV_5,
+      state: 'PENDING',
+      version: 0,
+      history: [],
+    });
+    // and the older one stays approved
+    expect((await approvalOf(db, review.id)).state).toBe('APPROVED');
+  });
+
+  it('P504-8 a revision with exactly the same content and hash still has its own approval', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    const twin = uuid(44);
+    db.tables.packageRevision.push(
+      packageRevision(twin, ORG_A, 10, `v4 ${SECRET}`)
+    );
+    const next = await reviewIn(
+      db,
+      'READY_FOR_APPROVAL',
+      'PACKAGE_REVISION',
+      twin
+    );
+    expect(next.targetContentHash).toBe(review.targetContentHash);
+    expect((await approvalOf(db, next.id)).state).toBe('PENDING');
+    await decide(db, next.id, 'refuse', REFUSAL);
+    expect((await approvalOf(db, review.id)).state).toBe('APPROVED');
+    expect(
+      db.tables.approval.map((r) => [r.reviewId, r.sequence, r.decision])
+    ).toEqual([
+      [review.id, 1, 'APPROVED'],
+      [next.id, 1, 'REFUSED'],
+    ]);
+  });
+
+  it('a grounded package review whose claims repeat in the next revision does not carry its approval', async () => {
+    const { db, review } = await readyClaimed();
+    await decide(db, review.id, 'approve');
+    const next = await act(
+      db,
+      (
+        await request(db, 'PACKAGE_REVISION', PKG_REV_G_NEXT)
+      ).id,
+      'start'
+    );
+    expect(await code(approvalOf(db, next.id))).toEqual({
+      status: 409,
+      code: 'CS_APPROVAL_UNAVAILABLE',
+    });
+  });
+});
+
+describe('ContentStudioReviewService: approval and the review workflow (P5-04)', () => {
+  it('P503R1 a grounded package review reaches approval only once every claim is verified', async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'VERIFIED');
+    expect((await code(act(db, review.id, 'ready-for-approval'))).code).toBe(
+      'CS_REVIEW_CLAIMS_INCOMPLETE'
+    );
+    expect((await code(decide(db, review.id, 'approve'))).code).toBe(
+      'CS_APPROVAL_UNAVAILABLE'
+    );
+    await assess(db, review.id, C2, 'VERIFIED');
+    await act(db, review.id, 'ready-for-approval');
+    expect((await decide(db, review.id, 'approve')).state).toBe('APPROVED');
+  });
+
+  it('P502R2 an approval note is not a comment, and comments stay open on a decided review', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'refuse', REFUSAL);
+    expect((await comments(db, review.id)).results).toEqual([]);
+    await say(db, review.id, 'Noted.');
+    expect((await approvalOf(db, review.id)).version).toBe(1);
+  });
+
+  it('P502R3 requesting changes is unchanged: it needs its own description and makes no decision', async () => {
+    const db = discussion();
+    const review = await reviewIn(db, 'IN_REVIEW');
+    expect((await code(askChanges(db, review.id, '  '))).code).toBe(
+      'CS_REVIEW_REVISION_REQUEST_INVALID'
+    );
+    await askChanges(db, review.id, CHANGES);
+    expect(db.tables.approval).toEqual([]);
+    expect((await code(approvalOf(db, review.id))).code).toBe(
+      'CS_APPROVAL_UNAVAILABLE'
+    );
+  });
+
+  it('a cancelled review never gets an approval', async () => {
+    const db = discussion();
+    const review = await reviewIn(db, 'CANCELLED');
+    expect((await code(decide(db, review.id, 'approve'))).code).toBe(
+      'CS_APPROVAL_UNAVAILABLE'
+    );
+  });
+});
+
+describe('ContentStudioReviewService approval boundaries (P5-04)', () => {
+  const source = (file: string) =>
+    readFileSync(join(__dirname, file), 'utf8').replace(/\/\/.*$/gm, '');
+  const root = join(__dirname, '..', '..', '..', '..', '..', '..');
+  const schema = readFileSync(join(__dirname, '..', 'schema.prisma'), 'utf8');
+  const modelOf = (name: string) => {
+    const start = schema.indexOf(`model ${name} {`);
+    return schema.slice(start, schema.indexOf('\n}', start));
+  };
+
+  it('P504-1/M23 the review state machine has no APPROVED state', () => {
+    const state = source('../../../content-studio/review/review.state.ts');
+    expect(state).not.toMatch(/'APPROVED'|'REFUSED'|'WITHDRAWN'/);
+    expect(state).toMatch(
+      /'REQUESTED',\s*'IN_REVIEW',\s*'CHANGES_REQUESTED',\s*'READY_FOR_APPROVAL',\s*'CANCELLED',\s*\]/
+    );
+  });
+
+  it('P504-2/M24 the review row holds no approval state: it is derived from the decisions', () => {
+    const review = modelOf('ContentStudioReview');
+    expect(review).not.toMatch(
+      /approval\w*\s+(String|Int|DateTime)|currentApproval|approvedAt|approvedBy/i
+    );
+    expect(review).toMatch(/approvals\s+ContentStudioApproval\[\]/);
+  });
+
+  it('P504-3 a decision row has exactly its decision fields and no updatedAt', () => {
+    const fields = modelOf('ContentStudioApproval')
+      .split('\n')
+      .slice(1)
+      .map((line) => line.trim().split(/\s+/)[0])
+      .filter((field) => /^[a-z]/.test(field));
+    expect(fields).toEqual([
+      'id',
+      'organizationId',
+      'reviewId',
+      'sequence',
+      'decision',
+      'packageRevisionId',
+      'designRevisionId',
+      'targetContentHash',
+      'actorUserId',
+      'note',
+      'createdAt',
+      'organization',
+      'review',
+      'actorUser',
+      'packageRevision',
+      'designRevision',
+    ]);
+    const model = modelOf('ContentStudioApproval');
+    expect(model).not.toMatch(
+      /updatedAt|@updatedAt|deletedAt|editedAt|comment|revisionRequest|Json/i
+    );
+    expect(model).toMatch(/@@unique\(\[reviewId, sequence\]\)/);
+    expect(model).toMatch(
+      /review\s+ContentStudioReview\s+@relation\(fields: \[reviewId, organizationId\], references: \[id, organizationId\]\)/
+    );
+    expect(model).toMatch(
+      /packageRevision\s+ContentPackageRevision\?\s+@relation\(fields: \[packageRevisionId, organizationId\], references: \[id, organizationId\], onDelete: Restrict, onUpdate: Restrict\)/
+    );
+    expect(model).toMatch(
+      /designRevision\s+ContentStudioDesignRevision\?\s+@relation\(fields: \[designRevisionId, organizationId\], references: \[id, organizationId\], onDelete: Restrict, onUpdate: Restrict\)/
+    );
+  });
+
+  it('P504-3/M11 decisions are only ever created: no update, upsert or delete', () => {
+    const text = source('content-studio.review.repository.ts');
+    expect(text).not.toMatch(
+      /contentStudioApproval\.(update|updateMany|upsert|delete|deleteMany)\(/
+    );
+    expect(
+      text.split(/contentStudioApproval\.(?:findMany|create)\(/).length - 1
+    ).toBe(3);
+  });
+
+  it('P504-6/P504-7/M25 handoff and publishing know nothing of approval', () => {
+    for (const file of [
+      'content-studio.handoff.service.ts',
+      'content-studio.handoff.repository.ts',
+    ]) {
+      expect(source(file)).not.toMatch(/approv|review/i);
+    }
+    const posts = readFileSync(
+      join(
+        root,
+        'libraries/nestjs-libraries/src/database/prisma/posts/posts.service.ts'
+      ),
+      'utf8'
+    );
+    expect(posts).not.toMatch(
+      /ContentStudioApproval|contentStudioApproval|content-studio/
+    );
+  });
+
+  it('P504-10/P504-11 no notification, email, MCP or agent integration', () => {
+    for (const file of [
+      'content-studio.review.service.ts',
+      'content-studio.review.repository.ts',
+      '../../../content-studio/review/review.approval.ts',
+    ]) {
+      expect(source(file)).not.toMatch(/notif|email|mcp|agent|webhook|credit/i);
+    }
+  });
+
+  it('P504-9 the approval domain is pure: no Node, database or browser dependency, and no approver policy', () => {
+    const text = readFileSync(
+      join(__dirname, '../../../content-studio/review/review.approval.ts'),
+      'utf8'
+    );
+    expect(text.match(/from '[^']+'/g)).toEqual([
+      "from '@gitroom/nestjs-libraries/content-studio/review/review.state'",
+    ]);
+    expect(text.replace(/\/\/.*$/gm, '')).not.toMatch(
+      /approver|quorum|group|assign|role|self/i
+    );
+  });
+
+  it('M26 a decision never requests changes, posts a comment or moves the review', () => {
+    const text = source('content-studio.review.service.ts');
+    const approval = text.slice(
+      text.indexOf('async getApproval('),
+      text.indexOf('private claimReview(')
+    );
+    expect(approval).not.toMatch(
+      /requestChanges|revisionRequest|createComment|transitionReview|changeState|setClaimAssessment|createReview/
+    );
+  });
+
+  it('P504-12/P504-13 package grounding and the Design Document are unchanged', () => {
+    const draft = readFileSync(
+      join(
+        root,
+        'libraries/nestjs-libraries/src/content-studio/content.package.draft.ts'
+      ),
+      'utf8'
+    );
+    expect(draft).toMatch(
+      /export const CONTENT_PACKAGE_GROUNDED_SCHEMA_VERSION = 2;/
+    );
+    expect(draft).not.toMatch(/approv/i);
+    const design = readFileSync(
+      join(
+        root,
+        'libraries/nestjs-libraries/src/content-studio/design/design.document.ts'
+      ),
+      'utf8'
+    );
+    expect(design).toMatch(/export const DESIGN_DOCUMENT_SCHEMA_VERSION = 1;/);
+    expect(design).not.toMatch(/approv/i);
   });
 });

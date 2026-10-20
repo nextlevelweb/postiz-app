@@ -11,6 +11,7 @@ import { SWRConfig } from 'swr';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { TextEncoder as NodeTextEncoder } from 'util';
+import dayjs from 'dayjs';
 
 // Reviews in the browser (P5-01): the review card of one exact saved
 // revision (state in words, the actions of that state, Request review), the
@@ -112,6 +113,8 @@ let revisionRequests: Record<string, Plain>;
 let extraDesignRevisions: Plain[];
 // P5-03B: the claims of each package review, as the server answers them
 let claimLists: Record<string, Plain>;
+// P5-04: the decision history of each ready review
+let approvals: Record<string, Plain[]>;
 const NEXT: Record<string, Record<string, string>> = {
   REQUESTED: { start: 'IN_REVIEW', cancel: 'CANCELLED' },
   IN_REVIEW: {
@@ -319,6 +322,59 @@ const server = (method: string, url: string, body: any): Reply => {
     }
     return reply(200, claimLists[review.id] ?? list);
   }
+  // approval decisions (P5-04)
+  const am = pathname.match(
+    /^\/content-studio\/reviews\/([^/]+)\/approval(?:\/(approve|refuse|withdraw))?$/
+  );
+  if (am) {
+    if (failNext) {
+      const failure = failNext;
+      failNext = null;
+      return reply(failure.status, { msg: SECRET, code: failure.code });
+    }
+    const review = reviews.find((r) => r.id === am[1]);
+    if (!review) return reply(404, { msg: SECRET, code: 'CS_NOT_FOUND' });
+    if (review.state !== 'READY_FOR_APPROVAL') {
+      return reply(409, { msg: SECRET, code: 'CS_APPROVAL_UNAVAILABLE' });
+    }
+    const history = (approvals[review.id] = approvals[review.id] ?? []);
+    const last = history[history.length - 1]?.decision;
+    const current = !last || last === 'WITHDRAWN' ? 'PENDING' : last;
+    if (method === 'POST') {
+      const decision = {
+        approve: 'APPROVED',
+        refuse: 'REFUSED',
+        withdraw: 'WITHDRAWN',
+      }[am[2] as 'approve'] as string;
+      if ((decision === 'WITHDRAWN') !== (current !== 'PENDING')) {
+        return reply(409, {
+          msg: SECRET,
+          code: 'CS_APPROVAL_INVALID_DECISION',
+        });
+      }
+      if (decision !== 'APPROVED' && !(body.note ?? '').trim()) {
+        return reply(400, { msg: SECRET, code: 'CS_APPROVAL_NOTE_INVALID' });
+      }
+      history.push({
+        sequence: history.length + 1,
+        decision,
+        note: body.note,
+        actor: { id: 'user-1', name: 'Ann' },
+        createdAt: T0,
+      });
+    }
+    const latest = history[history.length - 1]?.decision;
+    return reply(200, {
+      reviewId: review.id,
+      targetType: review.targetType,
+      targetRevisionId: review.targetRevisionId,
+      targetRevisionNumber: review.targetRevisionNumber,
+      targetContentHash: review.targetContentHash,
+      state: !latest || latest === 'WITHDRAWN' ? 'PENDING' : latest,
+      version: history.length,
+      history,
+    });
+  }
   // the discussion (P5-02)
   const cm = pathname.match(
     /^\/content-studio\/reviews\/([^/]+)\/comments(?:\/([^/]+))?$/
@@ -482,6 +538,7 @@ beforeEach(() => {
   revisionRequests = {};
   extraDesignRevisions = [];
   claimLists = {};
+  approvals = {};
   mockFetch.mockReset();
   mockFetch.mockImplementation(async (url: string, init: RequestInit = {}) =>
     server(
@@ -520,10 +577,12 @@ const click = async (element: HTMLElement) => {
 };
 const card = () =>
   screen.getByRole('region', { name: 'Review' }) as HTMLElement;
-// the review actions: the discussion toggle (P5-02) is not one of them
+// the review actions: the discussion toggle (P5-02) and the approval
+// decisions (P5-04, their own section) are not among them
 const buttons = () =>
   within(card())
     .queryAllByRole('button')
+    .filter((b) => !b.closest('[data-review-approval]'))
     .map((b) => b.textContent)
     .filter((name) => !/^(Show|Hide) (discussion|claims)$/.test(name ?? ''));
 const button = (name: string) =>
@@ -859,6 +918,8 @@ describe('Review UI boundaries', () => {
       'body',
       'body',
       'status, finding',
+      // P5-04: an approval decision sends its note only
+      'note',
       'resolutionRevisionId',
     ]);
     // a claim assessment sends its status and finding (P5-03B), nothing else
@@ -1422,14 +1483,16 @@ describe('Review discussion UI boundaries (P5-02)', () => {
   });
 
   it('P502-2 the discussion gates no handoff, approval or publishing', () => {
+    expect(read('content-studio.review.discussion.tsx')).not.toMatch(
+      /handoff|publish|approve\(|approval[A-Z]|signature/i
+    );
+    // the approval (P5-04) is its own section of the card, with its own pins
     for (const file of [
-      'content-studio.review.discussion.tsx',
       'content-studio.review.status.tsx',
       'content-studio.reviews.api.ts',
+      'content-studio.review.approval.tsx',
     ]) {
-      expect(read(file)).not.toMatch(
-        /handoff|publish|approve\(|approval[A-Z]|signature/i
-      );
+      expect(read(file)).not.toMatch(/handoff|publish|signature/i);
     }
   });
 });
@@ -1769,5 +1832,366 @@ describe('Claims & evidence in a package review (P5-03B)', () => {
     expect(grounding).not.toMatch(
       /review|Verified|Needs revision|Unreviewed|claims\.api/i
     );
+  });
+});
+
+// --- approval decisions (P5-04) ---
+
+describe('Approval of a ready review (P5-04)', () => {
+  const read = (file: string) =>
+    readFileSync(join(__dirname, file), 'utf8').replace(/\/\/.*$/gm, '');
+  const readyReview = (
+    targetType = 'PACKAGE_REVISION',
+    revisionId = PKG_REV_4,
+    n = 4,
+    state = 'READY_FOR_APPROVAL'
+  ) => {
+    const review = { ...reviewOf(targetType, revisionId, n), state };
+    reviews.push(review);
+    return review;
+  };
+  const decided = (
+    review: Plain,
+    ...entries: [string, string | null, Plain?][]
+  ) => {
+    approvals[review.id] = entries.map(([decision, note, actor], index) => ({
+      sequence: index + 1,
+      decision,
+      note,
+      actor: actor ?? { id: 'user-2', name: 'Bo' },
+      createdAt: T0,
+    }));
+  };
+  const showRevision = (
+    targetType = 'PACKAGE_REVISION',
+    revisionId = PKG_REV_4,
+    n = 4
+  ) =>
+    show(
+      h(ContentStudioReviewStatus, {
+        targetType,
+        revisionId,
+        revisionNumber: n,
+      })
+    );
+  const section = () =>
+    within(card()).getByRole('region', { name: 'Approval' }) as HTMLElement;
+  const approvalState = () =>
+    section()
+      .querySelector('[data-approval-state]')!
+      .getAttribute('data-approval-state');
+  const approvalButtons = () =>
+    within(section())
+      .queryAllByRole('button')
+      .map((b) => b.textContent);
+  const press = (name: string) =>
+    click(within(section()).getByRole('button', { name }));
+  const submit = (name: string) =>
+    within(section()).getByRole('button', {
+      name,
+    }) as HTMLButtonElement;
+  const note = (name: string, value: string) =>
+    fireEvent.change(within(section()).getByRole('textbox', { name }), {
+      target: { value },
+    });
+  const approvalCalls = () =>
+    calls().filter((c) => /\/approval(\/|$)/.test(c.url));
+  const approvalWrites = () =>
+    approvalCalls().filter((c) => c.method !== 'GET');
+
+  it.each([['REQUESTED'], ['IN_REVIEW'], ['CHANGES_REQUESTED'], ['CANCELLED']])(
+    'FA1/M18 a %s review has no approval section and loads none',
+    async (state) => {
+      readyReview('PACKAGE_REVISION', PKG_REV_4, 4, state);
+      await showRevision();
+      expect(
+        within(card()).queryByRole('region', { name: 'Approval' })
+      ).toBeNull();
+      expect(
+        within(card()).queryByRole('button', { name: 'Approve' })
+      ).toBeNull();
+      expect(approvalCalls()).toEqual([]);
+    }
+  );
+
+  it('FA1/FA2/FA3 a ready review shows its approval: Pending approval, with Approve and Refuse approval', async () => {
+    const review = readyReview();
+    await showRevision();
+    expect(approvalState()).toBe('PENDING');
+    expect(section().textContent).toContain('Pending approval');
+    expect(approvalButtons()).toEqual(['Approve', 'Refuse approval']);
+    // nothing in the history yet
+    expect(section().querySelector('[data-approval-history]')).toBeNull();
+    // loaded for exactly this review
+    expect(approvalCalls()).toEqual([
+      {
+        method: 'GET',
+        url: `/content-studio/reviews/${review.id}/approval`,
+        body: undefined,
+      },
+    ]);
+    // a ready review is still not approved
+    expect(state()).toBe('Ready for approval');
+  });
+
+  it('FA9 approving takes an optional note: sent as null when empty, nothing else in the body', async () => {
+    const review = readyReview();
+    await showRevision();
+    await press('Approve');
+    expect(
+      within(section()).getByRole('textbox', { name: 'Note (optional)' })
+    ).toBeTruthy();
+    expect(submit('Approve').disabled).toBe(false);
+    await click(submit('Approve'));
+    expect(approvalWrites()).toEqual([
+      {
+        method: 'POST',
+        url: `/content-studio/reviews/${review.id}/approval/approve`,
+        body: JSON.stringify({ note: null }),
+      },
+    ]);
+    expect(approvalState()).toBe('APPROVED');
+    expect(section().textContent).toContain('Approved');
+  });
+
+  it('FA9 an approval note is sent exactly as written', async () => {
+    readyReview();
+    await showRevision();
+    await press('Approve');
+    note('Note (optional)', '  Cleared by legal.\nShip it. ');
+    await click(submit('Approve'));
+    expect(JSON.parse(approvalWrites()[0].body!)).toEqual({
+      note: '  Cleared by legal.\nShip it. ',
+    });
+    expect(section().querySelector('[data-approval-note]')!.textContent).toBe(
+      '  Cleared by legal.\nShip it. '
+    );
+  });
+
+  it('FA7/M19 refusing requires a note: the button stays off until it has text', async () => {
+    const review = readyReview();
+    await showRevision();
+    await press('Refuse approval');
+    expect(submit('Refuse approval').disabled).toBe(true);
+    expect(section().textContent).toContain('A note is required.');
+    note('Why is approval being refused?', '   ');
+    expect(submit('Refuse approval').disabled).toBe(true);
+    await click(submit('Refuse approval'));
+    expect(approvalWrites()).toEqual([]);
+    note('Why is approval being refused?', 'The offer is not cleared.');
+    expect(submit('Refuse approval').disabled).toBe(false);
+    await click(submit('Refuse approval'));
+    expect(approvalWrites()).toEqual([
+      {
+        method: 'POST',
+        url: `/content-studio/reviews/${review.id}/approval/refuse`,
+        body: JSON.stringify({ note: 'The offer is not cleared.' }),
+      },
+    ]);
+    expect(approvalState()).toBe('REFUSED');
+    // refusing approval is not requesting changes
+    expect(state()).toBe('Ready for approval');
+    expect(section().textContent).not.toMatch(
+      /changes requested|request changes/i
+    );
+  });
+
+  it('FA4/FA10 APPROVED: who and when, its note, Withdraw approval only', async () => {
+    const review = readyReview();
+    decided(review, ['APPROVED', 'Looks right.']);
+    await showRevision();
+    expect(approvalState()).toBe('APPROVED');
+    expect(section().textContent).toContain('Bo · Oct 19, 2026');
+    expect(section().textContent).toContain('Looks right.');
+    expect(approvalButtons()).toEqual(['Withdraw approval']);
+  });
+
+  it('FA5 REFUSED: Withdraw refusal only', async () => {
+    const review = readyReview('DESIGN_REVISION', DESIGN_REV_1, 1);
+    decided(review, ['REFUSED', 'Off brand.']);
+    await showRevision('DESIGN_REVISION', DESIGN_REV_1, 1);
+    expect(approvalState()).toBe('REFUSED');
+    expect(section().textContent).toContain('Refused');
+    expect(approvalButtons()).toEqual(['Withdraw refusal']);
+  });
+
+  it('FA6/FA8 withdrawing needs a note, says the decision stays in the history, and leaves the approval pending again', async () => {
+    const review = readyReview();
+    decided(review, ['APPROVED', null]);
+    await showRevision();
+    await press('Withdraw approval');
+    expect(section().textContent).toContain(
+      'The previous decision stays in the approval history.'
+    );
+    expect(submit('Withdraw approval').disabled).toBe(true);
+    note('Why is this decision being withdrawn?', 'Legal is still checking.');
+    await click(submit('Withdraw approval'));
+    expect(approvalWrites()).toEqual([
+      {
+        method: 'POST',
+        url: `/content-studio/reviews/${review.id}/approval/withdraw`,
+        body: JSON.stringify({ note: 'Legal is still checking.' }),
+      },
+    ]);
+    expect(approvalState()).toBe('PENDING');
+    expect(approvalButtons()).toEqual(['Approve', 'Refuse approval']);
+    // the earlier approval is still there
+    expect(
+      Array.from(section().querySelectorAll('[data-approval-decision]'), (li) =>
+        li.getAttribute('data-approval-decision')
+      )
+    ).toEqual(['APPROVED', 'WITHDRAWN']);
+  });
+
+  it('FA10/M20 the history lists every decision in order, with actor, time and note', async () => {
+    const review = readyReview();
+    decided(
+      review,
+      ['APPROVED', null, { id: 'user-2', name: 'Bo' }],
+      ['WITHDRAWN', 'Too early.', { id: 'user-1', name: 'Ann' }],
+      ['REFUSED', 'Not cleared.', { id: 'user-2', name: 'Bo' }]
+    );
+    await showRevision();
+    const history = section().querySelector(
+      '[data-approval-history]'
+    ) as HTMLElement;
+    expect(history.querySelector('summary')!.textContent).toBe(
+      'Approval history'
+    );
+    const when = dayjs(T0).format('MMM D, YYYY HH:mm');
+    const items = Array.from(history.querySelectorAll('li'), (li) =>
+      Array.from(li.children, (part) => part.textContent)
+    );
+    expect(items).toEqual([
+      [`Approved · Bo · ${when}`],
+      [`Withdrawn · Ann · ${when}`, 'Too early.'],
+      [`Refused · Bo · ${when}`, 'Not cleared.'],
+    ]);
+  });
+
+  it('FA11/M21 no edit or delete of a decision anywhere', async () => {
+    const review = readyReview();
+    decided(review, ['APPROVED', 'Fine.']);
+    await showRevision();
+    const history = section().querySelector(
+      '[data-approval-history]'
+    ) as HTMLElement;
+    expect(within(history).queryAllByRole('button')).toEqual([]);
+    expect(approvalButtons().join(' ')).not.toMatch(
+      /edit|delete|remove|change/i
+    );
+    const ui = read('content-studio.review.approval.tsx');
+    expect(ui).not.toMatch(/PATCH|PUT|DELETE|delete|remove|edit/i);
+    const api = read('content-studio.reviews.api.ts');
+    const decide = api.slice(
+      api.indexOf('decideApproval: async'),
+      api.indexOf('resolveRevisionRequest: async')
+    );
+    expect(decide).toContain("method: 'POST'");
+    expect(decide).toContain('JSON.stringify({ note })');
+    expect(decide).not.toMatch(
+      /decision|sequence|actor|userId|organization|hash|state|version/i
+    );
+  });
+
+  it('FA12 the approval names the exact saved version or revision it applies to', async () => {
+    readyReview();
+    await showRevision();
+    expect(section().textContent).toContain(
+      'This approval applies to saved version 4.'
+    );
+    cleanup();
+    readyReview('DESIGN_REVISION', DESIGN_REV_2, 2);
+    await showRevision('DESIGN_REVISION', DESIGN_REV_2, 2);
+    expect(section().textContent).toContain(
+      'This approval applies to saved revision 2.'
+    );
+    // a design review is decided the same way
+    await press('Approve');
+    await click(submit('Approve'));
+    expect(approvalState()).toBe('APPROVED');
+  });
+
+  it('FA13/M22 a newer version has its own review and approval: nothing is inherited', async () => {
+    const four = readyReview('PACKAGE_REVISION', PKG_REV_4, 4);
+    const five = readyReview('PACKAGE_REVISION', PKG_REV_5, 5);
+    decided(four, ['APPROVED', null]);
+    await showRevision('PACKAGE_REVISION', PKG_REV_5, 5);
+    expect(approvalState()).toBe('PENDING');
+    expect(section().querySelector('[data-approval-history]')).toBeNull();
+    expect(approvalCalls().map((c) => c.url)).toEqual([
+      `/content-studio/reviews/${five.id}/approval`,
+    ]);
+  });
+
+  it('FA14 a decision someone else beat gets the fixed message and the current approval', async () => {
+    readyReview();
+    await showRevision();
+    await press('Approve');
+    failNext = { status: 409, code: 'CS_APPROVAL_CONFLICT' };
+    await click(submit('Approve'));
+    expect(mockToast).toHaveBeenCalledWith(
+      'The approval has changed. Check its current state and try again.',
+      'warning'
+    );
+    expect(JSON.stringify(mockToast.mock.calls)).not.toContain(SECRET);
+    // reloaded: still pending here
+    expect(approvalState()).toBe('PENDING');
+  });
+
+  it('an approval that cannot be read safely says so, and offers no decision', async () => {
+    readyReview();
+    mockFetch.mockImplementation(async (url: string, init: RequestInit = {}) =>
+      /\/approval$/.test(url)
+        ? reply(500, { msg: SECRET, code: 'CS_APPROVAL_INTEGRITY_ERROR' })
+        : server(
+            init.method || 'GET',
+            url,
+            init.body ? JSON.parse(init.body as string) : undefined
+          )
+    );
+    await showRevision();
+    expect(section().textContent).toContain(
+      'Stored approval data could not be read safely.'
+    );
+    expect(approvalButtons()).toEqual([]);
+  });
+
+  it("FA13/M22 an answer about another review is never shown as this one's approval", async () => {
+    const four = readyReview('PACKAGE_REVISION', PKG_REV_4, 4);
+    const five = readyReview('PACKAGE_REVISION', PKG_REV_5, 5);
+    decided(four, ['APPROVED', 'For version 4.']);
+    mockFetch.mockImplementation(async (url: string, init: RequestInit = {}) =>
+      url === `/content-studio/reviews/${five.id}/approval`
+        ? server(
+            'GET',
+            `/content-studio/reviews/${four.id}/approval`,
+            undefined
+          )
+        : server(
+            init.method || 'GET',
+            url,
+            init.body ? JSON.parse(init.body as string) : undefined
+          )
+    );
+    await showRevision('PACKAGE_REVISION', PKG_REV_5, 5);
+    expect(section().textContent).toContain(
+      'Stored approval data could not be read safely.'
+    );
+    expect(section().textContent).not.toContain('For version 4.');
+    expect(section().querySelector('[data-approval-state]')).toBeNull();
+  });
+
+  it('M18/M23 the approval comes from the shared rules, not from the component', () => {
+    const status = read('content-studio.review.status.tsx');
+    expect(status).toContain('isContentStudioApprovalAvailable(current.state)');
+    expect(status).toMatch(
+      /isContentStudioApprovalAvailable\(current\.state\) && \(\s*<ContentStudioReviewApproval review=\{current\} \/>/
+    );
+    expect(status.match(/<ContentStudioReviewApproval/g)).toHaveLength(1);
+    const ui = read('content-studio.review.approval.tsx');
+    expect(ui).toContain('contentStudioApprovalActions(data.state)');
+    expect(ui).toContain('parseContentStudioApprovalNote(');
+    expect(ui).not.toMatch(/state === 'PENDING' \?|=== 'APPROVED' \?/);
   });
 });

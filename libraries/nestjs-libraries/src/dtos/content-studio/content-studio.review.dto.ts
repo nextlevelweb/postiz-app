@@ -20,6 +20,7 @@ import {
   CONTENT_STUDIO_REVIEW_CLAIM_FINDING_MAX,
   CONTENT_STUDIO_REVIEW_CLAIM_STATUSES,
 } from '@gitroom/nestjs-libraries/content-studio/review/review.claim';
+import { CONTENT_STUDIO_APPROVAL_NOTE_MAX } from '@gitroom/nestjs-libraries/content-studio/review/review.approval';
 
 // Digits only: '2' becomes 2, while '2abc', '' or '1.5' stay text and fail
 const toQueryInteger = ({ value }: TransformFnParams) =>
@@ -118,4 +119,30 @@ export class UpdateContentStudioReviewClaimDto {
 export class ResolveContentStudioReviewRevisionRequestDto {
   @IsUUID()
   resolutionRevisionId: string;
+}
+
+// An approval decision (P5-04) is its route plus a plain-text note, nothing
+// else: the review comes from the path, the decision from the route, the
+// actor and the organization from the request, the sequence, the revision
+// and its hash from the server. There is no field for a decision, state,
+// sequence, target, hash, user or organization. Approving may say why;
+// refusing and withdrawing must (checked by the service)
+export class ApproveContentStudioReviewDto {
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsString()
+  @MaxLength(CONTENT_STUDIO_APPROVAL_NOTE_MAX)
+  note?: string | null;
+}
+
+export class RefuseContentStudioReviewDto {
+  @IsString()
+  @MaxLength(CONTENT_STUDIO_APPROVAL_NOTE_MAX)
+  note: string;
+}
+
+export class WithdrawContentStudioReviewApprovalDto {
+  @IsString()
+  @MaxLength(CONTENT_STUDIO_APPROVAL_NOTE_MAX)
+  note: string;
 }

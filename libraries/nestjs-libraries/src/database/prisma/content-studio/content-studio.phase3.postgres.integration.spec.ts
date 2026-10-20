@@ -1591,6 +1591,12 @@ describe('E. Source service on PostgreSQL: fixed errors, organization scope', ()
 
 // ============================================================================
 describe('F. AI source grounding with the real source repository (fake adapter, no network)', () => {
+  // With source material the answer is JSON with the text and its claims
+  // (P3-11, prompt templates v3); none are claimed here
+  const groundedAnswer = (text: string) =>
+    answer(JSON.stringify({ text, claims: [] }));
+  const groundedReply = async () => groundedAnswer('A brighter spring.');
+
   const contextOf = async (operationId: string) =>
     (
       await client.contentStudioAIOperation.findUniqueOrThrow({
@@ -1613,7 +1619,7 @@ describe('F. AI source grounding with the real source repository (fake adapter, 
     const fixture = await aiFixture();
     const { sourceId } = await capturedSource();
     const v1 = await versionMeta(sourceId, 1);
-    const { adapter, resolver } = fakeResolver();
+    const { adapter, resolver } = fakeResolver(groundedReply);
     const value = await proposeItem(resolver, fixture, [sourceId]);
     const prompt = promptOf(adapter);
     expect(prompt).toContain(PROMPT_MARKER);
@@ -1661,7 +1667,7 @@ describe('F. AI source grounding with the real source repository (fake adapter, 
     const fixture = await aiFixture();
     const { sourceId } = await capturedSource();
     const v1 = await versionMeta(sourceId, 1);
-    const { resolver } = fakeResolver();
+    const { resolver } = fakeResolver(groundedReply);
     await proposeItem(resolver, fixture, [sourceId]);
     const stored = await storedAIRows();
     expect(stored).toContain(sourceId);
@@ -1679,7 +1685,7 @@ describe('F. AI source grounding with the real source repository (fake adapter, 
   it('PRIV2/50 the context source reference has exactly sourceId, versionId, versionNumber and contentHash', async () => {
     const fixture = await aiFixture();
     const { sourceId } = await capturedSource();
-    const { resolver } = fakeResolver();
+    const { resolver } = fakeResolver(groundedReply);
     const value = await proposeItem(resolver, fixture, [sourceId]);
     const context = (await contextOf(value.operationId)) as {
       sources: Array<Record<string, unknown>>;
@@ -1779,7 +1785,7 @@ describe('F. AI source grounding with the real source repository (fake adapter, 
       expect(
         await append(ORG_A, sourceId, 1, capture('SECOND_CAPTURE_V2'))
       ).toMatchObject({ status: 'created' });
-      return answer('Done.');
+      return groundedAnswer('Done.');
     });
     const lookup = jest.spyOn(sources, 'getSourceForOrganization');
     const detail = jest.spyOn(sources, 'getVersionDetailByNumber');
@@ -1807,7 +1813,7 @@ describe('F. AI source grounding with the real source repository (fake adapter, 
       expect(await sources.archiveSource(ORG_A, sourceId, T2)).toEqual({
         count: 1,
       });
-      return answer('Done.');
+      return groundedAnswer('Done.');
     });
     const value = await proposeItem(resolver, fixture, [sourceId]);
     expect(value.provenance.sources[0]).toMatchObject({ versionId: v1.id });
@@ -1822,7 +1828,7 @@ describe('F. AI source grounding with the real source repository (fake adapter, 
   it('AIG4/38 a source of another organization is not found, and nothing about it is told', async () => {
     const fixture = await aiFixture();
     const other = await capturedSource(ORG_B);
-    const { adapter, resolver } = fakeResolver();
+    const { adapter, resolver } = fakeResolver(groundedReply);
     expect(
       await httpRefusal(proposeItem(resolver, fixture, [other.sourceId]), [
         other.sourceId,
@@ -1842,7 +1848,7 @@ describe('F. AI source grounding with the real source repository (fake adapter, 
     const fixture = await aiFixture();
     const { sourceId } = await capturedSource();
     await sources.archiveSource(ORG_A, sourceId, T2);
-    const { adapter, resolver } = fakeResolver();
+    const { adapter, resolver } = fakeResolver(groundedReply);
     expect(
       await httpRefusal(proposeItem(resolver, fixture, [sourceId]))
     ).toEqual({
@@ -1856,7 +1862,7 @@ describe('F. AI source grounding with the real source repository (fake adapter, 
   it('AIG6/40 a source never captured is not ready, and is not captured for the run', async () => {
     const fixture = await aiFixture();
     const sourceId = await createSource(ORG_A);
-    const { adapter, resolver } = fakeResolver();
+    const { adapter, resolver } = fakeResolver(groundedReply);
     expect(
       await httpRefusal(proposeItem(resolver, fixture, [sourceId]))
     ).toEqual({
@@ -1883,7 +1889,7 @@ describe('F. AI source grounding with the real source repository (fake adapter, 
         },
       })
     ).id;
-    const { adapter, resolver } = fakeResolver();
+    const { adapter, resolver } = fakeResolver(groundedReply);
     expect(
       await httpRefusal(proposeItem(resolver, fixture, [sourceId]))
     ).toEqual({
@@ -1909,7 +1915,7 @@ describe('F. AI source grounding with the real source repository (fake adapter, 
         })
       ).content
     ).toContain(CORRUPT_MARKER);
-    const { adapter, resolver } = fakeResolver();
+    const { adapter, resolver } = fakeResolver(groundedReply);
     expect(
       await httpRefusal(proposeItem(resolver, fixture, [sourceId]))
     ).toEqual({
@@ -1926,7 +1932,7 @@ describe('F. AI source grounding with the real source repository (fake adapter, 
       ORG_A,
       capture(PROMPT_MARKER, { extractionVersion: 'content-studio-source-v1' })
     );
-    const { adapter, resolver } = fakeResolver();
+    const { adapter, resolver } = fakeResolver(groundedReply);
     const value = await proposeItem(resolver, fixture, [sourceId]);
     expect(promptOf(adapter)).toContain(PROMPT_MARKER);
     expect(promptOf(adapter)).not.toContain('content-studio-source-v1');
@@ -1937,7 +1943,7 @@ describe('F. AI source grounding with the real source repository (fake adapter, 
     const fixture = await aiFixture();
     const { sourceId } = await capturedSource();
     expect((await sourceRow(sourceId)).createdById).toBe(USER_A1);
-    const { resolver } = fakeResolver();
+    const { resolver } = fakeResolver(groundedReply);
     const value = await proposeItem(resolver, fixture, [sourceId], USER_A2);
     const [operation] = await operationRows();
     expect(operation).toMatchObject({ id: value.operationId, userId: USER_A2 });
@@ -1947,7 +1953,7 @@ describe('F. AI source grounding with the real source repository (fake adapter, 
     const fixture = await aiFixture();
     const one = await capturedSource(ORG_A, capture('MARKER_SOURCE_ONE'));
     const two = await capturedSource(ORG_A, capture('MARKER_SOURCE_TWO'));
-    const { adapter, resolver } = fakeResolver();
+    const { adapter, resolver } = fakeResolver(groundedReply);
     const value = await proposeItem(resolver, fixture, [
       two.sourceId,
       one.sourceId,
@@ -1965,7 +1971,7 @@ describe('F. AI source grounding with the real source repository (fake adapter, 
       ).sources.map((s) => s.sourceId)
     ).toEqual([two.sourceId, one.sourceId]);
     // the same sources in the other order are another request
-    const again = fakeResolver();
+    const again = fakeResolver(groundedReply);
     const reversed = await proposeItem(again.resolver, fixture, [
       one.sourceId,
       two.sourceId,
@@ -1978,7 +1984,7 @@ describe('F. AI source grounding with the real source repository (fake adapter, 
   it('AIG12/45 more than five sources is an invalid request, before any source is read', async () => {
     const fixture = await aiFixture();
     const lookup = jest.spyOn(sources, 'getSourceForOrganization');
-    const { adapter, resolver } = fakeResolver();
+    const { adapter, resolver } = fakeResolver(groundedReply);
     expect(
       (
         await httpRefusal(
@@ -1997,7 +2003,7 @@ describe('F. AI source grounding with the real source repository (fake adapter, 
   it('AIG13/76/77 a later capture with the same content is another request: the exact version is part of it', async () => {
     const fixture = await aiFixture();
     const { sourceId } = await capturedSource();
-    const { resolver } = fakeResolver();
+    const { resolver } = fakeResolver(groundedReply);
     const first = await proposeItem(resolver, fixture, [sourceId]);
     await append(ORG_A, sourceId, 1, capture(PROMPT_MARKER, { fetchedAt: T2 }));
     const second = await proposeItem(resolver, fixture, [sourceId]);
@@ -2016,7 +2022,7 @@ describe('F. AI source grounding with the real source repository (fake adapter, 
 
   it('AIG14 without sources the operation has no sources key', async () => {
     const fixture = await aiFixture();
-    const { resolver } = fakeResolver();
+    const { resolver } = fakeResolver(groundedReply);
     const value = await proposeItem(resolver, fixture, []);
     expect(await contextOf(value.operationId)).toEqual({
       v: 1,

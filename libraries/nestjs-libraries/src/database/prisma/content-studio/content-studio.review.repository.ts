@@ -138,6 +138,25 @@ export type ContentStudioReviewClaimRow =
     select: typeof CLAIM;
   }>;
 
+// An approval decision as stored (P5-04), with the exact target it kept so
+// the service can check it against the review, and its actor
+const APPROVAL = {
+  id: true,
+  sequence: true,
+  decision: true,
+  packageRevisionId: true,
+  designRevisionId: true,
+  targetContentHash: true,
+  actorUserId: true,
+  note: true,
+  createdAt: true,
+  actorUser: PERSON,
+} as const;
+
+export type ContentStudioApprovalRow = Prisma.ContentStudioApprovalGetPayload<{
+  select: typeof APPROVAL;
+}>;
+
 // Exactly one of the two is set: the service never passes both or neither
 export interface ContentStudioReviewTargetFilter {
   packageRevisionId?: string | { not: null };
@@ -154,7 +173,10 @@ export interface ContentStudioReviewTargetFilter {
 // Claim assessments (P5-03B) are written only while the review row is held
 // IN_REVIEW at the version read, and IN_REVIEW -> READY_FOR_APPROVAL of a
 // package review checks them inside its own transaction, after it holds the
-// same row: the two are serialized on that row
+// same row: the two are serialized on that row. Approval decisions (P5-04)
+// are appended only while the review row is held READY_FOR_APPROVAL at the
+// version read, after the history is read again inside that transaction:
+// two decisions of one review wait for each other on that row
 @Injectable()
 export class ContentStudioReviewRepository {
   constructor(
@@ -164,6 +186,7 @@ export class ContentStudioReviewRepository {
     private _comment: PrismaRepository<'contentStudioReviewComment'>,
     private _revisionRequest: PrismaRepository<'contentStudioReviewRevisionRequest'>,
     private _claim: PrismaRepository<'contentStudioReviewClaim'>,
+    private _approval: PrismaRepository<'contentStudioApproval'>,
     private _transaction: PrismaTransaction
   ) {}
 
@@ -617,6 +640,88 @@ export class ContentStudioReviewRepository {
           select: { id: true },
         });
       }
+      return true;
+    });
+  }
+
+  // --- approval decisions (P5-04) ---
+
+  // The whole decision history of the review, in sequence order
+  listApprovalsForReview(organizationId: string, reviewId: string) {
+    return this._approval.model.contentStudioApproval.findMany({
+      where: {
+        organizationId,
+        reviewId,
+      },
+      orderBy: {
+        sequence: 'asc',
+      },
+      select: APPROVAL,
+    });
+  }
+
+  // Holds the review row READY_FOR_APPROVAL at the version the service read
+  // (its version written back unchanged, so only updatedAt moves: never its
+  // state, version or history), reads the decision history again and hands
+  // it to the gate, then appends the next decision after it. The gate throws
+  // when the history is not the one the decision was made on: nothing is
+  // written then. A held row that is no longer READY_FOR_APPROVAL at that
+  // version writes nothing (false). A second decision with the same sequence
+  // fails on the unique (reviewId, sequence) (P2002)
+  appendApprovalDecision(input: {
+    organizationId: string;
+    reviewId: string;
+    expectedReviewVersion: number;
+    decision: string;
+    packageRevisionId: string | null;
+    designRevisionId: string | null;
+    targetContentHash: string;
+    actorUserId: string;
+    note: string | null;
+    gate: (history: ContentStudioApprovalRow[]) => void;
+  }) {
+    return this._transaction.model.$transaction(async (tx) => {
+      const held = await tx.contentStudioReview.updateMany({
+        where: {
+          id: input.reviewId,
+          organizationId: input.organizationId,
+          state: 'READY_FOR_APPROVAL',
+          version: input.expectedReviewVersion,
+        },
+        data: {
+          version: {
+            increment: 0,
+          },
+        },
+      });
+      if (held.count !== 1) {
+        return false;
+      }
+      const history = await tx.contentStudioApproval.findMany({
+        where: {
+          organizationId: input.organizationId,
+          reviewId: input.reviewId,
+        },
+        orderBy: {
+          sequence: 'asc',
+        },
+        select: APPROVAL,
+      });
+      input.gate(history);
+      await tx.contentStudioApproval.create({
+        data: {
+          organizationId: input.organizationId,
+          reviewId: input.reviewId,
+          sequence: history.length + 1,
+          decision: input.decision,
+          packageRevisionId: input.packageRevisionId,
+          designRevisionId: input.designRevisionId,
+          targetContentHash: input.targetContentHash,
+          actorUserId: input.actorUserId,
+          note: input.note,
+        },
+        select: { id: true },
+      });
       return true;
     });
   }

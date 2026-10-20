@@ -164,7 +164,7 @@ describe('ContentStudioController design layout pattern routes', () => {
     const all = Object.getOwnPropertyNames(ContentStudioController.prototype)
       .filter((name) => name !== 'constructor')
       .map(route);
-    expect(all).toHaveLength(135);
+    expect(all).toHaveLength(139);
     expect(
       all.filter(
         (r) =>

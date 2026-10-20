@@ -13,6 +13,11 @@ import type {
   ContentStudioReviewClaimStatus,
   ContentStudioReviewClaimSummary,
 } from '@gitroom/nestjs-libraries/content-studio/review/review.claim';
+import type {
+  ContentStudioApprovalAction,
+  ContentStudioApprovalDecision,
+  ContentStudioApprovalState,
+} from '@gitroom/nestjs-libraries/content-studio/review/review.approval';
 import {
   ContentStudioRequestError,
   request,
@@ -32,7 +37,9 @@ import { designErrorCode } from '@gitroom/frontend/components/content-studio/con
 // the claims of exactly its revision with their assessments and evidence,
 // all as the server read and verified them (the browser never looks a
 // source version up for it), and an assessment sends a status and a
-// finding only
+// finding only. Approval (P5-04) is a ready review's own: its current state
+// and whole decision history as the server derived and checked them, and a
+// decision is its route plus a note, nothing else
 
 interface ContentStudioReviewPerson {
   id: string;
@@ -115,6 +122,26 @@ export interface ContentStudioReviewClaimList {
   claims: ContentStudioReviewClaim[];
 }
 
+// The approval of a review that is ready for approval: the current state
+// derived from the whole, append-only history of decisions about exactly
+// its revision
+export interface ContentStudioReviewApproval {
+  reviewId: string;
+  targetType: ContentStudioReviewTargetType;
+  targetRevisionId: string;
+  targetRevisionNumber: number;
+  targetContentHash: string;
+  state: ContentStudioApprovalState;
+  version: number;
+  history: {
+    sequence: number;
+    decision: ContentStudioApprovalDecision;
+    note: string | null;
+    actor: ContentStudioReviewPerson;
+    createdAt: string;
+  }[];
+}
+
 export const REVIEWS_PATH = '/content-studio/reviews';
 const reviewPath = (id: string) => `${REVIEWS_PATH}/${encodeURIComponent(id)}`;
 export const reviewCommentsPath = (id: string, page: number) =>
@@ -122,6 +149,7 @@ export const reviewCommentsPath = (id: string, page: number) =>
 export const reviewRevisionRequestPath = (id: string) =>
   `${reviewPath(id)}/revision-request`;
 export const reviewClaimsPath = (id: string) => `${reviewPath(id)}/claims`;
+export const reviewApprovalPath = (id: string) => `${reviewPath(id)}/approval`;
 export const reviewForRevisionPath = (
   targetType: ContentStudioReviewTargetType,
   revisionId: string
@@ -227,6 +255,27 @@ export const useContentStudioReviewClaims = (reviewId: string | null) => {
   return useSWR(reviewId ? reviewClaimsPath(reviewId) : null, load, swrOptions);
 };
 
+// The approval of a ready review, or nothing without one. An answer about
+// another review is refused
+export const useContentStudioReviewApproval = (reviewId: string | null) => {
+  const fetch = useFetch();
+  const load = useCallback(
+    async (path: string) => {
+      const approval = await request<ContentStudioReviewApproval>(fetch, path);
+      if (approval.reviewId !== reviewId) {
+        throw new ContentStudioRequestError(500, 'CS_APPROVAL_INTEGRITY_ERROR');
+      }
+      return approval;
+    },
+    [fetch, reviewId]
+  );
+  return useSWR(
+    reviewId ? reviewApprovalPath(reviewId) : null,
+    load,
+    swrOptions
+  );
+};
+
 // Review writes: one request each, never retried; each reloads the reviews
 // shown and their discussion. Nothing is edited in the cache by hand
 export const useContentStudioReviewActions = () => {
@@ -323,6 +372,22 @@ export const useContentStudioReviewActions = () => {
         );
         await refresh();
         return list;
+      },
+      // one decision: the route is the decision, and its note, as plain
+      // text, the only body. The actor, sequence and revision are the
+      // server's
+      decideApproval: async (
+        reviewId: string,
+        action: ContentStudioApprovalAction,
+        note: string | null
+      ) => {
+        const approval = await request<ContentStudioReviewApproval>(
+          fetch,
+          `${reviewApprovalPath(reviewId)}/${action}`,
+          { method: 'POST', body: JSON.stringify({ note }) }
+        );
+        await refresh();
+        return approval;
       },
       // the exact saved revision, by its id only: the server knows its type
       resolveRevisionRequest: async (
@@ -428,6 +493,27 @@ export const reviewErrorMessage = (t: Translate, error: unknown) => {
       return t(
         'content_studio_review_claims_incomplete',
         'Review every grounded claim before marking this revision ready for approval.'
+      );
+    case 'CS_APPROVAL_UNAVAILABLE':
+      return t(
+        'content_studio_approval_error_unavailable',
+        'Approval is only available once the review is ready for approval.'
+      );
+    case 'CS_APPROVAL_INVALID_DECISION':
+    case 'CS_APPROVAL_CONFLICT':
+      return t(
+        'content_studio_approval_error_state',
+        'The approval has changed. Check its current state and try again.'
+      );
+    case 'CS_APPROVAL_NOTE_INVALID':
+      return t(
+        'content_studio_approval_error_note',
+        'Refusing or withdrawing needs a note; every note has at most 10,000 characters.'
+      );
+    case 'CS_APPROVAL_INTEGRITY_ERROR':
+      return t(
+        'content_studio_approval_error_integrity',
+        'Stored approval data could not be read safely.'
       );
     case 'CS_NOT_FOUND':
       return t('content_studio_review_not_found', 'Review not found.');

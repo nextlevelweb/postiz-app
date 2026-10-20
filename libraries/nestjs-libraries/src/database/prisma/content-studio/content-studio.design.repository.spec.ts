@@ -615,6 +615,8 @@ describe('ContentStudioDesignProject schema', () => {
       reviews: 'ContentStudioReview[]',
       // P5-02: a revision request resolved by this exact revision points to it
       resolvedRequests: 'ContentStudioReviewRevisionRequest[]',
+      // P5-04: an approval decision about this exact revision points to it
+      approvals: 'ContentStudioApproval[]',
     });
   });
 

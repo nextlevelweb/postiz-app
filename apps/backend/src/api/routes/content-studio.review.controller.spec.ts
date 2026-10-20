@@ -37,14 +37,17 @@ import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/dat
 import { ContentStudioDesignBlockService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-block.service';
 import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 import {
+  ApproveContentStudioReviewDto,
   CreateContentStudioReviewCommentDto,
   CreateContentStudioReviewDto,
   ListContentStudioReviewCommentsDto,
   ListContentStudioReviewsDto,
+  RefuseContentStudioReviewDto,
   RequestContentStudioReviewChangesDto,
   ResolveContentStudioReviewRevisionRequestDto,
   UpdateContentStudioReviewClaimDto,
   UpdateContentStudioReviewCommentDto,
+  WithdrawContentStudioReviewApprovalDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.review.dto';
 
 // The real MediaService pulls in uploads, Redis and Temporal at import time;
@@ -85,6 +88,8 @@ const setup = () => {
     resolveRevisionRequest: jest.fn().mockResolvedValue(result),
     listClaims: jest.fn().mockResolvedValue(result),
     assessClaim: jest.fn().mockResolvedValue(result),
+    getApproval: jest.fn().mockResolvedValue(result),
+    decideApproval: jest.fn().mockResolvedValue(result),
   };
   const controller = new ContentStudioController(
     {} as ContentStudioService,
@@ -164,17 +169,21 @@ const TRANSITIONS = [
 // request organization and user only, the strict DTOs. The service has its
 // own spec
 describe('ContentStudioController review routes', () => {
-  it('RE8/P501-13/C16/P502-6/API10 declares exactly these thirteen routes (122 -> 128 -> 133 -> 135): no delete, event, approval or reopen route', () => {
+  it('RE8/P501-13/C16/P502-6/API10/P504-4/P504-5 declares exactly these seventeen routes (122 -> 128 -> 133 -> 135 -> 139): no delete, event, edit of a decision or reopen route', () => {
     const names = Object.getOwnPropertyNames(
       ContentStudioController.prototype
     ).filter((name) => /Review(?!sion)/.test(name));
     expect(names.map(route).sort()).toEqual([
       'GET /reviews',
+      'GET /reviews/:id/approval',
       'GET /reviews/:id/claims',
       'GET /reviews/:id/comments',
       'GET /reviews/:id/revision-request',
       'PATCH /reviews/:id/comments/:commentId',
       'POST /reviews',
+      'POST /reviews/:id/approval/approve',
+      'POST /reviews/:id/approval/refuse',
+      'POST /reviews/:id/approval/withdraw',
       'POST /reviews/:id/cancel',
       'POST /reviews/:id/comments',
       'POST /reviews/:id/ready-for-approval',
@@ -187,6 +196,9 @@ describe('ContentStudioController review routes', () => {
       ...TRANSITIONS.map(([name]) => name),
       'requestReviewChanges',
       'resolveReviewRevisionRequest',
+      'approveReview',
+      'refuseReviewApproval',
+      'withdrawReviewApproval',
     ]) {
       expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler(name))).toBe(200);
     }
@@ -197,7 +209,7 @@ describe('ContentStudioController review routes', () => {
       ).toBeUndefined();
     }
     const all = allRoutes();
-    expect(all).toHaveLength(135);
+    expect(all).toHaveLength(139);
     expect(
       all.filter(
         (r) =>
@@ -206,6 +218,10 @@ describe('ContentStudioController review routes', () => {
             r
               .replace('ready-for-approval', '')
               .replace(/^(GET|PUT) \/reviews\/:id\/claims(\/:claimId)?$/, '')
+              .replace(
+                /^(GET \/reviews\/:id\/approval|POST \/reviews\/:id\/approval\/(approve|refuse|withdraw))$/,
+                ''
+              )
           )
       )
     ).toEqual([]);
@@ -214,10 +230,22 @@ describe('ContentStudioController review routes', () => {
       'PATCH /reviews/:id/comments/:commentId',
     ]);
     expect(all.filter((r) => /approv|claim/i.test(r)).sort()).toEqual([
+      'GET /reviews/:id/approval',
       'GET /reviews/:id/claims',
+      'POST /reviews/:id/approval/approve',
+      'POST /reviews/:id/approval/refuse',
+      'POST /reviews/:id/approval/withdraw',
       'POST /reviews/:id/ready-for-approval',
       'PUT /reviews/:id/claims/:claimId',
     ]);
+    // a decision is never edited or deleted, and there is no generic "set
+    // the approval" route
+    expect(
+      all.filter((r) => /approv/i.test(r) && /^(PATCH|PUT|DELETE) /.test(r))
+    ).toEqual([]);
+    expect(
+      all.filter((r) => /\/approval(\/(state|set|status|decision))?$/.test(r))
+    ).toEqual(['GET /reviews/:id/approval']);
     // the one whole-assessment write; a claim is never deleted
     expect(all.filter((r) => /review/i.test(r) && /^PUT /.test(r))).toEqual([
       'PUT /reviews/:id/claims/:claimId',
@@ -432,9 +460,10 @@ describe('ContentStudioController review routes', () => {
     expect(block).toContain('cancelReview');
     expect(block).toContain('resolveReviewRevisionRequest');
     expect(block).not.toMatch(
-      /AIConnection|AIWriting|Role\.|users|render|Handoff|@Delete|CheckPolicies|BrandKit|Media|isAdmin|ADMIN|AIOperation|Source(Service|Ingestion)|@Body\(\) body: (?!(CreateContentStudioReview|RequestContentStudioReviewChanges|CreateContentStudioReviewComment|UpdateContentStudioReviewComment|ResolveContentStudioReviewRevisionRequest|UpdateContentStudioReviewClaim)Dto\b)/
+      /AIConnection|AIWriting|Role\.|users|render|Handoff|@Delete|CheckPolicies|BrandKit|Media|isAdmin|ADMIN|AIOperation|Source(Service|Ingestion)|@Body\(\) body: (?!(CreateContentStudioReview|RequestContentStudioReviewChanges|CreateContentStudioReviewComment|UpdateContentStudioReviewComment|ResolveContentStudioReviewRevisionRequest|UpdateContentStudioReviewClaim|ApproveContentStudioReview|RefuseContentStudioReview|WithdrawContentStudioReviewApproval)Dto\b)/
     );
-    expect(block.match(/@Body\(\)/g)).toHaveLength(6);
+    // P5-04: approve, refuse and withdraw each read their note only
+    expect(block.match(/@Body\(\)/g)).toHaveLength(9);
   });
 
   it('API1/API9/CLSEC1/CLSEC2 claims are listed and assessed for the request organization, by the request user, with the path claim and the declared fields only', async () => {
@@ -477,6 +506,49 @@ describe('ContentStudioController review routes', () => {
     expect(
       Reflect.getMetadata(HTTP_CODE_METADATA, handler('assessReviewClaim'))
     ).toBeUndefined();
+  });
+
+  it('P504 approval is read and decided for the request organization, by the request user: the decision from the route, the note only from the body', async () => {
+    const { controller, reviews, result } = setup();
+    expect(await controller.getReviewApproval(ORG, ID)).toBe(result);
+    expect(reviews.getApproval).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      reviewId: ID,
+    });
+    const extras = {
+      decision: 'APPROVED',
+      sequence: 1,
+      packageRevisionId: REVISION,
+      designRevisionId: REVISION,
+    };
+    for (const [method, dto, action] of [
+      ['approveReview', ApproveContentStudioReviewDto, 'approve'],
+      ['refuseReviewApproval', RefuseContentStudioReviewDto, 'refuse'],
+      [
+        'withdrawReviewApproval',
+        WithdrawContentStudioReviewApprovalDto,
+        'withdraw',
+      ],
+    ] as const) {
+      reviews.decideApproval.mockClear();
+      const body = Object.assign(withExtras(new dto()), extras, {
+        note: 'Because.',
+      });
+      expect(
+        await (
+          controller[method] as (...args: unknown[]) => Promise<unknown>
+        ).call(controller, ORG, USER, ID, body)
+      ).toBe(result);
+      expect(reviews.decideApproval).toHaveBeenCalledWith({
+        organizationId: 'org-a',
+        userId: 'user-1',
+        reviewId: ID,
+        action,
+        note: 'Because.',
+      });
+      expect(types(method)).toEqual([Object, Object, String, dto]);
+    }
+    expect(types('getReviewApproval')).toEqual([Object, String]);
   });
 });
 
@@ -622,6 +694,82 @@ describe('Review DTO validation', () => {
   ])('RA6 refuses the query %p', async (query) => {
     await rejected(ListContentStudioReviewsDto, query, 'query');
   });
+});
+
+describe('Approval DTO validation (P5-04)', () => {
+  it('an approval takes an optional note; a refusal and a withdrawal take one, as sent', async () => {
+    const note = '  Not cleared.\n\nSee legal.  ';
+    for (const body of [{}, { note: null }, { note: '' }, { note }]) {
+      expect({ ...(await run(ApproveContentStudioReviewDto, body)) }).toEqual(
+        body
+      );
+    }
+    for (const dto of [
+      RefuseContentStudioReviewDto,
+      WithdrawContentStudioReviewApprovalDto,
+    ]) {
+      expect({ ...(await run(dto, { note })) }).toEqual({ note });
+      // blank text is the service's rule (CS_APPROVAL_NOTE_INVALID)
+      expect({ ...(await run(dto, { note: ' ' })) }).toEqual({ note: ' ' });
+      await run(dto, { note: 'x'.repeat(10_000) });
+    }
+  });
+
+  const forbidden = [
+    'organizationId',
+    'userId',
+    'actorUserId',
+    'decision',
+    'sequence',
+    'targetContentHash',
+    'contentHash',
+    'packageRevisionId',
+    'designRevisionId',
+    'targetType',
+    'reviewId',
+    'state',
+    'reviewState',
+    'version',
+    'createdAt',
+    'approverId',
+    'body',
+    'comment',
+  ];
+  it.each([
+    ...[
+      ApproveContentStudioReviewDto,
+      RefuseContentStudioReviewDto,
+      WithdrawContentStudioReviewApprovalDto,
+    ].flatMap((dto) => [
+      [
+        `${dto.name} with a note over 10,000 characters`,
+        dto,
+        { note: 'x'.repeat(10_001) },
+      ],
+      [`${dto.name} with a number`, dto, { note: 5 }],
+      [`${dto.name} with a list`, dto, { note: ['x'] }],
+      ...forbidden.map(
+        (field) =>
+          [
+            `ASEC5-ASEC9 ${dto.name} with a ${field}`,
+            dto,
+            { note: 'Because.', [field]: MARKER },
+          ] as [string, unknown, Record<string, unknown>]
+      ),
+    ]),
+    ['a refusal without a note', RefuseContentStudioReviewDto, {}],
+    [
+      'a refusal with a null note',
+      RefuseContentStudioReviewDto,
+      { note: null },
+    ],
+    ['a withdrawal without a note', WithdrawContentStudioReviewApprovalDto, {}],
+  ] as [string, ArgumentMetadata['metatype'], Record<string, unknown>][])(
+    'refuses %s',
+    async (_name, dto, body) => {
+      await rejected(dto, body);
+    }
+  );
 });
 
 describe('Claim review DTO validation (P5-03B)', () => {
@@ -832,7 +980,7 @@ describe('Review boundaries (P5-01)', () => {
   };
   const code = (file: string) => read(file).replace(/\/\/.*$/gm, '');
 
-  it('P501-4/P501-5/P501-6/P502-1/51 adds exactly the review, state event, comment and revision request models: no approval, claim or annotation model', () => {
+  it('P501-4/P501-5/P501-6/P502-1/51 adds exactly the review, state event, comment and revision request models: no claim event, annotation or reviewer model (the approval decision model is P5-04)', () => {
     const models = Array.from(
       schema.matchAll(/^model (ContentStudio\w*) \{/gm),
       (m) => m[1]
@@ -851,6 +999,11 @@ describe('Review boundaries (P5-01)', () => {
           m
         )
       )
+    ).toEqual(['ContentStudioApproval']);
+    expect(
+      models.filter((m) =>
+        /Approver|Quorum|ApprovalGroup|ApprovalState/.test(m)
+      )
     ).toEqual([]);
     expect(schema).not.toMatch(/^enum ContentStudio/m);
   });
@@ -866,8 +1019,12 @@ describe('Review boundaries (P5-01)', () => {
     expect(review).toContain('@@unique([organizationId, packageRevisionId])');
     expect(review).toContain('@@unique([organizationId, designRevisionId])');
     expect(review).toMatch(/version +Int +@default\(1\)/);
-    // no package, design, project, template or content of its own
-    expect(review).not.toMatch(
+    // no package, design, project, template or content of its own, and no
+    // approval state: only the relation to its decisions (P5-04)
+    expect(review).toMatch(/approvals +ContentStudioApproval\[\]/);
+    expect(
+      review.replace(/approvals +ContentStudioApproval\[\]/, '')
+    ).not.toMatch(
       /packageId|designProjectId|projectId|templateId|content +String|Json|approv|reason|assigned|dueAt|metadata/i
     );
     // P5-02 adds only the two discussion relations

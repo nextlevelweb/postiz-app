@@ -2,6 +2,7 @@ import { HttpException, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import {
+  ContentStudioApprovalRow,
   ContentStudioReviewClaimRow,
   ContentStudioReviewRepository,
   ContentStudioReviewTargetFilter,
@@ -43,6 +44,17 @@ import {
   isContentStudioReviewClaimAssessmentIntact,
   parseContentStudioReviewClaimAssessment,
 } from '@gitroom/nestjs-libraries/content-studio/review/review.claim';
+import {
+  canDecideContentStudioApproval,
+  CONTENT_STUDIO_APPROVAL_ACTIONS,
+  ContentStudioApprovalAction,
+  ContentStudioApprovalDecision,
+  ContentStudioApprovalState,
+  contentStudioApprovalStatus,
+  isContentStudioApprovalAvailable,
+  isContentStudioApprovalNoteIntact,
+  parseContentStudioApprovalNote,
+} from '@gitroom/nestjs-libraries/content-studio/review/review.approval';
 
 // Fixed messages only: never ids, hashes, states of another request, content
 // or Prisma errors. A review or a revision of another organization is a
@@ -207,6 +219,47 @@ const integrityError = () =>
     },
     500
   );
+// Approval decisions (P5-04)
+const approvalUnavailable = () =>
+  new HttpException(
+    {
+      msg: 'Approval is only available once the review is ready for approval.',
+      code: 'CS_APPROVAL_UNAVAILABLE',
+    },
+    409
+  );
+const approvalInvalidDecision = () =>
+  new HttpException(
+    {
+      msg: 'This approval decision is not possible in the current approval state.',
+      code: 'CS_APPROVAL_INVALID_DECISION',
+    },
+    409
+  );
+const approvalNoteInvalid = () =>
+  new HttpException(
+    {
+      msg: 'Refusing or withdrawing needs a note saying why; every note stays within its length limit.',
+      code: 'CS_APPROVAL_NOTE_INVALID',
+    },
+    400
+  );
+const approvalConflict = () =>
+  new HttpException(
+    {
+      msg: 'The approval was decided by someone else in the meantime.',
+      code: 'CS_APPROVAL_CONFLICT',
+    },
+    409
+  );
+const approvalIntegrityError = () =>
+  new HttpException(
+    {
+      msg: 'Stored approval data could not be read safely.',
+      code: 'CS_APPROVAL_INTEGRITY_ERROR',
+    },
+    500
+  );
 
 // A second review of the same revision, or a second revision request of the
 // same review: the unique constraint refuses it
@@ -346,7 +399,21 @@ const parented = (
 // and IN_REVIEW -> READY_FOR_APPROVAL of a package review requires every
 // claim VERIFIED, checked in the same transaction as the transition. A claim
 // that needs revision asks for nothing by itself: requesting changes stays
-// its own explicit step
+// its own explicit step.
+//
+// Approval (P5-04) is a separate layer on a review that is
+// READY_FOR_APPROVAL, which stays so: an append-only history of decisions
+// (APPROVED, REFUSED, WITHDRAWN) about exactly its revision, each keeping
+// that revision and its hash as the review binds them. The current state is
+// derived from the history only. A decision in force is withdrawn before
+// another is made, and a decision is appended only onto exactly the history
+// it was made on: one made on a history someone else has since extended
+// is a conflict, never reinterpreted. Before any approval is read or
+// decided, the review, its exact revision and (for a package review) every
+// claim assessment are checked again, without changing any of them. Every
+// member may decide, the requester and the reviewers included: there are
+// no approver roles yet. A refusal requests no changes and posts nothing;
+// nothing here gates a handoff or publishing
 @Injectable()
 export class ContentStudioReviewService {
   private readonly _logger = new Logger(ContentStudioReviewService.name);
@@ -828,6 +895,231 @@ export class ContentStudioReviewService {
         : claimMutationForbidden();
     }
     return this.claimList(input.organizationId, current);
+  }
+
+  // --- approval decisions (P5-04) ---
+
+  // The approval of a review that is ready for approval: its current state,
+  // derived from its whole history, and that history in order
+  async getApproval(input: { organizationId: string; reviewId: string }) {
+    const review = this.reviewDetail(
+      await this.getRow(input.organizationId, input.reviewId)
+    );
+    const history =
+      await this._contentStudioReviewRepository.listApprovalsForReview(
+        input.organizationId,
+        review.id
+      );
+    if (!isContentStudioApprovalAvailable(review.state)) {
+      // decisions only ever exist for a review that is ready for approval
+      if (history.length) {
+        this._logger.error(
+          `Stored Content Studio approval is invalid: ${review.id}`
+        );
+        throw approvalIntegrityError();
+      }
+      throw approvalUnavailable();
+    }
+    await this.verifiedApprovalTarget(input.organizationId, review);
+    return this.approvalDetail(review, this.approvalHistory(review, history));
+  }
+
+  // One decision by the request user: approve (an optional note), refuse
+  // or withdraw (a note saying why). It is appended onto exactly the
+  // history read here, or not at all. The review does not change
+  async decideApproval(input: {
+    organizationId: string;
+    userId: string;
+    reviewId: string;
+    action: ContentStudioApprovalAction;
+    note: unknown;
+  }) {
+    const decision: ContentStudioApprovalDecision =
+      CONTENT_STUDIO_APPROVAL_ACTIONS[input.action];
+    const review = this.reviewDetail(
+      await this.getRow(input.organizationId, input.reviewId)
+    );
+    if (!isContentStudioApprovalAvailable(review.state)) {
+      throw approvalUnavailable();
+    }
+    const parsed = parseContentStudioApprovalNote(decision, input.note);
+    if (!parsed) {
+      throw approvalNoteInvalid();
+    }
+    await this.verifiedApprovalTarget(input.organizationId, review);
+    const current = this.approvalHistory(
+      review,
+      await this._contentStudioReviewRepository.listApprovalsForReview(
+        input.organizationId,
+        review.id
+      )
+    );
+    if (!canDecideContentStudioApproval(current.state, decision)) {
+      throw approvalInvalidDecision();
+    }
+    let appended: boolean;
+    try {
+      appended =
+        await this._contentStudioReviewRepository.appendApprovalDecision({
+          organizationId: input.organizationId,
+          reviewId: review.id,
+          expectedReviewVersion: review.version,
+          decision,
+          packageRevisionId:
+            review.targetType === 'PACKAGE_REVISION'
+              ? review.targetRevisionId
+              : null,
+          designRevisionId:
+            review.targetType === 'DESIGN_REVISION'
+              ? review.targetRevisionId
+              : null,
+          targetContentHash: review.targetContentHash,
+          actorUserId: input.userId,
+          note: parsed.note,
+          // decided on exactly this history, as it stands once the review
+          // row is held: anything appended since is a conflict
+          gate: (rows) => {
+            if (
+              this.approvalHistory(review, rows).version !== current.version
+            ) {
+              throw approvalConflict();
+            }
+          },
+        });
+    } catch (err) {
+      // the same sequence written by a concurrent decision
+      if (isUniqueConstraintError(err)) {
+        throw approvalConflict();
+      }
+      throw err;
+    }
+    if (!appended) {
+      throw approvalConflict();
+    }
+    return this.approvalDetail(
+      review,
+      this.approvalHistory(
+        review,
+        await this._contentStudioReviewRepository.listApprovalsForReview(
+          input.organizationId,
+          review.id
+        )
+      )
+    );
+  }
+
+  // What an approval is about must still be intact: the exact revision
+  // with the hash the review binds and, for a package review, every claim
+  // assessment, all verified as READY_FOR_APPROVAL requires. Read only
+  private async verifiedApprovalTarget(
+    organizationId: string,
+    review: {
+      id: string;
+      targetType: ContentStudioReviewTargetType;
+      targetRevisionId: string;
+      targetContentHash: string;
+    }
+  ) {
+    if (review.targetType === 'DESIGN_REVISION') {
+      await this.verifiedReviewedRevision(organizationId, review);
+      return;
+    }
+    const claims = await this.reviewedClaims(organizationId, review);
+    const assessments = this.claimAssessments(
+      review.id,
+      claims,
+      await this._contentStudioReviewRepository.listClaimsForReview(
+        organizationId,
+        review.id
+      )
+    );
+    if (
+      !contentStudioReviewClaimSummary(
+        claims.map((entry) => entry.claim.id),
+        this.claimStatuses(assessments)
+      ).complete
+    ) {
+      this._logger.error(
+        `Stored Content Studio review claim is invalid: ${review.id}`
+      );
+      throw integrityError();
+    }
+  }
+
+  // The stored decisions in sequence order and the state they lead to. Every
+  // row must be a known decision possible after the one before it, numbered
+  // 1, 2, 3..., keep exactly the review's revision and hash, and name its
+  // actor; anything else is reported, never repaired
+  private approvalHistory(
+    review: {
+      id: string;
+      targetType: ContentStudioReviewTargetType;
+      targetRevisionId: string;
+      targetContentHash: string;
+    },
+    rows: ContentStudioApprovalRow[]
+  ) {
+    const status = contentStudioApprovalStatus(rows);
+    const packageRevisionId =
+      review.targetType === 'PACKAGE_REVISION' ? review.targetRevisionId : null;
+    const designRevisionId =
+      review.targetType === 'DESIGN_REVISION' ? review.targetRevisionId : null;
+    if (
+      !status ||
+      rows.some(
+        (row) =>
+          row.packageRevisionId !== packageRevisionId ||
+          row.designRevisionId !== designRevisionId ||
+          row.targetContentHash !== review.targetContentHash ||
+          !row.actorUser ||
+          row.actorUser.id !== row.actorUserId ||
+          !(row.createdAt instanceof Date) ||
+          !isContentStudioApprovalNoteIntact(
+            row.decision as ContentStudioApprovalDecision,
+            row.note
+          )
+      )
+    ) {
+      this._logger.error(
+        `Stored Content Studio approval is invalid: ${review.id}`
+      );
+      throw approvalIntegrityError();
+    }
+    return { ...status, rows };
+  }
+
+  // Built field by field: no organization, review row or target id leaves
+  // with a decision; the target is the review's own
+  private approvalDetail(
+    review: {
+      id: string;
+      targetType: ContentStudioReviewTargetType;
+      targetRevisionId: string;
+      targetRevisionNumber: number;
+      targetContentHash: string;
+    },
+    approval: {
+      state: ContentStudioApprovalState;
+      version: number;
+      rows: ContentStudioApprovalRow[];
+    }
+  ) {
+    return {
+      reviewId: review.id,
+      targetType: review.targetType,
+      targetRevisionId: review.targetRevisionId,
+      targetRevisionNumber: review.targetRevisionNumber,
+      targetContentHash: review.targetContentHash,
+      state: approval.state,
+      version: approval.version,
+      history: approval.rows.map((row) => ({
+        sequence: row.sequence,
+        decision: row.decision as ContentStudioApprovalDecision,
+        note: row.note,
+        actor: { id: row.actorUser.id, name: row.actorUser.name },
+        createdAt: row.createdAt,
+      })),
+    };
   }
 
   // A package review, intact; a design review has no claims

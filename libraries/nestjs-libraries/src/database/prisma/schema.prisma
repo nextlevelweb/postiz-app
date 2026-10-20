@@ -81,6 +81,7 @@ model Organization {
   contentStudioReviewComments            ContentStudioReviewComment[]
   contentStudioReviewClaims              ContentStudioReviewClaim[]
   contentStudioReviewRevisionRequests    ContentStudioReviewRevisionRequest[]
+  contentStudioApprovals                 ContentStudioApproval[]
 
   @@index([apiKey])
   @@index([streakSince])
@@ -189,6 +190,7 @@ model User {
   contentStudioRevisionRequests          ContentStudioReviewRevisionRequest[]    @relation("ContentStudioRevisionRequestRequestedBy")
   contentStudioRevisionRequestsResolved  ContentStudioReviewRevisionRequest[]    @relation("ContentStudioRevisionRequestResolvedBy")
   contentStudioReviewClaimsReviewed      ContentStudioReviewClaim[]              @relation("ContentStudioReviewClaimReviewedBy")
+  contentStudioApprovalDecisions         ContentStudioApproval[]                 @relation("ContentStudioApprovalActor")
 
   @@unique([email, providerName])
   @@index([lastReadNotifications])
@@ -1972,6 +1974,7 @@ model ContentPackageRevision {
   handoffs           ContentStudioHandoff[]
   reviews            ContentStudioReview[]
   resolvedRequests   ContentStudioReviewRevisionRequest[]
+  approvals          ContentStudioApproval[]
 
   @@unique([packageId, revisionNumber])
   @@unique([id, organizationId])
@@ -2398,6 +2401,7 @@ model ContentStudioDesignRevision {
   renderBatches    ContentStudioDesignRenderBatch[]
   reviews          ContentStudioReview[]
   resolvedRequests ContentStudioReviewRevisionRequest[]
+  approvals        ContentStudioApproval[]
 
   @@unique([designProjectId, revisionNumber])
   @@unique([id, organizationId])
@@ -2593,6 +2597,7 @@ model ContentStudioReview {
   comments          ContentStudioReviewComment[]
   revisionRequest   ContentStudioReviewRevisionRequest?
   claims            ContentStudioReviewClaim[]
+  approvals         ContentStudioApproval[]
 
   @@unique([organizationId, packageRevisionId])
   @@unique([organizationId, designRevisionId])
@@ -2713,6 +2718,42 @@ model ContentStudioReviewClaim {
   @@unique([reviewId, organizationId, claimId])
   @@index([organizationId])
   @@index([reviewedByUserId])
+}
+
+// One approval decision (P5-04) about exactly the revision a review made
+// ready for approval: APPROVED, REFUSED or WITHDRAWN (checked in code), by
+// its actor, with an optional note (required to refuse or withdraw).
+// sequence is 1, 2, 3... per review, appended in a transaction that holds
+// the review row, so a review has one current decision: the last one
+// (WITHDRAWN or none is pending). Each row keeps the exact target it decided
+// on, as the server read it from the review: exactly one of the package or
+// design revision ids and that revision's targetContentHash. The review's
+// state, version and history never change with it. Only ever created, never
+// updated or deleted; never carried over to another review or revision
+model ContentStudioApproval {
+  id                String                       @id @default(uuid())
+  organizationId    String
+  reviewId          String
+  sequence          Int
+  decision          String
+  packageRevisionId String?
+  designRevisionId  String?
+  targetContentHash String
+  actorUserId       String
+  note              String?
+  createdAt         DateTime                     @default(now())
+  organization      Organization                 @relation(fields: [organizationId], references: [id])
+  review            ContentStudioReview          @relation(fields: [reviewId, organizationId], references: [id, organizationId])
+  actorUser         User                         @relation("ContentStudioApprovalActor", fields: [actorUserId], references: [id])
+  packageRevision   ContentPackageRevision?      @relation(fields: [packageRevisionId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
+  designRevision    ContentStudioDesignRevision? @relation(fields: [designRevisionId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([reviewId, sequence])
+  @@unique([id, organizationId])
+  @@index([organizationId, createdAt])
+  @@index([actorUserId])
+  @@index([packageRevisionId])
+  @@index([designRevisionId])
 }
 
 // One render font file as uploaded: the exact bytes of a single TrueType or

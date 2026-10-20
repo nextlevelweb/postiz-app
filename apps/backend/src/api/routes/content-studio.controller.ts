@@ -138,14 +138,17 @@ import {
   UpdateContentStudioDesignBlockDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-block.dto';
 import {
+  ApproveContentStudioReviewDto,
   CreateContentStudioReviewCommentDto,
   CreateContentStudioReviewDto,
   ListContentStudioReviewCommentsDto,
   ListContentStudioReviewsDto,
+  RefuseContentStudioReviewDto,
   RequestContentStudioReviewChangesDto,
   ResolveContentStudioReviewRevisionRequestDto,
   UpdateContentStudioReviewClaimDto,
   UpdateContentStudioReviewCommentDto,
+  WithdrawContentStudioReviewApprovalDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.review.dto';
 import {
   RenderAllContentStudioDesignDto,
@@ -1664,6 +1667,75 @@ export class ContentStudioController {
       claimId,
       status: body.status,
       finding: body.finding,
+    });
+  }
+
+  // Approval (P5-04) of a review that is ready for approval: its current
+  // state and decision history, and one route per decision. Every member
+  // may decide. The decision comes from the route, its note from the body;
+  // the actor, sequence, revision and hash from the request and the server.
+  // A decision is never edited or deleted: it is withdrawn. Nothing here
+  // changes the review or gates a handoff
+  @Get('/reviews/:id/approval')
+  getReviewApproval(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioReviewService.getApproval({
+      organizationId: org.id,
+      reviewId: id,
+    });
+  }
+
+  @Post('/reviews/:id/approval/approve')
+  @HttpCode(200)
+  approveReview(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Body() body: ApproveContentStudioReviewDto
+  ) {
+    return this._contentStudioReviewService.decideApproval({
+      organizationId: org.id,
+      userId: user.id,
+      reviewId: id,
+      action: 'approve',
+      note: body.note,
+    });
+  }
+
+  @Post('/reviews/:id/approval/refuse')
+  @HttpCode(200)
+  refuseReviewApproval(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Body() body: RefuseContentStudioReviewDto
+  ) {
+    return this._contentStudioReviewService.decideApproval({
+      organizationId: org.id,
+      userId: user.id,
+      reviewId: id,
+      action: 'refuse',
+      note: body.note,
+    });
+  }
+
+  // Takes back the decision in force; it stays in the history
+  @Post('/reviews/:id/approval/withdraw')
+  @HttpCode(200)
+  withdrawReviewApproval(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Body() body: WithdrawContentStudioReviewApprovalDto
+  ) {
+    return this._contentStudioReviewService.decideApproval({
+      organizationId: org.id,
+      userId: user.id,
+      reviewId: id,
+      action: 'withdraw',
+      note: body.note,
     });
   }
 

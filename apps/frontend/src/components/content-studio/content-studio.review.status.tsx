@@ -19,6 +19,8 @@ import {
   useContentStudioReviewForRevision,
 } from '@gitroom/frontend/components/content-studio/content-studio.reviews.api';
 import { ContentStudioReviewClaims } from '@gitroom/frontend/components/content-studio/content-studio.review.claims';
+import { ContentStudioReviewApproval } from '@gitroom/frontend/components/content-studio/content-studio.review.approval';
+import { isContentStudioApprovalAvailable } from '@gitroom/nestjs-libraries/content-studio/review/review.approval';
 import { designErrorCode } from '@gitroom/frontend/components/content-studio/content-studio.designs.api';
 import {
   ContentStudioRequestChangesForm,
@@ -73,7 +75,9 @@ const actionLabel = (t: Translate, action: ContentStudioReviewAction) => {
 // package review also shows the claims of its revision (P5-03B), loaded while
 // it is in review (Ready for approval waits for every claim to be verified;
 // the server checks it again) or once opened; a design review has none. A
-// review is not an approval; nothing here hands off, publishes or approves
+// review is not an approval: once it is ready for approval, its approval
+// (P5-04) is shown below it, loaded for exactly this review. Nothing here
+// hands off or publishes
 export const ContentStudioReviewStatus: FC<{
   targetType: ContentStudioReviewTargetType;
   revisionId: string;
@@ -260,6 +264,9 @@ export const ContentStudioReviewStatus: FC<{
           setOpen={setClaimsOpen}
           claims={claims}
         />
+      )}
+      {current && isContentStudioApprovalAvailable(current.state) && (
+        <ContentStudioReviewApproval review={current} />
       )}
       {current && <ContentStudioReviewDiscussion review={current} />}
       {!!current?.events.length && (

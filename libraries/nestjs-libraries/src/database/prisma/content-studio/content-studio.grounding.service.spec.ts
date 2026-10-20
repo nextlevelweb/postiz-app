@@ -877,11 +877,19 @@ describe('P3-11 boundaries', () => {
   const root = path.join(__dirname, '..', '..', '..', '..', '..', '..');
   const schema = read('..', 'schema.prisma');
 
-  it('P311-1/P311-2/P311-3 no claim, evidence or approval model in the database: claims live in revisions; the one claim-review model (P5-03B) holds assessments only', () => {
+  it('P311-1/P311-2/P311-3 no claim or evidence model in the database: claims live in revisions; the one claim-review model (P5-03B) holds assessments only, and the approval decisions (P5-04) no claim', () => {
     const models = schema.match(/^model \w+/gm) ?? [];
     expect(
       models.filter((model) => /Claim|Evidence|Grounding|Approval/.test(model))
-    ).toEqual(['model ContentStudioReviewClaim']);
+    ).toEqual([
+      'model ContentStudioReviewClaim',
+      'model ContentStudioApproval',
+    ]);
+    const decision = schema.slice(
+      schema.indexOf('model ContentStudioApproval {'),
+      schema.indexOf('\n}', schema.indexOf('model ContentStudioApproval {'))
+    );
+    expect(decision).not.toMatch(/claim|evidence|quote|source|grounding|Json/i);
     const assessment = schema.slice(
       schema.indexOf('model ContentStudioReviewClaim {'),
       schema.indexOf('\n}', schema.indexOf('model ContentStudioReviewClaim {'))

@@ -179,7 +179,7 @@ describe('ContentStudioController design template routes', () => {
       .filter((name) => name !== 'constructor')
       .map(route);
     // P4-13 adds the five style preset routes
-    expect(all).toHaveLength(135);
+    expect(all).toHaveLength(139);
     expect(
       all.filter(
         (r) =>
