@@ -1,4 +1,7 @@
-import { PrismaRepository } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
+import {
+  PrismaRepository,
+  PrismaTransaction,
+} from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ContentStudioHandoffRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.repository';
 
 // No database: the Prisma delegate is mocked, so these tests pin the queries
@@ -21,10 +24,50 @@ const setup = () => {
     delete: jest.fn().mockResolvedValue({}),
     deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
   };
-  const repository = new ContentStudioHandoffRepository({
-    model: { contentStudioHandoff: handoff },
-  } as unknown as PrismaRepository<'contentStudioHandoff'>);
-  return { handoff, repository };
+  // the transaction of an approved handoff (P5-07): its own delegates, and
+  // every call in order
+  const log: { call: string; args: Record<string, any> }[] = [];
+  const tracked = (call: string, value: unknown) =>
+    jest.fn(async (args: Record<string, any>) => {
+      log.push({ call, args });
+      return value;
+    });
+  const tx = {
+    contentStudioReview: {
+      findFirst: tracked('review.findFirst', { updatedAt: AT }),
+      updateMany: tracked('review.updateMany', { count: 1 }),
+    },
+    contentStudioApproval: {
+      count: tracked('approval.count', 3),
+    },
+    contentStudioHandoff: {
+      create: tracked('handoff.create', { id: ID, expiresAt: AT }),
+    },
+  };
+  const transaction = {
+    model: {
+      $transaction: jest.fn((fn: (client: typeof tx) => Promise<unknown>) =>
+        fn(tx)
+      ),
+    },
+  };
+  const repository = new ContentStudioHandoffRepository(
+    {
+      model: { contentStudioHandoff: handoff },
+    } as unknown as PrismaRepository<'contentStudioHandoff'>,
+    transaction as unknown as PrismaTransaction
+  );
+  return { handoff, repository, tx, transaction, log };
+};
+const APPROVED_HANDOFF = {
+  id: ID,
+  organizationId: ORG,
+  userId: USER,
+  packageId: 'package-1',
+  packageRevisionId: 'revision-1',
+  expiresAt: AT,
+  reviewId: 'review-1',
+  approvalVersion: 3,
 };
 const onlyCall = (fn: jest.Mock) => {
   expect(fn).toHaveBeenCalledTimes(1);
@@ -190,6 +233,7 @@ describe('ContentStudioHandoffRepository', () => {
         .sort()
     ).toEqual([
       'createHandoff',
+      'createHandoffWhileApproved',
       'getHandoffForOrganizationAndUser',
       'markOpenedIfNeeded',
       'revokeHandoff',
@@ -211,6 +255,100 @@ describe('ContentStudioHandoffRepository', () => {
         organizationId: ORG,
         userId: USER,
       });
+    }
+  });
+});
+
+describe('ContentStudioHandoffRepository: an approved handoff (P5-07)', () => {
+  const REVIEW_WHERE = {
+    id: 'review-1',
+    organizationId: ORG,
+    packageRevisionId: 'revision-1',
+    state: 'READY_FOR_APPROVAL',
+  };
+
+  it('WR2/AT4 holds the review without changing it, confirms the history, then creates the handoff, in one transaction', async () => {
+    const { handoff, repository, transaction, log } = setup();
+    await expect(
+      repository.createHandoffWhileApproved(APPROVED_HANDOFF)
+    ).resolves.toEqual({ id: ID, expiresAt: AT });
+    expect(transaction.model.$transaction).toHaveBeenCalledTimes(1);
+    expect(log).toEqual([
+      {
+        call: 'review.findFirst',
+        args: { where: REVIEW_WHERE, select: { updatedAt: true } },
+      },
+      {
+        call: 'review.updateMany',
+        // the hold writes back exactly the value it matched: nothing moves
+        args: {
+          where: { ...REVIEW_WHERE, updatedAt: AT },
+          data: { updatedAt: AT },
+        },
+      },
+      {
+        call: 'approval.count',
+        args: { where: { organizationId: ORG, reviewId: 'review-1' } },
+      },
+      {
+        call: 'handoff.create',
+        // the review and the approval never reach the handoff row
+        args: {
+          data: {
+            id: ID,
+            organizationId: ORG,
+            userId: USER,
+            packageId: 'package-1',
+            packageRevisionId: 'revision-1',
+            expiresAt: AT,
+          },
+          select: { id: true, expiresAt: true },
+        },
+      },
+    ]);
+    // never the plain create outside the transaction
+    expect(handoff.create).not.toHaveBeenCalled();
+  });
+
+  it('WR1/WR4 a review that is no longer ready for approval, or not this revision, writes nothing', async () => {
+    const { repository, tx } = setup();
+    tx.contentStudioReview.findFirst.mockResolvedValueOnce(null);
+    await expect(
+      repository.createHandoffWhileApproved(APPROVED_HANDOFF)
+    ).resolves.toBeNull();
+    expect(tx.contentStudioReview.updateMany).not.toHaveBeenCalled();
+    expect(tx.contentStudioApproval.count).not.toHaveBeenCalled();
+    expect(tx.contentStudioHandoff.create).not.toHaveBeenCalled();
+  });
+
+  it('WR1/WR4 a review that changed before it was held writes nothing', async () => {
+    const { repository, tx } = setup();
+    tx.contentStudioReview.updateMany.mockResolvedValueOnce({ count: 0 });
+    await expect(
+      repository.createHandoffWhileApproved(APPROVED_HANDOFF)
+    ).resolves.toBeNull();
+    expect(tx.contentStudioApproval.count).not.toHaveBeenCalled();
+    expect(tx.contentStudioHandoff.create).not.toHaveBeenCalled();
+  });
+
+  it.each([[2], [4]])(
+    'WR1/WR4/M11 a history of %p decisions instead of the 3 judged writes nothing',
+    async (count) => {
+      const { repository, tx } = setup();
+      tx.contentStudioApproval.count.mockResolvedValueOnce(count);
+      await expect(
+        repository.createHandoffWhileApproved(APPROVED_HANDOFF)
+      ).resolves.toBeNull();
+      expect(tx.contentStudioHandoff.create).not.toHaveBeenCalled();
+    }
+  );
+
+  it('M13 every statement of the transaction names the organization', async () => {
+    const { repository, log } = setup();
+    await repository.createHandoffWhileApproved(APPROVED_HANDOFF);
+    expect(log).toHaveLength(4);
+    for (const { args } of log) {
+      expect(args.where ?? args.data).toMatchObject({ organizationId: ORG });
     }
   });
 });

@@ -1292,3 +1292,221 @@ describe('workspace: source surface', () => {
     expect(page).not.toMatch(/fetch|Placeholder/);
   });
 });
+
+// P5-07: where the policy requires approval before handoff, the server says
+// so with each revision it shows, and decides again on every handoff
+describe('workspace: handoff where approval is required (P5-07)', () => {
+  const statusOf = (id: string, approved: boolean) => ({
+    targetType: 'PACKAGE_REVISION',
+    targetRevisionId: id,
+    targetRevisionNumber: 1,
+    targetContentHash: 'h'.repeat(64),
+    approved,
+    state: approved ? 'APPROVED' : 'PENDING_APPROVAL',
+    reviewId: 'review-1',
+    approvalVersion: approved ? 1 : 0,
+    currentDecision: null,
+  });
+  // the revision detail, with what the server says about its approval
+  let shown: { approved: boolean; required?: boolean };
+  const serveDetail = () => {
+    const previous = override;
+    override = (m, url, body) => {
+      const match =
+        m === 'GET' &&
+        url
+          .split('?')[0]
+          .match(/^\/content-studio\/packages\/pkg-1\/revisions\/([^/]+)$/);
+      if (match) {
+        const base = handle(m, url, body);
+        return {
+          ...base,
+          json: async () => ({
+            ...((await base.json()) as object),
+            approval: statusOf(match[1], shown.approved),
+            ...(shown.required === undefined
+              ? {}
+              : { handoffApprovalRequired: shown.required }),
+          }),
+        };
+      }
+      return previous(m, url, body);
+    };
+  };
+  const refuseHandoff = (code: string, status = 409) => {
+    const previous = override;
+    override = (m, url, body) =>
+      m === 'POST' && url.endsWith('/handoffs')
+        ? reply(status, { msg: `server text ${PKG}`, code })
+        : previous(m, url, body);
+  };
+  const viewRevision = async () => {
+    await click('History');
+    const dialog = screen.getByRole('dialog', { name: 'History' });
+    await click('View 1', dialog);
+    return dialog;
+  };
+  const MUST = 'This revision must be approved before handoff.';
+
+  it.each([
+    ['not said', undefined],
+    ['false', false],
+  ])(
+    'FH1 without the requirement (%s) the history is exactly as before: no Use in Post on a version',
+    async (_name, required) => {
+      shown = { approved: false, required };
+      addRevision(1);
+      serveDetail();
+      await renderWorkspace();
+      const dialog = await viewRevision();
+      expect(
+        within(dialog).queryByRole('button', { name: 'Use in Post' })
+      ).toBeNull();
+      expect(dialog.textContent).not.toContain(MUST);
+    }
+  );
+
+  it('FH2 an approved version can be used in a post: exactly that revision is handed off', async () => {
+    shown = { approved: true, required: true };
+    addRevision(1);
+    addRevision(2);
+    serveDetail();
+    await renderWorkspace();
+    const dialog = await viewRevision();
+    const use = button('Use in Post', dialog) as HTMLButtonElement;
+    expect(use.disabled).toBe(false);
+    expect(dialog.textContent).not.toContain(MUST);
+    await click('Use in Post', dialog);
+    // the older version itself, never a new revision of the draft
+    expect(revisionPosts()).toHaveLength(0);
+    expect(handoffPosts().map((c) => c.url)).toEqual([
+      `${BASE}/revisions/rev-1/handoffs`,
+    ]);
+    expect(mockRouter.push).toHaveBeenCalledWith(
+      `/launches?handoff=${HANDOFF}`
+    );
+    expect(screen.queryByRole('dialog', { name: 'History' })).toBeNull();
+  });
+
+  it('FH3/FH4 a version that is not approved cannot be used in a post, and says why in words', async () => {
+    shown = { approved: false, required: true };
+    addRevision(1);
+    serveDetail();
+    await renderWorkspace();
+    const dialog = await viewRevision();
+    expect((button('Use in Post', dialog) as HTMLButtonElement).disabled).toBe(
+      true
+    );
+    expect(dialog.textContent).toContain(MUST);
+    expect(handoffPosts()).toHaveLength(0);
+  });
+
+  it("FH5 Use in Post refused for its approval: a fixed message and the exact version's review one click away", async () => {
+    shown = { approved: false, required: true };
+    serveDetail();
+    refuseHandoff('CS_APPROVAL_REQUIRED');
+    await renderWorkspace();
+    await click('Use in Post');
+    expect(toasts()).toEqual([MUST]);
+    expect(mockRouter.push).not.toHaveBeenCalled();
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toContain(MUST);
+    expect(alert.textContent).not.toContain(PKG);
+    expect(box('Post')).toHaveProperty('disabled', false);
+    await click('Open review', alert);
+    const dialog = screen.getByRole('dialog', { name: 'History' });
+    await settle();
+    // the revision the handoff was refused for, exactly
+    expect(of('GET', `${BASE}/revisions/rev-1`).length).toBeGreaterThan(0);
+    expect(within(dialog).getByText(/^Version 1$/)).toBeTruthy();
+  });
+
+  it('FH6 a version shown approved but no longer approved: the server refuses, the message is fixed and the version is read again', async () => {
+    shown = { approved: true, required: true };
+    addRevision(1);
+    serveDetail();
+    refuseHandoff('CS_APPROVAL_REQUIRED');
+    await renderWorkspace();
+    const dialog = await viewRevision();
+    const before = of('GET', `${BASE}/revisions/rev-1`).length;
+    shown = { approved: false, required: true };
+    await click('Use in Post', dialog);
+    await settle();
+    expect(toasts()).toEqual([MUST]);
+    expect(mockRouter.push).not.toHaveBeenCalled();
+    expect(of('GET', `${BASE}/revisions/rev-1`).length).toBeGreaterThan(before);
+    expect((button('Use in Post', dialog) as HTMLButtonElement).disabled).toBe(
+      true
+    );
+  });
+
+  it.each([
+    'CS_REVIEW_INTEGRITY_ERROR',
+    'CS_APPROVAL_INTEGRITY_ERROR',
+    'CS_PROFILE_INTEGRITY_ERROR',
+  ])(
+    'FH7/M16 %s is not "needs approval": the revision could not be verified',
+    async (code) => {
+      refuseHandoff(code, 500);
+      await renderWorkspace();
+      await click('Use in Post');
+      expect(toasts()).toEqual([
+        'This revision could not be verified for handoff.',
+      ]);
+      expect(document.body.textContent).not.toContain(MUST);
+      expect(screen.queryByRole('button', { name: 'Open review' })).toBeNull();
+    }
+  );
+
+  it('FH7 the same codes outside a handoff keep their own message: a restore is never about approval', async () => {
+    addRevision(1);
+    override = (m, url) =>
+      m === 'GET' && url.split('?')[0] === `${BASE}/revisions/rev-1`
+        ? reply(500, { code: 'CS_REVIEW_INTEGRITY_ERROR' })
+        : undefined;
+    await renderWorkspace();
+    await click('History');
+    const dialog = screen.getByRole('dialog', { name: 'History' });
+    await click('Restore to draft 1', dialog);
+    expect(toasts()).toEqual(['Could not restore this version.']);
+  });
+
+  it('an approval that kept changing asks to try again', async () => {
+    refuseHandoff('CS_APPROVAL_CONFLICT');
+    await renderWorkspace();
+    await click('Use in Post');
+    expect(toasts()).toEqual([
+      'The approval of this revision changed. Try again.',
+    ]);
+  });
+
+  it('M15/SEC2-SEC4 a handoff sends nothing about approval, and the editor never reads the policy', async () => {
+    shown = { approved: true, required: true };
+    addRevision(1);
+    serveDetail();
+    await renderWorkspace();
+    const dialog = await viewRevision();
+    await click('Use in Post', dialog);
+    expect(handoffPosts().map((c) => c.body)).toEqual([undefined]);
+    expect(calls().some((c) => c.url.includes('editorial-policy'))).toBe(false);
+  });
+
+  it('FH8 the normal Postiz composer and the handoff opener know nothing of approval', () => {
+    const launches = join(__dirname, '..', 'launches');
+    const list = (dir: string): string[] =>
+      require('fs')
+        .readdirSync(dir, { withFileTypes: true })
+        .flatMap((entry: { name: string; isDirectory: () => boolean }) =>
+          entry.isDirectory()
+            ? list(join(dir, entry.name))
+            : /\.tsx?$/.test(entry.name) && !/\.spec\.tsx?$/.test(entry.name)
+            ? [join(dir, entry.name)]
+            : []
+        );
+    for (const file of list(launches)) {
+      expect(readFileSync(file, 'utf8')).not.toMatch(
+        /CS_APPROVAL|handoffApprovalRequired|requireApproval|editorial-policy/
+      );
+    }
+  });
+});

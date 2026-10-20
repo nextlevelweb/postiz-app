@@ -4,6 +4,7 @@ import { randomBytes } from 'crypto';
 import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.repository';
 import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
 import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
+import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
 import {
   ContentStudioGroundingError,
   ContentStudioGroundingService,
@@ -208,7 +209,8 @@ export class ContentStudioService {
     private _contentStudioRepository: ContentStudioRepository,
     private _contentStudioMediaService: ContentStudioMediaService,
     private _contentStudioGroundingService: ContentStudioGroundingService,
-    private _contentStudioReviewService: ContentStudioReviewService
+    private _contentStudioReviewService: ContentStudioReviewService,
+    private _contentStudioEditorialPolicyService: ContentStudioEditorialPolicyService
   ) {}
 
   listProjects(organizationId: string, archived: boolean) {
@@ -625,6 +627,13 @@ export class ContentStudioService {
           targetType: 'PACKAGE_REVISION',
           targetRevisionId: row.id,
         }),
+      // whether handing a revision off requires it to be approved, by the
+      // organization's current policy (P5-07): shown only, the handoff
+      // decides again. Never the policy itself
+      handoffApprovalRequired:
+        await this._contentStudioEditorialPolicyService.isApprovalRequiredForHandoff(
+          input.organizationId
+        ),
     };
   }
 

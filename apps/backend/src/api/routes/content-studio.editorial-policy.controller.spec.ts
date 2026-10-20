@@ -297,6 +297,12 @@ describe('Editorial policy DTO validation', () => {
     ['ED12 createdById', { createdById: 'u' }],
     ['ED13 an unknown field', { complianceScore: 1 }],
     ['schemaVersion', { schemaVersion: 1 }],
+    // P5-07: the switch lives in the policy content, never beside it
+    [
+      'POL4 a flat requireApprovalForHandoff',
+      { requireApprovalForHandoff: false },
+    ],
+    ['POL4 a bypass', { bypassApproval: true }],
   ])('refuses a save body with %s', async (field, extra) => {
     const message = await rejected(
       CreateContentStudioEditorialPolicyRevisionDto,

@@ -1123,15 +1123,25 @@ describe('Review boundaries (P5-01)', () => {
     }
   });
 
-  it('P501-7/P501-8/M26 handoff and publishing are not gated on a review', () => {
+  it('P501-7/P501-8/M26 publishing is never gated on a review; a handoff only through the P5-07 approval gate', () => {
     for (const file of [
-      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.handoff.service.ts',
-      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.handoff.repository.ts',
       'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.repository.ts',
       'libraries/nestjs-libraries/src/database/prisma/posts/posts.service.ts',
     ]) {
       expect(code(file)).not.toMatch(/\breview|READY_FOR_APPROVAL|approv/i);
     }
+    // P5-07: where the policy requires it, the handoff asks
+    // requireApprovedRevision and nothing else of the review service
+    expect(
+      code(
+        'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.handoff.service.ts'
+      )
+        .match(/_contentStudioReviewService\.\w+/g)!
+        .sort()
+    ).toEqual([
+      '_contentStudioReviewService.requireApprovedRevision',
+      '_contentStudioReviewService.requireApprovedRevision',
+    ]);
     // P5-05: the package and design revision views show whether exactly a
     // revision is approved, read from the review service; they gate nothing
     for (const file of [

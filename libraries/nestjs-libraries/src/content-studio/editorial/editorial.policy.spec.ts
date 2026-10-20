@@ -9,6 +9,7 @@ import {
   ContentStudioEditorialPolicyError,
   EDITORIAL_POLICY_CONTENT_MAX_BYTES,
   emptyContentStudioEditorialPolicyContent,
+  isContentStudioApprovalRequiredForHandoff,
   parseContentStudioEditorialPolicyContent,
 } from '@gitroom/nestjs-libraries/content-studio/editorial/editorial.policy';
 import {
@@ -499,6 +500,104 @@ describe('Editorial Policy revisions: canonical storage and integrity', () => {
     expect(new ContentStudioEditorialPolicyIntegrityError().message).toBe(
       'A stored editorial policy revision failed its integrity check'
     );
+  });
+});
+
+describe('Editorial Policy workflow: approval before handoff (P5-07)', () => {
+  const withWorkflow = (workflow: unknown) => ({ ...full(), workflow });
+
+  it('POL1 a policy without a workflow requires nothing, and gets none', () => {
+    const parsed = parseContentStudioEditorialPolicyContent(full());
+    expect(parsed).not.toHaveProperty('workflow');
+    expect(isContentStudioApprovalRequiredForHandoff(parsed)).toBe(false);
+    expect(isContentStudioApprovalRequiredForHandoff(null)).toBe(false);
+  });
+
+  it('POL1 a revision stored before the workflow existed still verifies, and requires nothing', () => {
+    const text = canonicalJson(
+      parseContentStudioEditorialPolicyContent(full())
+    );
+    const verified = parseVerifiedContentStudioEditorialPolicyRevision({
+      schemaVersion: 1,
+      content: text,
+      contentHash: sha256Hex(text),
+    });
+    expect(isContentStudioApprovalRequiredForHandoff(verified)).toBe(false);
+  });
+
+  it('POL3 on is kept and required', () => {
+    const parsed = parseContentStudioEditorialPolicyContent(
+      withWorkflow({ requireApprovalForHandoff: true })
+    );
+    expect(parsed.workflow).toEqual({ requireApprovalForHandoff: true });
+    expect(isContentStudioApprovalRequiredForHandoff(parsed)).toBe(true);
+    const stored = storedContentStudioEditorialPolicyContent(parsed);
+    expect(
+      isContentStudioApprovalRequiredForHandoff(
+        parseVerifiedContentStudioEditorialPolicyRevision(stored)
+      )
+    ).toBe(true);
+  });
+
+  it('POL2/M1 off has one form: no workflow, the same text and hash as a policy without it', () => {
+    const off = parseContentStudioEditorialPolicyContent(
+      withWorkflow({ requireApprovalForHandoff: false })
+    );
+    expect(off).toEqual(full());
+    expect(isContentStudioApprovalRequiredForHandoff(off)).toBe(false);
+    expect(storedContentStudioEditorialPolicyContent(off)).toEqual(
+      storedContentStudioEditorialPolicyContent(
+        parseContentStudioEditorialPolicyContent(full())
+      )
+    );
+    // and a stored "off" written any other way is not canonical
+    const text = canonicalJson(
+      withWorkflow({ requireApprovalForHandoff: false })
+    );
+    expect(() =>
+      parseVerifiedContentStudioEditorialPolicyRevision({
+        schemaVersion: 1,
+        content: text,
+        contentHash: sha256Hex(text),
+      })
+    ).toThrow(ContentStudioEditorialPolicyIntegrityError);
+  });
+
+  it.each([
+    ['a flat flag', { ...full(), requireApprovalForHandoff: true }],
+    ['a text', withWorkflow({ requireApprovalForHandoff: 'true' })],
+    ['a number', withWorkflow({ requireApprovalForHandoff: 1 })],
+    ['null', withWorkflow({ requireApprovalForHandoff: null })],
+    ['an empty workflow', withWorkflow({})],
+    ['a boolean workflow', withWorkflow(true)],
+    ['a null workflow', withWorkflow(null)],
+    [
+      'a bypass',
+      withWorkflow({ requireApprovalForHandoff: true, bypassApproval: true }),
+    ],
+    ['another rule', withWorkflow({ requireApprovalForPublish: true })],
+    [
+      'a policy version',
+      withWorkflow({ requireApprovalForHandoff: true, policyVersion: 2 }),
+    ],
+  ])('POL4 refuses %s', (_name, input) => {
+    expect(refusal(input)).toBe('INVALID');
+  });
+
+  it('the helper requires only an explicit true', () => {
+    for (const workflow of [
+      undefined,
+      {},
+      { requireApprovalForHandoff: false },
+      { requireApprovalForHandoff: 'true' },
+      { requireApprovalForHandoff: 1 },
+    ]) {
+      expect(
+        isContentStudioApprovalRequiredForHandoff({
+          workflow,
+        } as unknown as Parameters<typeof isContentStudioApprovalRequiredForHandoff>[0])
+      ).toBe(false);
+    }
   });
 });
 

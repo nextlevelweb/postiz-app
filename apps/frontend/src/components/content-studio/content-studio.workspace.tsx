@@ -11,6 +11,7 @@ import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
 import {
   ContentStudioDraft,
+  ContentStudioHandoffCreateResult,
   ContentStudioMediaPreview,
   ContentStudioPackageDetail,
   ContentStudioRequestError,
@@ -38,7 +39,10 @@ import {
 } from '@gitroom/frontend/components/content-studio/content-studio.ai-proposal';
 import { ContentStudioGroundingPanel } from '@gitroom/frontend/components/content-studio/content-studio.grounding';
 import { upgradeContentPackageDraftToV2 } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
-import { contentStudioLinkedRevisionId } from '@gitroom/frontend/components/content-studio/content-studio.reviews.api';
+import {
+  contentStudioLinkedRevisionId,
+  useContentStudioReviewActions,
+} from '@gitroom/frontend/components/content-studio/content-studio.reviews.api';
 
 const HANDOFF_ID = /^[0-9a-f]{64}$/;
 
@@ -89,6 +93,42 @@ const groundingSaveError = (
   }
 };
 
+// Fixed text for a handoff the server refused for the approval the policy
+// requires (P5-07). Not approved and not verifiable are different answers:
+// stored data that could not be checked is never "needs approval"
+const handoffApprovalError = (
+  t: (key: string, fallback: string) => string,
+  error: unknown
+) => {
+  const code =
+    error instanceof ContentStudioRequestError ? error.code : undefined;
+  switch (code) {
+    case 'CS_APPROVAL_REQUIRED':
+      return t(
+        'content_studio_handoff_approval_required',
+        'This revision must be approved before handoff.'
+      );
+    case 'CS_APPROVAL_CONFLICT':
+      return t(
+        'content_studio_handoff_approval_changed',
+        'The approval of this revision changed. Try again.'
+      );
+    case 'CS_REVIEW_INTEGRITY_ERROR':
+    case 'CS_APPROVAL_INTEGRITY_ERROR':
+    case 'CS_PROFILE_INTEGRITY_ERROR':
+      return t(
+        'content_studio_handoff_unverified',
+        'This revision could not be verified for handoff.'
+      );
+    default:
+      return undefined;
+  }
+};
+
+// A handoff the server refused for its approval, with that fixed text: only
+// a handoff ever says so
+class ContentStudioHandoffApprovalError extends Error {}
+
 interface PackageMeta {
   name: string;
   archived: boolean;
@@ -101,7 +141,12 @@ interface PackageMeta {
 // wait until the latest draft is saved, with the editor locked so nothing
 // changes under them. Leaving the page within 1500 ms of an edit can lose
 // that edit. A link to one saved version (the Review & Approval queue,
-// P5-06) opens the history at exactly that version once the package is shown
+// P5-06) opens the history at exactly that version once the package is shown.
+// Where the editorial policy requires approval before handoff (P5-07), the
+// server decides for exactly the revision handed off, and the editor never
+// reads the policy: a refusal names that revision so its review can be
+// opened, and a saved version the server says is approved can be used in a
+// post from the history
 export const ContentStudioWorkspace: FC<{
   packageId: string;
   linkedRevisionId?: string;
@@ -112,7 +157,10 @@ export const ContentStudioWorkspace: FC<{
   const modals = useModals();
   const api = useContentStudioWorkspaceApi();
   const aiWriting = useContentStudioAIWritingApi();
+  const reviewActions = useContentStudioReviewActions();
   const detail = useContentStudioPackage(packageId);
+  // the revision a handoff was refused for, until the next handoff
+  const [approvalNeeded, setApprovalNeeded] = useState<string | null>(null);
   const save = useCallback(
     (draft: ContentStudioDraft, base: number) =>
       api.saveDraft(packageId, base, draft),
@@ -206,6 +254,10 @@ export const ContentStudioWorkspace: FC<{
   // Fixed messages only: never the server's text or ids
   const explain = useCallback(
     (err: unknown, fallback: string) => {
+      if (err instanceof ContentStudioHandoffApprovalError) {
+        toaster.show(err.message, 'warning');
+        return;
+      }
       if (err instanceof ContentStudioAutosaveError) {
         toaster.show(
           err.state === 'conflict'
@@ -347,6 +399,37 @@ export const ContentStudioWorkspace: FC<{
     [api, controller, packageId, runAction, toaster, t]
   );
 
+  // Hands exactly this saved revision to the composer. A refusal for its
+  // approval keeps which revision it was, and reloads what was shown about
+  // approvals, which may be out of date
+  const handOff = useCallback(
+    async (revisionId: string) => {
+      setApprovalNeeded(null);
+      let handoff: ContentStudioHandoffCreateResult;
+      try {
+        handoff = await api.createHandoff(packageId, revisionId);
+      } catch (err) {
+        const message = handoffApprovalError(t, err);
+        if (!message) {
+          throw err;
+        }
+        if (
+          (err as ContentStudioRequestError).code === 'CS_APPROVAL_REQUIRED'
+        ) {
+          setApprovalNeeded(revisionId);
+        }
+        reviewActions.refresh();
+        throw new ContentStudioHandoffApprovalError(message);
+      }
+      if (!HANDOFF_ID.test(handoff.id)) {
+        throw new Error('Unexpected handoff');
+      }
+      router.push(`/launches?handoff=${handoff.id}`);
+      return 'navigating' as const;
+    },
+    [api, packageId, reviewActions, router, t]
+  );
+
   // An active package hands over a revision of its saved draft (the server
   // reuses the latest one when nothing changed). An archived package can only
   // hand over its latest existing revision
@@ -378,14 +461,20 @@ export const ContentStudioWorkspace: FC<{
               }
           );
         }
-        const handoff = await api.createHandoff(packageId, revisionId);
-        if (!HANDOFF_ID.test(handoff.id)) {
-          throw new Error('Unexpected handoff');
-        }
-        router.push(`/launches?handoff=${handoff.id}`);
-        return 'navigating';
+        return handOff(revisionId);
       }, t('content_studio_prepare_post_error', 'Could not prepare this post.')),
-    [api, controller, meta?.archived, packageId, router, runAction, t]
+    [api, controller, handOff, meta?.archived, packageId, runAction, t]
+  );
+
+  // One saved version, exactly as it is (from the history, where the server
+  // says approval is required)
+  const handOffRevision = useCallback(
+    (revisionId: string) =>
+      runAction(
+        () => handOff(revisionId),
+        t('content_studio_prepare_post_error', 'Could not prepare this post.')
+      ),
+    [handOff, runAction, t]
   );
 
   // Copies a revision into the draft and saves it on the current version.
@@ -529,12 +618,13 @@ export const ContentStudioWorkspace: FC<{
               controller.snapshot().state !== 'conflict'
             }
             onRestore={restore}
+            onUseInPost={handOffRevision}
             close={close}
           />
         ),
       });
     },
-    [modals, packageId, controller, restore, t]
+    [modals, packageId, controller, restore, handOffRevision, t]
   );
 
   // each linked version, opened once
@@ -639,6 +729,23 @@ export const ContentStudioWorkspace: FC<{
           </Button>
         </div>
       </div>
+
+      {!!approvalNeeded && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center gap-[12px] border border-red-400 rounded-[8px] p-[12px]"
+        >
+          <div className="flex-1 min-w-[200px]">
+            {t(
+              'content_studio_handoff_approval_required',
+              'This revision must be approved before handoff.'
+            )}
+          </div>
+          <Button secondary onClick={() => openHistory(approvalNeeded)}>
+            {t('content_studio_review_queue_open', 'Open review')}
+          </Button>
+        </div>
+      )}
 
       {meta.archived && meta.latestRevisionNumber === 0 && (
         <div className="text-textItemBlur">

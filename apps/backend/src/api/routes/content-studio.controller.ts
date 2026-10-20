@@ -434,7 +434,9 @@ export class ContentStudioController {
   }
 
   // Hands a frozen revision to this user's composer for 24 hours. Handoffs
-  // can't be listed, changed or deleted; the body is never read
+  // can't be listed, changed or deleted; the body is never read. Whether the
+  // revision must be approved first is the organization's current editorial
+  // policy, read by the server (P5-07): nothing the client sends decides it
   @Post('/packages/:id/revisions/:revisionId/handoffs')
   createHandoff(
     @GetOrgFromRequest() org: Organization,

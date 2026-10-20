@@ -230,6 +230,8 @@ export interface ContentStudioRevisionDetail
   content: ContentStudioDraft;
   media: ContentStudioMediaMap;
   approval: ContentStudioRevisionApprovalStatus;
+  // whether a handoff requires approval, by the current policy (P5-07)
+  handoffApprovalRequired: boolean;
 }
 
 export interface ContentStudioCreateRevisionResult {

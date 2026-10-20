@@ -18,6 +18,8 @@ import {
   sha256Hex,
 } from '@gitroom/nestjs-libraries/content-studio/canonical.json';
 import { contentStudioTextToComposerHtml } from '@gitroom/nestjs-libraries/content-studio/handoff.html';
+import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
+import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 
 // The real MediaService pulls in uploads, Redis and Temporal at import time,
 // and the real sanitizer needs a DOM; both are covered by their own specs.
@@ -118,6 +120,12 @@ const setup = () => {
       id: input.id,
       expiresAt: input.expiresAt,
     })),
+    createHandoffWhileApproved: jest.fn(
+      async (input: { id: string; expiresAt: Date }) => ({
+        id: input.id,
+        expiresAt: input.expiresAt,
+      })
+    ),
     getHandoffForOrganizationAndUser: jest.fn().mockResolvedValue(null),
     markOpenedIfNeeded: jest.fn().mockResolvedValue({ count: 1 }),
     revokeHandoff: jest.fn().mockResolvedValue({ count: 1 }),
@@ -126,12 +134,23 @@ const setup = () => {
     resolveForHandoff: jest.fn(readyMedia),
     getPreviewMap: jest.fn(),
   };
+  // P5-07: no organization requires approval unless a test says so; the
+  // approval itself is the review service's (its own suite runs it for
+  // real, with the handoff)
+  const policy = {
+    isApprovalRequiredForHandoff: jest.fn().mockResolvedValue(false),
+  };
+  const reviews = {
+    requireApprovedRevision: jest.fn(),
+  };
   const service = new ContentStudioHandoffService(
     repository as unknown as ContentStudioRepository,
     handoffs as unknown as ContentStudioHandoffRepository,
-    media as unknown as ContentStudioMediaService
+    media as unknown as ContentStudioMediaService,
+    policy as unknown as ContentStudioEditorialPolicyService,
+    reviews as unknown as ContentStudioReviewService
   );
-  return { repository, handoffs, media, service };
+  return { repository, handoffs, media, policy, reviews, service };
 };
 
 const rejection = async (promise: Promise<unknown>) => {
@@ -339,6 +358,77 @@ describe('ContentStudioHandoffService.createHandoff', () => {
 
     await expect(create(service)).rejects.toBe(error);
     expect(handoffs.createHandoff).not.toHaveBeenCalled();
+  });
+
+  it('HO8 without the policy requirement no approval is asked for, and the handoff is the plain one', async () => {
+    const { repository, handoffs, policy, reviews, service } = setup();
+    repository.getRevisionForPackage.mockResolvedValue(revisionRow());
+    reviews.requireApprovedRevision.mockRejectedValue(
+      new Error('must not be asked')
+    );
+    await create(service);
+    expect(policy.isApprovalRequiredForHandoff.mock.calls).toEqual([[ORG]]);
+    expect(reviews.requireApprovedRevision).not.toHaveBeenCalled();
+    expect(handoffs.createHandoff).toHaveBeenCalledTimes(1);
+    expect(handoffs.createHandoffWhileApproved).not.toHaveBeenCalled();
+  });
+
+  it('TT1/M4 with the requirement: the exact package revision is required approved, then handed off holding its review', async () => {
+    const { repository, handoffs, policy, reviews, service } = setup();
+    repository.getRevisionForPackage.mockResolvedValue(revisionRow());
+    policy.isApprovalRequiredForHandoff.mockResolvedValue(true);
+    reviews.requireApprovedRevision.mockResolvedValue({
+      approved: true,
+      state: 'APPROVED',
+      reviewId: 'review-1',
+      approvalVersion: 3,
+    });
+    const result = await create(service);
+    expect(reviews.requireApprovedRevision.mock.calls).toEqual([
+      [
+        {
+          organizationId: ORG,
+          targetType: 'PACKAGE_REVISION',
+          targetRevisionId: REVISION_ID,
+        },
+      ],
+    ]);
+    expect(handoffs.createHandoff).not.toHaveBeenCalled();
+    const input = handoffs.createHandoffWhileApproved.mock.calls[0][0];
+    expect(input).toEqual({
+      id: expect.stringMatching(/^[0-9a-f]{64}$/),
+      organizationId: ORG,
+      userId: USER,
+      packageId: PACKAGE_ID,
+      packageRevisionId: REVISION_ID,
+      expiresAt: new Date(NOW.getTime() + 24 * 60 * 60 * 1000),
+      reviewId: 'review-1',
+      approvalVersion: 3,
+    });
+    // the same answer as without the requirement
+    expect(result).toEqual({ id: input.id, expiresAt: input.expiresAt });
+  });
+
+  it('AT1/M8/M10 a revision that is not approved fails the handoff with that error before anything is written', async () => {
+    const { repository, handoffs, media, policy, reviews, service } = setup();
+    repository.getRevisionForPackage.mockResolvedValue(revisionRow());
+    policy.isApprovalRequiredForHandoff.mockResolvedValue(true);
+    const required = new HttpException(
+      { msg: 'This revision is not approved.', code: 'CS_APPROVAL_REQUIRED' },
+      409
+    );
+    reviews.requireApprovedRevision.mockRejectedValue(required);
+    await expect(create(service)).rejects.toBe(required);
+    expect(media.resolveForHandoff).not.toHaveBeenCalled();
+    expect(handoffs.createHandoff).not.toHaveBeenCalled();
+    expect(handoffs.createHandoffWhileApproved).not.toHaveBeenCalled();
+  });
+
+  it('a revision that is not found is 404 before the policy or an approval is read', async () => {
+    const { policy, reviews, service } = setup();
+    expect(await rejection(create(service))).toEqual(NOT_FOUND);
+    expect(policy.isApprovalRequiredForHandoff).not.toHaveBeenCalled();
+    expect(reviews.requireApprovedRevision).not.toHaveBeenCalled();
   });
 
   it('HC11 never reads the package, so an archived package can hand off a revision', async () => {

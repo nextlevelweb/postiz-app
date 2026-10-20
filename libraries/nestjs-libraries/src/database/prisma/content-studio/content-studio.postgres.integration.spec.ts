@@ -13,6 +13,7 @@ import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/
 import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
 import { ContentStudioGroundingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.grounding.service';
 import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
+import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
 import { parseContentPackageDraft } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 import {
   canonicalJson,
@@ -240,7 +241,8 @@ beforeAll(async () => {
     new PrismaTransaction(prisma)
   );
   handoffs = new ContentStudioHandoffRepository(
-    new PrismaRepository<'contentStudioHandoff'>(prisma)
+    new PrismaRepository<'contentStudioHandoff'>(prisma),
+    new PrismaTransaction(prisma)
   );
 
   await cleanFixtures();
@@ -553,7 +555,8 @@ describe('tenant constraints enforced by PostgreSQL', () => {
       repository,
       {} as ContentStudioMediaService,
       {} as ContentStudioGroundingService,
-      {} as ContentStudioReviewService
+      {} as ContentStudioReviewService,
+      {} as ContentStudioEditorialPolicyService
     );
     const refused = await service
       .createPackage({
@@ -617,9 +620,18 @@ describe('tenant constraints enforced by PostgreSQL', () => {
       await repository.getRevisionForPackage(ORG_A, a.packageId, x.revisionId)
     ).toBe(null);
     const resolveForHandoff = jest.fn(async () => [[]]);
-    const service = new ContentStudioHandoffService(repository, handoffs, {
-      resolveForHandoff,
-    } as unknown as ContentStudioMediaService);
+    // no policy requires approval here (P5-07 has its own suite)
+    const service = new ContentStudioHandoffService(
+      repository,
+      handoffs,
+      {
+        resolveForHandoff,
+      } as unknown as ContentStudioMediaService,
+      {
+        isApprovalRequiredForHandoff: async () => false,
+      } as unknown as ContentStudioEditorialPolicyService,
+      {} as ContentStudioReviewService
+    );
     const refused = await service
       .createHandoff({
         organizationId: ORG_A,
@@ -905,8 +917,10 @@ describe('revision immutability boundary', () => {
     expect(content.filter((m) => /revision/i.test(m)).sort()).toEqual(
       ALLOWED_REVISION_METHODS
     );
+    // P5-07: an approved handoff is created too, never changed or removed
     expect(methods(ContentStudioHandoffRepository.prototype).sort()).toEqual([
       'createHandoff',
+      'createHandoffWhileApproved',
       'getHandoffForOrganizationAndUser',
       'markOpenedIfNeeded',
       'revokeHandoff',

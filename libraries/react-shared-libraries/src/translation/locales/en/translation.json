@@ -1922,5 +1922,12 @@
   "content_studio_review_queue_load_error": "Review & Approval could not be loaded.",
   "content_studio_linked_revision_error": "This version could not be opened.",
   "content_studio_linked_design_revision_error": "This revision could not be opened.",
-  "content_studio_linked_design_revision_current": "Show the current revision"
+  "content_studio_linked_design_revision_current": "Show the current revision",
+  "content_studio_policy_workflow": "Handoff",
+  "content_studio_policy_require_approval": "Require approval before handoff",
+  "content_studio_policy_require_approval_hint": "Only revisions that are currently approved can be handed off to Postiz.",
+  "content_studio_policy_require_approval_on": "Unreviewed, pending, refused or withdrawn revisions cannot be handed off.",
+  "content_studio_handoff_approval_required": "This revision must be approved before handoff.",
+  "content_studio_handoff_approval_changed": "The approval of this revision changed. Try again.",
+  "content_studio_handoff_unverified": "This revision could not be verified for handoff."
 }

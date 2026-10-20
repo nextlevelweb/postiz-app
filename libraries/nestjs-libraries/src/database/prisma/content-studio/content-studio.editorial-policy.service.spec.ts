@@ -659,6 +659,134 @@ describe('ContentStudioEditorialPolicyService: history', () => {
   });
 });
 
+describe('ContentStudioEditorialPolicyService: approval before handoff (P5-07)', () => {
+  const requiring = (value: boolean) => ({
+    ...content(),
+    workflow: { requireApprovalForHandoff: value },
+  });
+
+  it('POL1 an organization without a policy, or with one saved before the setting existed, requires nothing', async () => {
+    const none = setup(null);
+    await expect(none.service.isApprovalRequiredForHandoff(ORG)).resolves.toBe(
+      false
+    );
+    expect(none.repository.getRevisionByNumber).not.toHaveBeenCalled();
+    const old = setup();
+    expect(JSON.parse(revisionRow().content)).not.toHaveProperty('workflow');
+    await expect(old.service.isApprovalRequiredForHandoff(ORG)).resolves.toBe(
+      false
+    );
+  });
+
+  it('POL2/POL3 the current revision decides: off is false, on is true', async () => {
+    for (const value of [false, true]) {
+      const { repository, service } = setup();
+      repository.getRevisionByNumber.mockResolvedValue(
+        revisionRow(storedOf(requiring(value)))
+      );
+      await expect(service.isApprovalRequiredForHandoff(ORG)).resolves.toBe(
+        value
+      );
+    }
+  });
+
+  it('POL5/POL6/POL7/M2/M12 always the current revision of exactly this organization, never an older one', async () => {
+    const { repository, service } = setup(
+      policyRow({ latestRevisionNumber: 5 })
+    );
+    // revision 4 required approval; the current revision 5 does not
+    (repository.getRevisionByNumber as jest.Mock).mockImplementation(
+      async (_org: unknown, _policy: unknown, revisionNumber: unknown) =>
+        revisionNumber === 4
+          ? revisionRow({ revisionNumber: 4, ...storedOf(requiring(true)) })
+          : revisionRow({ revisionNumber: 5 })
+    );
+    await expect(service.isApprovalRequiredForHandoff(ORG)).resolves.toBe(
+      false
+    );
+    expect(repository.getPolicyForOrganization.mock.calls).toEqual([[ORG]]);
+    expect(repository.getRevisionByNumber.mock.calls).toEqual([
+      [ORG, POLICY, 5],
+    ]);
+    // another organization's policy is never this one's
+    await expect(service.isApprovalRequiredForHandoff(OTHER_ORG)).resolves.toBe(
+      false
+    );
+  });
+
+  it('a current revision that is not intact is an integrity error, never "not required"', async () => {
+    const { repository, service } = setup();
+    repository.getRevisionByNumber.mockResolvedValue(
+      revisionRow({ contentHash: 'f'.repeat(64) })
+    );
+    expect(
+      (await httpError(service.isApprovalRequiredForHandoff(ORG))).body.code
+    ).toBe('CS_PROFILE_INTEGRITY_ERROR');
+    repository.getRevisionByNumber.mockResolvedValue(null);
+    expect(
+      (await httpError(service.isApprovalRequiredForHandoff(ORG))).body.code
+    ).toBe('CS_PROFILE_INTEGRITY_ERROR');
+  });
+
+  it('POL3 saving the setting on is a new revision; off again is the content of before (same hash)', async () => {
+    const { repository, service } = setup();
+    uuid.mockReturnValue(NEW_ID as ReturnType<typeof randomUUID>);
+    await service.createRevision({
+      organizationId: ORG,
+      userId: USER,
+      baseRevisionNumber: 2,
+      content: requiring(true),
+    });
+    await service.createRevision({
+      organizationId: ORG,
+      userId: USER,
+      baseRevisionNumber: 3,
+      content: requiring(false),
+    });
+    const [on, off] =
+      repository.createRevisionWithCompareAndSwap.mock.calls.map(
+        ([input]) =>
+          (
+            input as unknown as {
+              revision: { content: string; contentHash: string };
+            }
+          ).revision
+      );
+    expect(JSON.parse(on.content).workflow).toEqual({
+      requireApprovalForHandoff: true,
+    });
+    expect(off).toEqual(storedOf(content()));
+  });
+
+  it('POL4/M3 anything but the one switch is refused, a flat flag included', async () => {
+    for (const bad of [
+      { ...content(), requireApprovalForHandoff: false },
+      { ...content(), workflow: { requireApprovalForHandoff: 'false' } },
+      {
+        ...content(),
+        workflow: { requireApprovalForHandoff: true, bypass: true },
+      },
+      { ...content(), workflow: { skipApproval: true } },
+      { ...content(), workflow: true },
+    ]) {
+      const { repository, service } = setup();
+      expect(
+        (
+          await httpError(
+            service.createRevision({
+              organizationId: ORG,
+              userId: USER,
+              baseRevisionNumber: 2,
+              content: bad,
+            })
+          )
+        ).body.code
+      ).toBe('CS_PROFILE_INVALID');
+      expect(writes(repository)).toEqual([]);
+    }
+  });
+});
+
 describe('ContentStudioEditorialPolicyService source', () => {
   // code only: the comments explain these rules and may name them
   const text = fs

@@ -1,6 +1,6 @@
 'use client';
 
-import { FC, useCallback, useEffect, useState } from 'react';
+import { FC, useCallback, useEffect, useId, useState } from 'react';
 import { Button } from '@gitroom/react/form/button';
 import { useToaster } from '@gitroom/react/toaster/toaster';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
@@ -19,12 +19,15 @@ import {
   ConflictNotice,
   ContentStudioContentForm,
   ContentStudioRevisionHistory,
+  FieldGroup,
   LongTextField,
   StringListEditor,
 } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
 
 // Editorial Policy v1: the editorial rules of the organization. Context for
-// writing, not a check: nothing here scores or enforces it
+// writing, not a check: nothing here scores or enforces them. Its workflow
+// (P5-07) is the one setting the server enforces, on handoff; off is no
+// workflow at all
 export interface EditorialPolicyContent {
   schemaVersion: 1;
   principles: string[];
@@ -33,6 +36,7 @@ export interface EditorialPolicyContent {
   ctaRules: string[];
   formatConventions: string[];
   complianceNotes: string;
+  workflow?: { requireApprovalForHandoff: boolean };
 }
 
 export const emptyEditorialPolicyContent = (): EditorialPolicyContent => ({
@@ -49,8 +53,10 @@ export const EditorialPolicyForm: ContentStudioContentForm<
   EditorialPolicyContent
 > = ({ value, onChange, disabled }) => {
   const t = useT();
+  const hintId = useId();
   const set = (patch: Partial<EditorialPolicyContent>) =>
     onChange({ ...value, ...patch });
+  const requireApproval = value.workflow?.requireApprovalForHandoff === true;
   return (
     <div className="flex flex-col gap-[16px] min-w-0">
       <StringListEditor
@@ -99,6 +105,41 @@ export const EditorialPolicyForm: ContentStudioContentForm<
         rows={6}
         onChange={(complianceNotes) => set({ complianceNotes })}
       />
+      <FieldGroup label={t('content_studio_policy_workflow', 'Handoff')}>
+        <label className="flex items-center gap-[8px] text-[14px]">
+          <input
+            type="checkbox"
+            checked={requireApproval}
+            disabled={disabled}
+            aria-describedby={hintId}
+            onChange={(e) => {
+              // off is sent as no workflow at all
+              const next = { ...value };
+              delete next.workflow;
+              onChange(
+                e.target.checked
+                  ? { ...next, workflow: { requireApprovalForHandoff: true } }
+                  : next
+              );
+            }}
+          />
+          {t(
+            'content_studio_policy_require_approval',
+            'Require approval before handoff'
+          )}
+        </label>
+        <div id={hintId} className="text-[12px] text-textItemBlur">
+          {t(
+            'content_studio_policy_require_approval_hint',
+            'Only revisions that are currently approved can be handed off to Postiz.'
+          )}
+          {requireApproval &&
+            ` ${t(
+              'content_studio_policy_require_approval_on',
+              'Unreviewed, pending, refused or withdrawn revisions cannot be handed off.'
+            )}`}
+        </div>
+      </FieldGroup>
     </div>
   );
 };

@@ -5,6 +5,7 @@ import { ContentStudioEditorialPolicyRepository } from '@gitroom/nestjs-librarie
 import {
   ContentStudioEditorialPolicyContentV1,
   ContentStudioEditorialPolicyError,
+  isContentStudioApprovalRequiredForHandoff,
   parseContentStudioEditorialPolicyContent,
 } from '@gitroom/nestjs-libraries/content-studio/editorial/editorial.policy';
 import {
@@ -102,7 +103,8 @@ const revisionSummary = (row: RevisionRow) => ({
 // first save, and is addressed by the organization alone. Every member may
 // read and revise it: no role, plan or billing check. It is entered by hand
 // and is context for later generation and review, not a compliance check;
-// nothing here calls an AI provider
+// nothing here calls an AI provider. Its workflow is the one part that is
+// enforced, by the handoff (P5-07), always from the current revision
 @Injectable()
 export class ContentStudioEditorialPolicyService {
   constructor(
@@ -132,6 +134,18 @@ export class ContentStudioEditorialPolicyService {
       latestRevisionNumber: policy.latestRevisionNumber,
       currentRevision: this.revisionDetail(current),
     };
+  }
+
+  // Whether the organization requires a revision to be approved before it is
+  // handed off: what its current policy revision says now (never an older
+  // revision, never one an AI operation used), and no when it has none yet.
+  // A current revision that is not intact is an integrity error, never "not
+  // required"
+  async isApprovalRequiredForHandoff(organizationId: string) {
+    const { currentRevision } = await this.getPolicy(organizationId);
+    return isContentStudioApprovalRequiredForHandoff(
+      currentRevision?.content ?? null
+    );
   }
 
   // Saves the policy over the revision the editor started from: 0 for the

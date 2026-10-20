@@ -479,6 +479,25 @@ describe('ContentStudioController handoffs', () => {
     });
   });
 
+  it('SEC2-SEC4 creating a handoff passes the request organization, user and route ids only: no approval, bypass or hash from the client (P5-07)', async () => {
+    const { handoffs, controller } = setup();
+    await controller.createHandoff(ORG, USER, 'package-1', 'revision-1');
+    const [input] = handoffs.createHandoff.mock.calls[0];
+    expect(Object.keys(input).sort()).toEqual([
+      'organizationId',
+      'packageId',
+      'revisionId',
+      'userId',
+    ]);
+    expect(
+      Reflect.getMetadata(
+        'design:paramtypes',
+        ContentStudioController.prototype,
+        'createHandoff'
+      )
+    ).toHaveLength(4);
+  });
+
   it('C22 C25 opens a handoff for the request org and user', async () => {
     const { handoffs, controller, result } = setup();
     const opened = {

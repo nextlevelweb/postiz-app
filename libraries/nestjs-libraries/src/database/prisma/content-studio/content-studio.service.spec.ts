@@ -5,6 +5,7 @@ import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/
 import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
 import { ContentStudioGroundingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.grounding.service';
 import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
+import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
 import { parseContentPackageDraft } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 import * as canonical from '@gitroom/nestjs-libraries/content-studio/canonical.json';
 
@@ -147,13 +148,19 @@ const setup = () => {
         notReviewedStatus(input.targetRevisionId)
     ),
   };
+  // P5-07: no organization requires approval before handoff unless a test
+  // says so
+  const policy = {
+    isApprovalRequiredForHandoff: jest.fn(async () => false),
+  };
   const service = new ContentStudioService(
     repository as unknown as ContentStudioRepository,
     media as unknown as ContentStudioMediaService,
     grounding as unknown as ContentStudioGroundingService,
-    reviews as unknown as ContentStudioReviewService
+    reviews as unknown as ContentStudioReviewService,
+    policy as unknown as ContentStudioEditorialPolicyService
   );
-  return { repository, media, grounding, reviews, service };
+  return { repository, media, grounding, reviews, policy, service };
 };
 
 // Content Studio answers with plain HttpExceptions only: never the 403
@@ -1726,6 +1733,7 @@ describe('ContentStudioService revision history', () => {
       createdAt: T,
       createdBy: { id: USER, name: 'Ada' },
       content: DRAFT_A,
+      handoffApprovalRequired: false,
       media: {},
       approval: notReviewedStatus('revision-1'),
     });
@@ -2202,7 +2210,7 @@ describe('ContentStudioService revision approval binding (P5-05)', () => {
     },
   };
   const listed = async (rows: { id: string }[]) => {
-    const { repository, reviews, service } = setup();
+    const { repository, reviews, policy, service } = setup();
     repository.getPackageWriteStateForOrganization.mockResolvedValue({
       draftVersion: 5,
       archivedAt: null,
@@ -2211,6 +2219,7 @@ describe('ContentStudioService revision approval binding (P5-05)', () => {
     repository.countRevisionsForPackage.mockResolvedValue(rows.length);
     return {
       reviews,
+      policy,
       list: await service.listRevisions({
         organizationId: ORG,
         packageId: PACKAGE_ID,
@@ -2243,6 +2252,22 @@ describe('ContentStudioService revision approval binding (P5-05)', () => {
     expect(reviews.getRevisionApprovalStatuses).not.toHaveBeenCalled();
   });
 
+  it('FH2/FH3 the revision view says whether a handoff of it requires approval: the current policy of the organization, never the policy itself (P5-07)', async () => {
+    for (const required of [false, true]) {
+      const { repository, policy, service } = setup();
+      repository.getRevisionForPackage.mockResolvedValue(storedRevision());
+      policy.isApprovalRequiredForHandoff.mockResolvedValue(required);
+      const detail = await service.getRevision({
+        organizationId: ORG,
+        packageId: PACKAGE_ID,
+        revisionId: 'revision-1',
+      });
+      expect(detail.handoffApprovalRequired).toBe(required);
+      expect(policy.isApprovalRequiredForHandoff.mock.calls).toEqual([[ORG]]);
+      expect(JSON.stringify(detail)).not.toMatch(/workflow|principles/);
+    }
+  });
+
   it('AS1 a missing or corrupt revision is answered before any binding is read', async () => {
     const { repository, reviews, service } = setup();
     jest.spyOn(Logger.prototype, 'error').mockImplementation();
@@ -2273,6 +2298,11 @@ describe('ContentStudioService revision approval binding (P5-05)', () => {
       ).status
     ).toBe(500);
     expect(reviews.getRevisionApprovalStatus).not.toHaveBeenCalled();
+  });
+
+  it('a page of history reads no policy', async () => {
+    const { policy } = await listed([{ id: 'revision-1' }]);
+    expect(policy.isApprovalRequiredForHandoff).not.toHaveBeenCalled();
   });
 
   it('AS3/BQ1 a page of history asks for the binding of all its revisions once', async () => {
@@ -2354,15 +2384,19 @@ describe('ContentStudioService revision approval binding (P5-05)', () => {
     expect(reviews.getRevisionApprovalStatuses).not.toHaveBeenCalled();
   });
 
-  it('HR1 a handoff never asks whether a revision is approved', () => {
+  it('HR1 a handoff asks whether a revision is approved only through requireApprovedRevision, and only where the policy requires it (P5-07)', () => {
     const text = require('fs')
       .readFileSync(
         require('path').join(__dirname, 'content-studio.handoff.service.ts'),
         'utf8'
       )
       .replace(/\/\/.*$/gm, '');
+    // never the revision view or the status this listing shows
     expect(text).not.toMatch(
-      /approv|ContentStudioReviewService|getRevision\(|requireApprovedRevision/i
+      /getRevision\(|getRevisionApprovalStatus|getRevisionApprovalStatuses/
+    );
+    expect(text).toMatch(
+      /isApprovalRequiredForHandoff\([^)]*\)\s*\)\s*\?\s*await this\._contentStudioReviewService\.requireApprovedRevision\(/
     );
   });
 });

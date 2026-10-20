@@ -22,7 +22,10 @@ import { ContentStudioGroundingPanel } from '@gitroom/frontend/components/conten
 // exactly this version (P5-01), never of the draft, with whether exactly
 // this version is approved as the server answered for it (P5-05).
 // A revision request of that review is resolved by one of the newest saved
-// versions of this package (P5-02). Nothing here can change a revision
+// versions of this package (P5-02). Where the server says a handoff
+// requires approval (P5-07), exactly this version can be used in a post once
+// it says this version is approved; the server decides again when it is
+// handed off. Nothing here can change a revision
 const RevisionView: FC<{
   packageId: string;
   revision: ContentStudioRevisionSummary;
@@ -30,6 +33,7 @@ const RevisionView: FC<{
   canRestore: boolean;
   onBack: () => void;
   onRestore: (content: ContentStudioDraft) => void;
+  onUseInPost?: () => void;
 }> = ({
   packageId,
   revision,
@@ -37,6 +41,7 @@ const RevisionView: FC<{
   canRestore,
   onBack,
   onRestore,
+  onUseInPost,
 }) => {
   const t = useT();
   const detail = useContentStudioRevision(packageId, revision.id);
@@ -46,6 +51,10 @@ const RevisionView: FC<{
     detail.data?.approval?.targetRevisionId === revision.id
       ? detail.data.approval
       : null;
+  const handoffRequiresApproval =
+    !!onUseInPost &&
+    !!approval &&
+    detail.data?.handoffApprovalRequired === true;
 
   return (
     <div className="flex flex-col gap-[16px]">
@@ -65,7 +74,20 @@ const RevisionView: FC<{
         >
           {t('content_studio_restore_revision', 'Restore to draft')}
         </Button>
+        {handoffRequiresApproval && (
+          <Button disabled={!approval.approved} onClick={onUseInPost}>
+            {t('content_studio_use_in_post', 'Use in Post')}
+          </Button>
+        )}
       </div>
+      {handoffRequiresApproval && !approval.approved && (
+        <div className="text-textItemBlur">
+          {t(
+            'content_studio_handoff_approval_required',
+            'This revision must be approved before handoff.'
+          )}
+        </div>
+      )}
       <ContentStudioReviewStatus
         targetType="PACKAGE_REVISION"
         revisionId={revision.id}
@@ -117,7 +139,9 @@ const RevisionView: FC<{
 // each with whether exactly it is approved (P5-05): never another version's.
 // Restoring copies a version into the draft; the version itself stays as it
 // is. Opened for one version (a review link, P5-06), it shows exactly that
-// version once the server answered for it, never another one instead
+// version once the server answered for it, never another one instead.
+// onUseInPost is offered for a version only where the server says a handoff
+// requires approval
 export const ContentStudioRevisionHistory: FC<{
   packageId: string;
   initialRevisionId?: string | null;
@@ -126,12 +150,14 @@ export const ContentStudioRevisionHistory: FC<{
     revisionId: string,
     content?: ContentStudioDraft
   ) => Promise<boolean>;
+  onUseInPost?: (revisionId: string) => Promise<boolean>;
   close: () => void;
 }> = ({
   packageId,
   initialRevisionId = null,
   canRestore,
   onRestore,
+  onUseInPost,
   close,
 }) => {
   const t = useT();
@@ -155,6 +181,11 @@ export const ContentStudioRevisionHistory: FC<{
 
   const restore = async (revisionId: string, content?: ContentStudioDraft) => {
     if (await onRestore(revisionId, content)) {
+      close();
+    }
+  };
+  const inPost = async (revisionId: string) => {
+    if (onUseInPost && (await onUseInPost(revisionId))) {
       close();
     }
   };
@@ -188,6 +219,7 @@ export const ContentStudioRevisionHistory: FC<{
         canRestore={canRestore}
         onBack={() => setViewing(null)}
         onRestore={(content) => restore(viewing.id, content)}
+        onUseInPost={onUseInPost ? () => inPost(viewing.id) : undefined}
       />
     );
   }

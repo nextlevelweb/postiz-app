@@ -9,6 +9,7 @@ import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/pr
 import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.service';
 import { ContentStudioHandoffRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.repository';
+import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
 import {
   ContentStudioGroundingError,
   ContentStudioGroundingService,
@@ -307,7 +308,8 @@ const setup = (stored: object = v1Draft()) => {
     media as unknown as ContentStudioMediaService,
     grounding,
     // never reached: the draft and its grounding only
-    {} as ContentStudioReviewService
+    {} as ContentStudioReviewService,
+    {} as ContentStudioEditorialPolicyService
   );
   const save = (draft: unknown, baseDraftVersion = state.draftVersion) =>
     service.saveDraft({
@@ -852,7 +854,10 @@ describe('handoff of a grounded revision (P3-11)', () => {
     return new ContentStudioHandoffService(
       repository as unknown as ContentStudioRepository,
       handoffs as unknown as ContentStudioHandoffRepository,
-      media as unknown as ContentStudioMediaService
+      media as unknown as ContentStudioMediaService,
+      // opening a handoff never reads the policy or an approval
+      {} as ContentStudioEditorialPolicyService,
+      {} as ContentStudioReviewService
     ).resolveHandoff({
       organizationId: ORG,
       userId: USER,

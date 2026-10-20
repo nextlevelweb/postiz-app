@@ -443,7 +443,10 @@ const parented = (
 // approval history, all checked as above, and nothing else: no stored flag,
 // no newer or older revision, no other revision with the same hash. One
 // predicate (getRevisionApprovalStatus, and requireApprovedRevision on top
-// of it) and its batch for a page of revisions share the same checks
+// of it) and its batch for a page of revisions share the same checks. The
+// handoff (P5-07) is its one gate: where the organization's policy requires
+// approval, a revision is handed off only once requireApprovedRevision
+// accepts exactly it
 //
 // The Review & Approval queue (P5-06) is the list of reviews, most recently
 // active first, each row with what finding and opening the work needs: the
@@ -1378,9 +1381,9 @@ export class ContentStudioReviewService {
   }
 
   // The same answer for a caller that may only go on with an approved
-  // revision (the handoff gate of P5-07, not wired yet): the status of an
+  // revision (the handoff gate of P5-07, its only caller): the status of an
   // approved revision, CS_APPROVAL_REQUIRED for every revision that is not
-  // approved now, and the integrity errors as they are
+  // approved now, and the integrity errors as they are. Read only
   async requireApprovedRevision(input: {
     organizationId: string;
     targetType: unknown;

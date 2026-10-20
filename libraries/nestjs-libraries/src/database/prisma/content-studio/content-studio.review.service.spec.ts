@@ -23,6 +23,24 @@ import { parseContentStudioSourceContent } from '@gitroom/nestjs-libraries/conte
 import { storedContentStudioSourceContent } from '@gitroom/nestjs-libraries/content-studio/sources/source.version';
 import { hashContentPackageClaim } from '@gitroom/nestjs-libraries/content-studio/content.package.revision';
 import { storedContentStudioDesignDocument } from '@gitroom/nestjs-libraries/content-studio/design/design.document.revision';
+import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.service';
+import { ContentStudioHandoffRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.repository';
+import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.repository';
+import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
+import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
+
+// The handoff (P5-07) runs here on the same stand-in. The real MediaService
+// pulls in uploads, Redis and Temporal at import time and the sanitizer
+// needs a DOM; a handoff is only created here, never opened
+jest.mock(
+  '@gitroom/nestjs-libraries/database/prisma/media/media.service',
+  () => ({
+    MediaService: class MediaService {},
+  })
+);
+jest.mock('@gitroom/nestjs-libraries/content-studio/handoff.html', () => ({
+  contentStudioTextToComposerHtml: jest.fn(),
+}));
 
 // Reviews (P5-01) through the real service AND the real repository, on an
 // in-memory stand-in for Prisma that keeps what this needs of PostgreSQL:
@@ -125,6 +143,8 @@ const createDb = () => {
     sourceVersion: [] as Row[],
     // P5-04: approval decisions
     approval: [] as Row[],
+    // P5-07: handoffs
+    handoff: [] as Row[],
     // P5-06: the packages and designs the revisions belong to, by name
     parent: [
       { id: `package-${ORG_A}`, organizationId: ORG_A, name: 'Summer Launch' },
@@ -143,6 +163,8 @@ const createDb = () => {
   let clock = Date.parse('2026-10-19T10:00:00.000Z');
   const now = () => new Date((clock += 1000));
   const log: { op: string; where?: Row; data?: Row }[] = [];
+  // P5-07: a write that fails, to see that nothing else changes with it
+  const faults = { handoffCreate: null as Error | null };
 
   // P5-06: the name of the package or design a review's revision belongs
   // to, through the composite relations (the parent IN the organization)
@@ -422,8 +444,11 @@ const createDb = () => {
           matches(entry, args.where)
         );
         update(rows, args.data);
-        for (const row of rows) {
-          row.updatedAt = now();
+        // as Prisma: @updatedAt moves on every update unless it is written
+        if (!('updatedAt' in args.data)) {
+          for (const row of rows) {
+            row.updatedAt = now();
+          }
         }
         return { count: rows.length };
       },
@@ -607,6 +632,12 @@ const createDb = () => {
               : approvalView(row)
           );
       },
+      // P5-07: the history an approved handoff was judged on
+      count: async (args: Row) => {
+        log.push({ op: 'approval.count', where: args.where });
+        return tables.approval.filter((entry) => matches(entry, args.where))
+          .length;
+      },
       create: async (args: Row) => {
         log.push({ op: 'approval.create', data: args.data });
         const data = args.data;
@@ -626,6 +657,17 @@ const createDb = () => {
           createdAt: now(),
         });
         return { id: 'approval' };
+      },
+    },
+    // P5-07: a handoff is only ever created here
+    contentStudioHandoff: {
+      create: async (args: Row) => {
+        log.push({ op: 'handoff.create', data: args.data });
+        if (faults.handoffCreate) {
+          throw faults.handoffCreate;
+        }
+        tables.handoff.push({ ...args.data, createdAt: now() });
+        return pick(args.data, args.select);
       },
     },
     contentStudioReviewStateEvent: {
@@ -744,13 +786,63 @@ const createDb = () => {
     sources as unknown as ContentStudioSourceRepository
   );
   const service = new ContentStudioReviewService(repository, grounding);
+  // P5-07: the real handoff service and repository on the same tables. The
+  // policy is the organization's switch, read by the server per request;
+  // the package revision is read like getRevisionForPackage; every Media is
+  // ready
+  const policy = {
+    required: new Set<string>(),
+    isApprovalRequiredForHandoff: jest.fn(async (organizationId: string) =>
+      policy.required.has(organizationId)
+    ),
+  };
+  const requireApprovedRevision = jest.spyOn(
+    service,
+    'requireApprovedRevision'
+  );
+  const packages = {
+    getRevisionForPackage: async (
+      organizationId: string,
+      packageId: string,
+      revisionId: string
+    ) => {
+      log.push({
+        op: 'packageRevision.findFirst',
+        where: { id: revisionId, packageId, organizationId },
+      });
+      const row = tables.packageRevision.find(
+        (entry) =>
+          entry.id === revisionId &&
+          entry.packageId === packageId &&
+          entry.organizationId === organizationId
+      );
+      return row ? { ...row } : null;
+    },
+  };
+  const handoffs = new ContentStudioHandoffService(
+    packages as unknown as ContentStudioRepository,
+    new ContentStudioHandoffRepository(
+      { model: prisma } as unknown as PrismaRepository<'contentStudioHandoff'>,
+      { model: prisma } as unknown as PrismaTransaction
+    ),
+    {
+      resolveForHandoff: async (_org: string, draft: Row) =>
+        draft.copy.global.thread.map(() => []),
+    } as unknown as ContentStudioMediaService,
+    policy as unknown as ContentStudioEditorialPolicyService,
+    service
+  );
   return {
     get tables() {
       return tables;
     },
     log,
+    faults,
     repository,
     service,
+    policy,
+    requireApprovedRevision,
+    handoffs,
   };
 };
 
@@ -4216,11 +4308,12 @@ describe('ContentStudioReviewService claim review boundaries (P5-03B)', () => {
   });
 
   it('P503B-2/P503B-3 handoff and publishing know nothing of claim review', () => {
+    // an approved handoff (P5-07) leaves the claims to requireApprovedRevision
     for (const file of [
       'content-studio.handoff.service.ts',
       'content-studio.handoff.repository.ts',
     ]) {
-      expect(source(file)).not.toMatch(/claim|Claim|review|Review|READY/);
+      expect(source(file)).not.toMatch(/claim|Claim|IN_REVIEW/);
     }
   });
 
@@ -5443,13 +5536,21 @@ describe('ContentStudioReviewService approval boundaries (P5-04)', () => {
     ).toBe(4);
   });
 
-  it('P504-6/P504-7/M25 handoff and publishing know nothing of approval', () => {
-    for (const file of [
-      'content-studio.handoff.service.ts',
-      'content-studio.handoff.repository.ts',
-    ]) {
-      expect(source(file)).not.toMatch(/approv|review/i);
-    }
+  it('P504-6/P504-7/M25 handoff and publishing decide nothing about approval', () => {
+    // the handoff asks requireApprovedRevision (P5-07) and only ever counts
+    // the decisions it was judged on while it holds the review: it never
+    // writes a decision or a review
+    expect(source('content-studio.handoff.service.ts')).not.toMatch(
+      /decideApproval|appendApproval|\.contentStudioApproval\.|\.contentStudioReview\./
+    );
+    const repository = source('content-studio.handoff.repository.ts');
+    expect(repository.match(/contentStudioApproval\.\w+/g)).toEqual([
+      'contentStudioApproval.count',
+    ]);
+    expect(repository.match(/contentStudioReview\.\w+/g)).toEqual([
+      'contentStudioReview.findFirst',
+      'contentStudioReview.updateMany',
+    ]);
     const posts = readFileSync(
       join(
         root,
@@ -6568,7 +6669,7 @@ describe('ContentStudioReviewService approval binding boundaries (P5-05)', () =>
     ]);
   });
 
-  it('P505-4/HR2/M18 nothing calls the require helper yet: no handoff gate', () => {
+  it('P505-4/HR2/M18 the require helper gates the handoff only (P5-07), the revision views only show the predicate', () => {
     const callers = [join(root, 'apps'), join(root, 'libraries')]
       .flatMap(files)
       .filter((file) =>
@@ -6577,9 +6678,11 @@ describe('ContentStudioReviewService approval binding boundaries (P5-05)', () =>
         )
       )
       .map((file) => file.slice(root.length + 1));
-    // only the predicate itself and the revision views that show it
+    // the predicate itself, the revision views that show it and the
+    // handoff that requires it
     expect(callers.sort()).toEqual([
       'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.design.service.ts',
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.handoff.service.ts',
       'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.review.service.ts',
       'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.service.ts',
     ]);
@@ -6589,17 +6692,17 @@ describe('ContentStudioReviewService approval binding boundaries (P5-05)', () =>
     ]) {
       expect(source(file)).not.toMatch(/requireApprovedRevision/);
     }
-    for (const file of [
-      'content-studio.handoff.service.ts',
-      'content-studio.handoff.repository.ts',
-    ]) {
-      expect(source(file)).not.toMatch(
-        /approv|review|CS_APPROVAL_REQUIRED|ContentStudioReviewService/i
-      );
-    }
+    // the handoff asks the helper, never the status, and its repository
+    // knows no decision
+    expect(source('content-studio.handoff.service.ts')).not.toMatch(
+      /getRevisionApprovalStatus|CS_APPROVAL_REQUIRED/
+    );
+    expect(source('content-studio.handoff.repository.ts')).not.toMatch(
+      /CS_APPROVAL|ContentStudioReviewService|requireApproved/
+    );
   });
 
-  it('P505-5/P505-7/HR3 no publishing gate and no organization approval policy', () => {
+  it('P505-5/P505-7/HR3 no publishing gate, no approval policy column, and the binding reads no policy (it is the handoff that does, P5-07)', () => {
     const posts = readFileSync(
       join(
         root,
@@ -7589,17 +7692,28 @@ describe('ContentStudioReviewService Review & Approval queue boundaries (P5-06)'
     );
   });
 
-  it('P506-4/P506-5 the queue gates nothing: handoff and publishing never read it', () => {
+  it('P506-4/P506-5/R506-3 the queue gates nothing: handoff and publishing never read it', () => {
     const root = join(__dirname, '..', '..', '..', '..', '..', '..');
+    // the handoff asks requireApprovedRevision (P5-07), never the queue
     for (const file of [
       'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.handoff.service.ts',
       'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.handoff.repository.ts',
-      'libraries/nestjs-libraries/src/database/prisma/posts/posts.service.ts',
     ]) {
       expect(readFileSync(join(root, file), 'utf8')).not.toMatch(
-        /listReviews|ReviewQueue|reviewQueue|requireApprovedRevision|CONTENT_STUDIO_REVIEW_QUEUE|ContentStudioReview/
+        /listReviews|ReviewQueue|reviewQueue|CONTENT_STUDIO_REVIEW_QUEUE/
       );
     }
+    expect(
+      readFileSync(
+        join(
+          root,
+          'libraries/nestjs-libraries/src/database/prisma/posts/posts.service.ts'
+        ),
+        'utf8'
+      )
+    ).not.toMatch(
+      /listReviews|ReviewQueue|reviewQueue|requireApprovedRevision|CONTENT_STUDIO_REVIEW_QUEUE|ContentStudioReview/
+    );
   });
 
   it('P506-7/P506-8 a queue is derived with the shared rules only and resolves no evidence', () => {
@@ -7614,5 +7728,664 @@ describe('ContentStudioReviewService Review & Approval queue boundaries (P5-06)'
     expect(list).not.toMatch(
       /resolveEvidence|groundingService|decision === 'APPROVED'|\.some\(\(\w+\) => \w+\.decision/
     );
+  });
+});
+
+// --- handoff requiring an approved revision where configured (P5-07) ---
+
+const handOff = (
+  db: Db,
+  revisionId = PKG_REV_4,
+  org = ORG_A,
+  packageId = `package-${org}`
+) =>
+  db.handoffs.createHandoff({
+    organizationId: org,
+    userId: org === ORG_A ? USER_A : USER_B,
+    packageId,
+    revisionId,
+  });
+const APPROVAL_REQUIRED = { status: 409, code: 'CS_APPROVAL_REQUIRED' };
+// the real check, for a stand-in that does more around it
+const realRequire = (db: Db, input: Row) =>
+  ContentStudioReviewService.prototype.requireApprovedRevision.call(
+    db.service,
+    input as Parameters<
+      ContentStudioReviewService['requireApprovedRevision']
+    >[0]
+  );
+const reviewOf = (db: Db, revisionId = PKG_REV_4) =>
+  db.tables.review.find((row) => row.packageRevisionId === revisionId)!;
+
+// Revision 4 of package-org-a, its review (if any) where each lifecycle
+// state leaves it
+const HANDOFF_STATES = [
+  'NOT_REVIEWED',
+  'REQUESTED',
+  'IN_REVIEW',
+  'CHANGES_REQUESTED',
+  'CANCELLED',
+  'PENDING_APPROVAL',
+  'REFUSED',
+  'WITHDRAWN',
+  'APPROVED',
+  'RE_APPROVED',
+] as const;
+type HandoffState = (typeof HANDOFF_STATES)[number];
+const revisionIn = async (state: HandoffState) => {
+  const db = discussion();
+  if (state === 'NOT_REVIEWED') {
+    return db;
+  }
+  if (
+    state === 'REQUESTED' ||
+    state === 'IN_REVIEW' ||
+    state === 'CHANGES_REQUESTED' ||
+    state === 'CANCELLED'
+  ) {
+    await reviewIn(db, state);
+    return db;
+  }
+  const review = await reviewIn(db, 'READY_FOR_APPROVAL');
+  if (state === 'REFUSED') {
+    await decide(db, review.id, 'refuse', REFUSAL);
+  }
+  if (
+    state === 'WITHDRAWN' ||
+    state === 'APPROVED' ||
+    state === 'RE_APPROVED'
+  ) {
+    await decide(db, review.id, 'approve');
+  }
+  if (state === 'WITHDRAWN' || state === 'RE_APPROVED') {
+    await decide(db, review.id, 'withdraw', WITHDRAWAL);
+  }
+  if (state === 'RE_APPROVED') {
+    await decide(db, review.id, 'approve');
+  }
+  return db;
+};
+const NOT_APPROVED = HANDOFF_STATES.filter(
+  (state) => state !== 'APPROVED' && state !== 'RE_APPROVED'
+);
+const ops = (db: Db) => db.log.map((entry) => entry.op);
+
+describe('Handoff where approval is not required (P5-07)', () => {
+  it.each(HANDOFF_STATES)(
+    'HO1-HO8 a revision %s is handed off exactly as before: no approval is read',
+    async (state) => {
+      const db = await revisionIn(state);
+      db.log.length = 0;
+      const before = snapshot(db);
+      const handoff = await handOff(db);
+      expect(Object.keys(handoff).sort()).toEqual(['expiresAt', 'id']);
+      expect(db.tables.handoff).toEqual([
+        {
+          id: handoff.id,
+          organizationId: ORG_A,
+          userId: USER_A,
+          packageId: `package-${ORG_A}`,
+          packageRevisionId: PKG_REV_4,
+          expiresAt: handoff.expiresAt,
+          createdAt: expect.any(Date),
+        },
+      ]);
+      // the revision and the handoff, as before P5-07: no review, approval
+      // or claim is read and nothing is held
+      expect(ops(db)).toEqual(['packageRevision.findFirst', 'handoff.create']);
+      expect(db.requireApprovedRevision).not.toHaveBeenCalled();
+      expect(db.policy.isApprovalRequiredForHandoff).toHaveBeenCalledWith(
+        ORG_A
+      );
+      expect(snapshot(db)).toBe(before);
+    }
+  );
+});
+
+describe('Handoff where approval is required (P5-07)', () => {
+  it.each(NOT_APPROVED)(
+    'HE1-HE7/HE9 a revision %s is refused with CS_APPROVAL_REQUIRED and nothing is written',
+    async (state) => {
+      const db = await revisionIn(state);
+      db.policy.required.add(ORG_A);
+      db.log.length = 0;
+      const before = snapshot(db);
+      expect(await code(handOff(db))).toEqual(APPROVAL_REQUIRED);
+      expect(db.tables.handoff).toEqual([]);
+      expect(ops(db)).not.toContain('handoff.create');
+      // AT1/M10: refused before the handoff transaction ever starts
+      expect(ops(db)).not.toContain('review.updateMany');
+      expect(snapshot(db)).toBe(before);
+    }
+  );
+
+  it.each(['APPROVED', 'RE_APPROVED'] as const)(
+    'HE8/HE10/TT1 a revision %s is handed off through the one predicate, for exactly it',
+    async (state) => {
+      const db = await revisionIn(state);
+      db.policy.required.add(ORG_A);
+      const before = snapshot(db);
+      const handoff = await handOff(db);
+      // the same answer as without the requirement
+      expect(Object.keys(handoff).sort()).toEqual(['expiresAt', 'id']);
+      expect(db.tables.handoff).toEqual([
+        {
+          id: handoff.id,
+          organizationId: ORG_A,
+          userId: USER_A,
+          packageId: `package-${ORG_A}`,
+          packageRevisionId: PKG_REV_4,
+          expiresAt: handoff.expiresAt,
+          createdAt: expect.any(Date),
+        },
+      ]);
+      expect(db.requireApprovedRevision.mock.calls).toEqual([
+        [
+          {
+            organizationId: ORG_A,
+            targetType: 'PACKAGE_REVISION',
+            targetRevisionId: PKG_REV_4,
+          },
+        ],
+      ]);
+      // AT4: the check and the hold change no review, event or decision,
+      // not even the review's updatedAt (the queue order stays)
+      expect(snapshot(db)).toBe(before);
+    }
+  );
+
+  it("the policy is the organization's: another organization requiring approval changes nothing here (SEC6/M12)", async () => {
+    const db = await revisionIn('NOT_REVIEWED');
+    db.policy.required.add(ORG_B);
+    await handOff(db);
+    expect(db.tables.handoff).toHaveLength(1);
+    expect(db.policy.isApprovalRequiredForHandoff).toHaveBeenCalledWith(ORG_A);
+    expect(db.requireApprovedRevision).not.toHaveBeenCalled();
+    // and ORG_B's own unreviewed revision is refused
+    expect(await code(handOff(db, PKG_REV_B, ORG_B))).toEqual(
+      APPROVAL_REQUIRED
+    );
+  });
+
+  it('a grounded package revision is handed off with its verified claims; a corrupt assessment is an integrity error (AT2)', async () => {
+    const { db, review } = await readyClaimed();
+    await decide(db, review.id, 'approve');
+    db.policy.required.add(ORG_A);
+    await handOff(db, PKG_REV_G);
+    expect(db.tables.handoff).toHaveLength(1);
+    // the claim checks are requireApprovedRevision's own (P5-05), never
+    // repeated here
+    db.tables.claim[0].status = 'NEEDS_REVISION';
+    db.log.length = 0;
+    expect(await code(handOff(db, PKG_REV_G))).toEqual({
+      status: 500,
+      code: 'CS_REVIEW_INTEGRITY_ERROR',
+    });
+    expect(db.tables.handoff).toHaveLength(1);
+    expect(ops(db)).not.toContain('handoff.create');
+  });
+
+  it('AT2/R505-4 corrupt stored data is an integrity error, never "approval required", and writes nothing', async () => {
+    // an approval history with a gap
+    const history = await revisionIn('APPROVED');
+    history.policy.required.add(ORG_A);
+    history.tables.approval[0].sequence = 2;
+    expect(await code(handOff(history))).toEqual({
+      status: 500,
+      code: 'CS_APPROVAL_INTEGRITY_ERROR',
+    });
+    // a review whose revision hash no longer matches
+    const target = await revisionIn('APPROVED');
+    target.policy.required.add(ORG_A);
+    reviewOf(target).targetContentHash = 'f'.repeat(64);
+    expect((await code(handOff(target))).code).toMatch(/INTEGRITY_ERROR$/);
+    for (const db of [history, target]) {
+      expect(db.tables.handoff).toEqual([]);
+    }
+  });
+
+  it('a policy that cannot be read fails closed: nothing about the approval is read, nothing is written', async () => {
+    const db = await revisionIn('NOT_REVIEWED');
+    const failure = new HttpException(
+      {
+        msg: 'Stored editorial policy data could not be verified.',
+        code: 'CS_PROFILE_INTEGRITY_ERROR',
+      },
+      500
+    );
+    db.policy.isApprovalRequiredForHandoff.mockRejectedValueOnce(failure);
+    await expect(handOff(db)).rejects.toBe(failure);
+    expect(db.tables.handoff).toEqual([]);
+    expect(db.requireApprovedRevision).not.toHaveBeenCalled();
+  });
+
+  it('AT3 a handoff write that fails leaves the review and its approval exactly as they were', async () => {
+    const db = await revisionIn('APPROVED');
+    db.policy.required.add(ORG_A);
+    const before = snapshot(db);
+    const failure = new Error('write failed');
+    db.faults.handoffCreate = failure;
+    await expect(handOff(db)).rejects.toBe(failure);
+    expect(db.tables.handoff).toEqual([]);
+    expect(snapshot(db)).toBe(before);
+    expect((await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4)).state).toBe(
+      'APPROVED'
+    );
+  });
+
+  it('M8 CS_APPROVAL_REQUIRED is never swallowed: the handoff fails with it', async () => {
+    const db = await revisionIn('PENDING_APPROVAL');
+    db.policy.required.add(ORG_A);
+    const refusal = await handOff(db).catch((err) => err);
+    expect(refusal).toBeInstanceOf(HttpException);
+    expect((refusal as HttpException).getResponse()).toEqual({
+      msg: 'This revision is not approved.',
+      code: 'CS_APPROVAL_REQUIRED',
+    });
+  });
+});
+
+describe('Handoff of exactly the approved revision (P5-07)', () => {
+  it('EX1/EX2 revision N approved hands off; the newer unreviewed N+1 of the same package is refused', async () => {
+    const db = await revisionIn('APPROVED');
+    db.policy.required.add(ORG_A);
+    await handOff(db, PKG_REV_4);
+    expect(await code(handOff(db, PKG_REV_5))).toEqual(APPROVAL_REQUIRED);
+    expect(await code(handOff(db, PKG_REV_6))).toEqual(APPROVAL_REQUIRED);
+    expect(db.tables.handoff.map((row) => row.packageRevisionId)).toEqual([
+      PKG_REV_4,
+    ]);
+    // N+1 reviewed and approved itself: now it hands off too
+    const next = await reviewIn(
+      db,
+      'READY_FOR_APPROVAL',
+      'PACKAGE_REVISION',
+      PKG_REV_5
+    );
+    await decide(db, next.id, 'approve');
+    await handOff(db, PKG_REV_5);
+    expect(db.tables.handoff.map((row) => row.packageRevisionId)).toEqual([
+      PKG_REV_4,
+      PKG_REV_5,
+    ]);
+  });
+
+  it('EX3/M7 a newer revision with exactly the same content and hash inherits nothing', async () => {
+    const db = await revisionIn('APPROVED');
+    db.policy.required.add(ORG_A);
+    const same = { ...packageRevision(uuid(31), ORG_A, 10, `v4 ${SECRET}`) };
+    expect(same.contentHash).toBe(hashOf(db, PKG_REV_4));
+    db.tables.packageRevision.push(same);
+    expect(await code(handOff(db, same.id))).toEqual(APPROVAL_REQUIRED);
+    expect(db.tables.handoff).toEqual([]);
+  });
+
+  it("EX4/M6 another package's approval never applies, and a revision is only handed off with its own package", async () => {
+    const db = discussion();
+    db.policy.required.add(ORG_A);
+    const other = await reviewIn(
+      db,
+      'READY_FOR_APPROVAL',
+      'PACKAGE_REVISION',
+      PKG_REV_OTHER
+    );
+    await decide(db, other.id, 'approve');
+    expect(await code(handOff(db, PKG_REV_4))).toEqual(APPROVAL_REQUIRED);
+    // the approved revision named under another package is not found at all
+    expect(await code(handOff(db, PKG_REV_OTHER))).toEqual({
+      status: 404,
+      code: 'CS_NOT_FOUND',
+    });
+    await handOff(db, PKG_REV_OTHER, ORG_A, 'package-other');
+    expect(db.tables.handoff.map((row) => row.packageRevisionId)).toEqual([
+      PKG_REV_OTHER,
+    ]);
+  });
+
+  it("EX5/TT2/TT3 a design's approval never applies to a package handoff, and there is no design handoff", async () => {
+    const { db, review } = await readyDesign();
+    await decide(db, review.id, 'approve');
+    db.policy.required.add(ORG_A);
+    expect(await code(handOff(db, PKG_REV_4))).toEqual(APPROVAL_REQUIRED);
+    // a design revision is never a package revision to hand off
+    expect(await code(handOff(db, DESIGN_REV_7))).toEqual({
+      status: 404,
+      code: 'CS_NOT_FOUND',
+    });
+    const service = readFileSync(
+      join(__dirname, 'content-studio.handoff.service.ts'),
+      'utf8'
+    ).replace(/\/\/.*$/gm, '');
+    expect(service).toMatch(/targetType: 'PACKAGE_REVISION' as const/);
+    expect(service).not.toMatch(/DESIGN_REVISION|design/i);
+    const controller = readFileSync(
+      join(
+        __dirname,
+        '..',
+        '..',
+        '..',
+        '..',
+        '..',
+        '..',
+        'apps/backend/src/api/routes/content-studio.controller.ts'
+      ),
+      'utf8'
+    );
+    expect(controller.match(/@Post\('[^']*handoffs'\)/g)).toEqual([
+      "@Post('/packages/:id/revisions/:revisionId/handoffs')",
+    ]);
+  });
+
+  it("SEC1/SEC5/M13 another organization's approval is never used: its revision is not found from here", async () => {
+    const db = discussion();
+    const foreign = await reviewIn(
+      db,
+      'READY_FOR_APPROVAL',
+      'PACKAGE_REVISION',
+      PKG_REV_4
+    );
+    await decide(db, foreign.id, 'approve');
+    db.policy.required.add(ORG_A);
+    db.policy.required.add(ORG_B);
+    // org B names org A's approved revision under its own package or org A's
+    expect(await code(handOff(db, PKG_REV_4, ORG_B))).toEqual({
+      status: 404,
+      code: 'CS_NOT_FOUND',
+    });
+    expect(
+      await code(handOff(db, PKG_REV_4, ORG_B, `package-${ORG_A}`))
+    ).toEqual({ status: 404, code: 'CS_NOT_FOUND' });
+    expect(db.tables.handoff).toEqual([]);
+    // every statement of an approved handoff names the organization
+    db.log.length = 0;
+    await handOff(db);
+    expect(db.log.length).toBeGreaterThan(4);
+    for (const entry of db.log) {
+      expect(entry.where ?? entry.data).toMatchObject({
+        organizationId: ORG_A,
+      });
+    }
+  });
+});
+
+describe('Handoff and a withdrawal at the same time (P5-07)', () => {
+  it('WR1/WR4 a withdrawal committed between the check and the hold: the handoff is refused, nothing is written', async () => {
+    const db = await revisionIn('APPROVED');
+    db.policy.required.add(ORG_A);
+    const review = reviewOf(db);
+    db.requireApprovedRevision.mockImplementationOnce(async (input) => {
+      const status = await realRequire(db, input);
+      await decide(db, review.id, 'withdraw', WITHDRAWAL);
+      return status;
+    });
+    expect(await code(handOff(db))).toEqual(APPROVAL_REQUIRED);
+    expect(db.tables.handoff).toEqual([]);
+    // judged again after the hold saw another history
+    expect(db.requireApprovedRevision).toHaveBeenCalledTimes(2);
+    expect(decisions(db)).toEqual([
+      [1, 'APPROVED'],
+      [2, 'WITHDRAWN'],
+    ]);
+  });
+
+  it('WR2/WR3 the handoff held first: it is created, the withdrawal follows, and the next handoff is refused', async () => {
+    const db = await revisionIn('APPROVED');
+    db.policy.required.add(ORG_A);
+    const review = reviewOf(db);
+    // the withdrawal is asked for once the handoff was judged, and reaches
+    // its transaction after the handoff's: it waits, then is made on the
+    // history the handoff never changed
+    let withdrawal: Promise<Row> | undefined;
+    db.requireApprovedRevision.mockImplementationOnce(async (input) => {
+      const status = await realRequire(db, input);
+      withdrawal = decide(db, review.id, 'withdraw', WITHDRAWAL);
+      return status;
+    });
+    db.log.length = 0;
+    const handoff = await handOff(db);
+    expect((await withdrawal!).state).toBe('PENDING');
+    expect(ops(db).indexOf('handoff.create')).toBeLessThan(
+      ops(db).indexOf('approval.create')
+    );
+    expect(db.requireApprovedRevision).toHaveBeenCalledTimes(1);
+    // the handoff made while approved stays: nothing invalidates it
+    expect(db.tables.handoff.map((row) => row.id)).toEqual([handoff.id]);
+    expect(await code(handOff(db))).toEqual(APPROVAL_REQUIRED);
+    expect(db.tables.handoff.map((row) => row.id)).toEqual([handoff.id]);
+  });
+
+  it('a withdrawal and a new approval between the check and the hold: judged again, and handed off on the new approval', async () => {
+    const db = await revisionIn('APPROVED');
+    db.policy.required.add(ORG_A);
+    const review = reviewOf(db);
+    db.requireApprovedRevision.mockImplementationOnce(async (input) => {
+      const status = await realRequire(db, input);
+      await decide(db, review.id, 'withdraw', WITHDRAWAL);
+      await decide(db, review.id, 'approve');
+      return status;
+    });
+    await handOff(db);
+    expect(db.tables.handoff).toHaveLength(1);
+    expect(db.requireApprovedRevision).toHaveBeenCalledTimes(2);
+  });
+
+  it('an approval that keeps changing under the hold gives up with CS_APPROVAL_CONFLICT after three tries', async () => {
+    const db = await revisionIn('APPROVED');
+    db.policy.required.add(ORG_A);
+    const review = reviewOf(db);
+    db.requireApprovedRevision.mockImplementation(async (input) => {
+      const status = await realRequire(db, input);
+      await decide(db, review.id, 'withdraw', WITHDRAWAL);
+      await decide(db, review.id, 'approve');
+      return status;
+    });
+    expect(await code(handOff(db))).toEqual({
+      status: 409,
+      code: 'CS_APPROVAL_CONFLICT',
+    });
+    expect(db.tables.handoff).toEqual([]);
+    expect(db.requireApprovedRevision).toHaveBeenCalledTimes(3);
+  });
+
+  it('a comment between the check and the hold changes no approval: handed off at the first try', async () => {
+    const db = await revisionIn('APPROVED');
+    db.policy.required.add(ORG_A);
+    const review = reviewOf(db);
+    db.requireApprovedRevision.mockImplementationOnce(async (input) => {
+      const status = await realRequire(db, input);
+      await say(db, review.id, 'Looks good.');
+      return status;
+    });
+    await handOff(db);
+    expect(db.tables.handoff).toHaveLength(1);
+    expect(db.requireApprovedRevision).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Handoff approval boundaries (P5-07)', () => {
+  const root = join(__dirname, '..', '..', '..', '..', '..', '..');
+  const read = (file: string) =>
+    readFileSync(join(root, file), 'utf8').replace(/\/\/.*$/gm, '');
+  const HANDOFF_SERVICE =
+    'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.handoff.service.ts';
+  const HANDOFF_REPOSITORY =
+    'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.handoff.repository.ts';
+  const files = (dir: string): string[] =>
+    require('fs')
+      .readdirSync(dir, { withFileTypes: true })
+      .flatMap((entry: { name: string; isDirectory: () => boolean }) =>
+        entry.isDirectory()
+          ? ['node_modules', 'dist', '.next', 'build'].includes(entry.name)
+            ? []
+            : files(join(dir, entry.name))
+          : /\.tsx?$/.test(entry.name) && !/\.spec\.tsx?$/.test(entry.name)
+          ? [join(dir, entry.name)]
+          : []
+      );
+
+  it('P507-1 requireApprovedRevision is called by the handoff only, and only when it is created', () => {
+    const callers = [join(root, 'apps'), join(root, 'libraries')]
+      .flatMap(files)
+      .filter((file) =>
+        /requireApprovedRevision/.test(readFileSync(file, 'utf8'))
+      )
+      .map((file) => file.slice(root.length + 1))
+      .sort();
+    expect(callers).toEqual([
+      HANDOFF_SERVICE,
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.review.service.ts',
+    ]);
+    const service = read(HANDOFF_SERVICE);
+    const create = service.slice(
+      service.indexOf('async createHandoff('),
+      service.indexOf('async resolveHandoff(')
+    );
+    expect(create.match(/requireApprovedRevision\(/g)).toHaveLength(2);
+    expect(create).toMatch(/isApprovalRequiredForHandoff\(/);
+    // opening or revoking an existing handoff never asks again: a handoff
+    // made while approved stays usable after a withdrawal
+    expect(service.slice(service.indexOf('async resolveHandoff('))).not.toMatch(
+      /approv|_contentStudioReviewService|_contentStudioEditorialPolicyService/i
+    );
+  });
+
+  it('P507-5/M19 the handoff has no approval logic of its own: no decision, state or hash rule', () => {
+    for (const file of [HANDOFF_SERVICE, HANDOFF_REPOSITORY]) {
+      expect(read(file)).not.toMatch(
+        /contentStudioApprovalStatus|deriveContentStudio|isContentStudioRevisionApproved|\.decision|decision:|'APPROVED'|'WITHDRAWN'|'REFUSED'|targetContentHash|contentHash|claim|approved:\s*(true|false)/i
+      );
+    }
+    // the hold only confirms the history the predicate judged
+    const repository = read(HANDOFF_REPOSITORY);
+    expect(repository).toMatch(/decisions !== input\.approvalVersion/);
+    expect(repository).toMatch(/state: 'READY_FOR_APPROVAL'/);
+  });
+
+  it('P507-6 the exact revision handed off is the one judged: never the package, the latest or a hash', () => {
+    const service = read(HANDOFF_SERVICE);
+    const create = service.slice(
+      service.indexOf('async createHandoff('),
+      service.indexOf('async resolveHandoff(')
+    );
+    expect(create).toMatch(/targetRevisionId: input\.revisionId/);
+    expect(create).toMatch(/packageRevisionId: input\.revisionId/);
+    expect(create).not.toMatch(/latest|contentHash/i);
+  });
+
+  it('P507-2/P507-3/M17/M18/GP1-GP3 no publishing-wide gate and no bypass', () => {
+    // the general Postiz posting, scheduling and publishing code never asks
+    // (posts.repository has a legacy approvedSubmitForOrder of its own)
+    for (const file of [
+      'libraries/nestjs-libraries/src/database/prisma/posts/posts.service.ts',
+      'libraries/nestjs-libraries/src/database/prisma/posts/posts.repository.ts',
+    ]) {
+      expect(read(file)).not.toMatch(
+        /requireApproved|ApprovalRequired|content-studio|ContentStudio|EditorialPolicy/i
+      );
+    }
+    expect(
+      read(
+        'libraries/nestjs-libraries/src/database/prisma/posts/posts.service.ts'
+      )
+    ).not.toMatch(/approv/i);
+    const orchestrator = files(join(root, 'apps/orchestrator/src')).filter(
+      (file) =>
+        /requireApproved|isApprovalRequiredForHandoff|ContentStudioReview|EditorialPolicy/.test(
+          readFileSync(file, 'utf8')
+        )
+    );
+    expect(orchestrator).toEqual([]);
+    const isRequired = [join(root, 'apps'), join(root, 'libraries')]
+      .flatMap(files)
+      .filter((file) =>
+        /isApprovalRequiredForHandoff\(/.test(readFileSync(file, 'utf8'))
+      )
+      .map((file) => file.slice(root.length + 1))
+      .sort();
+    // the policy itself, the handoff it gates and the revision view that
+    // only says so
+    expect(isRequired).toEqual([
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.editorial-policy.service.ts',
+      HANDOFF_SERVICE,
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.service.ts',
+    ]);
+    // one policy, no way around it
+    for (const file of [
+      HANDOFF_SERVICE,
+      HANDOFF_REPOSITORY,
+      'apps/backend/src/api/routes/content-studio.controller.ts',
+      'libraries/nestjs-libraries/src/dtos/content-studio/content-studio.package.dto.ts',
+    ]) {
+      expect(read(file)).not.toMatch(
+        /bypass|skipApproval|force\b|forced|override|emergency|approvalRequired:|requireApproval\??:/i
+      );
+    }
+  });
+
+  it('SEC2-SEC4 the handoff route reads no body: nothing the client sends decides the approval', () => {
+    const controller = read(
+      'apps/backend/src/api/routes/content-studio.controller.ts'
+    );
+    const route = controller.slice(
+      controller.indexOf(
+        "@Post('/packages/:id/revisions/:revisionId/handoffs')"
+      ),
+      controller.indexOf("@Get('/handoffs/:handoffId')")
+    );
+    expect(route).not.toMatch(/@Body|@Query|@Headers|@Req\(/);
+    expect(route.match(/@\w+\([^)]*\)/g)).toEqual([
+      "@Post('/packages/:id/revisions/:revisionId/handoffs')",
+      '@GetOrgFromRequest()',
+      '@GetUserFromRequest()',
+      "@Param('id')",
+      "@Param('revisionId')",
+    ]);
+  });
+
+  it('R506-3 the Review & Approval queue gets no handoff action', () => {
+    const queue = readFileSync(
+      join(
+        root,
+        'apps/frontend/src/components/content-studio/content-studio.review.queue.tsx'
+      ),
+      'utf8'
+    );
+    expect(queue).not.toMatch(/handoff|Use in Post|createHandoff/i);
+  });
+
+  it('P507-7/P507-8 no approval cache and no new review state', () => {
+    for (const file of [HANDOFF_SERVICE, HANDOFF_REPOSITORY]) {
+      expect(read(file)).not.toMatch(/new Map|cache|memo|redis|ttl:/i);
+    }
+    const states = read(
+      'libraries/nestjs-libraries/src/content-studio/review/review.state.ts'
+    );
+    expect(states).toMatch(
+      /CONTENT_STUDIO_REVIEW_STATES = \[\s*'REQUESTED',\s*'IN_REVIEW',\s*'CHANGES_REQUESTED',\s*'READY_FOR_APPROVAL',\s*'CANCELLED',\s*\] as const/
+    );
+  });
+
+  it('P507-9/P507-10 Content Package v1/v2, the Design Document v1 and Editorial Policy v1 keep their versions', () => {
+    expect(
+      read(
+        'libraries/nestjs-libraries/src/content-studio/content.package.draft.ts'
+      )
+    ).toMatch(/export const CONTENT_PACKAGE_GROUNDED_SCHEMA_VERSION = 2;/);
+    expect(
+      read(
+        'libraries/nestjs-libraries/src/content-studio/design/design.document.ts'
+      )
+    ).toMatch(/export const DESIGN_DOCUMENT_SCHEMA_VERSION = 1;/);
+    expect(
+      read(
+        'libraries/nestjs-libraries/src/content-studio/editorial/editorial.policy.ts'
+      )
+    ).toMatch(/export const EDITORIAL_POLICY_SCHEMA_VERSION = 1;/);
+    for (const file of [
+      'libraries/nestjs-libraries/src/content-studio/content.package.draft.ts',
+      'libraries/nestjs-libraries/src/content-studio/design/design.document.ts',
+    ]) {
+      expect(read(file)).not.toMatch(/approv|handoffPolicy|workflow/i);
+    }
   });
 });

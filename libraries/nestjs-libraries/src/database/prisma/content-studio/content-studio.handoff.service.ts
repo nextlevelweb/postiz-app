@@ -6,6 +6,8 @@ import {
   ContentStudioMediaService,
   ContentStudioMediaUnavailableError,
 } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
+import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
+import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 import {
   ContentPackageRevisionIntegrityError,
   parseVerifiedContentPackageRevision,
@@ -14,6 +16,10 @@ import { ContentPackageDraft } from '@gitroom/nestjs-libraries/content-studio/co
 import { contentStudioTextToComposerHtml } from '@gitroom/nestjs-libraries/content-studio/handoff.html';
 
 export const CONTENT_STUDIO_HANDOFF_TTL_MS = 24 * 60 * 60 * 1000;
+
+// How often an approved handoff is tried when the approval changed between
+// its check and the hold (P5-07): each try checks the approval again
+const APPROVED_HANDOFF_ATTEMPTS = 3;
 
 // randomBytes(32) as hex: anything else can't be a handoff id
 const HANDOFF_ID = /^[0-9a-f]{64}$/;
@@ -50,6 +56,16 @@ const storedRevisionInvalid = () =>
     },
     500
   );
+// The approval kept changing between its check and the hold: approved at
+// every check, yet never the same history once held
+const approvalChanged = () =>
+  new HttpException(
+    {
+      msg: 'The approval of this revision changed. Try again.',
+      code: 'CS_APPROVAL_CONFLICT',
+    },
+    409
+  );
 // positions and reasons only, never Media ids or paths
 const mediaUnavailable = (err: ContentStudioMediaUnavailableError) =>
   new HttpException(
@@ -73,7 +89,18 @@ interface HandoffRequest {
 
 // A handoff hands one frozen revision to the composer of the user who made
 // it, for 24 hours. It can be opened again until it expires or is revoked.
-// Nothing here creates posts or changes packages and revisions
+// Nothing here creates posts or changes packages and revisions.
+//
+// Where the organization's current editorial policy requires it (P5-07), a
+// revision is handed off only while exactly it is approved, as the one
+// approval predicate (requireApprovedRevision, P5-05) judges it, and the
+// handoff is written holding the revision's review, so no withdrawal can
+// come between the check and the write. That is all the policy guards:
+// creating a handoff. A handoff made while the revision was approved stays
+// valid and can still be opened after a later withdrawal or refusal; only
+// new handoffs are refused. The policy is read once per request, so a change
+// of it applies from the next request on. Without the requirement nothing
+// about approval is read and a handoff is made exactly as before
 @Injectable()
 export class ContentStudioHandoffService {
   private readonly _logger = new Logger(ContentStudioHandoffService.name);
@@ -81,12 +108,15 @@ export class ContentStudioHandoffService {
   constructor(
     private _contentStudioRepository: ContentStudioRepository,
     private _contentStudioHandoffRepository: ContentStudioHandoffRepository,
-    private _contentStudioMediaService: ContentStudioMediaService
+    private _contentStudioMediaService: ContentStudioMediaService,
+    private _contentStudioEditorialPolicyService: ContentStudioEditorialPolicyService,
+    private _contentStudioReviewService: ContentStudioReviewService
   ) {}
 
   // Allowed for a revision of an archived package too: archiving stops
   // editing, not the use of history. Nothing is stored unless every Media of
-  // the revision is ready
+  // the revision is ready and, where the policy requires it, exactly this
+  // revision is approved
   async createHandoff(input: {
     organizationId: string;
     userId: string;
@@ -101,17 +131,52 @@ export class ContentStudioHandoffService {
     if (!revision) {
       throw notFound();
     }
+    // the exact revision handed off, never its package or a newer one
+    const target = {
+      organizationId: input.organizationId,
+      targetType: 'PACKAGE_REVISION' as const,
+      targetRevisionId: input.revisionId,
+    };
+    // CS_APPROVAL_REQUIRED unless approved now; integrity errors as they are
+    let approval =
+      (await this._contentStudioEditorialPolicyService.isApprovalRequiredForHandoff(
+        input.organizationId
+      ))
+        ? await this._contentStudioReviewService.requireApprovedRevision(target)
+        : null;
     await this.resolveMedia(input.organizationId, revision.content);
 
     const now = new Date();
-    return this._contentStudioHandoffRepository.createHandoff({
+    const handoff = {
       id: randomBytes(32).toString('hex'),
       organizationId: input.organizationId,
       userId: input.userId,
       packageId: input.packageId,
       packageRevisionId: input.revisionId,
       expiresAt: new Date(now.getTime() + CONTENT_STUDIO_HANDOFF_TTL_MS),
-    });
+    };
+    if (!approval) {
+      return this._contentStudioHandoffRepository.createHandoff(handoff);
+    }
+    for (let attempt = 1; ; attempt++) {
+      const created =
+        await this._contentStudioHandoffRepository.createHandoffWhileApproved({
+          ...handoff,
+          reviewId: approval.reviewId as string,
+          approvalVersion: approval.approvalVersion,
+        });
+      if (created) {
+        return created;
+      }
+      if (attempt === APPROVED_HANDOFF_ATTEMPTS) {
+        throw approvalChanged();
+      }
+      // a decision came between the check and the hold: judged again, so a
+      // withdrawal is CS_APPROVAL_REQUIRED
+      approval = await this._contentStudioReviewService.requireApprovedRevision(
+        target
+      );
+    }
   }
 
   // The composer values of the frozen revision: never the current draft. The

@@ -8,11 +8,14 @@ import {
 
 // Editorial Policy v1: the editorial rules of an organization, as structured,
 // bounded data that later AI generation reads from an exact revision and
-// later review shows next to a draft. Entered by hand. It is context, not
-// enforcement: nothing here checks content against it, verifies a claim or
-// promises compliance. Lengths count UTF-16 code units after line endings are
-// normalized, like the Writing DNA. Like that parser this file uses no
-// Node-only module
+// later review shows next to a draft. Entered by hand. Its rules are context,
+// not enforcement: nothing here checks content against them, verifies a claim
+// or promises compliance. The one thing a policy enforces is its optional
+// workflow (P5-07): whether a package revision must be approved before it is
+// handed off to the composer, judged for exactly that revision when the
+// handoff is made, by the policy current then. Lengths count UTF-16 code
+// units after line endings are normalized, like the Writing DNA. Like that
+// parser this file uses no Node-only module
 
 export const EDITORIAL_POLICY_SCHEMA_VERSION = 1;
 
@@ -31,8 +34,16 @@ export const EDITORIAL_COMPLIANCE_NOTES_MAX = 4000;
 // keys and strings in another order only, so this is its size too
 export const EDITORIAL_POLICY_CONTENT_MAX_BYTES = 32_768;
 
-// Every key is required. Each list refuses an entry it already has; the same
-// text in two different lists is allowed
+// The workflow of the organization's Content Studio: one switch. A policy
+// without it (every policy saved before it existed) requires nothing
+const workflowSchema = z
+  .object({
+    requireApprovalForHandoff: z.boolean(),
+  })
+  .strict();
+
+// Every key but workflow is required. Each list refuses an entry it already
+// has; the same text in two different lists is allowed
 const contentSchema = z
   .object({
     schemaVersion: z.literal(EDITORIAL_POLICY_SCHEMA_VERSION),
@@ -59,6 +70,7 @@ const contentSchema = z
     // one free text, trimmed outside and kept as written inside; empty when
     // there is nothing to note
     complianceNotes: trimmedText(EDITORIAL_COMPLIANCE_NOTES_MAX),
+    workflow: workflowSchema.optional(),
   })
   .strict();
 
@@ -70,6 +82,8 @@ export interface ContentStudioEditorialPolicyContentV1 {
   ctaRules: string[];
   formatConventions: string[];
   complianceNotes: string;
+  // only ever { requireApprovalForHandoff: true }: off is no workflow at all
+  workflow?: { requireApprovalForHandoff: boolean };
 }
 
 export type ContentStudioEditorialPolicyErrorCode = 'INVALID' | 'TOO_LARGE';
@@ -101,8 +115,9 @@ export class ContentStudioEditorialPolicyError extends Error {
 
 // Validates and normalizes an editorial policy (from a request or read back
 // from the database) into a new object: line endings normalized, entries and
-// notes trimmed. The input is never changed. Anything else is refused, never
-// repaired: no entry is dropped or merged
+// notes trimmed, a workflow that requires nothing left out. The input is
+// never changed. Anything else is refused, never repaired: no entry is
+// dropped or merged
 export function parseContentStudioEditorialPolicyContent(
   input: unknown
 ): ContentStudioEditorialPolicyContentV1 {
@@ -118,14 +133,25 @@ export function parseContentStudioEditorialPolicyContent(
       result.error.issues.map(({ path, code }) => ({ path, code }))
     );
   }
+  // off has one form, so a policy saved before the workflow existed and the
+  // same policy saved with it off are the same text and hash
+  const { workflow, ...rules } = result.data;
+  const content = workflow?.requireApprovalForHandoff
+    ? { ...rules, workflow: { requireApprovalForHandoff: true } }
+    : rules;
   if (
-    utf8ByteLength(JSON.stringify(result.data)) >
-    EDITORIAL_POLICY_CONTENT_MAX_BYTES
+    utf8ByteLength(JSON.stringify(content)) > EDITORIAL_POLICY_CONTENT_MAX_BYTES
   ) {
     throw new ContentStudioEditorialPolicyError('TOO_LARGE');
   }
-  return result.data as ContentStudioEditorialPolicyContentV1;
+  return content as ContentStudioEditorialPolicyContentV1;
 }
+
+// Whether a policy (null: none saved yet) requires a revision to be approved
+// before it is handed off. Anything but an explicit true requires nothing
+export const isContentStudioApprovalRequiredForHandoff = (
+  policy: Pick<ContentStudioEditorialPolicyContentV1, 'workflow'> | null
+) => policy?.workflow?.requireApprovalForHandoff === true;
 
 // A policy with no rules yet
 export const emptyContentStudioEditorialPolicyContent =

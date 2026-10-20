@@ -1045,3 +1045,89 @@ describe('Editorial policy', () => {
     expect(document.body.textContent).not.toContain(MARKER);
   });
 });
+
+describe('Editorial policy: approval before handoff (P5-07)', () => {
+  const toggle = (root: HTMLElement = document.body) =>
+    within(root).getByRole('checkbox', {
+      name: 'Require approval before handoff',
+    }) as HTMLInputElement;
+  const HINT =
+    'Only revisions that are currently approved can be handed off to Postiz.';
+  const ON_HINT =
+    'Unreviewed, pending, refused or withdrawn revisions cannot be handed off.';
+  const saved = () =>
+    requests('POST', '/content-studio/editorial-policy/revisions').map(
+      (c) => c.body
+    );
+
+  it('FP1/FP2/FP5 the switch is part of the editorial policy, off for a policy saved without it, with its description', async () => {
+    policy = [revision(1, policyContent())];
+    await openTab('editorial', 'Version 1');
+    const box = toggle();
+    expect(box.checked).toBe(false);
+    expect(box.closest('fieldset')!.querySelector('legend')!.textContent).toBe(
+      'Handoff'
+    );
+    const hint = document.getElementById(
+      box.getAttribute('aria-describedby')!
+    )!;
+    expect(hint.textContent).toBe(HINT);
+    expect(document.body.textContent).not.toContain(ON_HINT);
+  });
+
+  it('FP3/FP6 turning it on saves exactly the one switch in a new policy version', async () => {
+    policy = [revision(1, policyContent())];
+    await openTab('editorial', 'Version 1');
+    fireEvent.click(toggle());
+    expect(toggle().checked).toBe(true);
+    expect(document.body.textContent).toContain(ON_HINT);
+    fireEvent.click(button('Save policy'));
+    await flush();
+    expect(saved()).toEqual([
+      {
+        baseRevisionNumber: 1,
+        content: {
+          ...policyContent(),
+          workflow: { requireApprovalForHandoff: true },
+        },
+      },
+    ]);
+    expect(await screen.findByText('Version 2')).toBeTruthy();
+  });
+
+  it('FP4/FP6 turning it off sends no workflow at all', async () => {
+    policy = [
+      revision(1, {
+        ...policyContent(),
+        workflow: { requireApprovalForHandoff: true },
+      }),
+    ];
+    await openTab('editorial', 'Version 1');
+    expect(toggle().checked).toBe(true);
+    fireEvent.click(toggle());
+    fireEvent.click(button('Save policy'));
+    await flush();
+    const [body] = saved();
+    expect(body.content).toEqual(policyContent());
+    expect(Object.keys(body.content)).not.toContain('workflow');
+    expect(Object.keys(body).sort()).toEqual(['baseRevisionNumber', 'content']);
+  });
+
+  it('a version in the history shows its switch read-only', async () => {
+    policy = [
+      revision(1, {
+        ...policyContent(),
+        workflow: { requireApprovalForHandoff: true },
+      }),
+    ];
+    await openTab('editorial', 'Version 1');
+    fireEvent.click(button('History'));
+    const modal = dialog('Editorial policy history');
+    fireEvent.click(
+      await within(modal).findByRole('button', { name: 'View 1' })
+    );
+    await within(modal).findByText('Politics');
+    expect(toggle(modal).checked).toBe(true);
+    expect(toggle(modal).disabled).toBe(true);
+  });
+});

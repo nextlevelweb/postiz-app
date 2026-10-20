@@ -19,11 +19,33 @@ import { parseContentStudioDesignDocument } from '@gitroom/nestjs-libraries/cont
 import { storedContentStudioDesignDocument } from '@gitroom/nestjs-libraries/content-studio/design/design.document.revision';
 import { parseContentStudioSourceVersionInput } from '@gitroom/nestjs-libraries/content-studio/sources/source.version';
 import { createContentStudioPostgresClient } from '../../../../../../jest.content-studio.postgres.guard';
+import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.repository';
+import { ContentStudioHandoffRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.repository';
+import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.service';
+import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
+import { ContentStudioEditorialPolicyRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.repository';
+import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
+import { emptyContentStudioEditorialPolicyContent } from '@gitroom/nestjs-libraries/content-studio/editorial/editorial.policy';
+
+// P5-07: the handoff runs here too. The real MediaService pulls in uploads,
+// Redis and Temporal at import time and the sanitizer needs a DOM; a handoff
+// is only created here, of revisions without Media
+jest.mock(
+  '@gitroom/nestjs-libraries/database/prisma/media/media.service',
+  () => ({
+    MediaService: class MediaService {},
+  })
+);
+jest.mock('@gitroom/nestjs-libraries/content-studio/handoff.html', () => ({
+  contentStudioTextToComposerHtml: jest.fn(),
+}));
 
 // Phase 5 on a real PostgreSQL (P5-04): reviews, their claim review and
 // approval decisions under real concurrent transactions, (P5-05) the
 // approval binding of exact revisions read through the real queries, and
-// (P5-06) the Review & Approval queue: its filters, names and pages. Opt-in: runs only
+// (P5-06) the Review & Approval queue: its filters, names and pages, and
+// (P5-07) the handoff of a revision where the policy requires approval,
+// racing a withdrawal on the review row. Opt-in: runs only
 // through jest.content-studio.integration.config.ts against the disposable
 // local database (see jest.content-studio.postgres.guard.ts). The review
 // repository and service run unchanged on real Prisma; Prisma is used
@@ -91,11 +113,10 @@ const repositoryWith = (transaction: PrismaTransaction) =>
     transaction
   );
 
-// A service whose repository runs every transaction on the real client, with
-// `hooks[model.method]` awaited right before that call inside it. Counts every
-// call of a hooked method that was attempted. Everything else is the real
-// client
-const hookedService = (hooks: Record<string, () => Promise<void>>) => {
+// A transaction that runs on the real client, with `hooks[model.method]`
+// awaited right before that call inside it. Counts every call of a hooked
+// method that was attempted. Everything else is the real client
+const hookedTransaction = (hooks: Record<string, () => Promise<void>>) => {
   const calls: Record<string, number> = {};
   const transaction = {
     model: {
@@ -132,6 +153,12 @@ const hookedService = (hooks: Record<string, () => Promise<void>>) => {
         ),
     },
   } as unknown as PrismaTransaction;
+  return { transaction, calls };
+};
+
+// A review service whose repository runs every transaction hooked as above
+const hookedService = (hooks: Record<string, () => Promise<void>>) => {
+  const { transaction, calls } = hookedTransaction(hooks);
   const repository = repositoryWith(transaction);
   return {
     repository,
@@ -454,6 +481,9 @@ const eventsOf = (reviewId: string) =>
 
 const cleanPhase5 = async () => {
   const where = { organizationId: { in: ORGS } };
+  await client.contentStudioHandoff.deleteMany({ where });
+  await client.contentStudioEditorialPolicyRevision.deleteMany({ where });
+  await client.contentStudioEditorialPolicy.deleteMany({ where });
   await client.contentStudioApproval.deleteMany({ where });
   await client.contentStudioReviewClaim.deleteMany({ where });
   await client.contentStudioReviewRevisionRequest.deleteMany({ where });
@@ -1621,5 +1651,332 @@ describe('PQ1-PQ8. The Review & Approval queue on the real database (P5-06)', ()
       expect(new Set(listed).size).toBe(listed.length);
     }
     expect(r.reapproved).toBeDefined();
+  });
+});
+
+// ============================================================================
+describe('PH1-PH8. Handoff requiring an approved revision on the real database (P5-07)', () => {
+  const packages = () =>
+    new ContentStudioRepository(
+      new PrismaRepository<'contentStudioProject'>(prisma),
+      new PrismaRepository<'contentPackage'>(prisma),
+      new PrismaRepository<'contentPackageRevision'>(prisma),
+      new PrismaTransaction(prisma)
+    );
+  const policies = () =>
+    new ContentStudioEditorialPolicyService(
+      new ContentStudioEditorialPolicyRepository(
+        new PrismaRepository<'contentStudioEditorialPolicy'>(prisma),
+        new PrismaRepository<'contentStudioEditorialPolicyRevision'>(prisma),
+        new PrismaTransaction(prisma)
+      )
+    );
+  // the real handoff service on the real repositories and policy; its
+  // transaction may be hooked. Every Media is ready (there are none)
+  const handoffService = (
+    hooks: Record<string, () => Promise<void>> = {},
+    reviews = service
+  ) =>
+    new ContentStudioHandoffService(
+      packages(),
+      new ContentStudioHandoffRepository(
+        new PrismaRepository<'contentStudioHandoff'>(prisma),
+        hookedTransaction(hooks).transaction
+      ),
+      {
+        resolveForHandoff: async (
+          _org: string,
+          draft: { copy: { global: { thread: unknown[] } } }
+        ) => draft.copy.global.thread.map(() => []),
+      } as unknown as ContentStudioMediaService,
+      policies(),
+      reviews
+    );
+  // the organization's policy as saved through its real service: a new
+  // revision each time, the switch on or off
+  const requireApproval = async (organizationId: string, on: boolean) => {
+    const policy = policies();
+    const { latestRevisionNumber } = await policy.getPolicy(organizationId);
+    await policy.createRevision({
+      organizationId,
+      userId: OWNER[organizationId],
+      baseRevisionNumber: latestRevisionNumber,
+      content: {
+        ...emptyContentStudioEditorialPolicyContent(),
+        principles: [`Version ${latestRevisionNumber + 1}`],
+        ...(on ? { workflow: { requireApprovalForHandoff: true } } : {}),
+      },
+    });
+  };
+  const packageOf = async (revisionId: string) =>
+    (
+      await client.contentPackageRevision.findUniqueOrThrow({
+        where: { id: revisionId },
+        select: { packageId: true },
+      })
+    ).packageId;
+  const handOff = async (
+    revisionId: string,
+    organizationId = ORG_A,
+    on = handoffService()
+  ) =>
+    on.createHandoff({
+      organizationId,
+      userId: OWNER[organizationId],
+      packageId: await packageOf(revisionId),
+      revisionId,
+    });
+  const handoffsOf = (revisionId: string) =>
+    client.contentStudioHandoff.findMany({
+      where: { packageRevisionId: revisionId },
+      select: { id: true, organizationId: true, userId: true },
+    });
+  const approvedPackage = async () => {
+    const { reviewId, revision } = await reviewOf('package');
+    await decide(reviewId, 'approve');
+    return { reviewId, revision };
+  };
+
+  it('PH1 policy off: an unreviewed and a refused revision are handed off exactly as before', async () => {
+    const unreviewed = await packageRevision();
+    await handOff(unreviewed.id);
+    const { reviewId, revision } = await reviewOf('package');
+    await decide(reviewId, 'refuse');
+    // a saved policy with the switch off is the same as none
+    await requireApproval(ORG_A, false);
+    await handOff(revision.id);
+    expect(await handoffsOf(unreviewed.id)).toHaveLength(1);
+    expect(await handoffsOf(revision.id)).toHaveLength(1);
+  });
+
+  it('PH2 policy on: an approved revision is handed off, and its review and decisions do not change', async () => {
+    const { reviewId, revision } = await approvedPackage();
+    await requireApproval(ORG_A, true);
+    const before = await reviewState(reviewId);
+    const history = await approvalRows(reviewId);
+    const handoff = await handOff(revision.id);
+    expect(Object.keys(handoff).sort()).toEqual(['expiresAt', 'id']);
+    expect(await handoffsOf(revision.id)).toEqual([
+      { id: handoff.id, organizationId: ORG_A, userId: USER_A1 },
+    ]);
+    // the hold wrote back what it read: not even updatedAt moved
+    expect(await reviewState(reviewId)).toEqual(before);
+    expect(await approvalRows(reviewId)).toEqual(history);
+  });
+
+  it('PH3 policy on: an unreviewed, an in-review and a pending revision write nothing', async () => {
+    await requireApproval(ORG_A, true);
+    const unreviewed = await packageRevision();
+    const inReview = (await reviewOf('package', 'IN_REVIEW')).revision;
+    const pending = (await reviewOf('package')).revision;
+    for (const revision of [unreviewed, inReview, pending]) {
+      expect(await failure(handOff(revision.id))).toBe('CS_APPROVAL_REQUIRED');
+    }
+    expect(
+      await client.contentStudioHandoff.count({
+        where: { organizationId: ORG_A },
+      })
+    ).toBe(0);
+  });
+
+  it('PH4 policy on: refused and withdrawn are refused; approved again hands off', async () => {
+    await requireApproval(ORG_A, true);
+    const refused = await reviewOf('package');
+    await decide(refused.reviewId, 'refuse');
+    expect(await failure(handOff(refused.revision.id))).toBe(
+      'CS_APPROVAL_REQUIRED'
+    );
+    const withdrawn = await approvedPackage();
+    await decide(withdrawn.reviewId, 'withdraw');
+    expect(await failure(handOff(withdrawn.revision.id))).toBe(
+      'CS_APPROVAL_REQUIRED'
+    );
+    expect(await handoffsOf(refused.revision.id)).toEqual([]);
+    expect(await handoffsOf(withdrawn.revision.id)).toEqual([]);
+    await decide(withdrawn.reviewId, 'approve');
+    await handOff(withdrawn.revision.id);
+    expect(await handoffsOf(withdrawn.revision.id)).toHaveLength(1);
+  });
+
+  it('PH5/PH6 the approval of revision N applies to N only: a newer N+1, even with the same hash, is refused', async () => {
+    await requireApproval(ORG_A, true);
+    const { revision } = await approvedPackage();
+    const packageId = await packageOf(revision.id);
+    const newer = await packageRevision(ORG_A, 'Summer sale', 2, packageId);
+    const same = await packageRevision(ORG_A, 'Spring sale', 3, packageId);
+    expect(same.contentHash).toBe(revision.contentHash);
+    await handOff(revision.id);
+    expect(await failure(handOff(newer.id))).toBe('CS_APPROVAL_REQUIRED');
+    expect(await failure(handOff(same.id))).toBe('CS_APPROVAL_REQUIRED');
+    expect(await handoffsOf(newer.id)).toEqual([]);
+    expect(await handoffsOf(same.id)).toEqual([]);
+  });
+
+  it('POL6/POL7 the current policy decides on every request: on, then off again', async () => {
+    const unreviewed = await packageRevision();
+    await requireApproval(ORG_A, true);
+    expect(await failure(handOff(unreviewed.id))).toBe('CS_APPROVAL_REQUIRED');
+    await requireApproval(ORG_A, false);
+    await handOff(unreviewed.id);
+    expect(await handoffsOf(unreviewed.id)).toHaveLength(1);
+  });
+
+  it('PH7/WR1 a withdrawal committed between the check and the hold: the handoff is refused and writes nothing', async () => {
+    await requireApproval(ORG_A, true);
+    const { reviewId, revision } = await approvedPackage();
+    let withdrawn = false;
+    // the first statement of the handoff transaction waits for a whole
+    // withdrawal: it commits after the approval was checked
+    const on = handoffService({
+      'contentStudioReview.findFirst': async () => {
+        if (!withdrawn) {
+          withdrawn = true;
+          await decide(reviewId, 'withdraw');
+        }
+      },
+    });
+    expect(await failure(handOff(revision.id, ORG_A, on))).toBe(
+      'CS_APPROVAL_REQUIRED'
+    );
+    expect(await handoffsOf(revision.id)).toEqual([]);
+    expect((await approvalRows(reviewId)).map((row) => row.decision)).toEqual([
+      'APPROVED',
+      'WITHDRAWN',
+    ]);
+  });
+
+  it('PH7/WR2/WR3 the handoff holds the review first: it is created, the withdrawal waits and follows, the next handoff is refused', async () => {
+    await requireApproval(ORG_A, true);
+    const { reviewId, revision } = await approvedPackage();
+    let withdrawal: Promise<string> | undefined;
+    let release!: () => void;
+    const reached = new Promise<void>((resolve) => (release = resolve));
+    // the withdrawal is asked for while the handoff holds the review: it
+    // reaches its own hold of that row, which waits for the handoff
+    const withdrawing = hookedService({
+      'contentStudioReview.updateMany': async () => release(),
+    });
+    const on = handoffService({
+      'contentStudioApproval.count': async () => {
+        withdrawal = outcome(decide(reviewId, 'withdraw', withdrawing.service));
+        await reached;
+      },
+    });
+    const handoff = await handOff(revision.id, ORG_A, on);
+    expect(await withdrawal).toBe('ok');
+    expect(await handoffsOf(revision.id)).toEqual([
+      { id: handoff.id, organizationId: ORG_A, userId: USER_A1 },
+    ]);
+    expect((await approvalRows(reviewId)).map((row) => row.decision)).toEqual([
+      'APPROVED',
+      'WITHDRAWN',
+    ]);
+    // the handoff made while approved stays; a new one is refused
+    expect(await failure(handOff(revision.id))).toBe('CS_APPROVAL_REQUIRED');
+    expect(await handoffsOf(revision.id)).toHaveLength(1);
+  });
+
+  it('PH7/M11 a withdrawal asked for after the check never commits between the check and the handoff write', async () => {
+    await requireApproval(ORG_A, true);
+    const { reviewId, revision } = await approvedPackage();
+    let withdrawal: Promise<string> | undefined;
+    let settled = false;
+    let settledBeforeWrite = false;
+    // right before the handoff row is written, a withdrawal is asked for and
+    // given a moment: while the handoff holds the review it cannot commit
+    // (it waits for the hold); the wait only bounds how long it is given,
+    // it never decides what is right
+    const on = handoffService({
+      'contentStudioHandoff.create': async () => {
+        withdrawal = outcome(decide(reviewId, 'withdraw')).then((result) => {
+          settled = true;
+          return result;
+        });
+        let timer: NodeJS.Timeout | undefined;
+        await Promise.race([
+          withdrawal,
+          new Promise((resolve) => (timer = setTimeout(resolve, 1500))),
+        ]).finally(() => clearTimeout(timer));
+        settledBeforeWrite = settled;
+      },
+    });
+    const handed = await outcome(handOff(revision.id, ORG_A, on));
+    expect(await withdrawal).toBe('ok');
+    const rows = await handoffsOf(revision.id);
+    if (handed === 'ok') {
+      // the handoff held the review: the withdrawal came after its write
+      expect(rows).toHaveLength(1);
+    } else {
+      expect(rows).toEqual([]);
+    }
+    // a handoff is never written once a withdrawal committed after its check
+    expect(settledBeforeWrite && handed === 'ok').toBe(false);
+  });
+
+  it('PH7 racing at the hold: either the handoff first and the withdrawal after, or the withdrawal and no handoff; never a handoff after a withdrawal', async () => {
+    await requireApproval(ORG_A, true);
+    const seen = new Set<string>();
+    for (let round = 0; round < 6; round += 1) {
+      const { reviewId, revision } = await approvedPackage();
+      const both = latch(2);
+      const [handed, withdrawal] = await Promise.all([
+        outcome(
+          handOff(
+            revision.id,
+            ORG_A,
+            handoffService({ 'contentStudioReview.updateMany': () => both() })
+          )
+        ),
+        outcome(
+          decide(
+            reviewId,
+            'withdraw',
+            hookedService({ 'contentStudioReview.updateMany': () => both() })
+              .service
+          )
+        ),
+      ]);
+      expect(withdrawal).toBe('ok');
+      const rows = await handoffsOf(revision.id);
+      if (handed === 'ok') {
+        expect(rows).toHaveLength(1);
+      } else {
+        expect(handed).toBe('CS_APPROVAL_REQUIRED');
+        expect(rows).toEqual([]);
+      }
+      seen.add(handed);
+      // withdrawn from now on, whoever won
+      expect(await failure(handOff(revision.id))).toBe('CS_APPROVAL_REQUIRED');
+      expect(await handoffsOf(revision.id)).toHaveLength(rows.length);
+    }
+    expect(
+      [...seen].every((o) => ['ok', 'CS_APPROVAL_REQUIRED'].includes(o))
+    ).toBe(true);
+  });
+
+  it("PH8 another organization's approval is never used, and its policy is its own", async () => {
+    const { revision } = await approvedPackage();
+    await requireApproval(ORG_B, true);
+    // org B names org A's approved revision: not found, nothing written
+    const packageId = await packageOf(revision.id);
+    expect(
+      await failure(
+        handoffService().createHandoff({
+          organizationId: ORG_B,
+          userId: USER_B1,
+          packageId,
+          revisionId: revision.id,
+        })
+      )
+    ).toBe('CS_NOT_FOUND');
+    // org B's own unreviewed revision is refused under org B's policy
+    const own = await packageRevision(ORG_B);
+    expect(await failure(handOff(own.id, ORG_B))).toBe('CS_APPROVAL_REQUIRED');
+    // org A requires nothing: its unreviewed revision is handed off
+    const unreviewed = await packageRevision();
+    await handOff(unreviewed.id);
+    expect(await handoffsOf(revision.id)).toEqual([]);
+    expect(await handoffsOf(own.id)).toEqual([]);
+    expect(await handoffsOf(unreviewed.id)).toHaveLength(1);
   });
 });
