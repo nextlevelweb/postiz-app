@@ -51,8 +51,10 @@ import {
   ContentStudioApprovalDecision,
   ContentStudioApprovalState,
   contentStudioApprovalStatus,
+  deriveContentStudioRevisionApprovalBindingState,
   isContentStudioApprovalAvailable,
   isContentStudioApprovalNoteIntact,
+  isContentStudioRevisionApproved,
   parseContentStudioApprovalNote,
 } from '@gitroom/nestjs-libraries/content-studio/review/review.approval';
 
@@ -260,6 +262,17 @@ const approvalIntegrityError = () =>
     },
     500
   );
+// Approval binding (P5-05)
+const revisionNotFound = () =>
+  new HttpException({ msg: 'Revision not found.', code: 'CS_NOT_FOUND' }, 404);
+const approvalRequired = () =>
+  new HttpException(
+    {
+      msg: 'This revision is not approved.',
+      code: 'CS_APPROVAL_REQUIRED',
+    },
+    409
+  );
 
 // A second review of the same revision, or a second revision request of the
 // same review: the unique constraint refuses it
@@ -413,7 +426,14 @@ const parented = (
 // claim assessment are checked again, without changing any of them. Every
 // member may decide, the requester and the reviewers included: there are
 // no approver roles yet. A refusal requests no changes and posts nothing;
-// nothing here gates a handoff or publishing
+// nothing here gates a handoff or publishing.
+//
+// Approval binding (P5-05) answers whether exactly one immutable revision is
+// approved now, from that revision, its one review and that review's whole
+// approval history, all checked as above, and nothing else: no stored flag,
+// no newer or older revision, no other revision with the same hash. One
+// predicate (getRevisionApprovalStatus, and requireApprovedRevision on top
+// of it) and its batch for a page of revisions share the same checks
 @Injectable()
 export class ContentStudioReviewService {
   private readonly _logger = new Logger(ContentStudioReviewService.name);
@@ -1008,6 +1028,246 @@ export class ContentStudioReviewService {
     );
   }
 
+  // --- approval binding (P5-05) ---
+
+  // Whether exactly this immutable revision of the organization is approved
+  // now, and where it stands otherwise. The revision is named by its type
+  // and id only, never by a package, a design or "the latest"; it must be
+  // exactly what was stored, and its hash is the one it has stored. It is
+  // approved only when its own review is intact and ready for approval, its
+  // exact revision and (for a package) every claim assessment are intact and
+  // verified, and its whole approval history is intact and leads to
+  // APPROVED now. A withdrawn or refused decision is not approved, whatever
+  // came before it. No review, or any other lifecycle state, is an answer,
+  // never an error; stored data that is not intact is an integrity error,
+  // never "not approved"
+  async getRevisionApprovalStatus(input: {
+    organizationId: string;
+    targetType: unknown;
+    targetRevisionId: unknown;
+  }) {
+    if (
+      !isContentStudioReviewTargetType(input.targetType) ||
+      typeof input.targetRevisionId !== 'string'
+    ) {
+      throw invalidRequest();
+    }
+    const revision = await this.verifiedRevision(
+      input.organizationId,
+      { targetType: input.targetType, revisionId: input.targetRevisionId },
+      revisionNotFound
+    );
+    const [status] = await this.revisionApprovalStatuses(
+      input.organizationId,
+      input.targetType,
+      [revision.id]
+    );
+    return {
+      targetType: input.targetType,
+      targetRevisionId: revision.id,
+      targetRevisionNumber: revision.revisionNumber,
+      targetContentHash: revision.contentHash,
+      ...status,
+    };
+  }
+
+  // The same answer for a caller that may only go on with an approved
+  // revision (the handoff gate of P5-07, not wired yet): the status of an
+  // approved revision, CS_APPROVAL_REQUIRED for every revision that is not
+  // approved now, and the integrity errors as they are
+  async requireApprovedRevision(input: {
+    organizationId: string;
+    targetType: unknown;
+    targetRevisionId: unknown;
+  }) {
+    const status = await this.getRevisionApprovalStatus(input);
+    if (!status.approved) {
+      throw approvalRequired();
+    }
+    return status;
+  }
+
+  // Where each revision of one page of history stands, by id: whether it is
+  // approved and its state only, never its decisions. The revisions are the
+  // ones the caller read for that page; each is judged exactly like
+  // getRevisionApprovalStatus, with a fixed number of queries for the page
+  async getRevisionApprovalStatuses(input: {
+    organizationId: string;
+    targetType: ContentStudioReviewTargetType;
+    revisionIds: string[];
+  }) {
+    const statuses = await this.revisionApprovalStatuses(
+      input.organizationId,
+      input.targetType,
+      input.revisionIds
+    );
+    return new Map(
+      input.revisionIds.map((id, index) => [
+        id,
+        { approved: statuses[index].approved, state: statuses[index].state },
+      ])
+    );
+  }
+
+  // The binding of each revision, in the order given. The reviews of all of
+  // them are read in one query; only the reviews ready for approval have
+  // their decisions read, in one more, and their exact revision (and for a
+  // package their claim assessments) read again, together. Every review must
+  // be about exactly one of these revisions, at most one each
+  private async revisionApprovalStatuses(
+    organizationId: string,
+    targetType: ContentStudioReviewTargetType,
+    revisionIds: string[]
+  ) {
+    if (
+      revisionIds.length > PAGE_SIZE ||
+      revisionIds.some((id) => typeof id !== 'string' || !UUID.test(id))
+    ) {
+      throw invalidRequest();
+    }
+    if (!revisionIds.length) {
+      return [];
+    }
+    const parsed = (
+      await this._contentStudioReviewRepository.listReviewsForRevisions(
+        organizationId,
+        targetType === 'PACKAGE_REVISION'
+          ? { packageRevisionId: { in: revisionIds } }
+          : { designRevisionId: { in: revisionIds } }
+      )
+    ).map((row) => this.reviewDetail(row));
+    const reviews = new Map<string, (typeof parsed)[number]>();
+    for (const review of parsed) {
+      if (
+        review.targetType !== targetType ||
+        !revisionIds.includes(review.targetRevisionId) ||
+        reviews.has(review.targetRevisionId)
+      ) {
+        this._logger.error(
+          `Stored Content Studio review is invalid: ${review.id}`
+        );
+        throw integrityError();
+      }
+      reviews.set(review.targetRevisionId, review);
+    }
+    // only a review that is ready for approval has decisions, so only the
+    // ones read ready here have theirs read: one that becomes ready and is
+    // decided while this page is read is shown as it was read, never as
+    // corrupt
+    const ready = parsed.filter((review) =>
+      isContentStudioApprovalAvailable(review.state)
+    );
+    const decisions = new Map<string, ContentStudioApprovalRow[]>();
+    if (ready.length) {
+      for (const row of await this._contentStudioReviewRepository.listApprovalsForReviews(
+        organizationId,
+        ready.map((review) => review.id)
+      )) {
+        decisions.set(row.reviewId, [
+          ...(decisions.get(row.reviewId) ?? []),
+          row,
+        ]);
+      }
+    }
+    await this.verifiedApprovalTargets(organizationId, targetType, ready);
+    return revisionIds.map((id) => {
+      const review = reviews.get(id) ?? null;
+      const approval =
+        review && isContentStudioApprovalAvailable(review.state)
+          ? this.approvalHistory(review, decisions.get(review.id) ?? [])
+          : null;
+      const state = deriveContentStudioRevisionApprovalBindingState(
+        review?.state ?? null,
+        approval?.state ?? null
+      );
+      if (!state) {
+        throw approvalIntegrityError();
+      }
+      // the decision in force: the last one, unless it was a withdrawal
+      const current =
+        approval && (state === 'APPROVED' || state === 'REFUSED')
+          ? approval.rows[approval.rows.length - 1]
+          : null;
+      return {
+        approved: isContentStudioRevisionApproved(state),
+        state,
+        reviewId: review?.id ?? null,
+        approvalVersion: approval?.version ?? 0,
+        currentDecision: current && {
+          sequence: current.sequence,
+          decision: current.decision as ContentStudioApprovalDecision,
+          note: current.note,
+          actor: { id: current.actorUser.id, name: current.actorUser.name },
+          createdAt: current.createdAt,
+        },
+      };
+    });
+  }
+
+  // verifiedApprovalTarget for several ready reviews of one type at once:
+  // their exact revisions in one query and, for package reviews, all their
+  // claim assessments in one more, each checked exactly the same way
+  private async verifiedApprovalTargets(
+    organizationId: string,
+    targetType: ContentStudioReviewTargetType,
+    reviews: {
+      id: string;
+      targetRevisionId: string;
+      targetContentHash: string;
+    }[]
+  ) {
+    if (!reviews.length) {
+      return;
+    }
+    const revisionIds = reviews.map((review) => review.targetRevisionId);
+    if (targetType === 'DESIGN_REVISION') {
+      const revisions = new Map(
+        (
+          await this._contentStudioReviewRepository.listDesignRevisionsForOrganization(
+            organizationId,
+            revisionIds
+          )
+        ).map((revision) => [revision.id, revision])
+      );
+      for (const review of reviews) {
+        const revision = this.verifiedRevisionRow(
+          { targetType, revisionId: review.targetRevisionId },
+          revisions.get(review.targetRevisionId) ?? null,
+          integrityError
+        );
+        if (revision.contentHash !== review.targetContentHash) {
+          this._logger.error(
+            `Content Studio review target changed: ${review.id}`
+          );
+          throw integrityError();
+        }
+      }
+      return;
+    }
+    const [revisions, claims] = await Promise.all([
+      this._contentStudioReviewRepository.listPackageRevisionsForOrganization(
+        organizationId,
+        revisionIds
+      ),
+      this._contentStudioReviewRepository.listClaimsForReviews(
+        organizationId,
+        reviews.map((review) => review.id)
+      ),
+    ]);
+    for (const review of reviews) {
+      this.assertApprovalClaimsIntact(
+        review.id,
+        this.claimsOfRevision(
+          review,
+          revisions.find(
+            (revision) => revision.id === review.targetRevisionId
+          ) ?? null
+        ),
+        claims.filter((row) => row.reviewId === review.id)
+      );
+    }
+  }
+
   // What an approval is about must still be intact: the exact revision
   // with the hash the review binds and, for a package review, every claim
   // assessment, all verified as READY_FOR_APPROVAL requires. Read only
@@ -1024,23 +1284,32 @@ export class ContentStudioReviewService {
       await this.verifiedReviewedRevision(organizationId, review);
       return;
     }
-    const claims = await this.reviewedClaims(organizationId, review);
-    const assessments = this.claimAssessments(
+    this.assertApprovalClaimsIntact(
       review.id,
-      claims,
+      await this.reviewedClaims(organizationId, review),
       await this._contentStudioReviewRepository.listClaimsForReview(
         organizationId,
         review.id
       )
     );
+  }
+
+  // A ready package review: every assessment intact and every claim of its
+  // revision verified, as READY_FOR_APPROVAL required. Anything else is
+  // corruption, never "not approved"
+  private assertApprovalClaimsIntact(
+    reviewId: string,
+    claims: ReviewedClaim[],
+    rows: ContentStudioReviewClaimRow[]
+  ) {
     if (
       !contentStudioReviewClaimSummary(
         claims.map((entry) => entry.claim.id),
-        this.claimStatuses(assessments)
+        this.claimStatuses(this.claimAssessments(reviewId, claims, rows))
       ).complete
     ) {
       this._logger.error(
-        `Stored Content Studio review claim is invalid: ${review.id}`
+        `Stored Content Studio review claim is invalid: ${reviewId}`
       );
       throw integrityError();
     }
@@ -1143,11 +1412,30 @@ export class ContentStudioReviewService {
       targetContentHash: string;
     }
   ): Promise<ReviewedClaim[]> {
-    const revision =
+    return this.claimsOfRevision(
+      review,
       await this._contentStudioReviewRepository.getPackageRevisionForOrganization(
         organizationId,
         review.targetRevisionId
-      );
+      )
+    );
+  }
+
+  // The claims of the reviewed package revision as read: it must be exactly
+  // the reviewed one, still exactly what was stored
+  private claimsOfRevision(
+    review: {
+      id: string;
+      targetRevisionId: string;
+      targetContentHash: string;
+    },
+    revision: {
+      id: string;
+      schemaVersion: number;
+      content: string;
+      contentHash: string;
+    } | null
+  ): ReviewedClaim[] {
     if (
       !revision ||
       revision.id !== review.targetRevisionId ||
@@ -1356,6 +1644,21 @@ export class ContentStudioReviewService {
             organizationId,
             target.revisionId
           );
+    return this.verifiedRevisionRow(target, revision, missing);
+  }
+
+  // The revision as read: exactly the one asked for, still exactly what was
+  // stored
+  private verifiedRevisionRow(
+    target: ReviewTarget,
+    revision:
+      | ((PackageRevisionRef | DesignRevisionRef) & {
+          schemaVersion: number;
+          content: string;
+        })
+      | null,
+    missing: () => HttpException
+  ): ParentedRevision {
     if (!revision || revision.id !== target.revisionId) {
       throw missing();
     }

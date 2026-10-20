@@ -14,11 +14,13 @@ import {
 import { ContentStudioPager } from '@gitroom/frontend/components/content-studio/content-studio.package.list';
 import { ContentStudioMediaTile } from '@gitroom/frontend/components/content-studio/content-studio.thread.editor';
 import { ContentStudioReviewStatus } from '@gitroom/frontend/components/content-studio/content-studio.review.status';
+import { ContentStudioRevisionApprovalBadge } from '@gitroom/frontend/components/content-studio/content-studio.review.approval';
 import { ContentStudioGroundingPanel } from '@gitroom/frontend/components/content-studio/content-studio.grounding';
 
 // One revision, read-only: its text as plain text and its Media as they are
 // now, its grounding exactly as saved in it (P3-11), and the review of
-// exactly this version (P5-01), never of the draft.
+// exactly this version (P5-01), never of the draft, with whether exactly
+// this version is approved as the server answered for it (P5-05).
 // A revision request of that review is resolved by one of the newest saved
 // versions of this package (P5-02). Nothing here can change a revision
 const RevisionView: FC<{
@@ -39,12 +41,20 @@ const RevisionView: FC<{
   const t = useT();
   const detail = useContentStudioRevision(packageId, revision.id);
   const media = new Map(Object.entries(detail.data?.media || {}));
+  // the status of exactly this version, or none
+  const approval =
+    detail.data?.approval?.targetRevisionId === revision.id
+      ? detail.data.approval
+      : null;
 
   return (
     <div className="flex flex-col gap-[16px]">
       <div className="flex flex-wrap items-center gap-[8px]">
-        <h3 className="flex-1 font-[600]">
-          {t('content_studio_revision', 'Version')} {revision.revisionNumber}
+        <h3 className="flex-1 font-[600] flex flex-wrap items-center gap-[8px]">
+          <span>
+            {t('content_studio_revision', 'Version')} {revision.revisionNumber}
+          </span>
+          <ContentStudioRevisionApprovalBadge approval={approval} />
         </h3>
         <Button secondary onClick={onBack}>
           {t('content_studio_back_to_history', 'Back to history')}
@@ -103,7 +113,8 @@ const RevisionView: FC<{
   );
 };
 
-// The saved versions of a package, newest first, one server page at a time.
+// The saved versions of a package, newest first, one server page at a time,
+// each with whether exactly it is approved (P5-05): never another version's.
 // Restoring copies a version into the draft; the version itself stays as it is
 export const ContentStudioRevisionHistory: FC<{
   packageId: string;
@@ -173,9 +184,14 @@ export const ContentStudioRevisionHistory: FC<{
             className="flex flex-wrap items-center gap-[8px] border border-newTableBorder rounded-[8px] p-[12px]"
           >
             <div className="flex flex-col gap-[2px] flex-1 min-w-[200px]">
-              <div className="font-[600]">
-                {t('content_studio_revision', 'Version')}{' '}
-                {revision.revisionNumber}
+              <div className="font-[600] flex flex-wrap items-center gap-[8px]">
+                <span>
+                  {t('content_studio_revision', 'Version')}{' '}
+                  {revision.revisionNumber}
+                </span>
+                <ContentStudioRevisionApprovalBadge
+                  approval={revision.approval}
+                />
               </div>
               <div className="text-[12px] text-textItemBlur flex flex-wrap gap-x-[12px]">
                 <span>

@@ -1060,12 +1060,25 @@ describe('Review boundaries (P5-01)', () => {
     for (const file of [
       'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.handoff.service.ts',
       'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.handoff.repository.ts',
-      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.service.ts',
       'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.repository.ts',
-      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.design.service.ts',
       'libraries/nestjs-libraries/src/database/prisma/posts/posts.service.ts',
     ]) {
       expect(code(file)).not.toMatch(/\breview|READY_FOR_APPROVAL|approv/i);
+    }
+    // P5-05: the package and design revision views show whether exactly a
+    // revision is approved, read from the review service; they gate nothing
+    for (const file of [
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.service.ts',
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.design.service.ts',
+    ]) {
+      const text = code(file);
+      expect(text.match(/_contentStudioReviewService\.\w+/g)!.sort()).toEqual([
+        '_contentStudioReviewService.getRevisionApprovalStatus',
+        '_contentStudioReviewService.getRevisionApprovalStatuses',
+      ]);
+      expect(text).not.toMatch(
+        /READY_FOR_APPROVAL|requireApproved|CS_APPROVAL|\.approved\b/
+      );
     }
     const handoff = model('ContentStudioHandoff');
     expect(handoff).not.toMatch(/review|approv/i);

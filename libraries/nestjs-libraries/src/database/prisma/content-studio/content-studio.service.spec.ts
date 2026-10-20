@@ -4,6 +4,7 @@ import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/pris
 import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.service';
 import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
 import { ContentStudioGroundingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.grounding.service';
+import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 import { parseContentPackageDraft } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 import * as canonical from '@gitroom/nestjs-libraries/content-studio/canonical.json';
 
@@ -134,12 +135,25 @@ const setup = () => {
   const grounding = {
     verifyDraftGrounding: jest.fn(async () => undefined),
   };
+  // approval binding (P5-05) is the review service's: a revision without a
+  // review unless a test says otherwise
+  const reviews = {
+    getRevisionApprovalStatuses: jest.fn(
+      async (input: { revisionIds: string[] }) =>
+        new Map(input.revisionIds.map((id) => [id, NOT_REVIEWED_SUMMARY]))
+    ),
+    getRevisionApprovalStatus: jest.fn(
+      async (input: { targetType: string; targetRevisionId: string }) =>
+        notReviewedStatus(input.targetRevisionId)
+    ),
+  };
   const service = new ContentStudioService(
     repository as unknown as ContentStudioRepository,
     media as unknown as ContentStudioMediaService,
-    grounding as unknown as ContentStudioGroundingService
+    grounding as unknown as ContentStudioGroundingService,
+    reviews as unknown as ContentStudioReviewService
   );
-  return { repository, media, grounding, service };
+  return { repository, media, grounding, reviews, service };
 };
 
 // Content Studio answers with plain HttpExceptions only: never the 403
@@ -161,6 +175,18 @@ const NOT_FOUND = {
   status: 404,
   body: { msg: 'Content Studio item not found', code: 'CS_NOT_FOUND' },
 };
+const NOT_REVIEWED_SUMMARY = { approved: false, state: 'NOT_REVIEWED' };
+const notReviewedStatus = (id: string) => ({
+  targetType: 'PACKAGE_REVISION',
+  targetRevisionId: id,
+  targetRevisionNumber: 1,
+  targetContentHash: 'a'.repeat(64),
+  approved: false,
+  state: 'NOT_REVIEWED',
+  reviewId: null,
+  approvalVersion: 0,
+  currentDecision: null,
+});
 const PROJECT_ARCHIVED = {
   status: 409,
   body: { msg: 'This project is archived', code: 'CS_PROJECT_ARCHIVED' },
@@ -1580,7 +1606,10 @@ describe('ContentStudioService revision history', () => {
         packageId: PACKAGE_ID,
         page: 1,
       })
-    ).resolves.toEqual({ pages: 1, results: rows });
+    ).resolves.toEqual({
+      pages: 1,
+      results: rows.map((row) => ({ ...row, approval: NOT_REVIEWED_SUMMARY })),
+    });
     expect(repository.getPackageWriteStateForOrganization).toHaveBeenCalledWith(
       ORG,
       PACKAGE_ID
@@ -1596,7 +1625,8 @@ describe('ContentStudioService revision history', () => {
       PACKAGE_ID
     );
     // R37 R38: the repository rows are returned as they are, so the list
-    // keeps the repository's select (no content, createdBy id and name)
+    // keeps the repository's select (no content, createdBy id and name),
+    // with only the approval binding of each added (P5-05)
     expect(repository.getPackageForOrganization).not.toHaveBeenCalled();
   });
 
@@ -1697,6 +1727,7 @@ describe('ContentStudioService revision history', () => {
       createdBy: { id: USER, name: 'Ada' },
       content: DRAFT_A,
       media: {},
+      approval: notReviewedStatus('revision-1'),
     });
     expect(typeof detail.content).toBe('object');
     expect(JSON.stringify(detail)).not.toContain(JSON.stringify(CANONICAL_A));
@@ -2149,5 +2180,189 @@ describe('ContentStudioService media previews', () => {
     expect(
       repository.createRevisionWithCompareAndSwap.mock.calls[0][0].content
     ).toBe(REVISION_WITH_MEDIA_CONTENT);
+  });
+});
+
+describe('ContentStudioService revision approval binding (P5-05)', () => {
+  const APPROVED_STATUS = {
+    targetType: 'PACKAGE_REVISION',
+    targetRevisionId: 'revision-1',
+    targetRevisionNumber: 1,
+    targetContentHash: HASH_A,
+    approved: true,
+    state: 'APPROVED',
+    reviewId: 'review-1',
+    approvalVersion: 3,
+    currentDecision: {
+      sequence: 3,
+      decision: 'APPROVED',
+      note: null,
+      actor: { id: USER, name: 'Ada' },
+      createdAt: T,
+    },
+  };
+  const listed = async (rows: { id: string }[]) => {
+    const { repository, reviews, service } = setup();
+    repository.getPackageWriteStateForOrganization.mockResolvedValue({
+      draftVersion: 5,
+      archivedAt: null,
+    });
+    repository.listRevisionsForPackage.mockResolvedValue(rows);
+    repository.countRevisionsForPackage.mockResolvedValue(rows.length);
+    return {
+      reviews,
+      list: await service.listRevisions({
+        organizationId: ORG,
+        packageId: PACKAGE_ID,
+        page: 1,
+      }),
+    };
+  };
+
+  it('AS1 the revision view carries the full binding of exactly that revision', async () => {
+    const { repository, reviews, service } = setup();
+    repository.getRevisionForPackage.mockResolvedValue(storedRevision());
+    reviews.getRevisionApprovalStatus.mockResolvedValue(APPROVED_STATUS);
+    const detail = await service.getRevision({
+      organizationId: ORG,
+      packageId: PACKAGE_ID,
+      revisionId: 'revision-1',
+    });
+    expect(detail.approval).toEqual(APPROVED_STATUS);
+    // the organization of the request and the id of the revision read: no
+    // package, hash or "latest"
+    expect(reviews.getRevisionApprovalStatus.mock.calls).toEqual([
+      [
+        {
+          organizationId: ORG,
+          targetType: 'PACKAGE_REVISION',
+          targetRevisionId: 'revision-1',
+        },
+      ],
+    ]);
+    expect(reviews.getRevisionApprovalStatuses).not.toHaveBeenCalled();
+  });
+
+  it('AS1 a missing or corrupt revision is answered before any binding is read', async () => {
+    const { repository, reviews, service } = setup();
+    jest.spyOn(Logger.prototype, 'error').mockImplementation();
+    expect(
+      (
+        await rejection(
+          service.getRevision({
+            organizationId: ORG,
+            packageId: PACKAGE_ID,
+            revisionId: 'revision-1',
+          })
+        )
+      ).status
+    ).toBe(404);
+    repository.getRevisionForPackage.mockResolvedValue({
+      ...storedRevision(),
+      contentHash: HASH_B,
+    });
+    expect(
+      (
+        await rejection(
+          service.getRevision({
+            organizationId: ORG,
+            packageId: PACKAGE_ID,
+            revisionId: 'revision-1',
+          })
+        )
+      ).status
+    ).toBe(500);
+    expect(reviews.getRevisionApprovalStatus).not.toHaveBeenCalled();
+  });
+
+  it('AS3/BQ1 a page of history asks for the binding of all its revisions once', async () => {
+    const rows = [
+      { id: 'revision-3' },
+      { id: 'revision-2' },
+      { id: 'revision-1' },
+    ];
+    const { reviews } = await listed(rows);
+    expect(reviews.getRevisionApprovalStatuses.mock.calls).toEqual([
+      [
+        {
+          organizationId: ORG,
+          targetType: 'PACKAGE_REVISION',
+          revisionIds: ['revision-3', 'revision-2', 'revision-1'],
+        },
+      ],
+    ]);
+    expect(reviews.getRevisionApprovalStatus).not.toHaveBeenCalled();
+  });
+
+  it("AS3/BQ4 each row gets the answer for its own id, never another row's", async () => {
+    const { repository, reviews, service } = setup();
+    repository.getPackageWriteStateForOrganization.mockResolvedValue({
+      draftVersion: 5,
+      archivedAt: null,
+    });
+    repository.listRevisionsForPackage.mockResolvedValue([
+      { id: 'revision-2' },
+      { id: 'revision-1' },
+    ]);
+    reviews.getRevisionApprovalStatuses.mockResolvedValue(
+      new Map([
+        ['revision-1', { approved: true, state: 'APPROVED' }],
+        ['revision-2', { approved: false, state: 'NOT_REVIEWED' }],
+      ])
+    );
+    const list = await service.listRevisions({
+      organizationId: ORG,
+      packageId: PACKAGE_ID,
+      page: 1,
+    });
+    expect(list.results).toEqual([
+      {
+        id: 'revision-2',
+        approval: { approved: false, state: 'NOT_REVIEWED' },
+      },
+      { id: 'revision-1', approval: { approved: true, state: 'APPROVED' } },
+    ]);
+  });
+
+  it('AS5/AS6 a row keeps every existing field and adds the compact binding only', async () => {
+    const row = {
+      id: 'revision-1',
+      revisionNumber: 1,
+      contentHash: HASH_A,
+      origin: 'manual',
+      sourceDraftVersion: 5,
+      createdAt: T,
+      createdBy: { id: USER, name: 'Ada' },
+    };
+    const { list } = await listed([row]);
+    expect(list.results).toEqual([{ ...row, approval: NOT_REVIEWED_SUMMARY }]);
+    expect(Object.keys(list.results[0].approval!).sort()).toEqual([
+      'approved',
+      'state',
+    ]);
+  });
+
+  it('a missing package lists nothing and reads no binding', async () => {
+    const { reviews, service } = setup();
+    await rejection(
+      service.listRevisions({
+        organizationId: ORG,
+        packageId: PACKAGE_ID,
+        page: 1,
+      })
+    );
+    expect(reviews.getRevisionApprovalStatuses).not.toHaveBeenCalled();
+  });
+
+  it('HR1 a handoff never asks whether a revision is approved', () => {
+    const text = require('fs')
+      .readFileSync(
+        require('path').join(__dirname, 'content-studio.handoff.service.ts'),
+        'utf8'
+      )
+      .replace(/\/\/.*$/gm, '');
+    expect(text).not.toMatch(
+      /approv|ContentStudioReviewService|getRevision\(|requireApprovedRevision/i
+    );
   });
 });

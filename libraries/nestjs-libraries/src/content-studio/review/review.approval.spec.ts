@@ -7,10 +7,14 @@ import {
   contentStudioApprovalActions,
   contentStudioApprovalStateAfter,
   contentStudioApprovalStatus,
+  CONTENT_STUDIO_REVISION_APPROVAL_STATES,
+  deriveContentStudioRevisionApprovalBindingState,
   isContentStudioApprovalAction,
   isContentStudioApprovalAvailable,
   isContentStudioApprovalDecision,
   isContentStudioApprovalNoteIntact,
+  isContentStudioRevisionApprovalState,
+  isContentStudioRevisionApproved,
   parseContentStudioApprovalNote,
 } from '@gitroom/nestjs-libraries/content-studio/review/review.approval';
 import { CONTENT_STUDIO_REVIEW_STATES } from '@gitroom/nestjs-libraries/content-studio/review/review.state';
@@ -267,6 +271,123 @@ describe('approval notes (P5-04)', () => {
       for (const broken of ['', '  ', 'a\u0000', undefined, 3]) {
         expect(isContentStudioApprovalNoteIntact(decision, broken)).toBe(false);
       }
+    }
+  });
+});
+
+describe('approval binding states (P5-05)', () => {
+  it('has exactly eight binding states', () => {
+    expect(CONTENT_STUDIO_REVISION_APPROVAL_STATES).toEqual([
+      'NOT_REVIEWED',
+      'REVIEW_REQUESTED',
+      'IN_REVIEW',
+      'CHANGES_REQUESTED',
+      'REVIEW_CANCELLED',
+      'PENDING_APPROVAL',
+      'APPROVED',
+      'REFUSED',
+    ]);
+    for (const state of CONTENT_STUDIO_REVISION_APPROVAL_STATES) {
+      expect(isContentStudioRevisionApprovalState(state)).toBe(true);
+    }
+    for (const value of ['approved', 'PENDING', 'READY_FOR_APPROVAL', null]) {
+      expect(isContentStudioRevisionApprovalState(value)).toBe(false);
+    }
+  });
+
+  it('BS1-BS10 maps the review state and the derived approval state', () => {
+    expect(deriveContentStudioRevisionApprovalBindingState(null, null)).toBe(
+      'NOT_REVIEWED'
+    );
+    expect(
+      deriveContentStudioRevisionApprovalBindingState('REQUESTED', null)
+    ).toBe('REVIEW_REQUESTED');
+    expect(
+      deriveContentStudioRevisionApprovalBindingState('IN_REVIEW', null)
+    ).toBe('IN_REVIEW');
+    // M11: changes requested is never pending approval
+    expect(
+      deriveContentStudioRevisionApprovalBindingState('CHANGES_REQUESTED', null)
+    ).toBe('CHANGES_REQUESTED');
+    expect(
+      deriveContentStudioRevisionApprovalBindingState('CANCELLED', null)
+    ).toBe('REVIEW_CANCELLED');
+    for (const [approval, binding] of [
+      ['PENDING', 'PENDING_APPROVAL'],
+      ['APPROVED', 'APPROVED'],
+      ['REFUSED', 'REFUSED'],
+    ]) {
+      expect(
+        deriveContentStudioRevisionApprovalBindingState(
+          'READY_FOR_APPROVAL',
+          approval
+        )
+      ).toBe(binding);
+    }
+  });
+
+  it('BS9/BS10 a withdrawal is pending again, and a re-approval approved, through the derived state', () => {
+    const binding = (...decisions: string[]) =>
+      deriveContentStudioRevisionApprovalBindingState(
+        'READY_FOR_APPROVAL',
+        contentStudioApprovalStatus(history(...decisions))!.state
+      );
+    expect(binding()).toBe('PENDING_APPROVAL');
+    expect(binding('APPROVED', 'WITHDRAWN')).toBe('PENDING_APPROVAL');
+    expect(binding('REFUSED', 'WITHDRAWN')).toBe('PENDING_APPROVAL');
+    expect(binding('APPROVED', 'WITHDRAWN', 'APPROVED')).toBe('APPROVED');
+    expect(binding('APPROVED', 'WITHDRAWN', 'REFUSED')).toBe('REFUSED');
+  });
+
+  it('a review state and an approval state that cannot belong together have no binding', () => {
+    // only a review ready for approval has an approval, and it always has one
+    expect(
+      deriveContentStudioRevisionApprovalBindingState(
+        'READY_FOR_APPROVAL',
+        null
+      )
+    ).toBe(null);
+    for (const state of CONTENT_STUDIO_REVIEW_STATES) {
+      if (state === 'READY_FOR_APPROVAL') {
+        continue;
+      }
+      for (const approval of CONTENT_STUDIO_APPROVAL_STATES) {
+        expect(
+          deriveContentStudioRevisionApprovalBindingState(state, approval)
+        ).toBe(null);
+      }
+    }
+    for (const approval of CONTENT_STUDIO_APPROVAL_STATES) {
+      expect(
+        deriveContentStudioRevisionApprovalBindingState(null, approval)
+      ).toBe(null);
+    }
+    for (const [review, approval] of [
+      ['APPROVED', null],
+      ['ready_for_approval', 'APPROVED'],
+      ['READY_FOR_APPROVAL', 'approved'],
+      ['READY_FOR_APPROVAL', 'WITHDRAWN'],
+      [undefined, undefined],
+      [undefined, null],
+    ]) {
+      expect(
+        deriveContentStudioRevisionApprovalBindingState(review, approval)
+      ).toBe(null);
+    }
+  });
+
+  it('M1-M3 only APPROVED is approved', () => {
+    for (const state of CONTENT_STUDIO_REVISION_APPROVAL_STATES) {
+      expect(isContentStudioRevisionApproved(state)).toBe(state === 'APPROVED');
+    }
+    for (const value of [
+      'approved',
+      'READY_FOR_APPROVAL',
+      true,
+      null,
+      undefined,
+    ]) {
+      expect(isContentStudioRevisionApproved(value)).toBe(false);
     }
   });
 });

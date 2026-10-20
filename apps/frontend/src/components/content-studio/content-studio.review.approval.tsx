@@ -15,6 +15,11 @@ import {
   contentStudioApprovalActions,
   parseContentStudioApprovalNote,
 } from '@gitroom/nestjs-libraries/content-studio/review/review.approval';
+import type {
+  ContentStudioRevisionApprovalStatus,
+  ContentStudioRevisionApprovalSummary,
+} from '@gitroom/frontend/components/content-studio/content-studio.api';
+import type { ContentStudioRevisionApprovalState } from '@gitroom/nestjs-libraries/content-studio/review/review.approval';
 import {
   ContentStudioReview,
   reviewErrorMessage,
@@ -312,5 +317,67 @@ export const ContentStudioReviewApproval: FC<{
         </>
       )}
     </section>
+  );
+};
+
+// Where exactly one saved revision stands (P5-05), in words
+const revisionApprovalLabel = (
+  t: Translate,
+  state: ContentStudioRevisionApprovalState
+) => {
+  switch (state) {
+    case 'NOT_REVIEWED':
+      return t('content_studio_revision_approval_not_reviewed', 'Not reviewed');
+    case 'REVIEW_REQUESTED':
+      return t('content_studio_review_state_requested', 'Review requested');
+    case 'IN_REVIEW':
+      return t('content_studio_review_state_in_review', 'In review');
+    case 'CHANGES_REQUESTED':
+      return t(
+        'content_studio_review_state_changes_requested',
+        'Changes requested'
+      );
+    case 'REVIEW_CANCELLED':
+      return t(
+        'content_studio_revision_approval_review_cancelled',
+        'Review cancelled'
+      );
+    case 'PENDING_APPROVAL':
+      return t('content_studio_approval_state_pending', 'Pending approval');
+    case 'APPROVED':
+      return t('content_studio_approval_state_approved', 'Approved');
+    case 'REFUSED':
+      return t('content_studio_approval_state_refused', 'Refused');
+  }
+};
+
+// The approval status of one saved revision exactly as the server answered
+// it for that revision (P5-05): never worked out here from a decision
+// history, and never by color alone. With the revision's own status, the
+// decision in force says who made it and when
+export const ContentStudioRevisionApprovalBadge: FC<{
+  approval?:
+    | ContentStudioRevisionApprovalSummary
+    | ContentStudioRevisionApprovalStatus
+    | null;
+}> = ({ approval }) => {
+  const t = useT();
+  if (!approval) {
+    return null;
+  }
+  const decision =
+    'currentDecision' in approval ? approval.currentDecision : null;
+  return (
+    <span
+      data-revision-approval={approval.state}
+      className="text-[11px] font-[400] px-[8px] rounded-full border border-newTableBorder"
+    >
+      <span className="sr-only">
+        {t('content_studio_revision_approval', 'Approval status')}:{' '}
+      </span>
+      {revisionApprovalLabel(t, approval.state)}
+      {!!decision?.actor.name && ` · ${decision.actor.name}`}
+      {!!decision && ` · ${when(decision.createdAt)}`}
+    </span>
   );
 };

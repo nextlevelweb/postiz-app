@@ -11,6 +11,8 @@ import type {
 import type { ContentStudioDesignCanvasPreset } from '@gitroom/nestjs-libraries/content-studio/design/design.page.set';
 import {
   ContentStudioRequestError,
+  ContentStudioRevisionApprovalStatus,
+  ContentStudioRevisionApprovalSummary,
   request,
   swrOptions,
 } from '@gitroom/frontend/components/content-studio/content-studio.api';
@@ -46,6 +48,9 @@ export interface ContentStudioDesignRevisionSummary {
   schemaVersion: number;
   contentHash: string;
   createdAt: string;
+  // a design revision's history and its view say whether exactly it is
+  // approved (P5-05); a template revision has no approval
+  approval?: ContentStudioRevisionApprovalSummary;
 }
 
 export interface ContentStudioDesignRevisionList {
@@ -58,6 +63,7 @@ export interface ContentStudioDesignRevisionList {
 export interface ContentStudioDesignRevisionDetail
   extends ContentStudioDesignRevisionSummary {
   content: unknown;
+  approval?: ContentStudioRevisionApprovalStatus;
 }
 
 export interface ContentStudioDesignDetail extends ContentStudioDesignSummary {

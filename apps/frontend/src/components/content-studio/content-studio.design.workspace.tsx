@@ -84,6 +84,7 @@ import { SaveAsTemplateForm } from '@gitroom/frontend/components/content-studio/
 import { DesignStylePresets } from '@gitroom/frontend/components/content-studio/content-studio.design-style-presets';
 import { DesignCreativeLibrary } from '@gitroom/frontend/components/content-studio/content-studio.design-library';
 import { ContentStudioReviewStatus } from '@gitroom/frontend/components/content-studio/content-studio.review.status';
+import { ContentStudioRevisionApprovalBadge } from '@gitroom/frontend/components/content-studio/content-studio.review.approval';
 
 // The Creative Studio workspace of one design: its pages and layers, a live
 // structural preview, an inspector, the revision history, and server renders
@@ -776,7 +777,8 @@ const DesignBrandProvenance: FC<{
 
 // The revisions of the design (or of a design template, P4-11), newest
 // first, one server page at a time. Metadata only: a revision's document is
-// loaded when it is opened
+// loaded when it is opened. A design revision says whether exactly it is
+// approved (P5-05); a template revision has no approval
 export const DesignHistory: FC<{
   history: {
     data?: { pages: number; results: ContentStudioDesignRevisionSummary[] };
@@ -831,6 +833,9 @@ export const DesignHistory: FC<{
                       {t('content_studio_design_current', 'Current')}
                     </span>
                   )}
+                  <ContentStudioRevisionApprovalBadge
+                    approval={revision.approval}
+                  />
                 </div>
                 <div className="text-[12px] text-textItemBlur">
                   {formatDate(revision.createdAt)}
@@ -1476,6 +1481,15 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
       };
   const busy = commands.busy[design.id];
   const openedCode = designErrorCode(opened.error);
+  // whether exactly the shown saved revision is approved (P5-05), as the
+  // server answered for it: an opened revision's own view, or the current
+  // one's row of the history when that page shows it
+  const shownApproval = shown.historical
+    ? opened.data?.approval?.targetRevisionId === shown.id
+      ? opened.data.approval
+      : null
+    : history.data?.results.find((revision) => revision.id === shown.id)
+        ?.approval ?? null;
   // only the current revision of an active design is ever edited
   const editing = !!editor.document && !shown.historical && !design.archivedAt;
   const shownCurrent =
@@ -1550,6 +1564,7 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
               {shown.historical &&
                 ` · ${t('content_studio_design_historical', 'Historical')}`}
             </span>
+            <ContentStudioRevisionApprovalBadge approval={shownApproval} />
             <span>
               {t('content_studio_updated', 'Updated')}:{' '}
               {formatDate(design.updatedAt)}

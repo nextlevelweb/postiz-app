@@ -7,6 +7,7 @@ import { randomUUID } from 'crypto';
 import { ContentStudioDesignRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.repository';
 import { ContentStudioBrandKitRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.repository';
 import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
+import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 import { parseContentStudioDesignDocument } from '@gitroom/nestjs-libraries/content-studio/design/design.document';
 import { storedContentStudioDesignDocument } from '@gitroom/nestjs-libraries/content-studio/design/design.document.revision';
 import { parseContentStudioBrandKitContent } from '@gitroom/nestjs-libraries/content-studio/brand/brand.kit';
@@ -291,13 +292,38 @@ const setup = (
     ),
     getRevisionByNumber: jest.fn(),
   };
+  // approval binding (P5-05) is the review service's: a revision without a
+  // review unless a test says otherwise
+  const reviews = {
+    getRevisionApprovalStatuses: jest.fn(
+      async (input: { revisionIds: string[] }) =>
+        new Map(input.revisionIds.map((id) => [id, NOT_REVIEWED_SUMMARY]))
+    ),
+    getRevisionApprovalStatus: jest.fn(
+      async (input: { targetRevisionId: string }) =>
+        notReviewedStatus(input.targetRevisionId)
+    ),
+  };
   const service = new ContentStudioDesignService(
     designs as unknown as ContentStudioDesignRepository,
-    kits as unknown as ContentStudioBrandKitRepository
+    kits as unknown as ContentStudioBrandKitRepository,
+    reviews as unknown as ContentStudioReviewService
   );
-  return { designs, kits, service };
+  return { designs, kits, reviews, service };
 };
 type Designs = ReturnType<typeof setup>['designs'];
+const NOT_REVIEWED_SUMMARY = { approved: false, state: 'NOT_REVIEWED' };
+const notReviewedStatus = (id: string) => ({
+  targetType: 'DESIGN_REVISION',
+  targetRevisionId: id,
+  targetRevisionNumber: 1,
+  targetContentHash: 'a'.repeat(64),
+  approved: false,
+  state: 'NOT_REVIEWED',
+  reviewId: null,
+  approvalVersion: 0,
+  currentDecision: null,
+});
 const writes = (designs: Designs) =>
   [
     designs.createProjectWithFirstRevision,
@@ -1094,7 +1120,12 @@ describe('ContentStudioDesignService: revisions', () => {
       designId: DESIGN,
       page: 1,
     });
-    expect(list).toEqual({ pages: 1, results: [summaryOf(revisionRow())] });
+    expect(list).toEqual({
+      pages: 1,
+      results: [
+        { ...summaryOf(revisionRow()), approval: NOT_REVIEWED_SUMMARY },
+      ],
+    });
     expect(designs.listRevisionsForProject).toHaveBeenCalledWith({
       organizationId: ORG,
       designProjectId: DESIGN,
@@ -1115,6 +1146,7 @@ describe('ContentStudioDesignService: revisions', () => {
     ).toEqual({
       ...summaryOf(revisionRow()),
       content: normalized(),
+      approval: notReviewedStatus(REVISION),
     });
     expect(designs.getRevisionForProject).toHaveBeenCalledWith(
       ORG,
@@ -1170,9 +1202,11 @@ describe('ContentStudioDesignService source', () => {
       text.indexOf('constructor('),
       text.indexOf(') {}')
     );
+    // P5-05: the review service, for whether a revision is approved
     expect(constructor.match(/private _\w+: \w+/g)).toEqual([
       'private _contentStudioDesignRepository: ContentStudioDesignRepository',
       'private _contentStudioBrandKitRepository: ContentStudioBrandKitRepository',
+      'private _contentStudioReviewService: ContentStudioReviewService',
     ]);
   });
 
@@ -1187,5 +1221,120 @@ describe('ContentStudioDesignService source', () => {
     expect(text).not.toMatch(
       /_contentStudioBrandKitRepository\.(create|update|archive|restore)/
     );
+  });
+});
+
+describe('ContentStudioDesignService revision approval binding (P5-05)', () => {
+  it('AS2 the revision view carries the full binding of exactly that revision', async () => {
+    const { reviews, service } = setup();
+    const status = {
+      ...notReviewedStatus(REVISION),
+      approved: true,
+      state: 'APPROVED',
+    };
+    reviews.getRevisionApprovalStatus.mockResolvedValue(status);
+    const revision = await service.getRevision({
+      organizationId: ORG,
+      designId: DESIGN,
+      revisionId: REVISION,
+    });
+    expect(revision.approval).toEqual(status);
+    expect(reviews.getRevisionApprovalStatus.mock.calls).toEqual([
+      [
+        {
+          organizationId: ORG,
+          targetType: 'DESIGN_REVISION',
+          targetRevisionId: REVISION,
+        },
+      ],
+    ]);
+  });
+
+  it('AS4/BQ1 a page of history asks for the binding of all its revisions once, each row its own', async () => {
+    const { designs, reviews, service } = setup();
+    const second = '77777777-7777-4777-8777-777777777777';
+    designs.listRevisionsForProject.mockResolvedValueOnce([
+      summaryOf(revisionRow({ id: second, revisionNumber: 2 })),
+      summaryOf(revisionRow()),
+    ]);
+    reviews.getRevisionApprovalStatuses.mockResolvedValueOnce(
+      new Map([
+        [REVISION, { approved: true, state: 'APPROVED' }],
+        [second, { approved: false, state: 'REFUSED' }],
+      ])
+    );
+    const list = await service.listRevisions({
+      organizationId: ORG,
+      designId: DESIGN,
+      page: 1,
+    });
+    expect(list.results.map((row) => [row.id, row.approval])).toEqual([
+      [second, { approved: false, state: 'REFUSED' }],
+      [REVISION, { approved: true, state: 'APPROVED' }],
+    ]);
+    expect(reviews.getRevisionApprovalStatuses.mock.calls).toEqual([
+      [
+        {
+          organizationId: ORG,
+          targetType: 'DESIGN_REVISION',
+          revisionIds: [second, REVISION],
+        },
+      ],
+    ]);
+    expect(reviews.getRevisionApprovalStatus).not.toHaveBeenCalled();
+  });
+
+  it('AS5 a row keeps every existing field', async () => {
+    const { service } = setup();
+    const list = await service.listRevisions({
+      organizationId: ORG,
+      designId: DESIGN,
+      page: 1,
+    });
+    expect(Object.keys(list.results[0]).sort()).toEqual([
+      'approval',
+      'contentHash',
+      'createdAt',
+      'id',
+      'revisionNumber',
+      'schemaVersion',
+    ]);
+  });
+
+  it('a foreign or corrupt revision is answered before any binding is read', async () => {
+    const { designs, reviews, service } = setup();
+    await httpError(
+      service.getRevision({
+        organizationId: OTHER_ORG,
+        designId: DESIGN,
+        revisionId: REVISION,
+      })
+    );
+    designs.getRevisionForProject.mockResolvedValueOnce(
+      revisionRow({ content: '{"pages":[]}' })
+    );
+    expect(
+      (
+        await httpError(
+          service.getRevision({
+            organizationId: ORG,
+            designId: DESIGN,
+            revisionId: REVISION,
+          })
+        )
+      ).status
+    ).toBe(500);
+    expect(reviews.getRevisionApprovalStatus).not.toHaveBeenCalled();
+  });
+
+  it('a stored revision read for a template carries no binding and reads none', async () => {
+    const { reviews, service } = setup();
+    const revision = await service.getStoredRevision({
+      organizationId: ORG,
+      designId: DESIGN,
+      revisionId: REVISION,
+    });
+    expect(revision).not.toHaveProperty('approval');
+    expect(reviews.getRevisionApprovalStatus).not.toHaveBeenCalled();
   });
 });

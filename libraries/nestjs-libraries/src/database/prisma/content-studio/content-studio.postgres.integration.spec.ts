@@ -12,6 +12,7 @@ import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/
 import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.service';
 import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
 import { ContentStudioGroundingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.grounding.service';
+import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 import { parseContentPackageDraft } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 import {
   canonicalJson,
@@ -551,7 +552,8 @@ describe('tenant constraints enforced by PostgreSQL', () => {
     const service = new ContentStudioService(
       repository,
       {} as ContentStudioMediaService,
-      {} as ContentStudioGroundingService
+      {} as ContentStudioGroundingService,
+      {} as ContentStudioReviewService
     );
     const refused = await service
       .createPackage({

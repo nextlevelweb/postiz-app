@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { ContentStudioDesignRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.repository';
 import { ContentStudioBrandKitRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.repository';
+import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 import {
   collectContentStudioDesignBrandTokenRefs,
   ContentStudioDesignDocumentError,
@@ -151,7 +152,8 @@ const revisionSummary = (row: RevisionRow) => ({
 export class ContentStudioDesignService {
   constructor(
     private _contentStudioDesignRepository: ContentStudioDesignRepository,
-    private _contentStudioBrandKitRepository: ContentStudioBrandKitRepository
+    private _contentStudioBrandKitRepository: ContentStudioBrandKitRepository,
+    private _contentStudioReviewService: ContentStudioReviewService
   ) {}
 
   async listDesigns(input: {
@@ -341,7 +343,8 @@ export class ContentStudioDesignService {
     }
   }
 
-  // History stays readable when the design is archived
+  // History stays readable when the design is archived. Each revision says
+  // whether exactly it is approved (P5-05), judged for the whole page at once
   async listRevisions(input: {
     organizationId: string;
     designId: string;
@@ -360,15 +363,43 @@ export class ContentStudioDesignService {
         input.designId
       ),
     ]);
+    const approvals =
+      await this._contentStudioReviewService.getRevisionApprovalStatuses({
+        organizationId: input.organizationId,
+        targetType: 'DESIGN_REVISION',
+        revisionIds: rows.map((revision) => revision.id),
+      });
     return {
       pages: Math.ceil(count / PAGE_SIZE),
-      results: rows.map(revisionSummary),
+      results: rows.map((row) => ({
+        ...revisionSummary(row),
+        approval: approvals.get(row.id),
+      })),
+    };
+  }
+
+  // One revision as the API shows it: its document and whether exactly it
+  // is approved now (P5-05)
+  async getRevision(input: {
+    organizationId: string;
+    designId: string;
+    revisionId: string;
+  }) {
+    const revision = await this.getStoredRevision(input);
+    return {
+      ...revision,
+      approval:
+        await this._contentStudioReviewService.getRevisionApprovalStatus({
+          organizationId: input.organizationId,
+          targetType: 'DESIGN_REVISION',
+          targetRevisionId: revision.id,
+        }),
     };
   }
 
   // A stored revision is read on its own integrity: the Brand Kit revision it
   // names is not loaded again
-  async getRevision(input: {
+  async getStoredRevision(input: {
     organizationId: string;
     designId: string;
     revisionId: string;

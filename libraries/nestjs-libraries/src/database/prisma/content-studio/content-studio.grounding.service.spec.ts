@@ -6,6 +6,7 @@ import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/pris
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
 import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.service';
 import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
+import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.service';
 import { ContentStudioHandoffRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.repository';
 import {
@@ -304,7 +305,9 @@ const setup = (stored: object = v1Draft()) => {
   const service = new ContentStudioService(
     packages as unknown as ContentStudioRepository,
     media as unknown as ContentStudioMediaService,
-    grounding
+    grounding,
+    // never reached: the draft and its grounding only
+    {} as ContentStudioReviewService
   );
   const save = (draft: unknown, baseDraftVersion = state.draftVersion) =>
     service.saveDraft({

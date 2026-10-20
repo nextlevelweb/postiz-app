@@ -8,6 +8,7 @@ import {
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ContentStudioDesignRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.repository';
 import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
+import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 import { ContentStudioBrandKitRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.repository';
 import { ContentStudioDesignTemplateRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.repository';
 import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
@@ -383,9 +384,30 @@ const setup = () => {
     getCurrentRevision: jest.fn(),
     getLatestRevision: jest.fn(),
   };
+  // approval binding (P5-05): read for a design revision only, never by a
+  // template
+  const reviews = {
+    getRevisionApprovalStatuses: jest.fn(
+      async (input: { revisionIds: string[] }) =>
+        new Map(
+          input.revisionIds.map((id) => [
+            id,
+            { approved: false, state: 'NOT_REVIEWED' },
+          ])
+        )
+    ),
+    getRevisionApprovalStatus: jest.fn(
+      async (input: { targetRevisionId: string }) => ({
+        targetRevisionId: input.targetRevisionId,
+        approved: false,
+        state: 'NOT_REVIEWED',
+      })
+    ),
+  };
   const designs = new ContentStudioDesignService(
     designRepository,
-    brandKits as unknown as ContentStudioBrandKitRepository
+    brandKits as unknown as ContentStudioBrandKitRepository,
+    reviews as unknown as ContentStudioReviewService
   );
   const media = {
     getMediaByIdForOrganization: jest.fn(
@@ -2408,7 +2430,9 @@ describe('Design templates: source boundaries', () => {
       service.indexOf('async saveDesignRevisionAsTemplate'),
       service.indexOf('async getTemplate')
     );
-    expect(method).toContain('this._contentStudioDesignService.getRevision({');
+    expect(method).toContain(
+      'this._contentStudioDesignService.getStoredRevision({'
+    );
     expect(method).toContain('revision.content');
     expect(method).not.toMatch(/input\.content/);
     const dto = code(DTO);

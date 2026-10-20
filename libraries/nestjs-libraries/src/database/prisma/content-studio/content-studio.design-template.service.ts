@@ -376,7 +376,7 @@ export class ContentStudioDesignTemplateService {
   }) {
     const name = plainText(input.name, DESIGN_PROJECT_NAME_MAX, true) as string;
     const description = this.description(input.description);
-    const revision = await this._contentStudioDesignService.getRevision({
+    const revision = await this._contentStudioDesignService.getStoredRevision({
       organizationId: input.organizationId,
       designId: input.designId,
       revisionId: input.revisionId,

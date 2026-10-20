@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { randomBytes } from 'crypto';
 import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.repository';
 import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
+import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 import {
   ContentStudioGroundingError,
   ContentStudioGroundingService,
@@ -206,7 +207,8 @@ export class ContentStudioService {
   constructor(
     private _contentStudioRepository: ContentStudioRepository,
     private _contentStudioMediaService: ContentStudioMediaService,
-    private _contentStudioGroundingService: ContentStudioGroundingService
+    private _contentStudioGroundingService: ContentStudioGroundingService,
+    private _contentStudioReviewService: ContentStudioReviewService
   ) {}
 
   listProjects(organizationId: string, archived: boolean) {
@@ -547,7 +549,9 @@ export class ContentStudioService {
     return { created: true, revision: revisionSummary(result.revision) };
   }
 
-  // History stays readable when the package is archived
+  // History stays readable when the package is archived. Each revision says
+  // whether exactly it is approved (P5-05), as the review service judges it
+  // for the whole page at once: never from another revision
   async listRevisions(input: {
     organizationId: string;
     packageId: string;
@@ -575,9 +579,18 @@ export class ContentStudioService {
       ),
     ]);
 
+    const approvals =
+      await this._contentStudioReviewService.getRevisionApprovalStatuses({
+        organizationId: input.organizationId,
+        targetType: 'PACKAGE_REVISION',
+        revisionIds: results.map((revision) => revision.id),
+      });
     return {
       pages: Math.ceil(count / CONTENT_STUDIO_PAGE_SIZE),
-      results,
+      results: results.map((revision) => ({
+        ...revision,
+        approval: approvals.get(revision.id),
+      })),
     };
   }
 
@@ -605,6 +618,13 @@ export class ContentStudioService {
         input.organizationId,
         content
       ),
+      // whether exactly this revision is approved now (P5-05)
+      approval:
+        await this._contentStudioReviewService.getRevisionApprovalStatus({
+          organizationId: input.organizationId,
+          targetType: 'PACKAGE_REVISION',
+          targetRevisionId: row.id,
+        }),
     };
   }
 

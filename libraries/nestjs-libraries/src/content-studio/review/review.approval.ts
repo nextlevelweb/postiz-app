@@ -1,5 +1,6 @@
 import {
   ContentStudioReviewState,
+  isContentStudioReviewState,
   isContentStudioReviewText,
 } from '@gitroom/nestjs-libraries/content-studio/review/review.state';
 
@@ -166,3 +167,74 @@ export const isContentStudioApprovalNoteIntact = (
   decision: ContentStudioApprovalDecision,
   note: unknown
 ) => (decision === 'APPROVED' && note === null) || isNote(note);
+
+// Approval binding (P5-05): where exactly one immutable revision stands, from
+// its one review and that review's approval. Never stored: derived each time
+// from the review state and the approval state derived from the whole
+// history. Only APPROVED is approved: a review that is ready for approval
+// with no decision, or whose decision was withdrawn, is pending approval
+export const CONTENT_STUDIO_REVISION_APPROVAL_STATES = [
+  'NOT_REVIEWED',
+  'REVIEW_REQUESTED',
+  'IN_REVIEW',
+  'CHANGES_REQUESTED',
+  'REVIEW_CANCELLED',
+  'PENDING_APPROVAL',
+  'APPROVED',
+  'REFUSED',
+] as const;
+export type ContentStudioRevisionApprovalState =
+  (typeof CONTENT_STUDIO_REVISION_APPROVAL_STATES)[number];
+
+const REVIEW_BINDING: Record<
+  Exclude<ContentStudioReviewState, 'READY_FOR_APPROVAL'>,
+  ContentStudioRevisionApprovalState
+> = {
+  REQUESTED: 'REVIEW_REQUESTED',
+  IN_REVIEW: 'IN_REVIEW',
+  CHANGES_REQUESTED: 'CHANGES_REQUESTED',
+  CANCELLED: 'REVIEW_CANCELLED',
+};
+
+const APPROVAL_BINDING: Record<
+  ContentStudioApprovalState,
+  ContentStudioRevisionApprovalState
+> = {
+  PENDING: 'PENDING_APPROVAL',
+  APPROVED: 'APPROVED',
+  REFUSED: 'REFUSED',
+};
+
+// The binding state of a revision from the state of its review (null: it
+// has none) and the approval state of that review (null: it has none), or
+// null when the two cannot belong together: only a review that is ready for
+// approval has an approval state, and it always has one
+export const deriveContentStudioRevisionApprovalBindingState = (
+  reviewState: unknown,
+  approvalState: unknown
+): ContentStudioRevisionApprovalState | null => {
+  if (reviewState === null) {
+    return approvalState === null ? 'NOT_REVIEWED' : null;
+  }
+  if (!isContentStudioReviewState(reviewState)) {
+    return null;
+  }
+  if (reviewState === 'READY_FOR_APPROVAL') {
+    return isContentStudioApprovalState(approvalState)
+      ? APPROVAL_BINDING[approvalState]
+      : null;
+  }
+  return approvalState === null ? REVIEW_BINDING[reviewState] : null;
+};
+
+export const isContentStudioRevisionApprovalState = (
+  value: unknown
+): value is ContentStudioRevisionApprovalState =>
+  typeof value === 'string' &&
+  (CONTENT_STUDIO_REVISION_APPROVAL_STATES as readonly string[]).includes(
+    value
+  );
+
+// The one answer to "is this revision approved?"
+export const isContentStudioRevisionApproved = (state: unknown) =>
+  state === 'APPROVED';

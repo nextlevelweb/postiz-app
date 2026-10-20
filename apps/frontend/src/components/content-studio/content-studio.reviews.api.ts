@@ -143,6 +143,11 @@ export interface ContentStudioReviewApproval {
 }
 
 export const REVIEWS_PATH = '/content-studio/reviews';
+// The saved revisions of packages and designs, listed or opened: each shows
+// whether exactly it is approved (P5-05), so a review write reloads them too.
+// Never a package or a design itself: that would reload a draft being edited
+const REVISIONS_KEY =
+  /^\/content-studio\/(packages|designs)\/[^/?]+\/revisions[/?]/;
 const reviewPath = (id: string) => `${REVIEWS_PATH}/${encodeURIComponent(id)}`;
 export const reviewCommentsPath = (id: string, page: number) =>
   `${reviewPath(id)}/comments?page=${page}`;
@@ -288,7 +293,8 @@ export const useContentStudioReviewActions = () => {
         (key) =>
           typeof key === 'string' &&
           (key.startsWith(`${REVIEWS_PATH}?`) ||
-            key.startsWith(`${REVIEWS_PATH}/`))
+            key.startsWith(`${REVIEWS_PATH}/`) ||
+            REVISIONS_KEY.test(key))
       ),
     [mutate]
   );

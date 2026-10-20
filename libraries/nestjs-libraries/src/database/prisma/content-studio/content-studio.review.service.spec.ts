@@ -143,6 +143,10 @@ const createDb = () => {
       if (value && typeof value === 'object' && 'not' in value) {
         return row[key] !== value.not;
       }
+      // P5-05: the batch reads of a page
+      if (value && typeof value === 'object' && 'in' in value) {
+        return (value.in as unknown[]).includes(row[key]);
+      }
       return row[key] === value;
     });
   const person = (id: string | null) => {
@@ -278,6 +282,13 @@ const createDb = () => {
       },
       findMany: async (args: Row) => {
         log.push({ op: 'review.findMany', where: args.where });
+        // P5-05: the reviews of some exact revisions, in no particular order
+        if (args.orderBy === undefined) {
+          expect(args.skip).toBeUndefined();
+          return tables.review
+            .filter((entry) => matches(entry, args.where))
+            .map(reviewView);
+        }
         expect(args.orderBy).toEqual([{ createdAt: 'desc' }, { id: 'asc' }]);
         return tables.review
           .filter((entry) => matches(entry, args.where))
@@ -420,15 +431,25 @@ const createDb = () => {
     contentStudioReviewClaim: {
       findMany: async (args: Row) => {
         log.push({ op: 'claim.findMany', where: args.where });
-        expect(args.orderBy).toEqual([{ createdAt: 'asc' }, { id: 'asc' }]);
+        const batch = 'reviewId' in args.select;
+        expect(args.orderBy).toEqual(
+          batch
+            ? [{ reviewId: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }]
+            : [{ createdAt: 'asc' }, { id: 'asc' }]
+        );
         return tables.claim
           .filter((entry) => matches(entry, args.where))
           .sort(
             (a, b) =>
+              (batch ? a.reviewId.localeCompare(b.reviewId) : 0) ||
               a.createdAt.getTime() - b.createdAt.getTime() ||
               a.id.localeCompare(b.id)
           )
-          .map(claimView);
+          .map((row) =>
+            batch
+              ? { ...claimView(row), reviewId: row.reviewId }
+              : claimView(row)
+          );
       },
       updateMany: async (args: Row) => {
         log.push({
@@ -470,11 +491,24 @@ const createDb = () => {
     contentStudioApproval: {
       findMany: async (args: Row) => {
         log.push({ op: 'approval.findMany', where: args.where });
-        expect(args.orderBy).toEqual({ sequence: 'asc' });
+        const batch = 'reviewId' in args.select;
+        expect(args.orderBy).toEqual(
+          batch
+            ? [{ reviewId: 'asc' }, { sequence: 'asc' }]
+            : { sequence: 'asc' }
+        );
         return tables.approval
           .filter((entry) => matches(entry, args.where))
-          .sort((a, b) => a.sequence - b.sequence)
-          .map(approvalView);
+          .sort(
+            (a, b) =>
+              (batch ? a.reviewId.localeCompare(b.reviewId) : 0) ||
+              a.sequence - b.sequence
+          )
+          .map((row) =>
+            batch
+              ? { ...approvalView(row), reviewId: row.reviewId }
+              : approvalView(row)
+          );
       },
       create: async (args: Row) => {
         log.push({ op: 'approval.create', data: args.data });
@@ -526,6 +560,12 @@ const createDb = () => {
         );
         return row ? pick(row, args.select) : null;
       },
+      findMany: async (args: Row) => {
+        log.push({ op: 'packageRevision.findMany', where: args.where });
+        return tables.packageRevision
+          .filter((entry) => matches(entry, args.where))
+          .map((row) => pick(row, args.select));
+      },
     },
     contentStudioDesignRevision: {
       findFirst: async (args: Row) => {
@@ -534,6 +574,12 @@ const createDb = () => {
           matches(entry, args.where)
         );
         return row ? pick(row, args.select) : null;
+      },
+      findMany: async (args: Row) => {
+        log.push({ op: 'designRevision.findMany', where: args.where });
+        return tables.designRevision
+          .filter((entry) => matches(entry, args.where))
+          .map((row) => pick(row, args.select));
       },
     },
   };
@@ -1482,10 +1528,11 @@ describe('ContentStudioReviewService boundaries', () => {
       );
     }
     // the package or design of a revision is only ever read from the
-    // revision itself (P5-02: a resolving revision must share it)
+    // revision itself (P5-02: a resolving revision must share it; P5-05: the
+    // exact revisions of a page of approval binding)
     const repository = code('content-studio.review.repository.ts');
-    expect(repository.match(/packageId: true/g)).toHaveLength(3);
-    expect(repository.match(/designProjectId: true/g)).toHaveLength(3);
+    expect(repository.match(/packageId: true/g)).toHaveLength(4);
+    expect(repository.match(/designProjectId: true/g)).toHaveLength(4);
     expect(repository).toMatch(/packageRevisionId: input\.packageRevisionId/);
   });
 
@@ -1518,8 +1565,9 @@ describe('ContentStudioReviewService boundaries', () => {
       .slice(1);
     // P5-03B: the claim reads (one inside the READY transition), the hold
     // and the assessment write; P5-04: the approval history read, the hold,
-    // the history read inside it and the append
-    expect(queries.length).toBe(27);
+    // the history read inside it and the append; P5-05: the batch reads of
+    // package and design revisions, reviews, claims and approvals
+    expect(queries.length).toBe(32);
     for (const query of queries) {
       expect(query.slice(0, 400)).toMatch(/organizationId/);
     }
@@ -4090,7 +4138,8 @@ describe('ContentStudioReviewService claim review boundaries (P5-03B)', () => {
     const reads = text
       .split(/contentStudioReviewClaim\.(?:findMany|updateMany|create)\(/)
       .slice(1);
-    expect(reads).toHaveLength(4);
+    // P5-05: one more, the assessments of several reviews by their ids
+    expect(reads).toHaveLength(5);
     for (const read of reads) {
       expect(read.slice(0, 300)).toMatch(/reviewId/);
     }
@@ -5286,9 +5335,10 @@ describe('ContentStudioReviewService approval boundaries (P5-04)', () => {
     expect(text).not.toMatch(
       /contentStudioApproval\.(update|updateMany|upsert|delete|deleteMany)\(/
     );
+    // P5-05: one more read, the histories of several reviews at once
     expect(
       text.split(/contentStudioApproval\.(?:findMany|create)\(/).length - 1
-    ).toBe(3);
+    ).toBe(4);
   });
 
   it('P504-6/P504-7/M25 handoff and publishing know nothing of approval', () => {
@@ -5345,6 +5395,1146 @@ describe('ContentStudioReviewService approval boundaries (P5-04)', () => {
   });
 
   it('P504-12/P504-13 package grounding and the Design Document are unchanged', () => {
+    const draft = readFileSync(
+      join(
+        root,
+        'libraries/nestjs-libraries/src/content-studio/content.package.draft.ts'
+      ),
+      'utf8'
+    );
+    expect(draft).toMatch(
+      /export const CONTENT_PACKAGE_GROUNDED_SCHEMA_VERSION = 2;/
+    );
+    expect(draft).not.toMatch(/approv/i);
+    const design = readFileSync(
+      join(
+        root,
+        'libraries/nestjs-libraries/src/content-studio/design/design.document.ts'
+      ),
+      'utf8'
+    );
+    expect(design).toMatch(/export const DESIGN_DOCUMENT_SCHEMA_VERSION = 1;/);
+    expect(design).not.toMatch(/approv/i);
+  });
+});
+
+// --- approval binding (P5-05) ---
+
+const bindingOf = (
+  db: Db,
+  targetType: unknown,
+  targetRevisionId: unknown,
+  org = ORG_A
+) =>
+  db.service.getRevisionApprovalStatus({
+    organizationId: org,
+    targetType,
+    targetRevisionId,
+  });
+const requireApproved = (
+  db: Db,
+  targetType: unknown,
+  targetRevisionId: unknown,
+  org = ORG_A
+) =>
+  db.service.requireApprovedRevision({
+    organizationId: org,
+    targetType,
+    targetRevisionId,
+  });
+const bindingsOf = (
+  db: Db,
+  targetType: 'PACKAGE_REVISION' | 'DESIGN_REVISION',
+  revisionIds: string[],
+  org = ORG_A
+) =>
+  db.service.getRevisionApprovalStatuses({
+    organizationId: org,
+    targetType,
+    revisionIds,
+  });
+const hashOf = (db: Db, id: string) =>
+  [...db.tables.packageRevision, ...db.tables.designRevision].find(
+    (row) => row.id === id
+  )!.contentHash;
+const notApproved = (
+  db: Db,
+  state: string,
+  revisionId = PKG_REV_4,
+  number = 4,
+  targetType = 'PACKAGE_REVISION'
+) => ({
+  targetType,
+  targetRevisionId: revisionId,
+  targetRevisionNumber: number,
+  targetContentHash: hashOf(db, revisionId),
+  approved: false,
+  state,
+  reviewId: expect.any(String),
+  approvalVersion: 0,
+  currentDecision: null,
+});
+
+describe('ContentStudioReviewService: approval binding states (P5-05)', () => {
+  it('BS1 a revision without a review is NOT_REVIEWED, not an error', async () => {
+    const db = discussion();
+    expect(await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4)).toEqual({
+      ...notApproved(db, 'NOT_REVIEWED'),
+      reviewId: null,
+    });
+    expect(await bindingOf(db, 'DESIGN_REVISION', DESIGN_REV_7)).toEqual({
+      ...notApproved(db, 'NOT_REVIEWED', DESIGN_REV_7, 7, 'DESIGN_REVISION'),
+      reviewId: null,
+    });
+  });
+
+  it('BS2-BS5 every review state before approval is its own state, never approved', async () => {
+    for (const [state, binding] of [
+      ['REQUESTED', 'REVIEW_REQUESTED'],
+      ['IN_REVIEW', 'IN_REVIEW'],
+      ['CHANGES_REQUESTED', 'CHANGES_REQUESTED'],
+      ['CANCELLED', 'REVIEW_CANCELLED'],
+    ] as const) {
+      const db = discussion();
+      const review = await reviewIn(db, state);
+      expect(await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4)).toEqual({
+        ...notApproved(db, binding),
+        reviewId: review.id,
+      });
+    }
+  });
+
+  it('BS6/M1 READY_FOR_APPROVAL alone is PENDING_APPROVAL: not approved', async () => {
+    const { db, review } = await readyPackage();
+    expect(await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4)).toEqual({
+      ...notApproved(db, 'PENDING_APPROVAL'),
+      reviewId: review.id,
+    });
+  });
+
+  it('BS7/WB1 the current decision APPROVED is approved, with exactly that decision', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve', 'Cleared.');
+    expect(await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4)).toEqual({
+      targetType: 'PACKAGE_REVISION',
+      targetRevisionId: PKG_REV_4,
+      targetRevisionNumber: 4,
+      targetContentHash: hashOf(db, PKG_REV_4),
+      approved: true,
+      state: 'APPROVED',
+      reviewId: review.id,
+      approvalVersion: 1,
+      currentDecision: {
+        sequence: 1,
+        decision: 'APPROVED',
+        note: 'Cleared.',
+        actor: { id: USER_A2, name: 'Bo' },
+        createdAt: expect.any(Date),
+      },
+    });
+  });
+
+  it('BS8/FB1/FB2/M2 the current decision REFUSED is not approved', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'refuse', REFUSAL);
+    const status = await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4);
+    expect(status).toMatchObject({
+      approved: false,
+      state: 'REFUSED',
+      approvalVersion: 1,
+      currentDecision: { sequence: 1, decision: 'REFUSED', note: REFUSAL },
+    });
+  });
+
+  it('BS9/WB2/WB3/M3/M8 a withdrawn approval is PENDING_APPROVAL at once, with no decision in force', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    expect((await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4)).approved).toBe(
+      true
+    );
+    await decide(db, review.id, 'withdraw', WITHDRAWAL);
+    // the APPROVED row is still there: it is history, not the answer
+    expect(decisions(db)).toEqual([
+      [1, 'APPROVED'],
+      [2, 'WITHDRAWN'],
+    ]);
+    expect(await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4)).toEqual({
+      ...notApproved(db, 'PENDING_APPROVAL'),
+      reviewId: review.id,
+      approvalVersion: 2,
+    });
+    expect(
+      (await bindingsOf(db, 'PACKAGE_REVISION', [PKG_REV_4])).get(PKG_REV_4)
+    ).toEqual({ approved: false, state: 'PENDING_APPROVAL' });
+  });
+
+  it('BS10/WB4 re-approved after a withdrawal: approved by the newest APPROVED row', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve', 'First.');
+    await decide(db, review.id, 'withdraw', WITHDRAWAL);
+    await decide(db, review.id, 'approve', 'Second.', USER_A);
+    expect(await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4)).toMatchObject({
+      approved: true,
+      state: 'APPROVED',
+      approvalVersion: 3,
+      currentDecision: {
+        sequence: 3,
+        decision: 'APPROVED',
+        note: 'Second.',
+        actor: { id: USER_A, name: 'Ann' },
+      },
+    });
+    expect(decisions(db)).toHaveLength(3);
+  });
+
+  it('FB3 a withdrawn refusal is PENDING_APPROVAL', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'refuse', REFUSAL);
+    await decide(db, review.id, 'withdraw', WITHDRAWAL);
+    expect(await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4)).toMatchObject({
+      approved: false,
+      state: 'PENDING_APPROVAL',
+      currentDecision: null,
+    });
+  });
+
+  it('46 the binding agrees with the approval card for every history', async () => {
+    const steps: [string, ('approve' | 'refuse' | 'withdraw')[]][] = [
+      ['PENDING_APPROVAL', []],
+      ['APPROVED', ['approve']],
+      ['REFUSED', ['refuse']],
+      ['PENDING_APPROVAL', ['approve', 'withdraw']],
+      ['PENDING_APPROVAL', ['refuse', 'withdraw']],
+      ['APPROVED', ['refuse', 'withdraw', 'approve']],
+    ];
+    for (const [binding, actions] of steps) {
+      const { db, review } = await readyPackage();
+      for (const action of actions) {
+        await decide(
+          db,
+          review.id,
+          action,
+          action === 'approve' ? null : REFUSAL
+        );
+      }
+      const card = await approvalOf(db, review.id);
+      const status = await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4);
+      expect(status.state).toBe(binding);
+      expect(
+        {
+          PENDING: 'PENDING_APPROVAL',
+          APPROVED: 'APPROVED',
+          REFUSED: 'REFUSED',
+        }[card.state]
+      ).toBe(status.state);
+      expect(status.approvalVersion).toBe(card.version);
+      expect(status.approved).toBe(card.state === 'APPROVED');
+    }
+  });
+
+  it('DG3 a design revision goes through the same states', async () => {
+    const { db, review } = await readyDesign();
+    expect((await bindingOf(db, 'DESIGN_REVISION', DESIGN_REV_7)).state).toBe(
+      'PENDING_APPROVAL'
+    );
+    await decide(db, review.id, 'approve');
+    expect(await bindingOf(db, 'DESIGN_REVISION', DESIGN_REV_7)).toMatchObject({
+      targetType: 'DESIGN_REVISION',
+      targetRevisionNumber: 7,
+      approved: true,
+      state: 'APPROVED',
+    });
+    await decide(db, review.id, 'withdraw', WITHDRAWAL);
+    expect(await bindingOf(db, 'DESIGN_REVISION', DESIGN_REV_7)).toMatchObject({
+      approved: false,
+      state: 'PENDING_APPROVAL',
+    });
+    await decide(db, review.id, 'refuse', REFUSAL);
+    expect((await bindingOf(db, 'DESIGN_REVISION', DESIGN_REV_7)).state).toBe(
+      'REFUSED'
+    );
+  });
+});
+
+describe('ContentStudioReviewService: approval binds one exact revision (P5-05)', () => {
+  it('EB1/EB2/M4 revision N is approved; N+1 of the same package is not', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    expect((await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4)).approved).toBe(
+      true
+    );
+    for (const newer of [PKG_REV_5, PKG_REV_6]) {
+      expect(await bindingOf(db, 'PACKAGE_REVISION', newer)).toMatchObject({
+        targetRevisionId: newer,
+        approved: false,
+        state: 'NOT_REVIEWED',
+        reviewId: null,
+      });
+    }
+    const page = await bindingsOf(db, 'PACKAGE_REVISION', [
+      PKG_REV_6,
+      PKG_REV_5,
+      PKG_REV_4,
+      PKG_REV_3,
+    ]);
+    expect([...page]).toEqual([
+      [PKG_REV_6, { approved: false, state: 'NOT_REVIEWED' }],
+      [PKG_REV_5, { approved: false, state: 'NOT_REVIEWED' }],
+      [PKG_REV_4, { approved: true, state: 'APPROVED' }],
+      [PKG_REV_3, { approved: false, state: 'NOT_REVIEWED' }],
+    ]);
+  });
+
+  it('EB3/M5 a revision with the identical hash inherits nothing', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    const original = db.tables.packageRevision.find((r) => r.id === PKG_REV_4)!;
+    const twin = uuid(44);
+    db.tables.packageRevision.push({
+      ...original,
+      id: twin,
+      revisionNumber: 10,
+    });
+    expect(hashOf(db, twin)).toBe(original.contentHash);
+    expect(await bindingOf(db, 'PACKAGE_REVISION', twin)).toMatchObject({
+      targetContentHash: original.contentHash,
+      approved: false,
+      state: 'NOT_REVIEWED',
+      reviewId: null,
+    });
+    expect(
+      (await bindingsOf(db, 'PACKAGE_REVISION', [twin, PKG_REV_4])).get(twin)
+    ).toEqual({ approved: false, state: 'NOT_REVIEWED' });
+    // the same for a design
+    const design = await readyDesign();
+    await decide(design.db, design.review.id, 'approve');
+    const stored = design.db.tables.designRevision.find(
+      (r) => r.id === DESIGN_REV_7
+    )!;
+    const designTwin = uuid(77);
+    design.db.tables.designRevision.push({
+      ...stored,
+      id: designTwin,
+      revisionNumber: 11,
+    });
+    expect(
+      (await bindingOf(design.db, 'DESIGN_REVISION', designTwin)).state
+    ).toBe('NOT_REVIEWED');
+  });
+
+  it('EB4/EB5 design revision N is approved; N+1 of the same design is not', async () => {
+    const { db, review } = await readyDesign();
+    await decide(db, review.id, 'approve');
+    expect(
+      (await bindingOf(db, 'DESIGN_REVISION', DESIGN_REV_7)).approved
+    ).toBe(true);
+    expect(await bindingOf(db, 'DESIGN_REVISION', DESIGN_REV_8)).toMatchObject({
+      approved: false,
+      state: 'NOT_REVIEWED',
+    });
+    expect([
+      ...(await bindingsOf(db, 'DESIGN_REVISION', [
+        DESIGN_REV_8,
+        DESIGN_REV_7,
+      ])),
+    ]).toEqual([
+      [DESIGN_REV_8, { approved: false, state: 'NOT_REVIEWED' }],
+      [DESIGN_REV_7, { approved: true, state: 'APPROVED' }],
+    ]);
+  });
+
+  it('a package and a design revision are never confused, whatever the ids', async () => {
+    const { db, review } = await readyDesign();
+    await decide(db, review.id, 'approve');
+    // the design revision asked for as a package revision does not exist
+    expect(await code(bindingOf(db, 'PACKAGE_REVISION', DESIGN_REV_7))).toEqual(
+      { status: 404, code: 'CS_NOT_FOUND' }
+    );
+    expect(
+      (await bindingsOf(db, 'PACKAGE_REVISION', [DESIGN_REV_7])).get(
+        DESIGN_REV_7
+      )
+    ).toEqual({ approved: false, state: 'NOT_REVIEWED' });
+  });
+
+  it('EB6/M6 a decision kept for another revision is corruption, never approval', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    db.tables.approval[0].packageRevisionId = PKG_REV_5;
+    for (const read of [
+      () => bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4),
+      () => bindingsOf(db, 'PACKAGE_REVISION', [PKG_REV_4]),
+      () => requireApproved(db, 'PACKAGE_REVISION', PKG_REV_4),
+    ]) {
+      expect(await code(read())).toEqual({
+        status: 500,
+        code: 'CS_APPROVAL_INTEGRITY_ERROR',
+      });
+    }
+    // and the other revision is not approved by it either
+    expect((await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_5)).approved).toBe(
+      false
+    );
+  });
+
+  it('EB7/M7 a decision kept with another hash is corruption, never approval', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    db.tables.approval[0].targetContentHash = 'e'.repeat(64);
+    expect(await code(bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4))).toEqual({
+      status: 500,
+      code: 'CS_APPROVAL_INTEGRITY_ERROR',
+    });
+  });
+
+  it('a review that names another revision than its own relation is corruption', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    // the review now points at revision 5 with revision 4's hash
+    reviewRow(db, review.id).packageRevisionId = PKG_REV_5;
+    for (const read of [
+      () => bindingOf(db, 'PACKAGE_REVISION', PKG_REV_5),
+      () => bindingsOf(db, 'PACKAGE_REVISION', [PKG_REV_5, PKG_REV_4]),
+    ]) {
+      expect(await code(read())).toEqual({
+        status: 500,
+        code: 'CS_REVIEW_INTEGRITY_ERROR',
+      });
+    }
+  });
+
+  it('36 an archived package or design keeps the binding of its revisions', async () => {
+    // archiving is a package or design field the binding never reads: the
+    // revisions, reviews and decisions are what they were
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    for (const row of db.tables.packageRevision) {
+      row.archivedAt = new Date('2026-10-19T12:00:00.000Z');
+    }
+    expect((await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4)).approved).toBe(
+      true
+    );
+  });
+});
+
+describe('ContentStudioReviewService: approval binding integrity (P5-05)', () => {
+  const corrupted = async (
+    db: Db,
+    targetType: string,
+    revisionId: string,
+    errorCode: string
+  ) => {
+    const before = snapshot(db);
+    for (const read of [
+      () => bindingOf(db, targetType, revisionId),
+      () =>
+        bindingsOf(db, targetType as 'PACKAGE_REVISION' | 'DESIGN_REVISION', [
+          revisionId,
+        ]),
+      () => requireApproved(db, targetType, revisionId),
+    ]) {
+      expect(await code(read())).toEqual({ status: 500, code: errorCode });
+    }
+    // nothing is repaired
+    expect(snapshot(db)).toBe(before);
+  };
+
+  it('37 a revision that no longer verifies is an integrity error, never "not approved"', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    const stored = db.tables.packageRevision.find((r) => r.id === PKG_REV_4)!;
+    stored.content = stored.content.replace('v4', 'v9');
+    await corrupted(
+      db,
+      'PACKAGE_REVISION',
+      PKG_REV_4,
+      'CS_REVIEW_INTEGRITY_ERROR'
+    );
+  });
+
+  it('37 even without a review, the single predicate verifies the exact revision', async () => {
+    const db = discussion();
+    const stored = db.tables.packageRevision.find((r) => r.id === PKG_REV_5)!;
+    stored.content = stored.content.replace('v5', 'v8');
+    expect(await code(bindingOf(db, 'PACKAGE_REVISION', PKG_REV_5))).toEqual({
+      status: 500,
+      code: 'CS_REVIEW_INTEGRITY_ERROR',
+    });
+  });
+
+  it('DG2 a design revision that no longer verifies is an integrity error', async () => {
+    const { db, review } = await readyDesign();
+    await decide(db, review.id, 'approve');
+    const stored = db.tables.designRevision.find((r) => r.id === DESIGN_REV_7)!;
+    stored.content = stored.content.replace('#ffffff', '#fffffe');
+    await corrupted(
+      db,
+      'DESIGN_REVISION',
+      DESIGN_REV_7,
+      'CS_REVIEW_INTEGRITY_ERROR'
+    );
+  });
+
+  it('39/M10 a broken review history is an integrity error, never approved', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    db.tables.event.pop();
+    await corrupted(
+      db,
+      'PACKAGE_REVISION',
+      PKG_REV_4,
+      'CS_REVIEW_INTEGRITY_ERROR'
+    );
+  });
+
+  it('39 an unknown review state is an integrity error', async () => {
+    const { db, review } = await readyPackage();
+    reviewRow(db, review.id).state = 'APPROVED';
+    await corrupted(
+      db,
+      'PACKAGE_REVISION',
+      PKG_REV_4,
+      'CS_REVIEW_INTEGRITY_ERROR'
+    );
+  });
+
+  it('38/M9 a malformed approval history never yields "the latest valid-looking APPROVED"', async () => {
+    for (const rows of [
+      // a gap: APPROVED, then a third decision
+      [
+        [1, 'APPROVED'],
+        [3, 'APPROVED'],
+      ],
+      // an unknown decision after a withdrawal
+      [
+        [1, 'APPROVED'],
+        [2, 'WITHDRAWN'],
+        [3, 'MAYBE'],
+      ],
+      // APPROVED replaced directly by REFUSED, then APPROVED again
+      [
+        [1, 'REFUSED'],
+        [2, 'APPROVED'],
+      ],
+      // a history that does not start at 1
+      [[2, 'APPROVED']],
+    ] as const) {
+      const { db, review } = await readyPackage();
+      for (const [sequence, decision] of rows) {
+        db.tables.approval.push({
+          id: uuid(9800 + sequence),
+          organizationId: ORG_A,
+          reviewId: review.id,
+          sequence,
+          decision,
+          packageRevisionId: PKG_REV_4,
+          designRevisionId: null,
+          targetContentHash: hashOf(db, PKG_REV_4),
+          actorUserId: USER_A2,
+          note: decision === 'APPROVED' ? null : REFUSAL,
+          createdAt: new Date('2026-10-19T12:00:00.000Z'),
+        });
+      }
+      await corrupted(
+        db,
+        'PACKAGE_REVISION',
+        PKG_REV_4,
+        'CS_APPROVAL_INTEGRITY_ERROR'
+      );
+    }
+  });
+
+  it('38 decisions stored on a review that is not ready never approve it; the approval read reports them', async () => {
+    const db = discussion();
+    const review = await reviewIn(db, 'IN_REVIEW');
+    db.tables.approval.push({
+      id: uuid(9801),
+      organizationId: ORG_A,
+      reviewId: review.id,
+      sequence: 1,
+      decision: 'APPROVED',
+      packageRevisionId: PKG_REV_4,
+      designRevisionId: null,
+      targetContentHash: hashOf(db, PKG_REV_4),
+      actorUserId: USER_A2,
+      note: null,
+      createdAt: new Date('2026-10-19T12:00:00.000Z'),
+    });
+    // its decisions are never read for the binding: only a ready review has
+    // any, and one read before it was ready is shown as it was read
+    for (const status of [
+      await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4),
+      (await bindingsOf(db, 'PACKAGE_REVISION', [PKG_REV_4])).get(PKG_REV_4),
+    ]) {
+      expect(status).toMatchObject({ approved: false, state: 'IN_REVIEW' });
+    }
+    expect(
+      await code(requireApproved(db, 'PACKAGE_REVISION', PKG_REV_4))
+    ).toEqual({ status: 409, code: 'CS_APPROVAL_REQUIRED' });
+    expect(await code(approvalOf(db, review.id))).toEqual({
+      status: 500,
+      code: 'CS_APPROVAL_INTEGRITY_ERROR',
+    });
+  });
+
+  it('PC1 a grounded package revision is approved with its claims intact and verified', async () => {
+    const { db, review } = await readyClaimed();
+    await decide(db, review.id, 'approve');
+    expect(await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_G)).toMatchObject({
+      approved: true,
+      state: 'APPROVED',
+      targetRevisionNumber: 6,
+    });
+    expect(
+      (
+        await bindingsOf(db, 'PACKAGE_REVISION', [PKG_REV_G_NEXT, PKG_REV_G])
+      ).get(PKG_REV_G)
+    ).toEqual({ approved: true, state: 'APPROVED' });
+  });
+
+  it('PC2-PC4/40/M12 corrupt claim assessments are an integrity error, never approved or "not approved"', async () => {
+    for (const corrupt of [
+      // PC2 an assessment of no claim of the revision
+      (db: Db) => {
+        db.tables.claim[0].claimId = 'c_orphan000000000001';
+      },
+      // PC3 an assessment of another claim hash
+      (db: Db) => {
+        db.tables.claim[0].claimContentHash = 'e'.repeat(64);
+      },
+      // PC4 a malformed assessment
+      (db: Db) => {
+        db.tables.claim[1].status = 'BOGUS';
+      },
+      // a claim no longer verified although the review is ready
+      (db: Db) => {
+        db.tables.claim[1].status = 'NEEDS_REVISION';
+        db.tables.claim[1].finding = 'Changed behind the service.';
+      },
+      // a claim without its assessment
+      (db: Db) => {
+        db.tables.claim.pop();
+      },
+    ]) {
+      const { db, review } = await readyClaimed();
+      await decide(db, review.id, 'approve');
+      corrupt(db);
+      await corrupted(
+        db,
+        'PACKAGE_REVISION',
+        PKG_REV_G,
+        'CS_REVIEW_INTEGRITY_ERROR'
+      );
+    }
+  });
+
+  it('PC5 a v1 package revision has no claims and is approved normally', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    expect(
+      db.tables.packageRevision.find((r) => r.id === PKG_REV_4)!.schemaVersion
+    ).toBe(1);
+    expect((await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4)).approved).toBe(
+      true
+    );
+  });
+
+  it('DG1 a design binding reads no claim and no source', async () => {
+    const { db, review } = await readyDesign();
+    await decide(db, review.id, 'approve');
+    db.log.length = 0;
+    await bindingOf(db, 'DESIGN_REVISION', DESIGN_REV_7);
+    await bindingsOf(db, 'DESIGN_REVISION', [DESIGN_REV_8, DESIGN_REV_7]);
+    await requireApproved(db, 'DESIGN_REVISION', DESIGN_REV_7);
+    expect(db.log.filter((e) => /claim\.|sourceVersion\./.test(e.op))).toEqual(
+      []
+    );
+  });
+
+  it('a binding read writes nothing', async () => {
+    const { db, review } = await readyClaimed();
+    await decide(db, review.id, 'approve');
+    const before = snapshot(db);
+    db.log.length = 0;
+    await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_G);
+    await bindingsOf(db, 'PACKAGE_REVISION', [PKG_REV_G, PKG_REV_G_NEXT]);
+    await requireApproved(db, 'PACKAGE_REVISION', PKG_REV_G);
+    expect(
+      db.log.filter((e) => /create|update|delete|upsert/i.test(e.op))
+    ).toEqual([]);
+    expect(snapshot(db)).toBe(before);
+  });
+});
+
+describe('ContentStudioReviewService: requireApprovedRevision for P5-07 (P5-05)', () => {
+  const required = { status: 409, code: 'CS_APPROVAL_REQUIRED' };
+
+  it('RA1 an approved exact revision returns its status', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    expect(await requireApproved(db, 'PACKAGE_REVISION', PKG_REV_4)).toEqual(
+      await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4)
+    );
+    const design = await readyDesign();
+    await decide(design.db, design.review.id, 'approve');
+    expect(
+      (await requireApproved(design.db, 'DESIGN_REVISION', DESIGN_REV_7))
+        .approved
+    ).toBe(true);
+  });
+
+  it('RA2-RA6 every valid revision that is not approved now is CS_APPROVAL_REQUIRED', async () => {
+    // RA2 not reviewed
+    expect(
+      await code(requireApproved(discussion(), 'PACKAGE_REVISION', PKG_REV_4))
+    ).toEqual(required);
+    // RA3 requested, in review, changes requested, cancelled
+    for (const state of [
+      'REQUESTED',
+      'IN_REVIEW',
+      'CHANGES_REQUESTED',
+      'CANCELLED',
+    ] as const) {
+      const db = discussion();
+      await reviewIn(db, state);
+      expect(
+        await code(requireApproved(db, 'PACKAGE_REVISION', PKG_REV_4))
+      ).toEqual(required);
+    }
+    // RA4 pending, RA5 refused, RA6 withdrawn
+    for (const actions of [[], ['refuse'], ['approve', 'withdraw']] as (
+      | 'approve'
+      | 'refuse'
+      | 'withdraw'
+    )[][]) {
+      const { db, review } = await readyPackage();
+      for (const action of actions) {
+        await decide(
+          db,
+          review.id,
+          action,
+          action === 'approve' ? null : REFUSAL
+        );
+      }
+      expect(
+        await code(requireApproved(db, 'PACKAGE_REVISION', PKG_REV_4))
+      ).toEqual(required);
+    }
+  });
+
+  it('RA7 corruption is the integrity error, never approval-required', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    await decide(db, review.id, 'withdraw', WITHDRAWAL);
+    db.tables.approval[1].decision = 'GONE';
+    expect(
+      await code(requireApproved(db, 'PACKAGE_REVISION', PKG_REV_4))
+    ).toEqual({ status: 500, code: 'CS_APPROVAL_INTEGRITY_ERROR' });
+  });
+
+  it('a missing or malformed target is not found or invalid, never approval-required', async () => {
+    const db = discussion();
+    expect(
+      await code(requireApproved(db, 'PACKAGE_REVISION', MISSING))
+    ).toEqual({ status: 404, code: 'CS_NOT_FOUND' });
+    expect(
+      await code(requireApproved(db, 'PACKAGE_REVISION', 'not-a-uuid'))
+    ).toEqual({ status: 404, code: 'CS_NOT_FOUND' });
+    for (const targetType of ['PACKAGE', 'latest', null]) {
+      expect(await code(requireApproved(db, targetType, PKG_REV_4))).toEqual({
+        status: 400,
+        code: 'CS_INVALID_REQUEST',
+      });
+    }
+  });
+});
+
+describe('ContentStudioReviewService: batch approval binding (P5-05)', () => {
+  // a page of a package's history: 6 none, 5 refused, 4 approved, 3 in review
+  const page = async () => {
+    const db = discussion();
+    const four = await reviewIn(db, 'READY_FOR_APPROVAL');
+    await decide(db, four.id, 'approve');
+    const five = await reviewIn(
+      db,
+      'READY_FOR_APPROVAL',
+      'PACKAGE_REVISION',
+      PKG_REV_5
+    );
+    await decide(db, five.id, 'refuse', REFUSAL);
+    await reviewIn(db, 'IN_REVIEW', 'PACKAGE_REVISION', PKG_REV_3);
+    return db;
+  };
+  const IDS = [PKG_REV_6, PKG_REV_5, PKG_REV_4, PKG_REV_3];
+
+  it('AS3 every revision of a page gets exactly its own state', async () => {
+    const db = await page();
+    expect([...(await bindingsOf(db, 'PACKAGE_REVISION', IDS))]).toEqual([
+      [PKG_REV_6, { approved: false, state: 'NOT_REVIEWED' }],
+      [PKG_REV_5, { approved: false, state: 'REFUSED' }],
+      [PKG_REV_4, { approved: true, state: 'APPROVED' }],
+      [PKG_REV_3, { approved: false, state: 'IN_REVIEW' }],
+    ]);
+  });
+
+  it('the batch and the single predicate agree on every revision', async () => {
+    const db = await page();
+    const batch = await bindingsOf(db, 'PACKAGE_REVISION', IDS);
+    for (const id of IDS) {
+      const single = await bindingOf(db, 'PACKAGE_REVISION', id);
+      expect(batch.get(id)).toEqual({
+        approved: single.approved,
+        state: single.state,
+      });
+    }
+  });
+
+  it('BQ1-BQ3/M14 a page costs a fixed number of queries, never one per revision', async () => {
+    const db = await page();
+    db.log.length = 0;
+    await bindingsOf(db, 'PACKAGE_REVISION', IDS);
+    expect(db.log.map((e) => e.op).sort()).toEqual([
+      'approval.findMany',
+      'claim.findMany',
+      'packageRevision.findMany',
+      'review.findMany',
+    ]);
+    // BQ2: the reviews of exactly these revisions, in one query
+    expect(db.log.find((e) => e.op === 'review.findMany')!.where).toEqual({
+      organizationId: ORG_A,
+      packageRevisionId: { in: IDS },
+    });
+    // BQ3: the decisions of all the reviews ready for approval, in one query
+    const reviewIds = db.tables.review
+      .filter((row) => row.state === 'READY_FOR_APPROVAL')
+      .map((row) => row.id);
+    expect(reviewIds).toHaveLength(2);
+    expect(
+      [
+        ...(db.log.find((e) => e.op === 'approval.findMany')!.where!.reviewId
+          .in as string[]),
+      ].sort()
+    ).toEqual([...reviewIds].sort());
+    // only the reviews ready for approval have their revision read again
+    expect(
+      db.log.find((e) => e.op === 'packageRevision.findMany')!.where
+    ).toEqual({
+      id: { in: [PKG_REV_5, PKG_REV_4].sort() },
+      organizationId: ORG_A,
+    });
+  });
+
+  it('BQ1 more revisions on a page cost no more queries', async () => {
+    const db = await page();
+    db.log.length = 0;
+    await bindingsOf(db, 'PACKAGE_REVISION', [PKG_REV_4]);
+    const one = db.log.length;
+    db.log.length = 0;
+    await bindingsOf(db, 'PACKAGE_REVISION', [...IDS, PKG_REV_OTHER, MISSING]);
+    expect(db.log.length).toBe(one);
+  });
+
+  it('a page without reviews reads the reviews only, and an empty page reads nothing', async () => {
+    const db = discussion();
+    await bindingsOf(db, 'PACKAGE_REVISION', IDS);
+    expect(db.log.map((e) => e.op)).toEqual(['review.findMany']);
+    db.log.length = 0;
+    expect([...(await bindingsOf(db, 'PACKAGE_REVISION', []))]).toEqual([]);
+    expect(db.log).toEqual([]);
+  });
+
+  it('a page whose reviews are not ready reads no revision, claim or decision content again', async () => {
+    const db = discussion();
+    await reviewIn(db, 'IN_REVIEW');
+    db.log.length = 0;
+    await bindingsOf(db, 'PACKAGE_REVISION', IDS);
+    expect(db.log.map((e) => e.op)).toEqual(['review.findMany']);
+  });
+
+  it('a review made ready and decided while a page is read is shown as it was read, never as corrupt', async () => {
+    const db = discussion();
+    const review = await reviewIn(db, 'IN_REVIEW');
+    const original = db.repository.listReviewsForRevisions.bind(db.repository);
+    let raced = false;
+    db.repository.listReviewsForRevisions = (async (...args) => {
+      const rows = await original(...args);
+      if (!raced) {
+        raced = true;
+        await act(db, review.id, 'ready-for-approval');
+        await decide(db, review.id, 'approve');
+      }
+      return rows;
+    }) as typeof db.repository.listReviewsForRevisions;
+    expect(
+      (await bindingsOf(db, 'PACKAGE_REVISION', [PKG_REV_4])).get(PKG_REV_4)
+    ).toEqual({ approved: false, state: 'IN_REVIEW' });
+    // and the next read sees the decision
+    expect(
+      (await bindingsOf(db, 'PACKAGE_REVISION', [PKG_REV_4])).get(PKG_REV_4)
+    ).toEqual({ approved: true, state: 'APPROVED' });
+  });
+
+  it('BQ4 no latest or other revision is ever substituted', async () => {
+    const db = await page();
+    db.log.length = 0;
+    await bindingsOf(db, 'PACKAGE_REVISION', [PKG_REV_3]);
+    for (const entry of db.log) {
+      expect(JSON.stringify(entry.where)).not.toMatch(/latest|revisionNumber/);
+    }
+    expect(db.log.find((e) => e.op === 'review.findMany')!.where).toEqual({
+      organizationId: ORG_A,
+      packageRevisionId: { in: [PKG_REV_3] },
+    });
+  });
+
+  it('a corrupt review on a page fails the whole page closed', async () => {
+    const db = await page();
+    const stored = db.tables.packageRevision.find((r) => r.id === PKG_REV_4)!;
+    stored.content = stored.content.replace('v4', 'v9');
+    expect(await code(bindingsOf(db, 'PACKAGE_REVISION', IDS))).toEqual({
+      status: 500,
+      code: 'CS_REVIEW_INTEGRITY_ERROR',
+    });
+  });
+
+  it('a page is bounded and takes exact revision ids only', async () => {
+    const db = discussion();
+    const many = Array.from({ length: 51 }, (_, index) => uuid(1000 + index));
+    for (const ids of [many, ['latest'], [`${PKG_REV_4} `], ['']]) {
+      expect(await code(bindingsOf(db, 'PACKAGE_REVISION', ids))).toEqual({
+        status: 400,
+        code: 'CS_INVALID_REQUEST',
+      });
+    }
+    expect(db.log).toEqual([]);
+  });
+
+  it('AS4 a page of design revisions reads the design revisions only', async () => {
+    const { db, review } = await readyDesign();
+    await decide(db, review.id, 'approve');
+    db.log.length = 0;
+    expect([
+      ...(await bindingsOf(db, 'DESIGN_REVISION', [
+        DESIGN_REV_8,
+        DESIGN_REV_7,
+      ])),
+    ]).toEqual([
+      [DESIGN_REV_8, { approved: false, state: 'NOT_REVIEWED' }],
+      [DESIGN_REV_7, { approved: true, state: 'APPROVED' }],
+    ]);
+    expect(db.log.map((e) => e.op).sort()).toEqual([
+      'approval.findMany',
+      'designRevision.findMany',
+      'review.findMany',
+    ]);
+    expect(db.log.find((e) => e.op === 'review.findMany')!.where).toEqual({
+      organizationId: ORG_A,
+      designRevisionId: { in: [DESIGN_REV_8, DESIGN_REV_7] },
+    });
+  });
+
+  it('AS6 a page never carries a decision, a note or a history', async () => {
+    const db = await page();
+    const text = JSON.stringify([
+      ...(await bindingsOf(db, 'PACKAGE_REVISION', IDS)),
+    ]);
+    expect(text).not.toMatch(/history|note|actor|sequence|currentDecision/);
+    expect(text).not.toContain(REFUSAL);
+  });
+});
+
+describe('ContentStudioReviewService: approval binding tenancy (P5-05)', () => {
+  it('BSEC1/BSEC2 another organization cannot read the binding of a revision: plain 404', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    const design = await readyDesign();
+    await decide(design.db, design.review.id, 'approve');
+    for (const [store, targetType, id] of [
+      [db, 'PACKAGE_REVISION', PKG_REV_4],
+      [design.db, 'DESIGN_REVISION', DESIGN_REV_7],
+    ] as const) {
+      for (const read of [
+        () => bindingOf(store, targetType, id, ORG_B),
+        () => requireApproved(store, targetType, id, ORG_B),
+      ]) {
+        expect(await code(read())).toEqual({
+          status: 404,
+          code: 'CS_NOT_FOUND',
+        });
+      }
+    }
+  });
+
+  it('M13 another organization never sees a review or a decision in a page', async () => {
+    const { db, review } = await readyPackage();
+    await decide(db, review.id, 'approve');
+    db.log.length = 0;
+    expect(
+      (await bindingsOf(db, 'PACKAGE_REVISION', [PKG_REV_4], ORG_B)).get(
+        PKG_REV_4
+      )
+    ).toEqual({ approved: false, state: 'NOT_REVIEWED' });
+    for (const entry of db.log) {
+      expect(entry.where).toMatchObject({ organizationId: ORG_B });
+    }
+  });
+
+  it('M13 every binding query names the organization', async () => {
+    const { db, review } = await readyClaimed();
+    await decide(db, review.id, 'approve');
+    db.log.length = 0;
+    await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_G);
+    await bindingsOf(db, 'PACKAGE_REVISION', [PKG_REV_G, PKG_REV_G_NEXT]);
+    expect(db.log.length).toBeGreaterThan(0);
+    for (const entry of db.log) {
+      expect(entry.where).toMatchObject({ organizationId: ORG_A });
+    }
+  });
+
+  it("BSEC3-BSEC5 the target is a type and a revision id only, the organization the caller's", () => {
+    const text = readFileSync(
+      join(__dirname, 'content-studio.review.service.ts'),
+      'utf8'
+    ).replace(/\/\/.*$/gm, '');
+    for (const method of [
+      'async getRevisionApprovalStatus(',
+      'async requireApprovedRevision(',
+      'async getRevisionApprovalStatuses(',
+    ]) {
+      const start = text.indexOf(method);
+      const signature = text.slice(start, text.indexOf('}) {', start));
+      expect(signature.match(/^\s+(\w+):/gm)!.map((k) => k.trim())).toEqual(
+        method === 'async getRevisionApprovalStatuses('
+          ? ['organizationId:', 'targetType:', 'revisionIds:']
+          : ['organizationId:', 'targetType:', 'targetRevisionId:']
+      );
+      expect(signature).not.toMatch(
+        /contentHash|packageId|designProjectId|latest/i
+      );
+    }
+  });
+});
+
+describe('ContentStudioReviewService approval binding boundaries (P5-05)', () => {
+  const source = (file: string) =>
+    readFileSync(join(__dirname, file), 'utf8').replace(/\/\/.*$/gm, '');
+  const root = join(__dirname, '..', '..', '..', '..', '..', '..');
+  const schema = readFileSync(
+    join(__dirname, '..', 'schema.prisma'),
+    'utf8'
+  ).replace(/\/\/.*$/gm, '');
+  const binding = () => {
+    const text = source('content-studio.review.service.ts');
+    return text.slice(
+      text.indexOf('async getRevisionApprovalStatus('),
+      text.indexOf('private async verifiedApprovalTarget(')
+    );
+  };
+  const files = (dir: string): string[] =>
+    require('fs')
+      .readdirSync(dir, { withFileTypes: true })
+      .flatMap((entry: { name: string; isDirectory: () => boolean }) =>
+        entry.isDirectory()
+          ? ['node_modules', 'dist', '.next', 'build'].includes(entry.name)
+            ? []
+            : files(join(dir, entry.name))
+          : /\.tsx?$/.test(entry.name) && !/\.spec\.tsx?$/.test(entry.name)
+          ? [join(dir, entry.name)]
+          : []
+      );
+
+  it('P505-1/P505-2/P505-3/M19/M20 no model, column or cache holds an approval state', () => {
+    expect(schema).not.toMatch(
+      /model \w*(ApprovalBinding|ApprovalStatus|ApprovalCache)\w* \{/
+    );
+    // every Content Studio model and the Organization (a legacy Postiz model
+    // has an approved column of its own, about something else)
+    const models = schema
+      .split(/^model /m)
+      .filter((model) =>
+        /^(ContentStudio|ContentPackage|Organization )/.test(model)
+      );
+    expect(models.length).toBeGreaterThan(20);
+    for (const model of models) {
+      expect(model).not.toMatch(
+        /^\s+(approved|isApproved|approvedAt|approvedBy\w*|currentApproval\w*|approvalState|approvalStatus|manuallyApproved|approvalWaiver|approvalBypass)\s/im
+      );
+    }
+    // still exactly the P5-04 approval model, with the history as its truth
+    expect(schema.match(/^model ContentStudio\w*Approval\w* \{/gm)).toEqual([
+      'model ContentStudioApproval {',
+    ]);
+  });
+
+  it('P505-4/HR2/M18 nothing calls the require helper yet: no handoff gate', () => {
+    const callers = [join(root, 'apps'), join(root, 'libraries')]
+      .flatMap(files)
+      .filter((file) =>
+        /requireApprovedRevision|getRevisionApprovalStatus\(/.test(
+          readFileSync(file, 'utf8')
+        )
+      )
+      .map((file) => file.slice(root.length + 1));
+    // only the predicate itself and the revision views that show it
+    expect(callers.sort()).toEqual([
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.design.service.ts',
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.review.service.ts',
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.service.ts',
+    ]);
+    for (const file of [
+      'content-studio.service.ts',
+      'content-studio.design.service.ts',
+    ]) {
+      expect(source(file)).not.toMatch(/requireApprovedRevision/);
+    }
+    for (const file of [
+      'content-studio.handoff.service.ts',
+      'content-studio.handoff.repository.ts',
+    ]) {
+      expect(source(file)).not.toMatch(
+        /approv|review|CS_APPROVAL_REQUIRED|ContentStudioReviewService/i
+      );
+    }
+  });
+
+  it('P505-5/P505-7/HR3 no publishing gate and no organization approval policy', () => {
+    const posts = readFileSync(
+      join(
+        root,
+        'libraries/nestjs-libraries/src/database/prisma/posts/posts.service.ts'
+      ),
+      'utf8'
+    );
+    expect(posts).not.toMatch(/approv|content-studio/i);
+    expect(schema).not.toMatch(
+      /approvalRequired|requireApproval|approvalPolicy|approvalMode/i
+    );
+    expect(binding()).not.toMatch(/process\.env|setting|policy|config/i);
+  });
+
+  it('P505-6/P505-8 the binding never matches by hash and never follows the latest revision', () => {
+    const text = binding();
+    expect(text).not.toMatch(
+      /latest|revisionNumber:\s*\{|orderBy|contentHash:\s*\{|contentHash:\s*input/i
+    );
+    const repository = source('content-studio.review.repository.ts');
+    const reviews = repository.slice(
+      repository.indexOf('listReviewsForRevisions('),
+      repository.indexOf('getReviewForOrganization(')
+    );
+    expect(reviews).not.toMatch(/contentHash|orderBy|take|latest/i);
+  });
+
+  it('the binding is decided by the shared pure rules, only APPROVED approves', () => {
+    const text = binding();
+    expect(text).toMatch(/deriveContentStudioRevisionApprovalBindingState\(/);
+    expect(text).toMatch(/approved: isContentStudioRevisionApproved\(state\)/);
+    expect(text).not.toMatch(
+      /decision === 'APPROVED'|\.(some|find|filter|findLast)\([^)]*\.decision/
+    );
+  });
+
+  it('P505-10/P505-11 package grounding and the Design Document are unchanged', () => {
     const draft = readFileSync(
       join(
         root,

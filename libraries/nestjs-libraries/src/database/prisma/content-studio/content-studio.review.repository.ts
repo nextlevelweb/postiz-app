@@ -157,11 +157,28 @@ export type ContentStudioApprovalRow = Prisma.ContentStudioApprovalGetPayload<{
   select: typeof APPROVAL;
 }>;
 
+// The same rows read for several reviews at once (P5-05), each with the
+// review it belongs to so the service can group them
+const APPROVAL_OF_REVIEW = {
+  ...APPROVAL,
+  reviewId: true,
+} as const;
+
+const CLAIM_OF_REVIEW = {
+  ...CLAIM,
+  reviewId: true,
+} as const;
+
 // Exactly one of the two is set: the service never passes both or neither
 export interface ContentStudioReviewTargetFilter {
   packageRevisionId?: string | { not: null };
   designRevisionId?: string | { not: null };
 }
+
+// The reviews of some exact revisions of one type
+export type ContentStudioReviewRevisionsFilter =
+  | { packageRevisionId: { in: string[] } }
+  | { designRevisionId: { in: string[] } };
 
 // Reviews of an organization: every query filters on organizationId itself,
 // so a review, a comment, a revision request or a revision of another
@@ -176,7 +193,9 @@ export interface ContentStudioReviewTargetFilter {
 // same row: the two are serialized on that row. Approval decisions (P5-04)
 // are appended only while the review row is held READY_FOR_APPROVAL at the
 // version read, after the history is read again inside that transaction:
-// two decisions of one review wait for each other on that row
+// two decisions of one review wait for each other on that row. Approval
+// binding (P5-05) only reads: the reviews of a page of exact revisions, their
+// decisions, claim assessments and revisions, each in one query by ids
 @Injectable()
 export class ContentStudioReviewRepository {
   constructor(
@@ -218,6 +237,34 @@ export class ContentStudioReviewRepository {
     });
   }
 
+  // The exact package revisions, with their content, for one page of
+  // approval binding (P5-05)
+  listPackageRevisionsForOrganization(organizationId: string, ids: string[]) {
+    return this._packageRevision.model.contentPackageRevision.findMany({
+      where: {
+        id: { in: ids },
+        organizationId,
+      },
+      select: {
+        ...TARGET_REVISION,
+        packageId: true,
+      },
+    });
+  }
+
+  listDesignRevisionsForOrganization(organizationId: string, ids: string[]) {
+    return this._designRevision.model.contentStudioDesignRevision.findMany({
+      where: {
+        id: { in: ids },
+        organizationId,
+      },
+      select: {
+        ...TARGET_REVISION,
+        designProjectId: true,
+      },
+    });
+  }
+
   listReviewsForOrganization(input: {
     organizationId: string;
     target: ContentStudioReviewTargetFilter;
@@ -250,6 +297,20 @@ export class ContentStudioReviewRepository {
         ...input.target,
         state: input.state,
       },
+    });
+  }
+
+  // The reviews of exactly these revisions: at most one each
+  listReviewsForRevisions(
+    organizationId: string,
+    target: ContentStudioReviewRevisionsFilter
+  ) {
+    return this._review.model.contentStudioReview.findMany({
+      where: {
+        organizationId,
+        ...target,
+      },
+      select: REVIEW,
     });
   }
 
@@ -579,6 +640,18 @@ export class ContentStudioReviewRepository {
     });
   }
 
+  // Every assessment of several reviews at once, review by review
+  listClaimsForReviews(organizationId: string, reviewIds: string[]) {
+    return this._claim.model.contentStudioReviewClaim.findMany({
+      where: {
+        organizationId,
+        reviewId: { in: reviewIds },
+      },
+      orderBy: [{ reviewId: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+      select: CLAIM_OF_REVIEW,
+    });
+  }
+
   // Holds the review row IN_REVIEW at the version the service read (its
   // version written back unchanged, so only updatedAt moves), then writes the
   // claim's one assessment: the row of that claim with that exact claim hash
@@ -657,6 +730,19 @@ export class ContentStudioReviewRepository {
         sequence: 'asc',
       },
       select: APPROVAL,
+    });
+  }
+
+  // The whole decision history of several reviews at once, review by review,
+  // each in sequence order (P5-05)
+  listApprovalsForReviews(organizationId: string, reviewIds: string[]) {
+    return this._approval.model.contentStudioApproval.findMany({
+      where: {
+        organizationId,
+        reviewId: { in: reviewIds },
+      },
+      orderBy: [{ reviewId: 'asc' }, { sequence: 'asc' }],
+      select: APPROVAL_OF_REVIEW,
     });
   }
 

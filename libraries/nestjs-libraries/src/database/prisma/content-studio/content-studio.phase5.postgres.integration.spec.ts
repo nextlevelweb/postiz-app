@@ -21,7 +21,8 @@ import { parseContentStudioSourceVersionInput } from '@gitroom/nestjs-libraries/
 import { createContentStudioPostgresClient } from '../../../../../../jest.content-studio.postgres.guard';
 
 // Phase 5 on a real PostgreSQL (P5-04): reviews, their claim review and
-// approval decisions under real concurrent transactions. Opt-in: runs only
+// approval decisions under real concurrent transactions, and (P5-05) the
+// approval binding of exact revisions read through the real queries. Opt-in: runs only
 // through jest.content-studio.integration.config.ts against the disposable
 // local database (see jest.content-studio.postgres.guard.ts). The review
 // repository and service run unchanged on real Prisma; Prisma is used
@@ -1116,5 +1117,176 @@ describe('Approval decisions: what PostgreSQL enforces and what only the applica
     expect(
       await client.contentStudioReviewComment.count({ where: { reviewId } })
     ).toBe(0);
+  });
+});
+
+// ============================================================================
+describe('PB1-PB6. Approval binding of exact revisions on the real database (P5-05)', () => {
+  const binding = (
+    targetType: string,
+    targetRevisionId: string,
+    organizationId = ORG_A
+  ) =>
+    service.getRevisionApprovalStatus({
+      organizationId,
+      targetType,
+      targetRevisionId,
+    });
+  const page = (
+    targetType: 'PACKAGE_REVISION' | 'DESIGN_REVISION',
+    revisionIds: string[],
+    organizationId = ORG_A
+  ) =>
+    service.getRevisionApprovalStatuses({
+      organizationId,
+      targetType,
+      revisionIds,
+    });
+  // revisions 1-5 of one package: none, approved, refused, withdrawn,
+  // re-approved
+  const history = async () => {
+    const packageId = await createPackage();
+    const ids: string[] = [];
+    for (let n = 1; n <= 5; n += 1) {
+      ids.push((await packageRevision(ORG_A, `Version ${n}`, n, packageId)).id);
+    }
+    const ready = async (id: string) => {
+      const review = await requestReview('PACKAGE_REVISION', id);
+      await move(review.id, 'start');
+      await move(review.id, 'ready-for-approval');
+      return review.id;
+    };
+    await decide(await ready(ids[1]), 'approve');
+    await decide(await ready(ids[2]), 'refuse');
+    const withdrawn = await ready(ids[3]);
+    await decide(withdrawn, 'approve');
+    await decide(withdrawn, 'withdraw');
+    const again = await ready(ids[4]);
+    await decide(again, 'approve');
+    await decide(again, 'withdraw');
+    await decide(again, 'approve');
+    return { packageId, ids };
+  };
+
+  it('PB1 a page of revisions gets exactly its own states through the real batch queries', async () => {
+    const { ids } = await history();
+    const statuses = await page('PACKAGE_REVISION', [...ids].reverse());
+    expect([...statuses]).toEqual([
+      [ids[4], { approved: true, state: 'APPROVED' }],
+      [ids[3], { approved: false, state: 'PENDING_APPROVAL' }],
+      [ids[2], { approved: false, state: 'REFUSED' }],
+      [ids[1], { approved: true, state: 'APPROVED' }],
+      [ids[0], { approved: false, state: 'NOT_REVIEWED' }],
+    ]);
+    // the single predicate agrees on every one
+    for (const id of ids) {
+      const single = await binding('PACKAGE_REVISION', id);
+      expect({ approved: single.approved, state: single.state }).toEqual(
+        statuses.get(id)
+      );
+    }
+    expect(await binding('PACKAGE_REVISION', ids[4])).toMatchObject({
+      approvalVersion: 3,
+      currentDecision: { sequence: 3, decision: 'APPROVED' },
+    });
+  });
+
+  it('PB2 a withdrawal is not approved from the very next read: nothing is cached', async () => {
+    const { reviewId, revision } = await reviewOf('design');
+    await decide(reviewId, 'approve');
+    expect((await binding('DESIGN_REVISION', revision.id)).approved).toBe(true);
+    // withdrawn through another client of the same database
+    await decide(reviewId, 'withdraw', hookedService({}).service, A1);
+    expect(await binding('DESIGN_REVISION', revision.id)).toMatchObject({
+      approved: false,
+      state: 'PENDING_APPROVAL',
+      approvalVersion: 2,
+      currentDecision: null,
+    });
+    expect(
+      (await page('DESIGN_REVISION', [revision.id])).get(revision.id)
+    ).toEqual({ approved: false, state: 'PENDING_APPROVAL' });
+  });
+
+  it('PB3 a grounded package revision is approved with its claims, and a corrupt assessment fails closed', async () => {
+    const { reviewId, revision } = await reviewOf('grounded');
+    await decide(reviewId, 'approve');
+    expect(
+      (await page('PACKAGE_REVISION', [revision.id])).get(revision.id)
+    ).toEqual({ approved: true, state: 'APPROVED' });
+    // behind the service's back: an assessment no longer verified
+    await client.contentStudioReviewClaim.updateMany({
+      where: { reviewId, claimId: C2 },
+      data: { status: 'NEEDS_REVISION', finding: 'Changed directly.' },
+    });
+    expect(await failure(binding('PACKAGE_REVISION', revision.id))).toBe(
+      'CS_REVIEW_INTEGRITY_ERROR'
+    );
+    expect(await failure(page('PACKAGE_REVISION', [revision.id]))).toBe(
+      'CS_REVIEW_INTEGRITY_ERROR'
+    );
+    expect(
+      await failure(
+        service.requireApprovedRevision({
+          organizationId: ORG_A,
+          targetType: 'PACKAGE_REVISION',
+          targetRevisionId: revision.id,
+        })
+      )
+    ).toBe('CS_REVIEW_INTEGRITY_ERROR');
+  });
+
+  it('PB4 another organization reads no binding: 404 for one revision, nothing in a page', async () => {
+    const { reviewId, revision } = await reviewOf('package');
+    await decide(reviewId, 'approve');
+    expect(await failure(binding('PACKAGE_REVISION', revision.id, ORG_B))).toBe(
+      'CS_NOT_FOUND'
+    );
+    expect(
+      (await page('PACKAGE_REVISION', [revision.id], ORG_B)).get(revision.id)
+    ).toEqual({ approved: false, state: 'NOT_REVIEWED' });
+  });
+
+  it('PB5 an identical revision of the same package with the same hash inherits nothing', async () => {
+    const packageId = await createPackage();
+    const first = await packageRevision(ORG_A, 'Same text', 1, packageId);
+    const twin = await packageRevision(ORG_A, 'Same text', 2, packageId);
+    expect(twin.contentHash).toBe(first.contentHash);
+    const review = await requestReview('PACKAGE_REVISION', first.id);
+    await move(review.id, 'start');
+    await move(review.id, 'ready-for-approval');
+    await decide(review.id, 'approve');
+    expect([...(await page('PACKAGE_REVISION', [twin.id, first.id]))]).toEqual([
+      [twin.id, { approved: false, state: 'NOT_REVIEWED' }],
+      [first.id, { approved: true, state: 'APPROVED' }],
+    ]);
+  });
+
+  it('PB6 a read racing a withdrawal sees one committed history: approved before, pending after, never a mix', async () => {
+    for (let round = 0; round < 4; round += 1) {
+      const { reviewId, revision } = await reviewOf('package');
+      await decide(reviewId, 'approve');
+      const both = latch(2);
+      const withdrawing = hookedService({
+        'contentStudioReview.updateMany': () => both(),
+      });
+      const [read] = await Promise.all([
+        both().then(() => binding('PACKAGE_REVISION', revision.id)),
+        decide(reviewId, 'withdraw', withdrawing.service, A1),
+      ]);
+      expect([
+        [true, 'APPROVED', 1, 1],
+        [false, 'PENDING_APPROVAL', 2, null],
+      ]).toContainEqual([
+        read.approved,
+        read.state,
+        read.approvalVersion,
+        read.currentDecision?.sequence ?? null,
+      ]);
+      // and from then on it is withdrawn
+      expect((await binding('PACKAGE_REVISION', revision.id)).approved).toBe(
+        false
+      );
+    }
   });
 });

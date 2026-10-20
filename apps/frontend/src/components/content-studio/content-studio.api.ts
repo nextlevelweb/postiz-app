@@ -4,6 +4,7 @@ import { useCallback, useMemo, useRef } from 'react';
 import useSWR, { useSWRConfig } from 'swr';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
+import type { ContentStudioRevisionApprovalState } from '@gitroom/nestjs-libraries/content-studio/review/review.approval';
 
 // The shapes the Content Studio API returns. The organization comes from the
 // session on the server: it is never part of a request, a cache key or the
@@ -179,6 +180,33 @@ export interface ContentStudioPackageDetail
   media: ContentStudioMediaMap;
 }
 
+// Whether exactly one saved revision is approved now and where it stands
+// (P5-05), as the server judged it from that revision's own review and its
+// whole approval history. Shown as it is: never derived in the browser
+export interface ContentStudioRevisionApprovalSummary {
+  approved: boolean;
+  state: ContentStudioRevisionApprovalState;
+}
+
+// The same for one revision on its own, with the decision in force (none
+// while pending, also after a withdrawal)
+export interface ContentStudioRevisionApprovalStatus
+  extends ContentStudioRevisionApprovalSummary {
+  targetType: 'PACKAGE_REVISION' | 'DESIGN_REVISION';
+  targetRevisionId: string;
+  targetRevisionNumber: number;
+  targetContentHash: string;
+  reviewId: string | null;
+  approvalVersion: number;
+  currentDecision: null | {
+    sequence: number;
+    decision: 'APPROVED' | 'REFUSED';
+    note: string | null;
+    actor: { id: string; name: string | null };
+    createdAt: string;
+  };
+}
+
 export interface ContentStudioRevisionSummary {
   id: string;
   revisionNumber: number;
@@ -187,6 +215,7 @@ export interface ContentStudioRevisionSummary {
   sourceDraftVersion: number;
   createdAt: string;
   createdBy: { id: string; name: string | null };
+  approval: ContentStudioRevisionApprovalSummary;
 }
 
 export interface ContentStudioRevisionList {
@@ -200,6 +229,7 @@ export interface ContentStudioRevisionDetail
   schemaVersion: number;
   content: ContentStudioDraft;
   media: ContentStudioMediaMap;
+  approval: ContentStudioRevisionApprovalStatus;
 }
 
 export interface ContentStudioCreateRevisionResult {

@@ -81,6 +81,7 @@ const {
 } = require('./content-studio.revision.history');
 const {
   ContentStudioDesignWorkspace,
+  DesignHistory,
 } = require('./content-studio.design.workspace');
 
 type Plain = Record<string, any>;
@@ -115,6 +116,9 @@ let extraDesignRevisions: Plain[];
 let claimLists: Record<string, Plain>;
 // P5-04: the decision history of each ready review
 let approvals: Record<string, Plain[]>;
+// P5-05: what the server answers instead of its own judgement, by revision
+// id: the browser must show the answer as it is
+let bindingOverrides: Record<string, Plain>;
 const NEXT: Record<string, Record<string, string>> = {
   REQUESTED: { start: 'IN_REVIEW', cancel: 'CANCELLED' },
   IN_REVIEW: {
@@ -250,6 +254,56 @@ const claimListOf = (review: Plain, claims: Plain[]) => {
     claims,
   };
 };
+
+// P5-05: the server's answer for one exact revision, from its own review and
+// that review's decisions only
+const REVIEW_BINDING: Record<string, string> = {
+  REQUESTED: 'REVIEW_REQUESTED',
+  IN_REVIEW: 'IN_REVIEW',
+  CHANGES_REQUESTED: 'CHANGES_REQUESTED',
+  CANCELLED: 'REVIEW_CANCELLED',
+};
+const bindingOf = (targetType: string, revisionId: string): Plain => {
+  if (bindingOverrides[revisionId]) {
+    return bindingOverrides[revisionId];
+  }
+  const review = reviews.find(
+    (r) => r.targetType === targetType && r.targetRevisionId === revisionId
+  );
+  const history = (review && approvals[review.id]) || [];
+  const last = history[history.length - 1];
+  const state = !review
+    ? 'NOT_REVIEWED'
+    : review.state !== 'READY_FOR_APPROVAL'
+    ? REVIEW_BINDING[review.state]
+    : !last || last.decision === 'WITHDRAWN'
+    ? 'PENDING_APPROVAL'
+    : last.decision;
+  return {
+    targetType,
+    targetRevisionId: revisionId,
+    targetRevisionNumber: numberOf[revisionId],
+    targetContentHash: SHA('c'),
+    approved: state === 'APPROVED',
+    state,
+    reviewId: review?.id ?? null,
+    approvalVersion: history.length,
+    currentDecision:
+      state === 'APPROVED' || state === 'REFUSED'
+        ? {
+            sequence: last.sequence,
+            decision: last.decision,
+            note: last.note,
+            actor: last.actor,
+            createdAt: last.createdAt,
+          }
+        : null,
+  };
+};
+const summaryOf = (binding: Plain) => ({
+  approved: binding.approved,
+  state: binding.state,
+});
 
 const server = (method: string, url: string, body: any): Reply => {
   const { pathname, searchParams } = new URL(url, 'https://api.test');
@@ -477,7 +531,10 @@ const server = (method: string, url: string, body: any): Reply => {
         packageRevision(PKG_REV_5, 5),
         packageRevision(PKG_REV_4, 4),
         packageRevision(PKG_REV_3, 3),
-      ],
+      ].map((revision) => ({
+        ...revision,
+        approval: summaryOf(bindingOf('PACKAGE_REVISION', revision.id)),
+      })),
     });
   }
   const pm = pathname.match(
@@ -496,6 +553,7 @@ const server = (method: string, url: string, body: any): Reply => {
         },
       },
       media: {},
+      approval: bindingOf('PACKAGE_REVISION', pm[1]),
     });
   }
   // the design
@@ -515,7 +573,10 @@ const server = (method: string, url: string, body: any): Reply => {
   if (pathname === `/content-studio/designs/${DESIGN}/revisions`) {
     return reply(200, {
       pages: 1,
-      results: [...revisions].reverse().map(designMeta),
+      results: [...revisions].reverse().map((revision) => ({
+        ...designMeta(revision),
+        approval: summaryOf(bindingOf('DESIGN_REVISION', revision.id)),
+      })),
     });
   }
   const dm = pathname.match(
@@ -524,7 +585,11 @@ const server = (method: string, url: string, body: any): Reply => {
   if (dm) {
     const revision = revisions.find((r) => r.id === dm[1]);
     if (revision) {
-      return reply(200, { ...designMeta(revision), content: revision.content });
+      return reply(200, {
+        ...designMeta(revision),
+        content: revision.content,
+        approval: bindingOf('DESIGN_REVISION', revision.id),
+      });
     }
   }
   return reply(404, { msg: SECRET, code: 'CS_NOT_FOUND' });
@@ -539,6 +604,7 @@ beforeEach(() => {
   extraDesignRevisions = [];
   claimLists = {};
   approvals = {};
+  bindingOverrides = {};
   mockFetch.mockReset();
   mockFetch.mockImplementation(async (url: string, init: RequestInit = {}) =>
     server(
@@ -2193,5 +2259,266 @@ describe('Approval of a ready review (P5-04)', () => {
     expect(ui).toContain('contentStudioApprovalActions(data.state)');
     expect(ui).toContain('parseContentStudioApprovalNote(');
     expect(ui).not.toMatch(/state === 'PENDING' \?|=== 'APPROVED' \?/);
+  });
+});
+
+describe('Approval status of exact revisions (P5-05)', () => {
+  const read = (file: string) =>
+    readFileSync(join(__dirname, file), 'utf8').replace(/\/\/.*$/gm, '');
+  const ready = (targetType: string, revisionId: string, n: number) => {
+    const review = {
+      ...reviewOf(targetType, revisionId, n),
+      state: 'READY_FOR_APPROVAL',
+    };
+    reviews.push(review);
+    return review;
+  };
+  const decided = (review: Plain, ...decisions: [string, string | null][]) => {
+    approvals[review.id] = decisions.map(([decision, note], index) => ({
+      sequence: index + 1,
+      decision,
+      note,
+      actor: { id: 'user-2', name: 'Bo' },
+      createdAt: T0,
+    }));
+  };
+  const packageHistory = () =>
+    show(
+      h(ContentStudioRevisionHistory, {
+        packageId: PACKAGE,
+        canRestore: true,
+        onRestore: async () => true,
+        close: () => undefined,
+      })
+    );
+  // the badge of each listed revision, by its title
+  const rows = () =>
+    Array.from(document.querySelectorAll('li'))
+      .filter((li) => li.querySelector('[data-revision-approval]'))
+      .map((li) => [
+        li.querySelector('span')!.textContent,
+        li
+          .querySelector('[data-revision-approval]')!
+          .getAttribute('data-revision-approval'),
+        li.querySelector('[data-revision-approval]')!.textContent,
+      ]);
+  const headerBadge = () =>
+    document.querySelector(
+      'h3 [data-revision-approval], h1 ~ div [data-revision-approval]'
+    );
+
+  it('FBS1/FBS3/FBS6/M17 the package history shows each version its own state', async () => {
+    decided(ready('PACKAGE_REVISION', PKG_REV_4, 4), ['APPROVED', null]);
+    reviews.push(reviewOf('PACKAGE_REVISION', PKG_REV_3, 3, 'IN_REVIEW'));
+    await packageHistory();
+    expect(rows()).toEqual([
+      ['Version 5', 'NOT_REVIEWED', 'Approval status: Not reviewed'],
+      ['Version 4', 'APPROVED', 'Approval status: Approved'],
+      ['Version 3', 'IN_REVIEW', 'Approval status: In review'],
+    ]);
+    // the list costs no review or approval request: the server answered
+    expect(reviewCalls()).toEqual([]);
+  });
+
+  it('FBS4/FBS5 refused and withdrawn read as they are', async () => {
+    decided(ready('PACKAGE_REVISION', PKG_REV_5, 5), ['REFUSED', 'No.']);
+    decided(
+      ready('PACKAGE_REVISION', PKG_REV_4, 4),
+      ['APPROVED', null],
+      ['WITHDRAWN', 'Too early.']
+    );
+    reviews.push(reviewOf('PACKAGE_REVISION', PKG_REV_3, 3, 'CANCELLED'));
+    await packageHistory();
+    expect(rows().map(([title, , text]) => [title, text])).toEqual([
+      ['Version 5', 'Approval status: Refused'],
+      ['Version 4', 'Approval status: Pending approval'],
+      ['Version 3', 'Approval status: Review cancelled'],
+    ]);
+  });
+
+  it('M15/M16 the browser shows the server answer, never its own reading of a history', async () => {
+    const review = ready('PACKAGE_REVISION', PKG_REV_4, 4);
+    decided(review, ['APPROVED', null]);
+    bindingOverrides[PKG_REV_4] = {
+      ...bindingOf('PACKAGE_REVISION', PKG_REV_4),
+      approved: false,
+      state: 'PENDING_APPROVAL',
+      currentDecision: null,
+    };
+    bindingOverrides[PKG_REV_5] = {
+      ...bindingOf('PACKAGE_REVISION', PKG_REV_5),
+      approved: true,
+      state: 'APPROVED',
+    };
+    await packageHistory();
+    expect(rows().map(([title, state]) => [title, state])).toEqual([
+      ['Version 5', 'APPROVED'],
+      ['Version 4', 'PENDING_APPROVAL'],
+      ['Version 3', 'NOT_REVIEWED'],
+    ]);
+  });
+
+  it('FBS7 a version view shows its own status, with who decided, in agreement with its approval card', async () => {
+    decided(ready('PACKAGE_REVISION', PKG_REV_4, 4), ['APPROVED', null]);
+    await packageHistory();
+    await click(screen.getByRole('button', { name: 'View 4' }));
+    expect(headerBadge()!.getAttribute('data-revision-approval')).toBe(
+      'APPROVED'
+    );
+    expect(headerBadge()!.textContent).toBe(
+      `Approval status: Approved · Bo · ${dayjs(T0).format(
+        'MMM D, YYYY HH:mm'
+      )}`
+    );
+    const section = within(card()).getByRole('region', { name: 'Approval' });
+    expect(
+      section
+        .querySelector('[data-approval-state]')!
+        .getAttribute('data-approval-state')
+    ).toBe('APPROVED');
+    // withdrawn from the card: the version view follows the server at once
+    await click(
+      within(section).getByRole('button', { name: 'Withdraw approval' })
+    );
+    fireEvent.change(
+      within(section).getByRole('textbox', {
+        name: 'Why is this decision being withdrawn?',
+      }),
+      { target: { value: 'Legal is still checking.' } }
+    );
+    await click(
+      within(section).getByRole('button', { name: 'Withdraw approval' })
+    );
+    expect(
+      section
+        .querySelector('[data-approval-state]')!
+        .getAttribute('data-approval-state')
+    ).toBe('PENDING');
+    expect(headerBadge()!.getAttribute('data-revision-approval')).toBe(
+      'PENDING_APPROVAL'
+    );
+    expect(headerBadge()!.textContent).toBe(
+      'Approval status: Pending approval'
+    );
+    // and so does the list
+    await click(screen.getByRole('button', { name: 'Back to history' }));
+    expect(rows()[1]).toEqual([
+      'Version 4',
+      'PENDING_APPROVAL',
+      'Approval status: Pending approval',
+    ]);
+  });
+
+  it('FBS6 a newer version shows its own status, not the older approval', async () => {
+    decided(ready('PACKAGE_REVISION', PKG_REV_4, 4), ['APPROVED', null]);
+    await packageHistory();
+    await click(screen.getByRole('button', { name: 'View 5' }));
+    expect(headerBadge()!.getAttribute('data-revision-approval')).toBe(
+      'NOT_REVIEWED'
+    );
+  });
+
+  it('a version view never shows a status about another revision', async () => {
+    decided(ready('PACKAGE_REVISION', PKG_REV_4, 4), ['APPROVED', null]);
+    bindingOverrides[PKG_REV_5] = bindingOf('PACKAGE_REVISION', PKG_REV_4);
+    await packageHistory();
+    await click(screen.getByRole('button', { name: 'View 5' }));
+    expect(document.querySelector('h3 [data-revision-approval]')).toBeNull();
+  });
+
+  it('FBS2 the design history and the shown revision show their own states', async () => {
+    decided(ready('DESIGN_REVISION', DESIGN_REV_1, 1), ['REFUSED', 'No.']);
+    ready('DESIGN_REVISION', DESIGN_REV_2, 2);
+    await show(h(ContentStudioDesignWorkspace, { designId: DESIGN }));
+    // a row says the state only: who decided is the revision's own view
+    expect(rows()).toEqual([
+      ['Revision 2', 'PENDING_APPROVAL', 'Approval status: Pending approval'],
+      ['Revision 1', 'REFUSED', 'Approval status: Refused'],
+    ]);
+    // the shown current revision, from its row of the history
+    expect(headerBadge()!.getAttribute('data-revision-approval')).toBe(
+      'PENDING_APPROVAL'
+    );
+    // an opened revision, from its own view
+    await click(screen.getByRole('button', { name: 'View Revision 1' }));
+    expect(headerBadge()!.getAttribute('data-revision-approval')).toBe(
+      'REFUSED'
+    );
+    expect(headerBadge()!.textContent).toContain('Refused · Bo');
+  });
+
+  it('FBS8 a status is text with its label, never color alone', async () => {
+    decided(ready('PACKAGE_REVISION', PKG_REV_4, 4), ['APPROVED', null]);
+    await packageHistory();
+    for (const badge of Array.from(
+      document.querySelectorAll('[data-revision-approval]')
+    )) {
+      expect(badge.querySelector('.sr-only')!.textContent).toBe(
+        'Approval status: '
+      );
+      expect(badge.textContent!.length).toBeGreaterThan(
+        'Approval status: '.length
+      );
+    }
+    expect(read('content-studio.review.approval.tsx')).not.toMatch(
+      /bg-(green|red|yellow)|text-(green|red|yellow)/
+    );
+  });
+
+  it('a template history has no approval: no badge', async () => {
+    await show(
+      h(DesignHistory, {
+        history: {
+          data: {
+            pages: 1,
+            results: [designMeta({ id: DESIGN_REV_1, revisionNumber: 1 })],
+          },
+        },
+        latestRevisionNumber: 1,
+        shownId: DESIGN_REV_1,
+        page: 1,
+        setPage: () => undefined,
+        onView: () => undefined,
+      })
+    );
+    expect(document.body.textContent).toContain('Revision 1');
+    expect(document.querySelector('[data-revision-approval]')).toBeNull();
+  });
+
+  it('a review write reloads the revision lists and views, never a draft', () => {
+    const api = read('content-studio.reviews.api.ts');
+    expect(api).toMatch(
+      /REVISIONS_KEY =\s*\/\^\\\/content-studio\\\/\(packages\|designs\)\\\/\[\^\/\?\]\+\\\/revisions\[\/\?\]\//
+    );
+    const pattern =
+      /^\/content-studio\/(packages|designs)\/[^/?]+\/revisions[/?]/;
+    expect(
+      pattern.test(`/content-studio/packages/${PACKAGE}/revisions?page=1`)
+    ).toBe(true);
+    expect(
+      pattern.test(
+        `/content-studio/designs/${DESIGN}/revisions/${DESIGN_REV_1}`
+      )
+    ).toBe(true);
+    expect(pattern.test(`/content-studio/packages/${PACKAGE}`)).toBe(false);
+    expect(pattern.test(`/content-studio/designs/${DESIGN}`)).toBe(false);
+  });
+
+  it('P505-9/M15 the revision surfaces render the server status: no approval rules of their own', () => {
+    for (const file of [
+      'content-studio.revision.history.tsx',
+      'content-studio.design.workspace.tsx',
+    ]) {
+      const text = read(file);
+      expect(text).toContain('<ContentStudioRevisionApprovalBadge');
+      expect(text).not.toMatch(
+        /contentStudioApprovalStatus|deriveContentStudioRevisionApprovalBindingState|isContentStudioRevisionApproved|useContentStudioReviewApproval|decision === 'APPROVED'|state === 'APPROVED'/
+      );
+    }
+    const ui = read('content-studio.review.approval.tsx');
+    const badge = ui.slice(ui.indexOf('const revisionApprovalLabel'));
+    expect(badge).not.toMatch(
+      /history|contentStudioApprovalStatus|deriveContentStudioRevisionApprovalBindingState|=== 'APPROVED'|\.decision ===/
+    );
   });
 });
