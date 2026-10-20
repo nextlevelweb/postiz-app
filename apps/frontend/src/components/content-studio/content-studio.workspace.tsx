@@ -38,6 +38,7 @@ import {
 } from '@gitroom/frontend/components/content-studio/content-studio.ai-proposal';
 import { ContentStudioGroundingPanel } from '@gitroom/frontend/components/content-studio/content-studio.grounding';
 import { upgradeContentPackageDraftToV2 } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
+import { contentStudioLinkedRevisionId } from '@gitroom/frontend/components/content-studio/content-studio.reviews.api';
 
 const HANDOFF_ID = /^[0-9a-f]{64}$/;
 
@@ -99,10 +100,12 @@ interface PackageMeta {
 // version. Saving a version, restoring one, "Use in Post" and AI writing first
 // wait until the latest draft is saved, with the editor locked so nothing
 // changes under them. Leaving the page within 1500 ms of an edit can lose
-// that edit
-export const ContentStudioWorkspace: FC<{ packageId: string }> = ({
-  packageId,
-}) => {
+// that edit. A link to one saved version (the Review & Approval queue,
+// P5-06) opens the history at exactly that version once the package is shown
+export const ContentStudioWorkspace: FC<{
+  packageId: string;
+  linkedRevisionId?: string;
+}> = ({ packageId, linkedRevisionId }) => {
   const t = useT();
   const router = useRouter();
   const toaster = useToaster();
@@ -513,22 +516,36 @@ export const ContentStudioWorkspace: FC<{ packageId: string }> = ({
     [controller, proposal, runAction, t]
   );
 
-  const openHistory = useCallback(() => {
-    modals.openModal({
-      title: t('content_studio_history', 'History'),
-      children: (close) => (
-        <ContentStudioRevisionHistory
-          packageId={packageId}
-          canRestore={
-            !controller.snapshot().readOnly &&
-            controller.snapshot().state !== 'conflict'
-          }
-          onRestore={restore}
-          close={close}
-        />
-      ),
-    });
-  }, [modals, packageId, controller, restore, t]);
+  const openHistory = useCallback(
+    (initialRevisionId: string | null = null) => {
+      modals.openModal({
+        title: t('content_studio_history', 'History'),
+        children: (close) => (
+          <ContentStudioRevisionHistory
+            packageId={packageId}
+            initialRevisionId={initialRevisionId}
+            canRestore={
+              !controller.snapshot().readOnly &&
+              controller.snapshot().state !== 'conflict'
+            }
+            onRestore={restore}
+            close={close}
+          />
+        ),
+      });
+    },
+    [modals, packageId, controller, restore, t]
+  );
+
+  // each linked version, opened once
+  const linked = contentStudioLinkedRevisionId(linkedRevisionId);
+  const linkedOpened = useRef<string | null>(null);
+  useEffect(() => {
+    if (meta && linked && linkedOpened.current !== linked) {
+      linkedOpened.current = linked;
+      openHistory(linked);
+    }
+  }, [meta, linked, openHistory]);
 
   if (detail.error && !meta) {
     const missing =
@@ -591,7 +608,7 @@ export const ContentStudioWorkspace: FC<{ packageId: string }> = ({
           {meta.latestRevisionNumber}
         </span>
         <div className="flex flex-wrap gap-[8px]">
-          <Button secondary onClick={openHistory}>
+          <Button secondary onClick={() => openHistory()}>
             {t('content_studio_history', 'History')}
           </Button>
           <Button

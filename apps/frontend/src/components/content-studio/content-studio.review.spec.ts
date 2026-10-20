@@ -34,12 +34,39 @@ jest.mock('next/link', () => {
       createElement('a', { href, ...rest }, children),
   };
 });
-jest.mock('next/navigation', () => ({
-  useRouter: () => ({ push: jest.fn(), replace: jest.fn() }),
-}));
+// P5-06: the URL of the page, which a replace changes and every reader sees
+const mockLocation = {
+  search: '',
+  listeners: new Set<() => void>(),
+  replace(url: string) {
+    mockLocation.search = url.includes('?') ? url.split('?')[1] : '';
+    mockLocation.listeners.forEach((listener) => listener());
+  },
+};
+jest.mock('next/navigation', () => {
+  const { useSyncExternalStore } = require('react');
+  return {
+    useRouter: () => ({
+      push: jest.fn(),
+      replace: (url: string) => mockLocation.replace(url),
+    }),
+    usePathname: () => '/content-studio/reviews',
+    useSearchParams: () =>
+      new URLSearchParams(
+        useSyncExternalStore(
+          (listener: () => void) => {
+            mockLocation.listeners.add(listener);
+            return () => mockLocation.listeners.delete(listener);
+          },
+          () => mockLocation.search
+        )
+      ),
+  };
+});
+const mockOpenModal = jest.fn();
 jest.mock('@gitroom/frontend/components/layout/new-modal', () => ({
   useModals: () => ({
-    openModal: jest.fn(),
+    openModal: mockOpenModal,
     closeAll: jest.fn(),
     closeById: jest.fn(),
     closeCurrent: jest.fn(),
@@ -83,6 +110,9 @@ const {
   ContentStudioDesignWorkspace,
   DesignHistory,
 } = require('./content-studio.design.workspace');
+const { ContentStudioReviewQueue } = require('./content-studio.review.queue');
+const { ContentStudioWorkspace } = require('./content-studio.workspace');
+const { ContentStudioHome } = require('./content-studio.home');
 
 type Plain = Record<string, any>;
 type Reply = { ok: boolean; status: number; json: () => Promise<unknown> };
@@ -119,6 +149,18 @@ let approvals: Record<string, Plain[]>;
 // P5-05: what the server answers instead of its own judgement, by revision
 // id: the browser must show the answer as it is
 let bindingOverrides: Record<string, Plain>;
+// P5-06: the rows of the Review & Approval queue the server has, and the
+// queries the browser sent for it
+let queueRows: Plain[];
+let queueRequests: string[];
+const QUEUE_STATES: Record<string, string[]> = {
+  NEEDS_REVIEW: ['REVIEW_REQUESTED', 'IN_REVIEW'],
+  CHANGES_REQUESTED: ['CHANGES_REQUESTED'],
+  PENDING_APPROVAL: ['PENDING_APPROVAL'],
+  APPROVED: ['APPROVED'],
+  REFUSED: ['REFUSED'],
+  CANCELLED: ['REVIEW_CANCELLED'],
+};
 const NEXT: Record<string, Record<string, string>> = {
   REQUESTED: { start: 'IN_REVIEW', cancel: 'CANCELLED' },
   IN_REVIEW: {
@@ -312,6 +354,29 @@ const server = (method: string, url: string, body: any): Reply => {
       const failure = failNext;
       failNext = null;
       return reply(failure.status, { msg: SECRET, code: failure.code });
+    }
+    // P5-06: the queue asks for a page; the server's own rows, as it
+    // filtered and derived them
+    if (method === 'GET' && searchParams.has('page')) {
+      queueRequests.push(searchParams.toString());
+      const rows = queueRows.filter(
+        (row) =>
+          (!searchParams.get('queue') ||
+            QUEUE_STATES[searchParams.get('queue')!].includes(
+              row.approval.state
+            )) &&
+          (!searchParams.get('targetType') ||
+            row.target.type === searchParams.get('targetType')) &&
+          (!searchParams.get('search') ||
+            row.target.parentName
+              .toLowerCase()
+              .includes(searchParams.get('search')!.toLowerCase()))
+      );
+      const page = Number(searchParams.get('page'));
+      return reply(200, {
+        pages: Math.ceil(rows.length / 50),
+        results: rows.slice((page - 1) * 50, page * 50),
+      });
     }
     if (method === 'GET') {
       const results = reviews.filter(
@@ -523,6 +588,26 @@ const server = (method: string, url: string, body: any): Reply => {
     }
     return reply(200, review);
   }
+  // P5-06: the package itself, for its workspace
+  if (pathname === `/content-studio/packages/${PACKAGE}`) {
+    return reply(200, {
+      id: PACKAGE,
+      name: 'Summer Launch',
+      projectId: null,
+      draft: {
+        schemaVersion: 1,
+        copy: {
+          global: { thread: [{ id: 'i1', text: 'Draft', mediaIds: [] }] },
+        },
+      },
+      draftVersion: 6,
+      latestRevisionNumber: 5,
+      archivedAt: null,
+      createdAt: T0,
+      updatedAt: T0,
+      media: {},
+    });
+  }
   // package versions
   if (pathname === `/content-studio/packages/${PACKAGE}/revisions`) {
     return reply(200, {
@@ -605,6 +690,10 @@ beforeEach(() => {
   claimLists = {};
   approvals = {};
   bindingOverrides = {};
+  queueRows = [];
+  queueRequests = [];
+  mockLocation.search = '';
+  mockOpenModal.mockReset();
   mockFetch.mockReset();
   mockFetch.mockImplementation(async (url: string, init: RequestInit = {}) =>
     server(
@@ -2520,5 +2609,587 @@ describe('Approval status of exact revisions (P5-05)', () => {
     expect(badge).not.toMatch(
       /history|contentStudioApprovalStatus|deriveContentStudioRevisionApprovalBindingState|=== 'APPROVED'|\.decision ===/
     );
+  });
+});
+
+// --- the Review & Approval queue (P5-06) ---
+
+const QUEUE_PACKAGE = uuid(41);
+const QUEUE_DESIGN = uuid(42);
+const queueRow = (
+  type: 'PACKAGE_REVISION' | 'DESIGN_REVISION',
+  bindingState: string,
+  extra: Plain = {}
+): Plain => {
+  const n = 2 + queueRows.length;
+  const revisionId = uuid(3000 + queueRows.length);
+  const reviewState =
+    {
+      REVIEW_REQUESTED: 'REQUESTED',
+      IN_REVIEW: 'IN_REVIEW',
+      CHANGES_REQUESTED: 'CHANGES_REQUESTED',
+      REVIEW_CANCELLED: 'CANCELLED',
+    }[bindingState] ?? 'READY_FOR_APPROVAL';
+  const row = {
+    ...reviewOf(type, revisionId, n, reviewState),
+    updatedAt: '2026-10-19T11:30:00.000Z',
+    target: {
+      type,
+      revisionId,
+      revisionNumber: n,
+      parentId: type === 'PACKAGE_REVISION' ? QUEUE_PACKAGE : QUEUE_DESIGN,
+      parentName: type === 'PACKAGE_REVISION' ? 'Summer Launch' : 'Hero Banner',
+    },
+    approval: {
+      approved: bindingState === 'APPROVED',
+      state: bindingState,
+      decidedAt:
+        bindingState === 'APPROVED' || bindingState === 'REFUSED'
+          ? '2026-10-19T12:00:00.000Z'
+          : null,
+    },
+    revisionRequest: null,
+    claimSummary: null,
+    ...extra,
+  };
+  queueRows.push(row);
+  return row;
+};
+
+describe('Review & Approval queue (P5-06)', () => {
+  const read = (file: string) => readFileSync(join(__dirname, file), 'utf8');
+  const openQueue = (search = '') => {
+    mockLocation.search = search;
+    return show(h(ContentStudioReviewQueue));
+  };
+  const items = () =>
+    Array.from(document.querySelectorAll('ul > li')) as HTMLElement[];
+  const filter = (group: string, name: string) =>
+    within(screen.getByRole('group', { name })).getByRole('button', {
+      name: group,
+    });
+  const pressed = (name: string) =>
+    within(screen.getByRole('group', { name }))
+      .getAllByRole('button')
+      .filter((b) => b.getAttribute('aria-pressed') === 'true')
+      .map((b) => b.textContent);
+
+  it('FQ1 Content Studio links to Review & Approval, a page of its own', async () => {
+    await show(h(ContentStudioHome));
+    const link = screen.getByRole('link', { name: 'Review & Approval' });
+    expect(link.getAttribute('href')).toBe('/content-studio/reviews');
+    const page = readFileSync(
+      join(__dirname, '../../app/(app)/(site)/content-studio/reviews/page.tsx'),
+      'utf8'
+    );
+    expect(page).toContain('return <ContentStudioReviewQueue />;');
+    expect(page).not.toMatch(/fetch|useSWR/);
+  });
+
+  it('FQ2 opens on Needs review, asking the server for that queue only', async () => {
+    queueRow('PACKAGE_REVISION', 'IN_REVIEW');
+    queueRow('DESIGN_REVISION', 'APPROVED');
+    await openQueue();
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(
+      'Review & Approval'
+    );
+    expect(pressed('Review state')).toEqual(['Needs review']);
+    expect(pressed('Content type')).toEqual(['All']);
+    expect(queueRequests).toEqual(['page=1&queue=NEEDS_REVIEW']);
+    expect(items()).toHaveLength(1);
+  });
+
+  it('FQ3/FQ4/FQ5 a row names its package or design, its exact version or revision and where it stands, in text', async () => {
+    queueRow('PACKAGE_REVISION', 'IN_REVIEW');
+    queueRow('DESIGN_REVISION', 'REVIEW_REQUESTED');
+    await openQueue();
+    const [pkg, design] = items();
+    expect(within(pkg).getByRole('heading', { level: 2 }).textContent).toBe(
+      'Summer Launch'
+    );
+    expect(pkg.textContent).toContain('Package');
+    expect(pkg.textContent).toContain('Version 2');
+    expect(pkg.textContent).toContain('Approval status: In review');
+    expect(pkg.textContent).toContain('Requested by Ann');
+    expect(pkg.textContent).toContain(
+      `Updated ${dayjs('2026-10-19T11:30:00.000Z').format('MMM D, YYYY HH:mm')}`
+    );
+    expect(within(design).getByRole('heading', { level: 2 }).textContent).toBe(
+      'Hero Banner'
+    );
+    expect(design.textContent).toContain('Design');
+    expect(design.textContent).toContain('Revision 3');
+    expect(design.textContent).toContain('Approval status: Review requested');
+  });
+
+  it('FQ6/FQ7/M17 pending, approved and refused are the server answer as it is, with the decision time', async () => {
+    queueRow('PACKAGE_REVISION', 'PENDING_APPROVAL');
+    queueRow('PACKAGE_REVISION', 'APPROVED');
+    queueRow('DESIGN_REVISION', 'REFUSED');
+    await openQueue('queue=all');
+    const states = items().map(
+      (item) => item.querySelector('[data-revision-approval]')!.textContent
+    );
+    expect(states).toEqual([
+      'Approval status: Pending approval',
+      'Approval status: Approved',
+      'Approval status: Refused',
+    ]);
+    const decided = `Decided ${dayjs('2026-10-19T12:00:00.000Z').format(
+      'MMM D, YYYY HH:mm'
+    )}`;
+    expect(items().map((item) => item.textContent!.includes(decided))).toEqual([
+      false,
+      true,
+      true,
+    ]);
+    // M17: a row says what the server answered, never what a review state
+    // would suggest: a READY review the server calls pending stays pending
+    expect(queueRows[1].state).toBe('READY_FOR_APPROVAL');
+    expect(document.body.textContent).not.toContain('Ready for approval');
+    expect(read('content-studio.review.queue.tsx')).not.toMatch(
+      /contentStudioApprovalStatus|deriveContentStudioRevisionApprovalBindingState|isContentStudioRevisionApproved|useContentStudioReviewApproval|decision ===|\.events|READY_FOR_APPROVAL/
+    );
+  });
+
+  it('FQ8 a review that asked for changes says whether its revision request is open, resolved or not recorded', async () => {
+    queueRow('PACKAGE_REVISION', 'CHANGES_REQUESTED', {
+      revisionRequest: { status: 'OPEN' },
+    });
+    queueRow('DESIGN_REVISION', 'CHANGES_REQUESTED', {
+      revisionRequest: { status: 'RESOLVED' },
+    });
+    queueRow('DESIGN_REVISION', 'CHANGES_REQUESTED');
+    await openQueue('queue=CHANGES_REQUESTED');
+    expect(pressed('Review state')).toEqual(['Changes requested']);
+    expect(
+      items().map((item) =>
+        [
+          'Revision request open',
+          'Revision request resolved',
+          'No revision request recorded',
+        ].find((text) => item.textContent!.includes(text))
+      )
+    ).toEqual([
+      'Revision request open',
+      'Revision request resolved',
+      'No revision request recorded',
+    ]);
+    // the request text stays on the revision's own view
+    expect(document.body.textContent).not.toContain('Change the');
+  });
+
+  it('FQ9 a package review in review shows its claim counts; one without claims says so', async () => {
+    queueRow('PACKAGE_REVISION', 'IN_REVIEW', {
+      claimSummary: {
+        total: 6,
+        verified: 4,
+        needsRevision: 1,
+        unreviewed: 1,
+        complete: false,
+      },
+    });
+    queueRow('PACKAGE_REVISION', 'IN_REVIEW', {
+      claimSummary: {
+        total: 0,
+        verified: 0,
+        needsRevision: 0,
+        unreviewed: 0,
+        complete: true,
+      },
+    });
+    queueRow('DESIGN_REVISION', 'IN_REVIEW');
+    await openQueue();
+    const [six, none, design] = items();
+    expect(six.textContent).toContain('Claims verified: 4 / 6');
+    expect(none.textContent).toContain('No grounded claims');
+    expect(design.textContent).not.toMatch(/Claims|grounded/);
+  });
+
+  it('FQ10 the type filter and the queue tabs ask the server again, from page 1', async () => {
+    queueRow('PACKAGE_REVISION', 'APPROVED');
+    queueRow('DESIGN_REVISION', 'APPROVED');
+    await openQueue();
+    await click(filter('Designs', 'Content type'));
+    expect(pressed('Content type')).toEqual(['Designs']);
+    expect(queueRequests[queueRequests.length - 1]).toBe(
+      'page=1&queue=NEEDS_REVIEW&targetType=DESIGN_REVISION'
+    );
+    await click(filter('Approved', 'Review state'));
+    expect(queueRequests[queueRequests.length - 1]).toBe(
+      'page=1&queue=APPROVED&targetType=DESIGN_REVISION'
+    );
+    expect(
+      items().map((item) => item.textContent!.includes('Hero Banner'))
+    ).toEqual([true]);
+    await click(filter('All', 'Review state'));
+    expect(queueRequests[queueRequests.length - 1]).toBe(
+      'page=1&targetType=DESIGN_REVISION'
+    );
+    expect(mockLocation.search).toBe('queue=all&type=DESIGN_REVISION');
+    await click(filter('Packages', 'Content type'));
+    expect(items()).toHaveLength(1);
+    expect(items()[0].textContent).toContain('Summer Launch');
+  });
+
+  it('search asks the server for part of a package or design name', async () => {
+    queueRow('PACKAGE_REVISION', 'IN_REVIEW');
+    queueRow('DESIGN_REVISION', 'IN_REVIEW');
+    await openQueue();
+    fireEvent.change(
+      screen.getByRole('searchbox', { name: 'Package or design name' }),
+      { target: { value: ' hero ' } }
+    );
+    await click(screen.getByRole('button', { name: 'Search' }));
+    expect(queueRequests[queueRequests.length - 1]).toBe(
+      'page=1&queue=NEEDS_REVIEW&search=hero'
+    );
+    expect(items()).toHaveLength(1);
+    expect(items()[0].textContent).toContain('Hero Banner');
+  });
+
+  it('FQ11 pages through the server pages', async () => {
+    for (let n = 0; n < 51; n++) {
+      queueRow('PACKAGE_REVISION', 'PENDING_APPROVAL');
+    }
+    await openQueue('queue=PENDING_APPROVAL');
+    expect(items()).toHaveLength(50);
+    const pager = screen.getByRole('navigation', { name: 'Pages' });
+    expect(pager.textContent).toContain('1 / 2');
+    await click(within(pager).getByRole('button', { name: 'Next' }));
+    expect(queueRequests[queueRequests.length - 1]).toBe(
+      'page=2&queue=PENDING_APPROVAL'
+    );
+    expect(items()).toHaveLength(1);
+    expect(items()[0].textContent).toContain('Version 52');
+  });
+
+  it('a nameless package or design is named in words, never by an id', async () => {
+    queueRow('PACKAGE_REVISION', 'IN_REVIEW').target.parentName = '  ';
+    queueRow('DESIGN_REVISION', 'IN_REVIEW').target.parentName = '';
+    await openQueue();
+    expect(
+      items().map(
+        (item) => within(item).getByRole('heading', { level: 2 }).textContent
+      )
+    ).toEqual(['Untitled package', 'Untitled design']);
+    expect(
+      screen
+        .getAllByRole('link', { name: /^Open review: / })
+        .map((link) => link.getAttribute('aria-label'))
+    ).toEqual([
+      'Open review: Untitled package, Version 2',
+      'Open review: Untitled design, Revision 3',
+    ]);
+  });
+
+  it('FQ12 says plainly when nothing is there', async () => {
+    await openQueue();
+    expect(document.body.textContent).toContain(
+      'No review or approval work needs attention.'
+    );
+    await click(filter('Approved', 'Review state'));
+    expect(document.body.textContent).toContain('No completed reviews yet.');
+    await click(filter('Packages', 'Content type'));
+    expect(document.body.textContent).toContain(
+      'No reviews match these filters.'
+    );
+    await click(filter('All', 'Content type'));
+    await click(filter('All', 'Review state'));
+    expect(document.body.textContent).toContain('No reviews yet.');
+  });
+
+  it('FQ13 a failed load says so in fixed words and can be tried again', async () => {
+    failNext = { status: 500, code: 'CS_REVIEW_INTEGRITY_ERROR' };
+    queueRow('PACKAGE_REVISION', 'IN_REVIEW');
+    await openQueue();
+    expect(screen.getByRole('alert').textContent).toContain(
+      'Review & Approval could not be loaded.'
+    );
+    expect(items()).toEqual([]);
+    await click(screen.getByRole('button', { name: 'Try again' }));
+    expect(items()).toHaveLength(1);
+  });
+
+  it('a row whose target does not agree with its own review is refused, never opened', async () => {
+    const row = queueRow('PACKAGE_REVISION', 'IN_REVIEW');
+    row.target = { ...row.target, revisionId: PKG_REV_5 };
+    await openQueue();
+    expect(screen.getByRole('alert').textContent).toContain(
+      'Review & Approval could not be loaded.'
+    );
+    expect(document.querySelector('a[href*="revision="]')).toBeNull();
+  });
+
+  it('FQ14/NAV1-NAV4 Open review opens exactly the reviewed version or revision, from the ids the server sent', async () => {
+    const pkg = queueRow('PACKAGE_REVISION', 'PENDING_APPROVAL');
+    const design = queueRow('DESIGN_REVISION', 'IN_REVIEW');
+    // NAV4: a name is text, never part of where a row leads
+    const tricky = queueRow('PACKAGE_REVISION', 'IN_REVIEW');
+    tricky.target.parentName = '?revision=latest&x=<b>';
+    await openQueue('queue=all');
+    const links = screen.getAllByRole('link', { name: /^Open review: / });
+    expect(links.map((link) => link.getAttribute('aria-label'))).toEqual([
+      'Open review: Summer Launch, Version 2',
+      'Open review: Hero Banner, Revision 3',
+      'Open review: ?revision=latest&x=<b>, Version 4',
+    ]);
+    // NAV1/NAV2: the exact revision, by id, never the package or design alone
+    expect(links.map((link) => link.getAttribute('href'))).toEqual([
+      `/content-studio/${QUEUE_PACKAGE}?revision=${pkg.target.revisionId}`,
+      `/content-studio/designs/${QUEUE_DESIGN}?revision=${design.target.revisionId}`,
+      `/content-studio/${QUEUE_PACKAGE}?revision=${tricky.target.revisionId}`,
+    ]);
+    // NAV3: no link leads to a package or design without its revision
+    for (const link of Array.from(document.querySelectorAll('a'))) {
+      const href = link.getAttribute('href')!;
+      if (
+        href.startsWith(`/content-studio/${QUEUE_PACKAGE}`) ||
+        href.startsWith('/content-studio/designs/')
+      ) {
+        expect(href).toMatch(/\?revision=[0-9a-f-]{36}$/);
+      }
+    }
+    // and is never markup
+    expect(document.querySelector('li b')).toBeNull();
+  });
+
+  it('FQ15 nothing is decided, commented, requested or assessed here', async () => {
+    queueRow('PACKAGE_REVISION', 'PENDING_APPROVAL');
+    queueRow('PACKAGE_REVISION', 'IN_REVIEW', {
+      claimSummary: {
+        total: 1,
+        verified: 0,
+        needsRevision: 0,
+        unreviewed: 1,
+        complete: false,
+      },
+    });
+    queueRow('DESIGN_REVISION', 'CHANGES_REQUESTED', {
+      revisionRequest: { status: 'OPEN' },
+    });
+    await openQueue('queue=all');
+    // the only buttons are the filters, the search and nothing in a row
+    expect(screen.getAllByRole('button').map((b) => b.textContent)).toEqual([
+      'Needs review',
+      'Changes requested',
+      'Pending approval',
+      'Approved',
+      'Refused',
+      'Review cancelled',
+      'All',
+      'All',
+      'Packages',
+      'Designs',
+      'Search',
+    ]);
+    for (const item of items()) {
+      expect(within(item).queryAllByRole('button')).toEqual([]);
+      expect(
+        within(item)
+          .getAllByRole('link')
+          .map((link) => link.textContent)
+      ).toEqual(['Open review']);
+    }
+    expect(document.querySelector('textarea')).toBeNull();
+    expect(calls().filter((c) => c.method !== 'GET')).toEqual([]);
+    const source = read('content-studio.review.queue.tsx');
+    expect(source).not.toMatch(
+      /useContentStudioReviewActions|ContentStudioReviewStatus|ContentStudioReviewApprovalSection|ContentStudioReviewClaims|ContentStudioReviewDiscussion|method:/
+    );
+  });
+
+  it('FQ16 narrow screens: cards and wrapping filters, no table to scroll sideways', async () => {
+    queueRow('PACKAGE_REVISION', 'IN_REVIEW');
+    await openQueue();
+    expect(document.querySelector('table')).toBeNull();
+    for (const name of ['Review state', 'Content type']) {
+      expect(screen.getByRole('group', { name }).className).toContain(
+        'flex-wrap'
+      );
+    }
+    const [item] = items();
+    expect(item.className).toMatch(/flex-wrap/);
+    expect(item.className).toMatch(/min-w-0/);
+    expect(within(item).getByRole('heading', { level: 2 }).className).toContain(
+      'break-words'
+    );
+    expect(screen.getByRole('search')).toBeTruthy();
+  });
+
+  it('a review write elsewhere reloads the queue: its key is the reviews list', () => {
+    const api = read('content-studio.reviews.api.ts');
+    expect(api).toMatch(/key\.startsWith\(`\$\{REVIEWS_PATH\}\?`\)/);
+    expect(api).toMatch(
+      /return `\$\{REVIEWS_PATH\}\?\$\{params\.toString\(\)\}`;/
+    );
+    expect(api).not.toMatch(
+      /refreshInterval|setInterval|WebSocket|EventSource/
+    );
+  });
+});
+
+// an exact version or revision linked from the queue
+describe('Opening a linked revision (P5-06)', () => {
+  const versionHeader = () => document.querySelector('h3')?.textContent ?? null;
+
+  it('NAV1 the package history opens exactly the linked version, never the list or the newest one', async () => {
+    reviews.push(reviewOf('PACKAGE_REVISION', PKG_REV_4, 4, 'IN_REVIEW'));
+    await show(
+      h(ContentStudioRevisionHistory, {
+        packageId: PACKAGE,
+        initialRevisionId: PKG_REV_4,
+        canRestore: true,
+        onRestore: async () => true,
+        close: () => undefined,
+      })
+    );
+    expect(versionHeader()).toContain('Version 4');
+    expect(card().getAttribute('data-review-revision')).toBe(PKG_REV_4);
+    expect(state()).toBe('In review');
+    expect(screen.queryByRole('button', { name: 'View 5' })).toBeNull();
+    await click(screen.getByRole('button', { name: 'Back to history' }));
+    expect(screen.getByRole('button', { name: 'View 5' })).toBeTruthy();
+  });
+
+  it('a linked version that cannot be read says so, and shows no other version instead', async () => {
+    await show(
+      h(ContentStudioRevisionHistory, {
+        packageId: PACKAGE,
+        initialRevisionId: uuid(404),
+        canRestore: true,
+        onRestore: async () => true,
+        close: () => undefined,
+      })
+    );
+    expect(screen.getByRole('alert').textContent).toBe(
+      'This version could not be opened.'
+    );
+    expect(document.querySelector('[data-review-revision]')).toBeNull();
+    await click(screen.getByRole('button', { name: 'Back to history' }));
+    expect(screen.getByRole('button', { name: 'View 4' })).toBeTruthy();
+  });
+
+  it('NAV1 the package workspace opens its history at the linked version once, and only a revision id is followed', async () => {
+    await show(
+      h(ContentStudioWorkspace, {
+        packageId: PACKAGE,
+        linkedRevisionId: PKG_REV_3,
+      })
+    );
+    expect(mockOpenModal).toHaveBeenCalledTimes(1);
+    const modal = mockOpenModal.mock.calls[0][0];
+    expect(modal.title).toBe('History');
+    const history = modal.children(() => undefined);
+    expect(history.props.initialRevisionId).toBe(PKG_REV_3);
+    expect(history.props.packageId).toBe(PACKAGE);
+    cleanup();
+    mockOpenModal.mockReset();
+    // NAV3: anything but a revision id opens nothing
+    for (const linkedRevisionId of ['latest', `${PKG_REV_3}x`, '']) {
+      await show(
+        h(ContentStudioWorkspace, { packageId: PACKAGE, linkedRevisionId })
+      );
+      cleanup();
+    }
+    expect(mockOpenModal).not.toHaveBeenCalled();
+    // the History button still opens the plain list
+    await show(h(ContentStudioWorkspace, { packageId: PACKAGE }));
+    expect(mockOpenModal).not.toHaveBeenCalled();
+    await click(screen.getByRole('button', { name: 'History' }));
+    expect(
+      mockOpenModal.mock.calls[0][0].children(() => undefined).props
+        .initialRevisionId
+    ).toBeNull();
+  });
+
+  it('NAV2 the design workspace shows exactly the linked revision, and not the current one while it loads', async () => {
+    reviews.push(reviewOf('DESIGN_REVISION', DESIGN_REV_1, 1, 'CANCELLED'));
+    const cache = new Map();
+    let resolveLinked!: () => void;
+    const linkedLoaded = new Promise<void>(
+      (resolve) => (resolveLinked = resolve)
+    );
+    const plain = mockFetch.getMockImplementation()!;
+    mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith(`/revisions/${DESIGN_REV_1}`)) {
+        await linkedLoaded;
+      }
+      return plain(url, init);
+    });
+    render(
+      h(
+        SWRConfig,
+        { value: { provider: () => cache, dedupingInterval: 0 } },
+        h(ContentStudioDesignWorkspace, {
+          designId: DESIGN,
+          linkedRevisionId: DESIGN_REV_1,
+        })
+      )
+    );
+    await flush();
+    // the current revision (2) is not shown in the linked one's place
+    expect(document.querySelector('[data-review-revision]')).toBeNull();
+    resolveLinked();
+    await flush();
+    expect(card().getAttribute('data-review-revision')).toBe(DESIGN_REV_1);
+    expect(card().textContent).toContain('Review · Revision 1');
+    expect(state()).toBe('Cancelled');
+  });
+
+  it('NAV2 a link to the current revision shows it as the current one; an unreadable one says so', async () => {
+    await show(
+      h(ContentStudioDesignWorkspace, {
+        designId: DESIGN,
+        linkedRevisionId: DESIGN_REV_2,
+      })
+    );
+    expect(card().getAttribute('data-review-revision')).toBe(DESIGN_REV_2);
+    expect(screen.getByRole('button', { name: 'Edit design' })).toBeTruthy();
+    cleanup();
+    await show(
+      h(ContentStudioDesignWorkspace, {
+        designId: DESIGN,
+        linkedRevisionId: uuid(404),
+      })
+    );
+    expect(screen.getByRole('alert').textContent).toBe(
+      'This revision could not be opened.'
+    );
+    expect(document.querySelector('[data-review-revision]')).toBeNull();
+    await click(
+      screen.getByRole('button', { name: 'Show the current revision' })
+    );
+    expect(card().getAttribute('data-review-revision')).toBe(DESIGN_REV_2);
+  });
+
+  it('NAV3 the design workspace follows a revision id only', async () => {
+    await show(
+      h(ContentStudioDesignWorkspace, {
+        designId: DESIGN,
+        linkedRevisionId: 'latest',
+      })
+    );
+    expect(card().getAttribute('data-review-revision')).toBe(DESIGN_REV_2);
+    expect(calls().filter((c) => /\/revisions\/latest/.test(c.url))).toEqual(
+      []
+    );
+  });
+
+  it('the route pages hand the linked revision over as it is, for the workspace to check', () => {
+    for (const route of ['[id]/page.tsx', 'designs/[id]/page.tsx']) {
+      const page = readFileSync(
+        join(__dirname, '../../app/(app)/(site)/content-studio', route),
+        'utf8'
+      );
+      expect(page).toMatch(
+        /const \{ revision \} = await params\.searchParams;/
+      );
+      expect(page).toMatch(
+        /typeof revision === 'string' \? revision : undefined/
+      );
+      expect(page).toContain('linkedRevisionId={linked}');
+      expect(page).not.toMatch(/fetch|useSWR|latest/);
+    }
   });
 });

@@ -4,15 +4,20 @@ import {
   CONTENT_STUDIO_APPROVAL_DECISIONS,
   CONTENT_STUDIO_APPROVAL_NOTE_MAX,
   CONTENT_STUDIO_APPROVAL_STATES,
+  CONTENT_STUDIO_REVIEW_QUEUE_STATES,
+  CONTENT_STUDIO_REVIEW_QUEUES,
   contentStudioApprovalActions,
   contentStudioApprovalStateAfter,
   contentStudioApprovalStatus,
+  contentStudioReviewStatesOfBindingStates,
   CONTENT_STUDIO_REVISION_APPROVAL_STATES,
   deriveContentStudioRevisionApprovalBindingState,
   isContentStudioApprovalAction,
   isContentStudioApprovalAvailable,
   isContentStudioApprovalDecision,
+  isContentStudioApprovalDerivationNeeded,
   isContentStudioApprovalNoteIntact,
+  isContentStudioReviewQueue,
   isContentStudioRevisionApprovalState,
   isContentStudioRevisionApproved,
   parseContentStudioApprovalNote,
@@ -389,5 +394,110 @@ describe('approval binding states (P5-05)', () => {
     ]) {
       expect(isContentStudioRevisionApproved(value)).toBe(false);
     }
+  });
+});
+
+describe('Review & Approval queues (P5-06)', () => {
+  const binding = (review: string, ...decisions: string[]) =>
+    deriveContentStudioRevisionApprovalBindingState(
+      review,
+      review === 'READY_FOR_APPROVAL'
+        ? contentStudioApprovalStatus(history(...decisions))!.state
+        : null
+    );
+  const queuesOf = (state: string) =>
+    CONTENT_STUDIO_REVIEW_QUEUES.filter((queue) =>
+      (CONTENT_STUDIO_REVIEW_QUEUE_STATES[queue] as readonly string[]).includes(
+        state
+      )
+    );
+
+  it('QF1-QF10 every review lands in exactly the queue of the binding state it derives now', () => {
+    expect(queuesOf(binding('REQUESTED'))).toEqual(['NEEDS_REVIEW']);
+    expect(queuesOf(binding('IN_REVIEW'))).toEqual(['NEEDS_REVIEW']);
+    expect(queuesOf(binding('CHANGES_REQUESTED'))).toEqual([
+      'CHANGES_REQUESTED',
+    ]);
+    expect(queuesOf(binding('CANCELLED'))).toEqual(['CANCELLED']);
+    expect(queuesOf(binding('READY_FOR_APPROVAL'))).toEqual([
+      'PENDING_APPROVAL',
+    ]);
+    expect(queuesOf(binding('READY_FOR_APPROVAL', 'APPROVED'))).toEqual([
+      'APPROVED',
+    ]);
+    expect(queuesOf(binding('READY_FOR_APPROVAL', 'REFUSED'))).toEqual([
+      'REFUSED',
+    ]);
+    // M1/M2: a decision taken back is pending again, whatever it was
+    expect(
+      queuesOf(binding('READY_FOR_APPROVAL', 'APPROVED', 'WITHDRAWN'))
+    ).toEqual(['PENDING_APPROVAL']);
+    expect(
+      queuesOf(binding('READY_FOR_APPROVAL', 'REFUSED', 'WITHDRAWN'))
+    ).toEqual(['PENDING_APPROVAL']);
+    expect(
+      queuesOf(
+        binding('READY_FOR_APPROVAL', 'REFUSED', 'WITHDRAWN', 'APPROVED')
+      )
+    ).toEqual(['APPROVED']);
+  });
+
+  it('a review is in one queue at most; a revision without a review is in none', () => {
+    for (const state of CONTENT_STUDIO_REVISION_APPROVAL_STATES) {
+      expect(queuesOf(state)).toHaveLength(state === 'NOT_REVIEWED' ? 0 : 1);
+    }
+    expect(CONTENT_STUDIO_REVIEW_QUEUES).toEqual([
+      'NEEDS_REVIEW',
+      'CHANGES_REQUESTED',
+      'PENDING_APPROVAL',
+      'APPROVED',
+      'REFUSED',
+      'CANCELLED',
+    ]);
+    for (const value of ['OPEN', 'ALL', 'needs_review', 'READY', null, 1]) {
+      expect(isContentStudioReviewQueue(value)).toBe(false);
+    }
+  });
+
+  it('M7 the review states a queue narrows to in the database, never one it does not hold', () => {
+    const states = (queue: (typeof CONTENT_STUDIO_REVIEW_QUEUES)[number]) =>
+      contentStudioReviewStatesOfBindingStates(
+        CONTENT_STUDIO_REVIEW_QUEUE_STATES[queue]
+      );
+    expect(states('NEEDS_REVIEW')).toEqual(['REQUESTED', 'IN_REVIEW']);
+    expect(states('CHANGES_REQUESTED')).toEqual(['CHANGES_REQUESTED']);
+    expect(states('CANCELLED')).toEqual(['CANCELLED']);
+    for (const queue of ['PENDING_APPROVAL', 'APPROVED', 'REFUSED'] as const) {
+      expect(states(queue)).toEqual(['READY_FOR_APPROVAL']);
+    }
+    expect(
+      contentStudioReviewStatesOfBindingStates(
+        CONTENT_STUDIO_REVISION_APPROVAL_STATES
+      )
+    ).toEqual(CONTENT_STUDIO_REVIEW_STATES);
+  });
+
+  it('only a queue holding some but not all approval states needs the approval history derived', () => {
+    const needs = (queue: (typeof CONTENT_STUDIO_REVIEW_QUEUES)[number]) =>
+      isContentStudioApprovalDerivationNeeded(
+        CONTENT_STUDIO_REVIEW_QUEUE_STATES[queue]
+      );
+    expect(CONTENT_STUDIO_REVIEW_QUEUES.filter(needs)).toEqual([
+      'PENDING_APPROVAL',
+      'APPROVED',
+      'REFUSED',
+    ]);
+    expect(
+      isContentStudioApprovalDerivationNeeded([
+        'PENDING_APPROVAL',
+        'APPROVED',
+        'REFUSED',
+      ])
+    ).toBe(false);
+    expect(
+      isContentStudioApprovalDerivationNeeded(
+        CONTENT_STUDIO_REVISION_APPROVAL_STATES
+      )
+    ).toBe(false);
   });
 });

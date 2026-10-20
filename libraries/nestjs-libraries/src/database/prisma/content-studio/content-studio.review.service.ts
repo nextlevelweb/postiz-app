@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import {
   ContentStudioApprovalRow,
   ContentStudioReviewClaimRow,
+  ContentStudioReviewListFilter,
   ContentStudioReviewRepository,
   ContentStudioReviewTargetFilter,
 } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.repository';
@@ -47,13 +48,19 @@ import {
 import {
   canDecideContentStudioApproval,
   CONTENT_STUDIO_APPROVAL_ACTIONS,
+  CONTENT_STUDIO_REVIEW_QUEUE_SEARCH_MAX,
+  CONTENT_STUDIO_REVIEW_QUEUE_STATES,
   ContentStudioApprovalAction,
   ContentStudioApprovalDecision,
   ContentStudioApprovalState,
   contentStudioApprovalStatus,
+  contentStudioReviewStatesOfBindingStates,
+  ContentStudioRevisionApprovalState,
   deriveContentStudioRevisionApprovalBindingState,
   isContentStudioApprovalAvailable,
+  isContentStudioApprovalDerivationNeeded,
   isContentStudioApprovalNoteIntact,
+  isContentStudioReviewQueue,
   isContentStudioRevisionApproved,
   parseContentStudioApprovalNote,
 } from '@gitroom/nestjs-libraries/content-studio/review/review.approval';
@@ -294,6 +301,9 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 // the same page size as the other Creative Studio lists
 const PAGE_SIZE = 50;
+// a queue of derived approval state reads its reviews' decisions this many
+// reviews at a time (P5-06)
+const QUEUE_SCAN_CHUNK = 500;
 
 interface Person {
   id: string;
@@ -434,6 +444,17 @@ const parented = (
 // no newer or older revision, no other revision with the same hash. One
 // predicate (getRevisionApprovalStatus, and requireApprovedRevision on top
 // of it) and its batch for a page of revisions share the same checks
+//
+// The Review & Approval queue (P5-06) is the list of reviews, most recently
+// active first, each row with what finding and opening the work needs: the
+// package or design name, the exact revision, the binding state as above
+// (the same checks, for the whole page at once), the revision request's
+// status and a package review's claim counts. Never a comment, a request
+// text, an approval note or history, a claim or its evidence, or content. A
+// queue filters by the binding state each review derives now: from its
+// state in the database where that tells, and from its whole approval
+// history where it does not, before the page is cut, so a page is never a
+// filtered slice of another one
 @Injectable()
 export class ContentStudioReviewService {
   private readonly _logger = new Logger(ContentStudioReviewService.name);
@@ -443,13 +464,18 @@ export class ContentStudioReviewService {
     private _contentStudioGroundingService: ContentStudioGroundingService
   ) {}
 
-  // One page of the organization's reviews, newest first. The revision id
-  // only narrows the list together with its target type
+  // One page of the organization's reviews, most recently active first,
+  // each with its queue summary (P5-06). The revision id only narrows the
+  // list together with its target type. A queue narrows it to the binding
+  // states it names, derived for every review it looks at; the raw review
+  // state cannot be asked for together with a queue
   async listReviews(input: {
     organizationId: string;
     targetType?: string;
     targetRevisionId?: string;
     state?: string;
+    queue?: string;
+    search?: string;
     page: number;
   }) {
     if (
@@ -458,7 +484,13 @@ export class ContentStudioReviewService {
       (input.targetRevisionId !== undefined &&
         (input.targetType === undefined ||
           !UUID.test(input.targetRevisionId))) ||
-      (input.state !== undefined && !isContentStudioReviewState(input.state))
+      (input.state !== undefined && !isContentStudioReviewState(input.state)) ||
+      (input.queue !== undefined &&
+        (!isContentStudioReviewQueue(input.queue) ||
+          input.state !== undefined)) ||
+      (input.search !== undefined &&
+        (typeof input.search !== 'string' ||
+          input.search.length > CONTENT_STUDIO_REVIEW_QUEUE_SEARCH_MAX))
     ) {
       throw invalidRequest();
     }
@@ -470,23 +502,297 @@ export class ContentStudioReviewService {
               ? 'packageRevisionId'
               : 'designRevisionId']: input.targetRevisionId ?? { not: null },
           };
-    const filter = {
+    const bindingStates = isContentStudioReviewQueue(input.queue)
+      ? CONTENT_STUDIO_REVIEW_QUEUE_STATES[input.queue]
+      : null;
+    const filter: ContentStudioReviewListFilter = {
       organizationId: input.organizationId,
       target,
-      state: input.state,
+      states: bindingStates
+        ? contentStudioReviewStatesOfBindingStates(bindingStates)
+        : input.state === undefined
+        ? undefined
+        : [input.state],
+      parentName: input.search?.trim() || undefined,
     };
+    const skip = (input.page - 1) * PAGE_SIZE;
+    const { rows, count } =
+      bindingStates && isContentStudioApprovalDerivationNeeded(bindingStates)
+        ? await this.derivedQueuePage(filter, bindingStates, skip)
+        : await this.storedQueuePage(filter, skip);
+    const results = await this.queueItems(input.organizationId, rows);
+    return {
+      pages: Math.ceil(count / PAGE_SIZE),
+      // a review decided after its queue was read shows where it is now,
+      // never under a queue it has left
+      results: bindingStates
+        ? results.filter((item) => bindingStates.includes(item.approval.state))
+        : results,
+    };
+  }
+
+  // A queue the review state alone decides: one page straight from the
+  // database, and its count
+  private async storedQueuePage(
+    filter: ContentStudioReviewListFilter,
+    skip: number
+  ) {
     const [rows, count] = await Promise.all([
       this._contentStudioReviewRepository.listReviewsForOrganization({
         ...filter,
-        skip: (input.page - 1) * PAGE_SIZE,
+        skip,
         take: PAGE_SIZE,
       }),
       this._contentStudioReviewRepository.countReviewsForOrganization(filter),
     ]);
+    return { rows, count };
+  }
+
+  // A queue that depends on approval: every review the database filter
+  // leaves is looked at in the list order, a chunk at a time, with its
+  // decisions only, and judged by the binding state its whole history
+  // derives; the page is cut from the reviews that belong, and only those
+  // are read in full. Corrupt history is an integrity error, never skipped
+  private async derivedQueuePage(
+    filter: ContentStudioReviewListFilter,
+    bindingStates: readonly ContentStudioRevisionApprovalState[],
+    skip: number
+  ) {
+    const matching: string[] = [];
+    const seen = new Set<string>();
+    let after: string | null = null;
+    for (;;) {
+      const chunk =
+        await this._contentStudioReviewRepository.listReviewDecisionsForOrganization(
+          { ...filter, after, take: QUEUE_SCAN_CHUNK }
+        );
+      for (const review of chunk) {
+        // a review active again while the queue is read can come round twice
+        if (seen.has(review.id)) {
+          continue;
+        }
+        seen.add(review.id);
+        if (!isContentStudioReviewState(review.state)) {
+          this._logger.error(
+            `Stored Content Studio review is invalid: ${review.id}`
+          );
+          throw integrityError();
+        }
+        const approval = isContentStudioApprovalAvailable(review.state)
+          ? contentStudioApprovalStatus(review.approvals)
+          : null;
+        const state = deriveContentStudioRevisionApprovalBindingState(
+          review.state,
+          approval?.state ?? null
+        );
+        if (!state) {
+          this._logger.error(
+            `Stored Content Studio approval is invalid: ${review.id}`
+          );
+          throw approvalIntegrityError();
+        }
+        if (bindingStates.includes(state)) {
+          matching.push(review.id);
+        }
+      }
+      if (chunk.length < QUEUE_SCAN_CHUNK) {
+        break;
+      }
+      after = chunk[chunk.length - 1].id;
+    }
+    const ids = matching.slice(skip, skip + PAGE_SIZE);
+    const rows = ids.length
+      ? await this._contentStudioReviewRepository.listReviewsByIdsForOrganization(
+          filter.organizationId,
+          ids
+        )
+      : [];
+    const byId = new Map(rows.map((row) => [row.id, row]));
     return {
-      pages: Math.ceil(count / PAGE_SIZE),
-      results: rows.map((row) => this.reviewDetail(row)),
+      rows: ids.flatMap((id) => byId.get(id) ?? []),
+      count: matching.length,
     };
+  }
+
+  // What each review of a page shows in the queue, for the whole page at
+  // once: the name of its package or design, its binding state (the P5-05
+  // checks, by target type), its revision request's status (a review that
+  // asked for changes) and its claim counts (a package review in review).
+  // Every row is checked; one that is not intact fails the page
+  private async queueItems(organizationId: string, rows: ReviewRow[]) {
+    const reviews = rows.map((row) => this.reviewDetail(row));
+    const ofType = (targetType: ContentStudioReviewTargetType) =>
+      reviews.filter((review) => review.targetType === targetType);
+    const packages = ofType('PACKAGE_REVISION');
+    const designs = ofType('DESIGN_REVISION');
+    const [parents, packageBindings, designBindings, requests, claims] =
+      await Promise.all([
+        this.revisionParents(organizationId, packages, designs),
+        this.approvalBindings(organizationId, 'PACKAGE_REVISION', packages),
+        this.approvalBindings(organizationId, 'DESIGN_REVISION', designs),
+        this.revisionRequestStatuses(organizationId, rows),
+        this.claimSummaries(
+          organizationId,
+          packages.filter((review) => review.state === 'IN_REVIEW')
+        ),
+      ]);
+    return reviews.map((review) => {
+      const binding =
+        packageBindings.get(review.id) ?? designBindings.get(review.id)!;
+      const parent = parents.get(review.targetRevisionId)!;
+      return {
+        ...review,
+        target: {
+          type: review.targetType,
+          revisionId: review.targetRevisionId,
+          revisionNumber: review.targetRevisionNumber,
+          parentId: parent.id,
+          parentName: parent.name,
+        },
+        approval: {
+          approved: binding.approved,
+          state: binding.state,
+          decidedAt: binding.currentDecision?.createdAt ?? null,
+        },
+        revisionRequest:
+          review.state === 'CHANGES_REQUESTED'
+            ? requests.get(review.id) ?? null
+            : null,
+        claimSummary: claims.get(review.id) ?? null,
+      };
+    });
+  }
+
+  // The package or design of each reviewed revision, by revision id: one
+  // query per target type, each revision read inside the organization and
+  // bound to the parent the review row names
+  private async revisionParents(
+    organizationId: string,
+    packages: { id: string; targetRevisionId: string }[],
+    designs: { id: string; targetRevisionId: string }[]
+  ) {
+    const [packageRows, designRows] = await Promise.all([
+      packages.length
+        ? this._contentStudioReviewRepository.listPackageRevisionParentsForOrganization(
+            organizationId,
+            packages.map((review) => review.targetRevisionId)
+          )
+        : [],
+      designs.length
+        ? this._contentStudioReviewRepository.listDesignRevisionParentsForOrganization(
+            organizationId,
+            designs.map((review) => review.targetRevisionId)
+          )
+        : [],
+    ]);
+    const parents = new Map<string, { id: string; name: string }>();
+    for (const row of packageRows) {
+      if (row.package && row.package.id === row.packageId) {
+        parents.set(row.id, { id: row.package.id, name: row.package.name });
+      }
+    }
+    for (const row of designRows) {
+      if (row.designProject && row.designProject.id === row.designProjectId) {
+        parents.set(row.id, {
+          id: row.designProject.id,
+          name: row.designProject.name,
+        });
+      }
+    }
+    for (const review of [...packages, ...designs]) {
+      const parent = parents.get(review.targetRevisionId);
+      if (!parent || typeof parent.name !== 'string') {
+        this._logger.error(
+          `Content Studio review target changed: ${review.id}`
+        );
+        throw integrityError();
+      }
+    }
+    return parents;
+  }
+
+  // The status of the revision request of each review that asked for
+  // changes, by review id, all read in one query and each checked whole. A
+  // review that asked for changes before requests existed has none. Only the
+  // reviews read in that state have theirs read: a review that asks for
+  // changes while the page is read is shown as it was read
+  private async revisionRequestStatuses(
+    organizationId: string,
+    rows: ReviewRow[]
+  ) {
+    const asked = rows.filter((row) => row.state === 'CHANGES_REQUESTED');
+    const statuses = new Map<string, { status: string }>();
+    if (!asked.length) {
+      return statuses;
+    }
+    for (const request of await this._contentStudioReviewRepository.listRevisionRequestsForReviews(
+      organizationId,
+      asked.map((row) => row.id)
+    )) {
+      const row = asked.find((review) => review.id === request.reviewId);
+      if (!row || statuses.has(row.id)) {
+        this._logger.error(
+          `Stored Content Studio revision request is invalid: ${request.id}`
+        );
+        throw integrityError();
+      }
+      statuses.set(row.id, {
+        status: this.revisionRequestDetail(request, row).status,
+      });
+    }
+    return statuses;
+  }
+
+  // The claim counts of each package review in review, by review id: the
+  // exact claims of every reviewed revision in one query and every
+  // assessment in another, checked as claim review checks them. No evidence
+  // is resolved and no source version read
+  private async claimSummaries(
+    organizationId: string,
+    reviews: {
+      id: string;
+      targetRevisionId: string;
+      targetContentHash: string;
+    }[]
+  ) {
+    const summaries = new Map<
+      string,
+      ReturnType<typeof contentStudioReviewClaimSummary>
+    >();
+    if (!reviews.length) {
+      return summaries;
+    }
+    const [revisions, rows] = await Promise.all([
+      this._contentStudioReviewRepository.listPackageRevisionsForOrganization(
+        organizationId,
+        reviews.map((review) => review.targetRevisionId)
+      ),
+      this._contentStudioReviewRepository.listClaimsForReviews(
+        organizationId,
+        reviews.map((review) => review.id)
+      ),
+    ]);
+    for (const review of reviews) {
+      const claims = this.claimsOfRevision(
+        review,
+        revisions.find((revision) => revision.id === review.targetRevisionId) ??
+          null
+      );
+      summaries.set(
+        review.id,
+        contentStudioReviewClaimSummary(
+          claims.map((entry) => entry.claim.id),
+          this.claimStatuses(
+            this.claimAssessments(
+              review.id,
+              claims,
+              rows.filter((row) => row.reviewId === review.id)
+            )
+          )
+        )
+      );
+    }
+    return summaries;
   }
 
   // A review in REQUESTED of exactly that revision of the organization, with
@@ -1150,11 +1456,37 @@ export class ContentStudioReviewService {
       }
       reviews.set(review.targetRevisionId, review);
     }
-    // only a review that is ready for approval has decisions, so only the
-    // ones read ready here have theirs read: one that becomes ready and is
-    // decided while this page is read is shown as it was read, never as
-    // corrupt
-    const ready = parsed.filter((review) =>
+    const bindings = await this.approvalBindings(
+      organizationId,
+      targetType,
+      parsed
+    );
+    return revisionIds.map((id) => {
+      const review = reviews.get(id);
+      return review
+        ? bindings.get(review.id)!
+        : this.approvalBinding(null, null);
+    });
+  }
+
+  // The binding of each of these reviews of one type, by review id (P5-05,
+  // and the Review & Approval queue, P5-06). Only the reviews ready for
+  // approval have their decisions read, in one query, and their exact
+  // revision (and for a package their claim assessments) read again,
+  // together: one that becomes ready and is decided while a page is read is
+  // shown as it was read, never as corrupt
+  private async approvalBindings(
+    organizationId: string,
+    targetType: ContentStudioReviewTargetType,
+    reviews: {
+      id: string;
+      targetType: ContentStudioReviewTargetType;
+      targetRevisionId: string;
+      targetContentHash: string;
+      state: ContentStudioReviewState;
+    }[]
+  ) {
+    const ready = reviews.filter((review) =>
       isContentStudioApprovalAvailable(review.state)
     );
     const decisions = new Map<string, ContentStudioApprovalRow[]>();
@@ -1170,38 +1502,54 @@ export class ContentStudioReviewService {
       }
     }
     await this.verifiedApprovalTargets(organizationId, targetType, ready);
-    return revisionIds.map((id) => {
-      const review = reviews.get(id) ?? null;
-      const approval =
-        review && isContentStudioApprovalAvailable(review.state)
-          ? this.approvalHistory(review, decisions.get(review.id) ?? [])
-          : null;
-      const state = deriveContentStudioRevisionApprovalBindingState(
-        review?.state ?? null,
-        approval?.state ?? null
-      );
-      if (!state) {
-        throw approvalIntegrityError();
-      }
-      // the decision in force: the last one, unless it was a withdrawal
-      const current =
-        approval && (state === 'APPROVED' || state === 'REFUSED')
-          ? approval.rows[approval.rows.length - 1]
-          : null;
-      return {
-        approved: isContentStudioRevisionApproved(state),
-        state,
-        reviewId: review?.id ?? null,
-        approvalVersion: approval?.version ?? 0,
-        currentDecision: current && {
-          sequence: current.sequence,
-          decision: current.decision as ContentStudioApprovalDecision,
-          note: current.note,
-          actor: { id: current.actorUser.id, name: current.actorUser.name },
-          createdAt: current.createdAt,
-        },
-      };
-    });
+    return new Map(
+      reviews.map((review) => [
+        review.id,
+        this.approvalBinding(
+          review,
+          isContentStudioApprovalAvailable(review.state)
+            ? this.approvalHistory(review, decisions.get(review.id) ?? [])
+            : null
+        ),
+      ])
+    );
+  }
+
+  // Where a revision stands from its review (null: none) and that review's
+  // checked approval history (null: it is not ready for approval)
+  private approvalBinding(
+    review: { id: string; state: string } | null,
+    approval: {
+      state: ContentStudioApprovalState;
+      version: number;
+      rows: ContentStudioApprovalRow[];
+    } | null
+  ) {
+    const state = deriveContentStudioRevisionApprovalBindingState(
+      review?.state ?? null,
+      approval?.state ?? null
+    );
+    if (!state) {
+      throw approvalIntegrityError();
+    }
+    // the decision in force: the last one, unless it was a withdrawal
+    const current =
+      approval && (state === 'APPROVED' || state === 'REFUSED')
+        ? approval.rows[approval.rows.length - 1]
+        : null;
+    return {
+      approved: isContentStudioRevisionApproved(state),
+      state,
+      reviewId: review?.id ?? null,
+      approvalVersion: approval?.version ?? 0,
+      currentDecision: current && {
+        sequence: current.sequence,
+        decision: current.decision as ContentStudioApprovalDecision,
+        note: current.note,
+        actor: { id: current.actorUser.id, name: current.actorUser.name },
+        createdAt: current.createdAt,
+      },
+    };
   }
 
   // verifiedApprovalTarget for several ready reviews of one type at once:

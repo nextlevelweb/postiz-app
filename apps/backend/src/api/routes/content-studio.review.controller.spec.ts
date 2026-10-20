@@ -269,7 +269,33 @@ describe('ContentStudioController review routes', () => {
       targetType: 'DESIGN_REVISION',
       targetRevisionId: REVISION,
       state: 'IN_REVIEW',
+      queue: undefined,
+      search: undefined,
       page: 2,
+    });
+  });
+
+  it('QSEC5 the Review & Approval queue (P5-06) is the same list: the queue and search as declared, the organization from the request only', async () => {
+    const { controller, reviews } = setup();
+    await controller.listReviews(
+      ORG,
+      Object.assign(withExtras(new ListContentStudioReviewsDto()), {
+        page: 1,
+        targetType: 'PACKAGE_REVISION',
+        state: undefined,
+        queue: 'PENDING_APPROVAL',
+        search: 'Summer',
+        organizationId: 'org-b',
+      })
+    );
+    expect(reviews.listReviews).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      targetType: 'PACKAGE_REVISION',
+      targetRevisionId: undefined,
+      state: undefined,
+      queue: 'PENDING_APPROVAL',
+      search: 'Summer',
+      page: 1,
     });
   });
 
@@ -621,6 +647,37 @@ describe('Review DTO validation', () => {
     }).toEqual({ page: 1 });
   });
 
+  it('accepts a queue and a search of the Review & Approval queue (P5-06)', async () => {
+    for (const queue of [
+      'NEEDS_REVIEW',
+      'CHANGES_REQUESTED',
+      'PENDING_APPROVAL',
+      'APPROVED',
+      'REFUSED',
+      'CANCELLED',
+    ]) {
+      expect({
+        ...(await run(
+          ListContentStudioReviewsDto,
+          { queue, search: 'Summer launch', targetType: 'DESIGN_REVISION' },
+          'query'
+        )),
+      }).toEqual({
+        page: 1,
+        queue,
+        search: 'Summer launch',
+        targetType: 'DESIGN_REVISION',
+      });
+    }
+    expect({
+      ...(await run(
+        ListContentStudioReviewsDto,
+        { search: 'x'.repeat(100) },
+        'query'
+      )),
+    }).toEqual({ page: 1, search: 'x'.repeat(100) });
+  });
+
   it.each([
     ['no target type', { targetRevisionId: REVISION }],
     ['no revision id', { targetType: 'PACKAGE_REVISION' }],
@@ -691,6 +748,16 @@ describe('Review DTO validation', () => {
     [{ organizationId: 'org-b' }],
     [{ take: '1000' }],
     [{ where: MARKER }],
+    // P5-06: only a declared queue, never an approval or decision filter
+    [{ queue: 'OPEN' }],
+    [{ queue: 'ALL' }],
+    [{ queue: 'approved' }],
+    [{ queue: ['APPROVED', 'REFUSED'] }],
+    [{ lifecycleState: 'APPROVED' }],
+    [{ approvalState: 'APPROVED' }],
+    [{ decision: 'APPROVED' }],
+    [{ search: 'x'.repeat(101) }],
+    [{ search: ['a', 'b'] }],
   ])('RA6 refuses the query %p', async (query) => {
     await rejected(ListContentStudioReviewsDto, query, 'query');
   });

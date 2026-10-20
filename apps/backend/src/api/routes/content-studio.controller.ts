@@ -1466,7 +1466,9 @@ export class ContentStudioController {
   // on. The organization, the user, the hash and every state come from the
   // request and the server only; a state change reads no body (no state),
   // except request changes, whose body is its revision request (P5-02). A
-  // review is not an approval and gates nothing; none is deleted
+  // review is not an approval and gates nothing; none is deleted. The list is
+  // also the Review & Approval queue (P5-06): read only, filtered by the
+  // binding state the server derives
   @Get('/reviews')
   listReviews(
     @GetOrgFromRequest() org: Organization,
@@ -1477,6 +1479,8 @@ export class ContentStudioController {
       targetType: query.targetType,
       targetRevisionId: query.targetRevisionId,
       state: query.state,
+      queue: query.queue,
+      search: query.search,
       page: query.page,
     });
   }

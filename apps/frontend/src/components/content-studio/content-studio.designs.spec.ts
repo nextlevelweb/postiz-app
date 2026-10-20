@@ -2253,8 +2253,14 @@ describe('Creative Studio: frontend boundaries', () => {
     expect(code(readFileSync(join(routes, 'page.tsx'), 'utf8'))).toContain(
       'return <ContentStudioDesigns />;'
     );
-    expect(code(readFileSync(join(routes, '[id]/page.tsx'), 'utf8'))).toContain(
-      'return <ContentStudioDesignWorkspace key={id} designId={id} />;'
+    // P5-06: with the exact revision a review links to
+    expect(
+      code(readFileSync(join(routes, '[id]/page.tsx'), 'utf8')).replace(
+        /\s+/g,
+        ' '
+      )
+    ).toContain(
+      '<ContentStudioDesignWorkspace key={id} designId={id} linkedRevisionId={linked} />'
     );
     expect(readdirSync(routes).sort()).toEqual(['[id]', 'page.tsx']);
   });

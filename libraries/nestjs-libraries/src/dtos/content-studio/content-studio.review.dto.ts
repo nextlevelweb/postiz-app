@@ -20,7 +20,11 @@ import {
   CONTENT_STUDIO_REVIEW_CLAIM_FINDING_MAX,
   CONTENT_STUDIO_REVIEW_CLAIM_STATUSES,
 } from '@gitroom/nestjs-libraries/content-studio/review/review.claim';
-import { CONTENT_STUDIO_APPROVAL_NOTE_MAX } from '@gitroom/nestjs-libraries/content-studio/review/review.approval';
+import {
+  CONTENT_STUDIO_APPROVAL_NOTE_MAX,
+  CONTENT_STUDIO_REVIEW_QUEUE_SEARCH_MAX,
+  CONTENT_STUDIO_REVIEW_QUEUES,
+} from '@gitroom/nestjs-libraries/content-studio/review/review.approval';
 
 // Digits only: '2' becomes 2, while '2abc', '' or '1.5' stay text and fail
 const toQueryInteger = ({ value }: TransformFnParams) =>
@@ -29,7 +33,10 @@ const toQueryInteger = ({ value }: TransformFnParams) =>
 const PAGE_MAX = 100_000;
 
 // The revision id narrows the list only together with its target type (the
-// service refuses it alone)
+// service refuses it alone). A queue (P5-06) narrows it to the binding states
+// it names, derived by the server, and never comes with a raw state; search
+// is part of a package or design name. There is no field for an
+// organization, a user, an approval state or a decision
 export class ListContentStudioReviewsDto {
   @IsOptional()
   @IsInt()
@@ -49,6 +56,15 @@ export class ListContentStudioReviewsDto {
   @IsOptional()
   @IsIn(CONTENT_STUDIO_REVIEW_STATES)
   state?: string;
+
+  @IsOptional()
+  @IsIn(CONTENT_STUDIO_REVIEW_QUEUES)
+  queue?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(CONTENT_STUDIO_REVIEW_QUEUE_SEARCH_MAX)
+  search?: string;
 }
 
 // The exact revision to review, nothing else: the organization and the user

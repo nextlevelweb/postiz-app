@@ -125,6 +125,15 @@ const createDb = () => {
     sourceVersion: [] as Row[],
     // P5-04: approval decisions
     approval: [] as Row[],
+    // P5-06: the packages and designs the revisions belong to, by name
+    parent: [
+      { id: `package-${ORG_A}`, organizationId: ORG_A, name: 'Summer Launch' },
+      { id: `package-${ORG_B}`, organizationId: ORG_B, name: 'Rival Plan' },
+      { id: `design-${ORG_A}`, organizationId: ORG_A, name: 'Hero Banner' },
+      { id: `design-${ORG_B}`, organizationId: ORG_B, name: 'Rival Banner' },
+      { id: 'package-other', organizationId: ORG_A, name: 'Autumn Promo' },
+      { id: 'design-other', organizationId: ORG_A, name: 'Story Card' },
+    ] as Row[],
     user: [
       { id: USER_A, name: 'Ann' },
       { id: USER_A2, name: 'Bo' },
@@ -135,10 +144,46 @@ const createDb = () => {
   const now = () => new Date((clock += 1000));
   const log: { op: string; where?: Row; data?: Row }[] = [];
 
-  const matches = (row: Row, where: Row = {}) =>
+  // P5-06: the name of the package or design a review's revision belongs
+  // to, through the composite relations (the parent IN the organization)
+  const parentOf = (row: Row, relation: string) => {
+    const revision =
+      relation === 'packageRevision'
+        ? tables.packageRevision.find(
+            (entry) =>
+              entry.id === row.packageRevisionId &&
+              entry.organizationId === row.organizationId
+          )
+        : tables.designRevision.find(
+            (entry) =>
+              entry.id === row.designRevisionId &&
+              entry.organizationId === row.organizationId
+          );
+    return revision
+      ? tables.parent.find(
+          (entry) =>
+            entry.id === (revision.packageId ?? revision.designProjectId) &&
+            entry.organizationId === revision.organizationId
+        ) ?? null
+      : null;
+  };
+  const matches = (row: Row, where: Row = {}): boolean =>
     Object.entries(where).every(([key, value]) => {
       if (value === undefined) {
         return true;
+      }
+      // P5-06: a part of the package or design name, case-insensitive
+      if (key === 'OR') {
+        return (value as Row[]).some((entry) => matches(row, entry));
+      }
+      if (key === 'packageRevision' || key === 'designRevision') {
+        const name = (value.is.package ?? value.is.designProject).name;
+        expect(name.mode).toBe('insensitive');
+        const parent = parentOf(row, key);
+        return (
+          !!parent &&
+          parent.name.toLowerCase().includes(name.contains.toLowerCase())
+        );
       }
       if (value && typeof value === 'object' && 'not' in value) {
         return row[key] !== value.not;
@@ -272,6 +317,23 @@ const createDb = () => {
     Object.fromEntries(
       Object.keys(select).map((key) => [key, row[key]] as const)
     );
+  // P5-06: a revision with its package or design read through the composite
+  // relation (that parent IN the revision's organization), by name only
+  const withParent = (row: Row, select: Row, relation: string) => {
+    if (!(relation in select)) {
+      return pick(row, select);
+    }
+    const parent = tables.parent.find(
+      (entry) =>
+        entry.id === (row.packageId ?? row.designProjectId) &&
+        entry.organizationId === row.organizationId
+    );
+    const { [relation]: _parent, ...scalars } = select;
+    return {
+      ...pick(row, scalars),
+      [relation]: parent ? { id: parent.id, name: parent.name } : null,
+    };
+  };
 
   const model = {
     contentStudioReview: {
@@ -289,16 +351,41 @@ const createDb = () => {
             .filter((entry) => matches(entry, args.where))
             .map(reviewView);
         }
-        expect(args.orderBy).toEqual([{ createdAt: 'desc' }, { id: 'asc' }]);
-        return tables.review
+        // P5-06: most recently active first
+        expect(args.orderBy).toEqual([{ updatedAt: 'desc' }, { id: 'asc' }]);
+        const sorted = tables.review
           .filter((entry) => matches(entry, args.where))
           .sort(
             (a, b) =>
-              b.createdAt.getTime() - a.createdAt.getTime() ||
+              b.updatedAt.getTime() - a.updatedAt.getTime() ||
               a.id.localeCompare(b.id)
-          )
-          .slice(args.skip, args.skip + args.take)
-          .map(reviewView);
+          );
+        // P5-06: the decisions of a queue, a chunk at a time after a cursor
+        if ('approvals' in args.select) {
+          expect(args.select.approvals.where).toEqual({
+            organizationId: args.where.organizationId,
+          });
+          const from = args.cursor
+            ? sorted.findIndex((entry) => entry.id === args.cursor.id) +
+              args.skip
+            : 0;
+          return sorted.slice(from, from + args.take).map((row) => ({
+            id: row.id,
+            state: row.state,
+            approvals: tables.approval
+              .filter(
+                (entry) =>
+                  entry.reviewId === row.id &&
+                  entry.organizationId === row.organizationId
+              )
+              .sort((a, b) => a.sequence - b.sequence)
+              .map((entry) => ({
+                sequence: entry.sequence,
+                decision: entry.decision,
+              })),
+          }));
+        }
+        return sorted.slice(args.skip, args.skip + args.take).map(reviewView);
       },
       count: async (args: Row) => {
         log.push({ op: 'review.count', where: args.where });
@@ -390,6 +477,16 @@ const createDb = () => {
           matches(entry, args.where)
         );
         return row ? revisionRequestView(row) : null;
+      },
+      // P5-06: the requests of a page of reviews
+      findMany: async (args: Row) => {
+        log.push({ op: 'revisionRequest.findMany', where: args.where });
+        return tables.revisionRequest
+          .filter((entry) => matches(entry, args.where))
+          .map((row) => ({
+            ...revisionRequestView(row),
+            reviewId: row.reviewId,
+          }));
       },
       create: async (args: Row) => {
         log.push({ op: 'revisionRequest.create', data: args.data });
@@ -564,7 +661,7 @@ const createDb = () => {
         log.push({ op: 'packageRevision.findMany', where: args.where });
         return tables.packageRevision
           .filter((entry) => matches(entry, args.where))
-          .map((row) => pick(row, args.select));
+          .map((row) => withParent(row, args.select, 'package'));
       },
     },
     contentStudioDesignRevision: {
@@ -579,7 +676,7 @@ const createDb = () => {
         log.push({ op: 'designRevision.findMany', where: args.where });
         return tables.designRevision
           .filter((entry) => matches(entry, args.where))
-          .map((row) => pick(row, args.select));
+          .map((row) => withParent(row, args.select, 'designProject'));
       },
     },
   };
@@ -1376,14 +1473,16 @@ describe('ContentStudioReviewService: listing', () => {
     return { db, p4, d7, p5, b };
   };
 
-  it("RSEC3 lists the organization's reviews only, newest first", async () => {
+  // P5-06: most recently active first (d7 was started last), no longer by
+  // creation
+  it("RSEC3 lists the organization's reviews only, most recently active first", async () => {
     const { db, p4, d7, p5, b } = await many();
     const listed = await db.service.listReviews({
       organizationId: ORG_A,
       page: 1,
     });
     expect(listed.pages).toBe(1);
-    expect(listed.results.map((r) => r.id)).toEqual([p5.id, d7.id, p4.id]);
+    expect(listed.results.map((r) => r.id)).toEqual([d7.id, p5.id, p4.id]);
     expect(JSON.stringify(listed)).not.toContain(b.id);
     for (const entry of db.log.filter((e) =>
       /review\.(findMany|count)/.test(e.op)
@@ -1529,10 +1628,11 @@ describe('ContentStudioReviewService boundaries', () => {
     }
     // the package or design of a revision is only ever read from the
     // revision itself (P5-02: a resolving revision must share it; P5-05: the
-    // exact revisions of a page of approval binding)
+    // exact revisions of a page of approval binding; P5-06: the name of the
+    // package or design of each reviewed revision of a queue page)
     const repository = code('content-studio.review.repository.ts');
-    expect(repository.match(/packageId: true/g)).toHaveLength(4);
-    expect(repository.match(/designProjectId: true/g)).toHaveLength(4);
+    expect(repository.match(/packageId: true/g)).toHaveLength(5);
+    expect(repository.match(/designProjectId: true/g)).toHaveLength(5);
     expect(repository).toMatch(/packageRevisionId: input\.packageRevisionId/);
   });
 
@@ -1566,8 +1666,10 @@ describe('ContentStudioReviewService boundaries', () => {
     // P5-03B: the claim reads (one inside the READY transition), the hold
     // and the assessment write; P5-04: the approval history read, the hold,
     // the history read inside it and the append; P5-05: the batch reads of
-    // package and design revisions, reviews, claims and approvals
-    expect(queries.length).toBe(32);
+    // package and design revisions, reviews, claims and approvals; P5-06:
+    // the queue's decision scan, its page by ids, the packages and designs
+    // of a page and its revision requests
+    expect(queries.length).toBe(37);
     for (const query of queries) {
       expect(query.slice(0, 400)).toMatch(/organizationId/);
     }
@@ -6555,5 +6657,962 @@ describe('ContentStudioReviewService approval binding boundaries (P5-05)', () =>
     );
     expect(design).toMatch(/export const DESIGN_DOCUMENT_SCHEMA_VERSION = 1;/);
     expect(design).not.toMatch(/approv/i);
+  });
+});
+
+// --- the Review & Approval queue (P5-06) ---
+
+const queue = (db: Db, filter: Row = {}, org = ORG_A, page = 1) =>
+  db.service.listReviews({ organizationId: org, page, ...filter });
+const queueIds = async (db: Db, filter: Row = {}, org = ORG_A) =>
+  (await queue(db, filter, org)).results.map((item) => item.id);
+const COMMENT_SECRET = `A private remark ${SECRET}`;
+
+// One organization's work, every binding state, both target types, and a
+// second organization that must never show:
+// package 3 REQUESTED, 4 APPROVED, 5 REFUSED, 6 PENDING (no decision);
+// package-other 9 PENDING (approved, then withdrawn);
+// design 7 IN_REVIEW, 8 CHANGES_REQUESTED, 6 CANCELLED, 9 APPROVED
+// (refused, withdrawn, approved); org B: a package APPROVED, a design
+// REQUESTED
+const board = async () => {
+  const db = discussion();
+  const r = {
+    p3: await reviewIn(db, 'REQUESTED', 'PACKAGE_REVISION', PKG_REV_3),
+    p4: await reviewIn(db, 'READY_FOR_APPROVAL', 'PACKAGE_REVISION', PKG_REV_4),
+    p5: await reviewIn(db, 'READY_FOR_APPROVAL', 'PACKAGE_REVISION', PKG_REV_5),
+    p6: await reviewIn(db, 'READY_FOR_APPROVAL', 'PACKAGE_REVISION', PKG_REV_6),
+    po: await reviewIn(
+      db,
+      'READY_FOR_APPROVAL',
+      'PACKAGE_REVISION',
+      PKG_REV_OTHER
+    ),
+    d7: await reviewIn(db, 'IN_REVIEW', 'DESIGN_REVISION', DESIGN_REV_7),
+    d8: await reviewIn(
+      db,
+      'CHANGES_REQUESTED',
+      'DESIGN_REVISION',
+      DESIGN_REV_8
+    ),
+    d6: await reviewIn(db, 'CANCELLED', 'DESIGN_REVISION', DESIGN_REV_6),
+    d9: await reviewIn(
+      db,
+      'READY_FOR_APPROVAL',
+      'DESIGN_REVISION',
+      DESIGN_REV_9
+    ),
+  };
+  await decide(db, r.p4.id, 'approve', 'Looks right.');
+  await decide(db, r.p5.id, 'refuse', REFUSAL);
+  await decide(db, r.po.id, 'approve');
+  await decide(db, r.po.id, 'withdraw', WITHDRAWAL);
+  await decide(db, r.d9.id, 'refuse', REFUSAL);
+  await decide(db, r.d9.id, 'withdraw', WITHDRAWAL);
+  await decide(db, r.d9.id, 'approve');
+  await say(db, r.d7.id, COMMENT_SECRET);
+  // org B's own work, approved and requested
+  const pb = await request(db, 'PACKAGE_REVISION', PKG_REV_B, ORG_B, USER_B);
+  await act(db, pb.id, 'start', ORG_B, USER_B);
+  await act(db, pb.id, 'ready-for-approval', ORG_B, USER_B);
+  await decide(db, pb.id, 'approve', undefined, USER_B, ORG_B);
+  await request(db, 'DESIGN_REVISION', DESIGN_REV_B, ORG_B, USER_B);
+  return { db, r };
+};
+// the board's org-B package review, made in org B
+const boardB = async () => {
+  const db = discussion();
+  const pb = await request(db, 'PACKAGE_REVISION', PKG_REV_B, ORG_B, USER_B);
+  await act(db, pb.id, 'start', ORG_B, USER_B);
+  await act(db, pb.id, 'ready-for-approval', ORG_B, USER_B);
+  await decide(db, pb.id, 'approve', undefined, USER_B, ORG_B);
+  const dbB = await request(db, 'DESIGN_REVISION', DESIGN_REV_B, ORG_B, USER_B);
+  return { db, pb, dbB };
+};
+
+describe('ContentStudioReviewService: Review & Approval queue filters (P5-06)', () => {
+  it('QF1-QF10/FL1-FL7 every queue holds exactly the reviews whose binding state is in it now', async () => {
+    const { db, r } = await board();
+    const states = Object.fromEntries(
+      (await queue(db)).results.map((item) => [item.id, item.approval.state])
+    );
+    expect(states).toEqual({
+      [r.p3.id]: 'REVIEW_REQUESTED',
+      [r.p4.id]: 'APPROVED',
+      [r.p5.id]: 'REFUSED',
+      [r.p6.id]: 'PENDING_APPROVAL',
+      [r.po.id]: 'PENDING_APPROVAL',
+      [r.d7.id]: 'IN_REVIEW',
+      [r.d8.id]: 'CHANGES_REQUESTED',
+      [r.d6.id]: 'REVIEW_CANCELLED',
+      [r.d9.id]: 'APPROVED',
+    });
+    const set = async (queueName: string) =>
+      new Set(await queueIds(db, { queue: queueName }));
+    // FL1: REQUESTED and IN_REVIEW only, never CHANGES_REQUESTED or ready
+    expect(await set('NEEDS_REVIEW')).toEqual(new Set([r.p3.id, r.d7.id]));
+    expect(await set('CHANGES_REQUESTED')).toEqual(new Set([r.d8.id]));
+    // FL3/QF5/QF8: no decision, and an approval taken back
+    expect(await set('PENDING_APPROVAL')).toEqual(new Set([r.p6.id, r.po.id]));
+    // FL4/QF6/QF10: approved now, also after refused -> withdrawn -> approved
+    expect(await set('APPROVED')).toEqual(new Set([r.p4.id, r.d9.id]));
+    expect(await set('REFUSED')).toEqual(new Set([r.p5.id]));
+    expect(await set('CANCELLED')).toEqual(new Set([r.d6.id]));
+    // FL7: all of them
+    expect(await queueIds(db)).toHaveLength(9);
+  });
+
+  it('FL8/FL9 a queue narrows to packages or designs', async () => {
+    const { db, r } = await board();
+    expect(
+      new Set(
+        await queueIds(db, {
+          queue: 'APPROVED',
+          targetType: 'PACKAGE_REVISION',
+        })
+      )
+    ).toEqual(new Set([r.p4.id]));
+    expect(
+      new Set(
+        await queueIds(db, { queue: 'APPROVED', targetType: 'DESIGN_REVISION' })
+      )
+    ).toEqual(new Set([r.d9.id]));
+    expect(
+      new Set(
+        await queueIds(db, {
+          queue: 'NEEDS_REVIEW',
+          targetType: 'DESIGN_REVISION',
+        })
+      )
+    ).toEqual(new Set([r.d7.id]));
+    expect(
+      await queueIds(db, {
+        queue: 'PENDING_APPROVAL',
+        targetType: 'DESIGN_REVISION',
+      })
+    ).toEqual([]);
+  });
+
+  it('a queue filtered in the database asks for the review states it maps to, never an approval state', async () => {
+    const { db } = await board();
+    db.log.length = 0;
+    await queue(db, { queue: 'NEEDS_REVIEW' });
+    const where = db.log.find((e) => e.op === 'review.findMany')!.where!;
+    expect(where.state).toEqual({ in: ['REQUESTED', 'IN_REVIEW'] });
+    expect(db.log.find((e) => e.op === 'review.count')!.where).toEqual(where);
+    db.log.length = 0;
+    await queue(db, { queue: 'APPROVED' });
+    expect(
+      db.log.find((e) => e.op === 'review.findMany')!.where!.state
+    ).toEqual({ in: ['READY_FOR_APPROVAL'] });
+    // derived queues count what they derived: no count query
+    expect(db.log.some((e) => e.op === 'review.count')).toBe(false);
+  });
+
+  it('most recently active first: a decision moves its review to the top', async () => {
+    const { db, r } = await board();
+    const before = await queueIds(db);
+    expect(before[0]).toBe(r.d7.id); // the comment came last
+    await decide(db, r.p6.id, 'approve');
+    expect((await queueIds(db))[0]).toBe(r.p6.id);
+    expect((await queueIds(db, { queue: 'APPROVED' }))[0]).toBe(r.p6.id);
+  });
+
+  it('search narrows to part of a package or design name, in any case', async () => {
+    const { db, r } = await board();
+    expect(new Set(await queueIds(db, { search: 'summer' }))).toEqual(
+      new Set([r.p3.id, r.p4.id, r.p5.id, r.p6.id])
+    );
+    expect(new Set(await queueIds(db, { search: ' BANNER ' }))).toEqual(
+      new Set([r.d7.id, r.d8.id, r.d6.id, r.d9.id])
+    );
+    expect(
+      new Set(
+        await queueIds(db, { search: 'promo', queue: 'PENDING_APPROVAL' })
+      )
+    ).toEqual(new Set([r.po.id]));
+    // QSEC2/QSEC3: another organization's names find nothing
+    expect(await queueIds(db, { search: 'Rival' })).toEqual([]);
+    // blank is no search
+    expect(await queueIds(db, { search: '   ' })).toHaveLength(9);
+  });
+
+  it('refuses an unknown queue, a queue with a raw state and a search over its limit', async () => {
+    const { db } = await board();
+    for (const filter of [
+      { queue: 'OPEN' },
+      { queue: 'ALL' },
+      { queue: 'APPROVED', state: 'READY_FOR_APPROVAL' },
+      { search: 'x'.repeat(101) },
+      { search: 7 },
+    ]) {
+      expect(await code(queue(db, filter))).toEqual({
+        status: 400,
+        code: 'CS_INVALID_REQUEST',
+      });
+    }
+    expect(await queueIds(db, { search: 'x'.repeat(100) })).toEqual([]);
+  });
+});
+
+describe('ContentStudioReviewService: withdrawal moves a review between queues (P5-06)', () => {
+  it('WF1-WF5 approved -> withdrawn -> approved, refused -> withdrawn', async () => {
+    const { db, r } = await board();
+    const isIn = async (queueName: string, id: string) =>
+      (await queueIds(db, { queue: queueName })).includes(id);
+    expect(await isIn('APPROVED', r.p4.id)).toBe(true);
+    await decide(db, r.p4.id, 'withdraw', WITHDRAWAL);
+    // WF1/WF2
+    expect(await isIn('APPROVED', r.p4.id)).toBe(false);
+    expect(await isIn('PENDING_APPROVAL', r.p4.id)).toBe(true);
+    // WF3/WF4
+    expect(await isIn('REFUSED', r.p5.id)).toBe(true);
+    await decide(db, r.p5.id, 'withdraw', WITHDRAWAL);
+    expect(await isIn('REFUSED', r.p5.id)).toBe(false);
+    expect(await isIn('PENDING_APPROVAL', r.p5.id)).toBe(true);
+    // WF5
+    await decide(db, r.p4.id, 'approve');
+    expect(await isIn('APPROVED', r.p4.id)).toBe(true);
+    expect(await isIn('PENDING_APPROVAL', r.p4.id)).toBe(false);
+  });
+
+  it('a review decided between the queue scan and its page read is shown where it is now, never under the queue it left', async () => {
+    const { db, r } = await board();
+    const repository = db.repository as any;
+    const read = repository.listReviewsByIdsForOrganization.bind(repository);
+    repository.listReviewsByIdsForOrganization = async (
+      org: string,
+      ids: string[]
+    ) => {
+      await decide(db, r.p4.id, 'withdraw', WITHDRAWAL);
+      return read(org, ids);
+    };
+    const approved = await queue(db, { queue: 'APPROVED' });
+    expect(approved.results.map((item) => item.id)).toEqual([r.d9.id]);
+    expect(
+      approved.results.every((item) => item.approval.state === 'APPROVED')
+    ).toBe(true);
+  });
+});
+
+describe('ContentStudioReviewService: Review & Approval queue rows (P5-06)', () => {
+  it('QL1/QL2/QL4/QL5 a package row names its package, exact version, requester and current approval', async () => {
+    const { db, r } = await board();
+    const [item] = (await queue(db, { queue: 'APPROVED' })).results.filter(
+      (entry) => entry.id === r.p4.id
+    );
+    expect(item.target).toEqual({
+      type: 'PACKAGE_REVISION',
+      revisionId: PKG_REV_4,
+      revisionNumber: 4,
+      parentId: `package-${ORG_A}`,
+      parentName: 'Summer Launch',
+    });
+    expect(item.requestedBy).toEqual({ id: USER_A, name: 'Ann' });
+    expect(Object.keys(item.requestedBy).sort()).toEqual(['id', 'name']);
+    expect(item.approval).toEqual({
+      approved: true,
+      state: 'APPROVED',
+      decidedAt: expect.any(Date),
+    });
+    expect(item.approval.decidedAt).toEqual(
+      db.tables.approval.find((row) => row.reviewId === r.p4.id)!.createdAt
+    );
+    expect(item.revisionRequest).toBeNull();
+    expect(item.claimSummary).toBeNull();
+    // the existing review fields are all still there (REG1)
+    expect(item).toMatchObject({
+      id: r.p4.id,
+      targetType: 'PACKAGE_REVISION',
+      targetRevisionId: PKG_REV_4,
+      targetRevisionNumber: 4,
+      state: 'READY_FOR_APPROVAL',
+      version: 3,
+    });
+    expect(item.events).toHaveLength(3);
+  });
+
+  it('QL3 a design row names its design and exact revision; another package or design keeps its own name', async () => {
+    const { db, r } = await board();
+    const items = (await queue(db)).results;
+    const of = (id: string) => items.find((entry) => entry.id === id)!;
+    expect(of(r.d8.id).target).toEqual({
+      type: 'DESIGN_REVISION',
+      revisionId: DESIGN_REV_8,
+      revisionNumber: 8,
+      parentId: `design-${ORG_A}`,
+      parentName: 'Hero Banner',
+    });
+    expect(of(r.po.id).target).toMatchObject({
+      revisionNumber: 9,
+      parentId: 'package-other',
+      parentName: 'Autumn Promo',
+    });
+    // M10: a name follows its own revision's parent, never a neighbour's
+    for (const item of items) {
+      const parent = db.tables.parent.find(
+        (entry) => entry.id === item.target.parentId
+      )!;
+      const revision = [
+        ...db.tables.packageRevision,
+        ...db.tables.designRevision,
+      ].find((entry) => entry.id === item.target.revisionId)!;
+      expect(parent.id).toBe(revision.packageId ?? revision.designProjectId);
+      expect(item.target.parentName).toBe(parent.name);
+      expect(item.target.revisionNumber).toBe(revision.revisionNumber);
+    }
+  });
+
+  it('QL5 a withdrawn approval is pending with no decision time; a refusal keeps its time', async () => {
+    const { db, r } = await board();
+    const items = (await queue(db)).results;
+    const of = (id: string) => items.find((entry) => entry.id === id)!;
+    expect(of(r.po.id).approval).toEqual({
+      approved: false,
+      state: 'PENDING_APPROVAL',
+      decidedAt: null,
+    });
+    expect(of(r.p5.id).approval).toEqual({
+      approved: false,
+      state: 'REFUSED',
+      decidedAt: expect.any(Date),
+    });
+    expect(of(r.d7.id).approval).toEqual({
+      approved: false,
+      state: 'IN_REVIEW',
+      decidedAt: null,
+    });
+  });
+
+  it('QL6/QL7 a row carries no comment, request text, approval note or history, claim, evidence or content', async () => {
+    const { db } = await board();
+    const text = JSON.stringify(await queue(db));
+    for (const secret of [
+      SECRET,
+      CHANGES,
+      REFUSAL,
+      WITHDRAWAL,
+      'Looks right.',
+      '"history"',
+      '"note"',
+      '"body"',
+      '"content"',
+      '"claims"',
+      '"evidence"',
+      '"currentDecision"',
+      ORG_B,
+      'Rival',
+    ]) {
+      expect(text).not.toContain(secret);
+    }
+  });
+
+  it('QL8 a review that asked for changes says whether its revision request is open or resolved, or that none was recorded', async () => {
+    const { db, r } = await board();
+    const row = async () =>
+      (await queue(db, { queue: 'CHANGES_REQUESTED' })).results[0];
+    expect((await row()).revisionRequest).toEqual({ status: 'OPEN' });
+    await resolve(db, r.d8.id, DESIGN_REV_9);
+    expect((await row()).revisionRequest).toEqual({ status: 'RESOLVED' });
+    // a review that asked for changes before revision requests existed
+    db.tables.revisionRequest.length = 0;
+    expect((await row()).revisionRequest).toBeNull();
+    // only that state has one
+    for (const item of (await queue(db)).results) {
+      if (item.state !== 'CHANGES_REQUESTED') {
+        expect(item.revisionRequest).toBeNull();
+      }
+    }
+  });
+
+  it('QL9 a package review in review counts its exact claims from stored assessments, resolving no evidence', async () => {
+    const { db, review } = await claimed();
+    await assess(db, review.id, C1, 'VERIFIED');
+    db.log.length = 0;
+    const [item] = (await queue(db, { queue: 'NEEDS_REVIEW' })).results;
+    expect(item.claimSummary).toEqual({
+      total: 2,
+      verified: 1,
+      needsRevision: 0,
+      unreviewed: 1,
+      complete: false,
+    });
+    expect(db.log.some((e) => e.op === 'sourceVersion.findMany')).toBe(false);
+    await assess(db, review.id, C2, 'NEEDS_REVISION', 'No source says so.');
+    const [next] = (await queue(db, { queue: 'NEEDS_REVIEW' })).results;
+    expect(next.claimSummary).toMatchObject({ verified: 1, needsRevision: 1 });
+    // a v1 revision has no claims: counted, nothing to verify
+    const v1 = await reviewIn(db, 'IN_REVIEW', 'PACKAGE_REVISION', PKG_REV_4);
+    const items = (await queue(db, { queue: 'NEEDS_REVIEW' })).results;
+    expect(items.find((entry) => entry.id === v1.id)!.claimSummary).toEqual({
+      total: 0,
+      verified: 0,
+      needsRevision: 0,
+      unreviewed: 0,
+      complete: true,
+    });
+  });
+
+  it('QL9 only a package review in review has claim counts', async () => {
+    const { db, r } = await board();
+    for (const item of (await queue(db)).results) {
+      expect(item.claimSummary).toBeNull();
+    }
+    expect(r.d7.state).toBe('IN_REVIEW');
+  });
+
+  it('QL10 a page of design reviews reads no claim or source version', async () => {
+    const { db } = await board();
+    db.log.length = 0;
+    await queue(db, { targetType: 'DESIGN_REVISION' });
+    expect(
+      db.log.filter((e) => /claim|sourceVersion|packageRevision/.test(e.op))
+    ).toEqual([]);
+  });
+});
+
+describe('ContentStudioReviewService: Review & Approval queue pagination (P5-06)', () => {
+  it('FL10/PQ7 a derived queue is paged after it is derived: 50 then the rest, no row twice, none lost', async () => {
+    const db = discussion();
+    const approved: string[] = [];
+    for (let n = 0; n < 53; n++) {
+      const id = uuid(1000 + n);
+      db.tables.packageRevision.push(packageRevision(id, ORG_A, 20 + n));
+      const review = await reviewIn(
+        db,
+        'READY_FOR_APPROVAL',
+        'PACKAGE_REVISION',
+        id
+      );
+      // every fourth one stays pending: the approved ones are not one block
+      if (n % 4) {
+        await decide(db, review.id, 'approve');
+        approved.push(review.id);
+      }
+    }
+    expect(approved).toHaveLength(39);
+    for (let n = 0; n < 30; n++) {
+      // more approved ones: 69 in all
+      const id = uuid(1100 + n);
+      db.tables.packageRevision.push(packageRevision(id, ORG_A, 80 + n));
+      const review = await reviewIn(
+        db,
+        'READY_FOR_APPROVAL',
+        'PACKAGE_REVISION',
+        id
+      );
+      await decide(db, review.id, 'approve');
+      approved.push(review.id);
+    }
+    const first = await queue(db, { queue: 'APPROVED' });
+    const second = await queue(db, { queue: 'APPROVED' }, ORG_A, 2);
+    const third = await queue(db, { queue: 'APPROVED' }, ORG_A, 3);
+    expect(first.pages).toBe(2);
+    expect(first.results).toHaveLength(50);
+    expect(second.results).toHaveLength(19);
+    expect(third.results).toEqual([]);
+    const ids = [...first.results, ...second.results].map((item) => item.id);
+    expect(new Set(ids).size).toBe(69);
+    expect(new Set(ids)).toEqual(new Set(approved));
+    // most recently decided first, the same on every read
+    expect(ids).toEqual([...approved].reverse());
+    expect(
+      (await queue(db, { queue: 'APPROVED' })).results.map((item) => item.id)
+    ).toEqual(first.results.map((item) => item.id));
+    const pending = await queue(db, { queue: 'PENDING_APPROVAL' });
+    expect(pending.pages).toBe(1);
+    expect(pending.results).toHaveLength(14);
+  });
+
+  it('M5/M21 a derived queue counts the reviews that are in it now: an approval taken back is not counted', async () => {
+    const db = discussion();
+    for (let n = 0; n < 52; n++) {
+      const id = uuid(1200 + n);
+      db.tables.packageRevision.push(packageRevision(id, ORG_A, 200 + n));
+      const review = await reviewIn(
+        db,
+        'READY_FOR_APPROVAL',
+        'PACKAGE_REVISION',
+        id
+      );
+      await decide(db, review.id, 'approve');
+      if (n >= 48) {
+        await decide(db, review.id, 'withdraw', WITHDRAWAL);
+      }
+    }
+    const approved = await queue(db, { queue: 'APPROVED' });
+    expect([approved.pages, approved.results.length]).toEqual([1, 48]);
+    const pending = await queue(db, { queue: 'PENDING_APPROVAL' });
+    expect([pending.pages, pending.results.length]).toEqual([1, 4]);
+  });
+
+  // rows written as the server would, without 4 service calls each
+  const readyRows = (db: Db, count: number, start: number) => {
+    const base = Date.parse('2026-01-01T00:00:00.000Z');
+    const ids: string[] = [];
+    for (let n = 0; n < count; n++) {
+      const revisionId = uuid(start + n);
+      const id = uuid(start + 50_000 + n);
+      const revision = packageRevision(revisionId, ORG_A, 1000 + n);
+      db.tables.packageRevision.push(revision);
+      const at = new Date(base - n * 1000);
+      db.tables.review.push({
+        id,
+        organizationId: ORG_A,
+        packageRevisionId: revisionId,
+        designRevisionId: null,
+        targetContentHash: revision.contentHash,
+        state: 'READY_FOR_APPROVAL',
+        version: 3,
+        requestedById: USER_A,
+        createdAt: at,
+        updatedAt: at,
+      });
+      [
+        [null, 'REQUESTED'],
+        ['REQUESTED', 'IN_REVIEW'],
+        ['IN_REVIEW', 'READY_FOR_APPROVAL'],
+      ].forEach(([fromState, toState], index) =>
+        db.tables.event.push({
+          id: `event-${id}-${index}`,
+          organizationId: ORG_A,
+          reviewId: id,
+          sequence: index + 1,
+          fromState,
+          toState,
+          actorUserId: USER_A,
+          createdAt: at,
+        })
+      );
+      ids.push(id);
+    }
+    return ids;
+  };
+
+  it('the scan reads the decisions a chunk of 500 reviews at a time, after the last one read, and finds a match past the first chunk', async () => {
+    const db = discussion();
+    const ids = readyRows(db, 501, 20_000);
+    // the oldest review, the only approved one, is in the second chunk
+    db.tables.approval.push({
+      id: uuid(90_000),
+      organizationId: ORG_A,
+      reviewId: ids[500],
+      sequence: 1,
+      decision: 'APPROVED',
+      packageRevisionId:
+        db.tables.review[db.tables.review.length - 1].packageRevisionId,
+      designRevisionId: null,
+      targetContentHash:
+        db.tables.review[db.tables.review.length - 1].targetContentHash,
+      actorUserId: USER_A,
+      note: null,
+      createdAt: new Date(),
+    });
+    db.log.length = 0;
+    const approved = await queue(db, { queue: 'APPROVED' });
+    expect(approved.results.map((item) => item.id)).toEqual([ids[500]]);
+    expect(approved.pages).toBe(1);
+    const scans = db.log.filter(
+      (e) => e.op === 'review.findMany' && e.where!.state
+    );
+    expect(scans).toHaveLength(2);
+    const pending = await queue(db, { queue: 'PENDING_APPROVAL' }, ORG_A, 11);
+    // the 500 others are pending: 10 pages, the 11th is empty
+    expect(pending.pages).toBe(10);
+    expect(pending.results.map((item) => item.id)).toEqual([]);
+    const last = await queue(db, { queue: 'PENDING_APPROVAL' }, ORG_A, 10);
+    expect(last.results.map((item) => item.id)).toEqual(ids.slice(450, 500));
+  });
+});
+
+describe('ContentStudioReviewService: Review & Approval queue batching (P5-06)', () => {
+  const ops = (db: Db) => db.log.map((e) => e.op).sort();
+
+  it('QB1-QB6/M13-M15 a mixed page costs a fixed set of queries, whatever its size', async () => {
+    const { db } = await board();
+    db.log.length = 0;
+    await queue(db);
+    const small = ops(db);
+    expect(small).toEqual(
+      [
+        // the page and its count
+        'review.findMany',
+        'review.count',
+        // QB1/QB2: the packages and designs of the page, one query each
+        'packageRevision.findMany',
+        'designRevision.findMany',
+        // QB3: the decisions of the ready reviews, one query per type, and
+        // their exact revisions (and package claims) checked again
+        'approval.findMany',
+        'approval.findMany',
+        'packageRevision.findMany',
+        'claim.findMany',
+        'designRevision.findMany',
+        // QB4: the revision requests of the page
+        'revisionRequest.findMany',
+      ].sort()
+    );
+    // QB6: more rows of every kind cost nothing more
+    for (const [id, n] of [
+      [uuid(300), 30],
+      [uuid(301), 31],
+    ] as const) {
+      db.tables.packageRevision.push(packageRevision(id, ORG_A, n));
+      const review = await reviewIn(
+        db,
+        'READY_FOR_APPROVAL',
+        'PACKAGE_REVISION',
+        id
+      );
+      await decide(db, review.id, 'approve');
+    }
+    for (const [id, n] of [
+      [uuid(310), 40],
+      [uuid(311), 41],
+    ] as const) {
+      db.tables.designRevision.push(designRevision(id, ORG_A, n, '#123456'));
+      await reviewIn(db, 'CHANGES_REQUESTED', 'DESIGN_REVISION', id);
+    }
+    db.log.length = 0;
+    await queue(db);
+    expect(ops(db)).toEqual(small);
+  });
+
+  it('QB5 the claim counts of every package review in review: one revision query and one assessment query', async () => {
+    const { db, review } = await claimed();
+    await reviewIn(db, 'IN_REVIEW', 'PACKAGE_REVISION', PKG_REV_4);
+    await reviewIn(db, 'IN_REVIEW', 'PACKAGE_REVISION', PKG_REV_5);
+    await assess(db, review.id, C1, 'VERIFIED');
+    db.log.length = 0;
+    const items = (await queue(db, { queue: 'NEEDS_REVIEW' })).results;
+    expect(items.map((item) => item.claimSummary?.total).sort()).toEqual([
+      0, 0, 2,
+    ]);
+    expect(ops(db)).toEqual(
+      [
+        'review.findMany',
+        'review.count',
+        'packageRevision.findMany',
+        'packageRevision.findMany',
+        'claim.findMany',
+      ].sort()
+    );
+    const claims = db.log.find((e) => e.op === 'claim.findMany')!.where!;
+    expect([...claims.reviewId.in].sort()).toEqual(
+      items.map((item) => item.id).sort()
+    );
+  });
+
+  it('QB3 a derived queue scans decisions, then reads only its page in full', async () => {
+    const { db, r } = await board();
+    db.log.length = 0;
+    await queue(db, { queue: 'APPROVED' });
+    const reads = db.log.filter((e) => e.op === 'review.findMany');
+    expect(reads).toHaveLength(2);
+    expect(reads[1].where).toEqual({
+      organizationId: ORG_A,
+      id: { in: [r.d9.id, r.p4.id] },
+    });
+  });
+});
+
+describe('ContentStudioReviewService: Review & Approval queue tenancy (P5-06)', () => {
+  it('QSEC1-QSEC4 an organization lists, names and filters its own reviews only', async () => {
+    const { db, pb, dbB } = await boardB();
+    const a = await request(db, 'PACKAGE_REVISION', PKG_REV_4);
+    const listedA = await queue(db);
+    expect(listedA.results.map((item) => item.id)).toEqual([a.id]);
+    const textA = JSON.stringify(listedA);
+    for (const leak of [pb.id, dbB.id, 'Rival', USER_B, 'Other', ORG_B]) {
+      expect(textA).not.toContain(leak);
+    }
+    expect(await queueIds(db, { queue: 'APPROVED' })).toEqual([]);
+    expect(await queueIds(db, { queue: 'NEEDS_REVIEW' })).toEqual([a.id]);
+    const listedB = await queue(db, {}, ORG_B);
+    expect(new Set(listedB.results.map((item) => item.id))).toEqual(
+      new Set([pb.id, dbB.id])
+    );
+    expect(
+      listedB.results.map((item) => item.target.parentName).sort()
+    ).toEqual(['Rival Banner', 'Rival Plan']);
+    expect(await queueIds(db, { queue: 'APPROVED' }, ORG_B)).toEqual([pb.id]);
+    expect(JSON.stringify(listedB)).not.toContain('Summer');
+  });
+
+  it('M11/M12 every read of the queue names the organization', async () => {
+    const { db } = await boardB();
+    await request(db, 'PACKAGE_REVISION', PKG_REV_4);
+    db.log.length = 0;
+    await queue(db, {}, ORG_B);
+    await queue(db, { queue: 'APPROVED' }, ORG_B);
+    await queue(db, { queue: 'PENDING_APPROVAL', search: 'rival' }, ORG_B);
+    expect(db.log.length).toBeGreaterThan(8);
+    for (const entry of db.log) {
+      expect(entry.where!.organizationId).toBe(ORG_B);
+    }
+  });
+
+  it('a revision whose package is not in the organization fails the page closed', async () => {
+    const { db, r } = await board();
+    db.tables.parent = db.tables.parent.filter(
+      (entry) => entry.id !== 'package-other'
+    );
+    expect(await code(queue(db))).toEqual({
+      status: 500,
+      code: 'CS_REVIEW_INTEGRITY_ERROR',
+    });
+    expect(r.po.id).toBeDefined();
+    // a queue without that row is unaffected
+    expect(await queueIds(db, { queue: 'APPROVED' })).toHaveLength(2);
+  });
+});
+
+describe('ContentStudioReviewService: Review & Approval queue integrity (P5-06)', () => {
+  it('a corrupt approval history fails a derived queue closed, never skipped or shown as approved', async () => {
+    const { db, r } = await board();
+    const row = db.tables.approval.find((entry) => entry.reviewId === r.p5.id)!;
+    row.sequence = 2;
+    for (const queueName of ['APPROVED', 'PENDING_APPROVAL', 'REFUSED']) {
+      expect(await code(queue(db, { queue: queueName }))).toEqual({
+        status: 500,
+        code: 'CS_APPROVAL_INTEGRITY_ERROR',
+      });
+    }
+    expect(await code(queue(db))).toEqual({
+      status: 500,
+      code: 'CS_APPROVAL_INTEGRITY_ERROR',
+    });
+  });
+
+  it('a review of unknown state is a review integrity error, never an approval state of its own', async () => {
+    const { db, r } = await board();
+    const row = db.tables.review.find((entry) => entry.id === r.p4.id)!;
+    row.state = 'APPROVED';
+    expect(await code(queue(db))).toEqual({
+      status: 500,
+      code: 'CS_REVIEW_INTEGRITY_ERROR',
+    });
+    // a queue asks the database for the review states it maps to only: a
+    // state no queue maps to is in none
+    expect(await queueIds(db, { queue: 'APPROVED' })).toEqual([r.d9.id]);
+    // and if the scan ever reads one, it fails closed
+    const repository = db.repository as any;
+    const scan = repository.listReviewDecisionsForOrganization.bind(repository);
+    repository.listReviewDecisionsForOrganization = async (input: Row) => [
+      ...(await scan(input)),
+      { id: r.p4.id, state: 'APPROVED', approvals: [] },
+    ];
+    expect(await code(queue(db, { queue: 'APPROVED' }))).toEqual({
+      status: 500,
+      code: 'CS_REVIEW_INTEGRITY_ERROR',
+    });
+  });
+
+  it('M5 an approval taken back is never approved, even though its history holds an APPROVED', async () => {
+    const { db, r } = await board();
+    expect(
+      db.tables.approval.some(
+        (entry) => entry.reviewId === r.po.id && entry.decision === 'APPROVED'
+      )
+    ).toBe(true);
+    expect(await queueIds(db, { queue: 'APPROVED' })).not.toContain(r.po.id);
+  });
+
+  it('a package approval whose claim assessment no longer holds fails the queue closed (P5-05 checks)', async () => {
+    const { db, review } = await readyClaimed();
+    await decide(db, review.id, 'approve');
+    expect(await queueIds(db, { queue: 'APPROVED' })).toEqual([review.id]);
+    const claim = db.tables.claim.find((row) => row.claimId === C1)!;
+    claim.status = 'NEEDS_REVISION';
+    claim.finding = 'Changed behind the service.';
+    for (const filter of [{ queue: 'APPROVED' }, {}]) {
+      expect(await code(queue(db, filter))).toEqual({
+        status: 500,
+        code: 'CS_REVIEW_INTEGRITY_ERROR',
+      });
+    }
+  });
+
+  it('a corrupt revision request fails its page closed', async () => {
+    const { db } = await board();
+    db.tables.revisionRequest[0].status = 'DONE';
+    expect(await code(queue(db, { queue: 'CHANGES_REQUESTED' }))).toEqual({
+      status: 500,
+      code: 'CS_REVIEW_INTEGRITY_ERROR',
+    });
+  });
+
+  it('PQ6/M5 another revision with the same hash shows nothing of an approval', async () => {
+    const db = discussion();
+    const twin = {
+      ...packageRevision(uuid(500), ORG_A, 50, 'v4'),
+      contentHash: '',
+    };
+    const four = db.tables.packageRevision.find((row) => row.id === PKG_REV_4)!;
+    db.tables.packageRevision.push({
+      ...twin,
+      content: four.content,
+      contentHash: four.contentHash,
+    });
+    const approved = await reviewIn(db, 'READY_FOR_APPROVAL');
+    await decide(db, approved.id, 'approve');
+    const other = await reviewIn(
+      db,
+      'READY_FOR_APPROVAL',
+      'PACKAGE_REVISION',
+      uuid(500)
+    );
+    const items = (await queue(db)).results;
+    expect(items.find((item) => item.id === other.id)!.approval.state).toBe(
+      'PENDING_APPROVAL'
+    );
+    expect(await queueIds(db, { queue: 'APPROVED' })).toEqual([approved.id]);
+  });
+});
+
+describe('ContentStudioReviewService: a review read across a commit (P5-06)', () => {
+  // Prisma reads a review and its events in two statements: a transition
+  // committed between them shows one event more than the row's version
+  const tear = (db: Db, times: number) => {
+    const model = (db.repository as any)._review.model.contentStudioReview;
+    const read = { findFirst: model.findFirst, findMany: model.findMany };
+    let left = times;
+    const torn = (row: Row) => ({
+      ...row,
+      stateEvents: [
+        ...row.stateEvents,
+        {
+          sequence: row.version + 1,
+          fromState: row.state,
+          toState: 'CANCELLED',
+          createdAt: new Date(),
+          actorUser: { id: USER_A, name: 'Ann' },
+        },
+      ],
+    });
+    model.findFirst = async (args: Row) => {
+      const row = await read.findFirst(args);
+      return row && left-- > 0 ? torn(row) : row;
+    };
+    model.findMany = async (args: Row) => {
+      const rows = await read.findMany(args);
+      return 'approvals' in (args.select ?? {}) || left-- <= 0
+        ? rows
+        : rows.map(torn);
+    };
+  };
+
+  it('a torn read is read again, never reported as corrupt', async () => {
+    const { db, r } = await board();
+    tear(db, 2);
+    expect((await queue(db)).results).toHaveLength(9);
+    tear(db, 1);
+    expect(
+      (
+        await db.service.getApproval({
+          organizationId: ORG_A,
+          reviewId: r.p4.id,
+        })
+      ).state
+    ).toBe('APPROVED');
+    tear(db, 2);
+    expect((await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4)).state).toBe(
+      'APPROVED'
+    );
+  });
+
+  it('one that stays torn, or a history that is really longer, is still an integrity error', async () => {
+    const { db, r } = await board();
+    tear(db, 3);
+    expect(await code(queue(db))).toEqual({
+      status: 500,
+      code: 'CS_REVIEW_INTEGRITY_ERROR',
+    });
+    const fresh = await board();
+    fresh.db.tables.event.push({
+      ...fresh.db.tables.event.find((e) => e.reviewId === fresh.r.p3.id)!,
+      id: 'event-extra',
+      sequence: 2,
+      fromState: 'REQUESTED',
+      toState: 'IN_REVIEW',
+    });
+    fresh.db.log.length = 0;
+    expect(
+      await code(
+        fresh.db.service.listComments({
+          organizationId: ORG_A,
+          reviewId: fresh.r.p3.id,
+          page: 1,
+        })
+      )
+    ).toEqual({ status: 500, code: 'CS_REVIEW_INTEGRITY_ERROR' });
+    // read three times at most, never more
+    expect(
+      fresh.db.log.filter((e) => e.op === 'review.findFirst')
+    ).toHaveLength(3);
+    expect(r.p4.id).toBeDefined();
+  });
+});
+
+describe('ContentStudioReviewService Review & Approval queue boundaries (P5-06)', () => {
+  const read = (file: string) =>
+    readFileSync(join(__dirname, file), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+  it('P506-2/P506-3 the queue writes nothing and stores no queue or approval state', async () => {
+    const { db } = await board();
+    const before = snapshot(db);
+    db.log.length = 0;
+    await queue(db);
+    for (const queueName of ['NEEDS_REVIEW', 'APPROVED', 'PENDING_APPROVAL']) {
+      await queue(db, { queue: queueName });
+    }
+    expect(snapshot(db)).toBe(before);
+    expect(db.log.filter((e) => /create|update|delete/i.test(e.op))).toEqual(
+      []
+    );
+  });
+
+  it('P506-1/P506-2 no model or column holds a queue, inbox or derived state', () => {
+    const schema = readFileSync(
+      join(__dirname, '..', 'schema.prisma'),
+      'utf8'
+    ).replace(/\/\/.*$/gm, '');
+    expect(schema).not.toMatch(/model \w*(Queue|Inbox|WorkItem)\w* \{/);
+    const review = schema.slice(
+      schema.indexOf('model ContentStudioReview {'),
+      schema.indexOf('}', schema.indexOf('model ContentStudioReview {'))
+    );
+    expect(review).not.toMatch(
+      /queue|inbox|lifecycle|bindingState|approvalState|approved|lastActivity|parentName/i
+    );
+  });
+
+  it('P506-4/P506-5 the queue gates nothing: handoff and publishing never read it', () => {
+    const root = join(__dirname, '..', '..', '..', '..', '..', '..');
+    for (const file of [
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.handoff.service.ts',
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.handoff.repository.ts',
+      'libraries/nestjs-libraries/src/database/prisma/posts/posts.service.ts',
+    ]) {
+      expect(readFileSync(join(root, file), 'utf8')).not.toMatch(
+        /listReviews|ReviewQueue|reviewQueue|requireApprovedRevision|CONTENT_STUDIO_REVIEW_QUEUE|ContentStudioReview/
+      );
+    }
+  });
+
+  it('P506-7/P506-8 a queue is derived with the shared rules only and resolves no evidence', () => {
+    const service = read('content-studio.review.service.ts');
+    const list = service.slice(
+      service.indexOf('async listReviews('),
+      service.indexOf('async requestReview(')
+    );
+    expect(list).toMatch(/deriveContentStudioRevisionApprovalBindingState/);
+    expect(list).toMatch(/contentStudioApprovalStatus\(/);
+    expect(list).toMatch(/this\.approvalBindings\(/);
+    expect(list).not.toMatch(
+      /resolveEvidence|groundingService|decision === 'APPROVED'|\.some\(\(\w+\) => \w+\.decision/
+    );
   });
 });

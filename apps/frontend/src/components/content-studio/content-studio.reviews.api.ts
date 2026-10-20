@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useMemo } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import useSWR, { useSWRConfig } from 'swr';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import type {
@@ -17,9 +18,15 @@ import type {
   ContentStudioApprovalAction,
   ContentStudioApprovalDecision,
   ContentStudioApprovalState,
+  ContentStudioReviewQueue,
+} from '@gitroom/nestjs-libraries/content-studio/review/review.approval';
+import {
+  CONTENT_STUDIO_REVIEW_QUEUE_SEARCH_MAX,
+  isContentStudioReviewQueue,
 } from '@gitroom/nestjs-libraries/content-studio/review/review.approval';
 import {
   ContentStudioRequestError,
+  ContentStudioRevisionApprovalSummary,
   request,
   swrOptions,
 } from '@gitroom/frontend/components/content-studio/content-studio.api';
@@ -39,7 +46,10 @@ import { designErrorCode } from '@gitroom/frontend/components/content-studio/con
 // source version up for it), and an assessment sends a status and a
 // finding only. Approval (P5-04) is a ready review's own: its current state
 // and whole decision history as the server derived and checked them, and a
-// decision is its route plus a note, nothing else
+// decision is its route plus a note, nothing else. The Review & Approval
+// queue (P5-06) is the same list of reviews, one page at a time, filtered by
+// the binding state the server derives for each; a row is opened at exactly
+// its revision, from the ids the server sent for it
 
 interface ContentStudioReviewPerson {
   id: string;
@@ -142,7 +152,39 @@ export interface ContentStudioReviewApproval {
   }[];
 }
 
+// One row of the Review & Approval queue (P5-06): the review as above, with
+// the package or design it is about and its exact revision, where that
+// revision stands now (P5-05), the status of its revision request (a review
+// that asked for changes; null: none recorded) and the claim counts of a
+// package review in review. Never a comment, note, history or evidence
+export interface ContentStudioReviewQueueItem extends ContentStudioReview {
+  target: {
+    type: ContentStudioReviewTargetType;
+    revisionId: string;
+    revisionNumber: number;
+    parentId: string;
+    parentName: string;
+  };
+  approval: ContentStudioRevisionApprovalSummary & {
+    decidedAt: string | null;
+  };
+  revisionRequest: { status: ContentStudioRevisionRequestStatus } | null;
+  claimSummary: ContentStudioReviewClaimSummary | null;
+}
+
+export interface ContentStudioReviewQueueFilters {
+  // null: every review
+  queue: ContentStudioReviewQueue | null;
+  targetType: ContentStudioReviewTargetType | null;
+  search: string;
+  page: number;
+}
+
 export const REVIEWS_PATH = '/content-studio/reviews';
+// The page of the queue in the app
+export const REVIEW_QUEUE_PAGE = '/content-studio/reviews';
+const PAGE_MAX = 100_000;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // The saved revisions of packages and designs, listed or opened: each shows
 // whether exactly it is approved (P5-05), so a review write reloads them too.
 // Never a package or a design itself: that would reload a draft being edited
@@ -162,6 +204,132 @@ export const reviewForRevisionPath = (
   `${REVIEWS_PATH}?targetType=${targetType}&targetRevisionId=${encodeURIComponent(
     revisionId
   )}`;
+
+// The queue of the URL: a known queue (none: Needs review; "all": every
+// review), a target type, a search and a page; anything else is the default
+export const parseContentStudioReviewQueueFilters = (search: {
+  get(name: string): string | null;
+}): ContentStudioReviewQueueFilters => {
+  const queue = search.get('queue');
+  const type = search.get('type');
+  const page = search.get('page');
+  const pageNumber = page && /^\d+$/.test(page) ? Number(page) : 1;
+  return {
+    queue:
+      queue === 'all'
+        ? null
+        : isContentStudioReviewQueue(queue)
+        ? queue
+        : 'NEEDS_REVIEW',
+    targetType:
+      type === 'PACKAGE_REVISION' || type === 'DESIGN_REVISION' ? type : null,
+    search: (search.get('search') ?? '').slice(
+      0,
+      CONTENT_STUDIO_REVIEW_QUEUE_SEARCH_MAX
+    ),
+    page: pageNumber >= 1 && pageNumber <= PAGE_MAX ? pageNumber : 1,
+  };
+};
+
+export const reviewQueuePath = (filters: ContentStudioReviewQueueFilters) => {
+  const params = new URLSearchParams({ page: String(filters.page) });
+  if (filters.queue) {
+    params.set('queue', filters.queue);
+  }
+  if (filters.targetType) {
+    params.set('targetType', filters.targetType);
+  }
+  if (filters.search.trim()) {
+    params.set('search', filters.search.trim());
+  }
+  return `${REVIEWS_PATH}?${params.toString()}`;
+};
+
+// The filters live in the URL, so leaving for a review and coming back
+// shows the same queue. A new queue, type or search starts on page 1
+export const useContentStudioReviewQueueFilters = () => {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const filters = useMemo(
+    () => parseContentStudioReviewQueueFilters(searchParams),
+    [searchParams]
+  );
+  const setFilters = useCallback(
+    (next: Partial<ContentStudioReviewQueueFilters>) => {
+      const merged = { ...filters, page: 1, ...next };
+      const params = new URLSearchParams();
+      if (merged.queue !== 'NEEDS_REVIEW') {
+        params.set('queue', merged.queue ?? 'all');
+      }
+      if (merged.targetType) {
+        params.set('type', merged.targetType);
+      }
+      if (merged.search.trim()) {
+        params.set('search', merged.search.trim());
+      }
+      if (merged.page > 1) {
+        params.set('page', String(merged.page));
+      }
+      const query = params.toString();
+      router.replace(query ? `${pathname}?${query}` : pathname, {
+        scroll: false,
+      });
+    },
+    [filters, pathname, router]
+  );
+  return { filters, setFilters };
+};
+
+// One page of the queue as the server derived it. A row whose target does
+// not agree with its own review is refused: it would open another revision
+export const useContentStudioReviewQueue = (
+  filters: ContentStudioReviewQueueFilters
+) => {
+  const fetch = useFetch();
+  const load = useCallback(
+    async (path: string) => {
+      const list = await request<{
+        pages: number;
+        results: ContentStudioReviewQueueItem[];
+      }>(fetch, path);
+      if (
+        list.results.some(
+          (item) =>
+            item.target.type !== item.targetType ||
+            item.target.revisionId !== item.targetRevisionId ||
+            item.target.revisionNumber !== item.targetRevisionNumber
+        )
+      ) {
+        throw new ContentStudioRequestError(500, 'CS_REVIEW_INTEGRITY_ERROR');
+      }
+      return list;
+    },
+    [fetch]
+  );
+  return useSWR(reviewQueuePath(filters), load, swrOptions);
+};
+
+// Where a review is acted on: exactly its revision, in its package (the
+// version opened in the history) or its design, by the ids the server sent,
+// never "the latest" and never anything typed
+export const contentStudioReviewTargetHref = (target: {
+  type: ContentStudioReviewTargetType;
+  parentId: string;
+  revisionId: string;
+}) =>
+  `${
+    target.type === 'PACKAGE_REVISION'
+      ? '/content-studio'
+      : '/content-studio/designs'
+  }/${encodeURIComponent(target.parentId)}?revision=${encodeURIComponent(
+    target.revisionId
+  )}`;
+
+// The revision a link asks a package or design to open, or null when it is
+// not a revision id
+export const contentStudioLinkedRevisionId = (value: unknown) =>
+  typeof value === 'string' && UUID.test(value) ? value : null;
 
 // The review of exactly this revision, or null when it has none. A revision
 // has at most one; anything that is not about this very revision is refused

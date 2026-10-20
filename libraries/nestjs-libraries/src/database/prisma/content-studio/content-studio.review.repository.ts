@@ -175,6 +175,42 @@ export interface ContentStudioReviewTargetFilter {
   designRevisionId?: string | { not: null };
 }
 
+// The reviews of an organization a list asks for (P5-06): the target filter,
+// the review states (none: every state) and a part of the name of the
+// package or design the reviewed revision belongs to
+export interface ContentStudioReviewListFilter {
+  organizationId: string;
+  target: ContentStudioReviewTargetFilter;
+  states?: string[];
+  parentName?: string;
+}
+
+// A review and its state events are read by two statements: a transition
+// committed between them shows an event the row read does not have yet. Such
+// a read is read again (events are only ever appended, so a later read is
+// whole), twice at most; anything still not whole is the service's to
+// report, never repaired here
+const isTorn = (row: { version: number; stateEvents: unknown[] } | null) =>
+  !!row && row.stateEvents.length > row.version;
+const whole = async <
+  T extends { version: number; stateEvents: unknown[] } | null
+>(
+  read: () => Promise<T[]>
+) => {
+  let rows = await read();
+  for (let again = 0; again < 2 && rows.some(isTorn); again++) {
+    rows = await read();
+  }
+  return rows;
+};
+
+// The parent of a reviewed revision, read through the revision's own
+// relation (package and design are bound to the revision's organization)
+const parentNameFilter = (name: string) => ({
+  contains: name,
+  mode: 'insensitive' as const,
+});
+
 // The reviews of some exact revisions of one type
 export type ContentStudioReviewRevisionsFilter =
   | { packageRevisionId: { in: string[] } }
@@ -195,7 +231,11 @@ export type ContentStudioReviewRevisionsFilter =
 // version read, after the history is read again inside that transaction:
 // two decisions of one review wait for each other on that row. Approval
 // binding (P5-05) only reads: the reviews of a page of exact revisions, their
-// decisions, claim assessments and revisions, each in one query by ids
+// decisions, claim assessments and revisions, each in one query by ids. The
+// Review & Approval queue (P5-06) only reads too: a page of reviews, most
+// recently active first, and what each row shows of them (the names of their
+// packages and designs, their revision requests' status), each in one query
+// for the page
 @Injectable()
 export class ContentStudioReviewRepository {
   constructor(
@@ -265,37 +305,155 @@ export class ContentStudioReviewRepository {
     });
   }
 
-  listReviewsForOrganization(input: {
-    organizationId: string;
-    target: ContentStudioReviewTargetFilter;
-    state?: string;
-    skip: number;
-    take: number;
-  }) {
-    return this._review.model.contentStudioReview.findMany({
-      where: {
-        organizationId: input.organizationId,
-        ...input.target,
-        state: input.state,
-      },
-      // id breaks ties so pages never overlap
-      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
-      select: REVIEW,
-      skip: input.skip,
-      take: input.take,
-    });
+  // Everything a list filters on besides the organization, which every
+  // query names itself
+  private reviewsFilter(input: ContentStudioReviewListFilter) {
+    return {
+      ...input.target,
+      state: input.states ? { in: input.states } : undefined,
+      ...(input.parentName
+        ? {
+            OR: [
+              {
+                packageRevision: {
+                  is: { package: { name: parentNameFilter(input.parentName) } },
+                },
+              },
+              {
+                designRevision: {
+                  is: {
+                    designProject: {
+                      name: parentNameFilter(input.parentName),
+                    },
+                  },
+                },
+              },
+            ],
+          }
+        : {}),
+    };
   }
 
-  countReviewsForOrganization(input: {
-    organizationId: string;
-    target: ContentStudioReviewTargetFilter;
-    state?: string;
-  }) {
+  // Most recently active first (a transition, comment, claim assessment or
+  // approval decision moves updatedAt); id breaks ties so pages never overlap
+  listReviewsForOrganization(
+    input: ContentStudioReviewListFilter & { skip: number; take: number }
+  ) {
+    return whole(() =>
+      this._review.model.contentStudioReview.findMany({
+        where: {
+          organizationId: input.organizationId,
+          ...this.reviewsFilter(input),
+        },
+        orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+        select: REVIEW,
+        skip: input.skip,
+        take: input.take,
+      })
+    );
+  }
+
+  countReviewsForOrganization(input: ContentStudioReviewListFilter) {
     return this._review.model.contentStudioReview.count({
       where: {
         organizationId: input.organizationId,
-        ...input.target,
-        state: input.state,
+        ...this.reviewsFilter(input),
+      },
+    });
+  }
+
+  // One chunk of the reviews a queue of derived approval state looks
+  // through (P5-06), in the same order as the list, after the review with
+  // the id given (none: from the start): each review's id and state and its
+  // decisions' sequence and decision only, never a note, a target or content
+  listReviewDecisionsForOrganization(
+    input: ContentStudioReviewListFilter & {
+      after: string | null;
+      take: number;
+    }
+  ) {
+    return this._review.model.contentStudioReview.findMany({
+      where: {
+        organizationId: input.organizationId,
+        ...this.reviewsFilter(input),
+      },
+      orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+      ...(input.after ? { cursor: { id: input.after }, skip: 1 } : {}),
+      take: input.take,
+      select: {
+        id: true,
+        state: true,
+        approvals: {
+          where: {
+            organizationId: input.organizationId,
+          },
+          orderBy: {
+            sequence: 'asc',
+          },
+          select: {
+            sequence: true,
+            decision: true,
+          },
+        },
+      },
+    });
+  }
+
+  // Exactly these reviews, in no particular order (the caller has the order)
+  listReviewsByIdsForOrganization(organizationId: string, ids: string[]) {
+    return whole(() =>
+      this._review.model.contentStudioReview.findMany({
+        where: {
+          organizationId,
+          id: { in: ids },
+        },
+        select: REVIEW,
+      })
+    );
+  }
+
+  // The package of each of these exact package revisions, by its name only
+  // (P5-06): never its draft or another revision
+  listPackageRevisionParentsForOrganization(
+    organizationId: string,
+    ids: string[]
+  ) {
+    return this._packageRevision.model.contentPackageRevision.findMany({
+      where: {
+        id: { in: ids },
+        organizationId,
+      },
+      select: {
+        id: true,
+        packageId: true,
+        package: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+    });
+  }
+
+  listDesignRevisionParentsForOrganization(
+    organizationId: string,
+    ids: string[]
+  ) {
+    return this._designRevision.model.contentStudioDesignRevision.findMany({
+      where: {
+        id: { in: ids },
+        organizationId,
+      },
+      select: {
+        id: true,
+        designProjectId: true,
+        designProject: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
       },
     });
   }
@@ -305,23 +463,28 @@ export class ContentStudioReviewRepository {
     organizationId: string,
     target: ContentStudioReviewRevisionsFilter
   ) {
-    return this._review.model.contentStudioReview.findMany({
-      where: {
-        organizationId,
-        ...target,
-      },
-      select: REVIEW,
-    });
+    return whole(() =>
+      this._review.model.contentStudioReview.findMany({
+        where: {
+          organizationId,
+          ...target,
+        },
+        select: REVIEW,
+      })
+    );
   }
 
-  getReviewForOrganization(organizationId: string, id: string) {
-    return this._review.model.contentStudioReview.findFirst({
-      where: {
-        id,
-        organizationId,
-      },
-      select: REVIEW,
-    });
+  async getReviewForOrganization(organizationId: string, id: string) {
+    const [row] = await whole(async () => [
+      await this._review.model.contentStudioReview.findFirst({
+        where: {
+          id,
+          organizationId,
+        },
+        select: REVIEW,
+      }),
+    ]);
+    return row;
   }
 
   // The review in REQUESTED at version 1 and its first event, or neither. A
@@ -581,6 +744,23 @@ export class ContentStudioReviewRepository {
           organizationId,
         },
         select: REVISION_REQUEST,
+      }
+    );
+  }
+
+  // The revision requests of several reviews at once (P5-06), each with the
+  // review it belongs to: at most one per review
+  listRevisionRequestsForReviews(organizationId: string, reviewIds: string[]) {
+    return this._revisionRequest.model.contentStudioReviewRevisionRequest.findMany(
+      {
+        where: {
+          organizationId,
+          reviewId: { in: reviewIds },
+        },
+        select: {
+          ...REVISION_REQUEST,
+          reviewId: true,
+        },
       }
     );
   }

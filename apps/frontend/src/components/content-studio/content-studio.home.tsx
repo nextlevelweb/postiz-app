@@ -22,6 +22,7 @@ import {
 } from '@gitroom/frontend/components/content-studio/content-studio.package.list';
 import { CreateContentStudioPackageModal } from '@gitroom/frontend/components/content-studio/content-studio.package.modal';
 import { ContentStudioProjectsModal } from '@gitroom/frontend/components/content-studio/content-studio.projects.modal';
+import { REVIEW_QUEUE_PAGE } from '@gitroom/frontend/components/content-studio/content-studio.reviews.api';
 
 // The Content Studio home: packages of the organization, filtered by project
 // and archive state on the server, one summary page at a time
@@ -136,6 +137,12 @@ export const ContentStudioHome: FC = () => {
             className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
           >
             {t('content_studio_creative_studio', 'Creative Studio')}
+          </Link>
+          <Link
+            href={REVIEW_QUEUE_PAGE}
+            className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
+          >
+            {t('content_studio_review_queue', 'Review & Approval')}
           </Link>
           <Link
             href="/content-studio/intelligence"

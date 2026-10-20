@@ -85,6 +85,7 @@ import { DesignStylePresets } from '@gitroom/frontend/components/content-studio/
 import { DesignCreativeLibrary } from '@gitroom/frontend/components/content-studio/content-studio.design-library';
 import { ContentStudioReviewStatus } from '@gitroom/frontend/components/content-studio/content-studio.review.status';
 import { ContentStudioRevisionApprovalBadge } from '@gitroom/frontend/components/content-studio/content-studio.review.approval';
+import { contentStudioLinkedRevisionId } from '@gitroom/frontend/components/content-studio/content-studio.reviews.api';
 
 // The Creative Studio workspace of one design: its pages and layers, a live
 // structural preview, an inspector, the revision history, and server renders
@@ -1404,10 +1405,14 @@ const NotLoaded: FC<{ children: ReactNode; retry?: () => void }> = ({
 // One design: its current revision (or an opened older one), read-only, the
 // review of exactly that saved revision (P5-01), and its history. An
 // archived design stays readable and renderable; only its rename is gone
-// until it is restored
-export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
-  designId,
-}) => {
+// until it is restored. A link to one saved revision (the Review & Approval
+// queue, P5-06) opens exactly that revision once its own detail confirms it;
+// until then, or when it cannot be read, the current one is not shown in its
+// place
+export const ContentStudioDesignWorkspace: FC<{
+  designId: string;
+  linkedRevisionId?: string;
+}> = ({ designId, linkedRevisionId }) => {
   const t = useT();
   const detail = useContentStudioDesign(designId);
   const [historyPage, setHistoryPage] = useState(1);
@@ -1416,7 +1421,18 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
     id: string;
     revisionNumber: number;
   } | null>(null);
-  const opened = useContentStudioDesignRevision(designId, viewing?.id ?? null);
+  // the linked revision, until it is shown
+  const [linked, setLinked] = useState(() =>
+    contentStudioLinkedRevisionId(linkedRevisionId)
+  );
+  // a new link while this design is shown asks for its own revision
+  useEffect(() => {
+    setLinked(contentStudioLinkedRevisionId(linkedRevisionId));
+  }, [linkedRevisionId]);
+  const opened = useContentStudioDesignRevision(
+    designId,
+    viewing?.id ?? linked
+  );
   const [pageId, setPageId] = useState<string | null>(null);
   const commands = useDesignCommands();
   const render = useDesignRender(designId);
@@ -1437,6 +1453,18 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
     () => (opened.data ? parseDesign(opened.data.content) : null),
     [opened.data]
   );
+  const currentId = currentRevision?.id;
+  useEffect(() => {
+    if (!linked || !currentId || opened.data?.id !== linked) {
+      return;
+    }
+    setLinked(null);
+    setViewing(
+      linked === currentId
+        ? null
+        : { id: linked, revisionNumber: opened.data.revisionNumber }
+    );
+  }, [linked, currentId, opened.data]);
 
   if (detail.error) {
     const code = designErrorCode(detail.error);
@@ -1468,6 +1496,27 @@ export const ContentStudioDesignWorkspace: FC<{ designId: string }> = ({
           'Design could not be loaded safely.'
         )}
       </NotLoaded>
+    );
+  }
+
+  if (linked) {
+    return opened.error ? (
+      <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col items-center gap-[12px] py-[40px] min-w-0">
+        <div role="alert">
+          {t(
+            'content_studio_linked_design_revision_error',
+            'This revision could not be opened.'
+          )}
+        </div>
+        <Button secondary onClick={() => setLinked(null)}>
+          {t(
+            'content_studio_linked_design_revision_current',
+            'Show the current revision'
+          )}
+        </Button>
+      </div>
+    ) : (
+      <LoadingComponent />
     );
   }
 

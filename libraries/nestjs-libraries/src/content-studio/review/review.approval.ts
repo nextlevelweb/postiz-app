@@ -1,4 +1,5 @@
 import {
+  CONTENT_STUDIO_REVIEW_STATES,
   ContentStudioReviewState,
   isContentStudioReviewState,
   isContentStudioReviewText,
@@ -238,3 +239,65 @@ export const isContentStudioRevisionApprovalState = (
 // The one answer to "is this revision approved?"
 export const isContentStudioRevisionApproved = (state: unknown) =>
   state === 'APPROVED';
+
+// The Review & Approval queue (P5-06): the reviews of an organization by the
+// binding state their exact revision derives now, never by a stored status.
+// Each queue is a set of binding states; a review's own state decides the
+// non-approval ones, and the approval history of a review that is ready for
+// approval decides whether it is pending, approved or refused now
+export const CONTENT_STUDIO_REVIEW_QUEUES = [
+  'NEEDS_REVIEW',
+  'CHANGES_REQUESTED',
+  'PENDING_APPROVAL',
+  'APPROVED',
+  'REFUSED',
+  'CANCELLED',
+] as const;
+export type ContentStudioReviewQueue =
+  (typeof CONTENT_STUDIO_REVIEW_QUEUES)[number];
+
+export const CONTENT_STUDIO_REVIEW_QUEUE_STATES: Record<
+  ContentStudioReviewQueue,
+  readonly ContentStudioRevisionApprovalState[]
+> = {
+  NEEDS_REVIEW: ['REVIEW_REQUESTED', 'IN_REVIEW'],
+  CHANGES_REQUESTED: ['CHANGES_REQUESTED'],
+  PENDING_APPROVAL: ['PENDING_APPROVAL'],
+  APPROVED: ['APPROVED'],
+  REFUSED: ['REFUSED'],
+  CANCELLED: ['REVIEW_CANCELLED'],
+};
+
+export const isContentStudioReviewQueue = (
+  value: unknown
+): value is ContentStudioReviewQueue =>
+  typeof value === 'string' &&
+  (CONTENT_STUDIO_REVIEW_QUEUES as readonly string[]).includes(value);
+
+// The review states whose reviews can have one of these binding states: the
+// ones a database filter may narrow to before anything is derived
+export const contentStudioReviewStatesOfBindingStates = (
+  states: readonly ContentStudioRevisionApprovalState[]
+): ContentStudioReviewState[] =>
+  CONTENT_STUDIO_REVIEW_STATES.filter((reviewState) =>
+    reviewState === 'READY_FOR_APPROVAL'
+      ? CONTENT_STUDIO_APPROVAL_STATES.some((approvalState) =>
+          states.includes(APPROVAL_BINDING[approvalState])
+        )
+      : states.includes(REVIEW_BINDING[reviewState])
+  );
+
+// Whether the review state alone cannot tell: some, but not every, approval
+// state of a review that is ready for approval belongs to these binding
+// states, so its approval history has to be derived first
+export const isContentStudioApprovalDerivationNeeded = (
+  states: readonly ContentStudioRevisionApprovalState[]
+) => {
+  const included = CONTENT_STUDIO_APPROVAL_STATES.filter((approvalState) =>
+    states.includes(APPROVAL_BINDING[approvalState])
+  ).length;
+  return included > 0 && included < CONTENT_STUDIO_APPROVAL_STATES.length;
+};
+
+// A queue may be narrowed by part of the package or design name
+export const CONTENT_STUDIO_REVIEW_QUEUE_SEARCH_MAX = 100;

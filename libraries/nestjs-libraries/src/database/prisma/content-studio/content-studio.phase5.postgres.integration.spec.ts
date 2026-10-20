@@ -21,8 +21,9 @@ import { parseContentStudioSourceVersionInput } from '@gitroom/nestjs-libraries/
 import { createContentStudioPostgresClient } from '../../../../../../jest.content-studio.postgres.guard';
 
 // Phase 5 on a real PostgreSQL (P5-04): reviews, their claim review and
-// approval decisions under real concurrent transactions, and (P5-05) the
-// approval binding of exact revisions read through the real queries. Opt-in: runs only
+// approval decisions under real concurrent transactions, (P5-05) the
+// approval binding of exact revisions read through the real queries, and
+// (P5-06) the Review & Approval queue: its filters, names and pages. Opt-in: runs only
 // through jest.content-studio.integration.config.ts against the disposable
 // local database (see jest.content-studio.postgres.guard.ts). The review
 // repository and service run unchanged on real Prisma; Prisma is used
@@ -1288,5 +1289,337 @@ describe('PB1-PB6. Approval binding of exact revisions on the real database (P5-
         false
       );
     }
+  });
+});
+
+// ============================================================================
+describe('PQ1-PQ8. The Review & Approval queue on the real database (P5-06)', () => {
+  const queue = (
+    filter: Record<string, unknown> = {},
+    organizationId = ORG_A,
+    page = 1
+  ) => service.listReviews({ organizationId, page, ...filter });
+  const ids = async (
+    filter: Record<string, unknown> = {},
+    organizationId = ORG_A
+  ) => (await queue(filter, organizationId)).results.map((item) => item.id);
+  const named = async (id: string, name: string) => {
+    const revision = await client.contentPackageRevision.findUniqueOrThrow({
+      where: { id },
+      select: { packageId: true },
+    });
+    await client.contentPackage.update({
+      where: { id: revision.packageId },
+      data: { name },
+    });
+    return revision.packageId;
+  };
+  const ready = async (revisionId: string, targetType = 'PACKAGE_REVISION') => {
+    const review = await requestReview(targetType, revisionId);
+    await move(review.id, 'start');
+    await move(review.id, 'ready-for-approval');
+    return review.id;
+  };
+  // every binding state of one organization:
+  // approved, refused, pending (none), approved->withdrawn, refused->withdrawn,
+  // re-approved, in review, cancelled; and a design approved
+  const board = async () => {
+    const r: Record<string, string> = {};
+    r.approved = await ready((await packageRevision()).id);
+    await decide(r.approved, 'approve');
+    r.refused = await ready((await packageRevision()).id);
+    await decide(r.refused, 'refuse');
+    r.pending = await ready((await packageRevision()).id);
+    r.withdrawnApproval = await ready((await packageRevision()).id);
+    await decide(r.withdrawnApproval, 'approve');
+    await decide(r.withdrawnApproval, 'withdraw');
+    r.withdrawnRefusal = await ready((await packageRevision()).id);
+    await decide(r.withdrawnRefusal, 'refuse');
+    await decide(r.withdrawnRefusal, 'withdraw');
+    r.reapproved = await ready((await packageRevision()).id);
+    await decide(r.reapproved, 'approve');
+    await decide(r.reapproved, 'withdraw');
+    await decide(r.reapproved, 'approve');
+    const inReview = await requestReview(
+      'PACKAGE_REVISION',
+      (
+        await packageRevision()
+      ).id
+    );
+    await move(inReview.id, 'start');
+    r.inReview = inReview.id;
+    const cancelled = await requestReview(
+      'PACKAGE_REVISION',
+      (
+        await packageRevision()
+      ).id
+    );
+    await move(cancelled.id, 'cancel');
+    r.cancelled = cancelled.id;
+    const design = await designRevision();
+    r.design = await ready(design.id, 'DESIGN_REVISION');
+    await decide(r.design, 'approve');
+    return r;
+  };
+  // org B's own approved package review
+  const otherOrganization = async () => {
+    const revision = await packageRevision(ORG_B, 'Rival');
+    const b = as(ORG_B, USER_B1);
+    const review = await service.requestReview({
+      ...b,
+      targetType: 'PACKAGE_REVISION',
+      targetRevisionId: revision.id,
+    });
+    for (const action of ['start', 'ready-for-approval'] as const) {
+      await service.transitionReview({ ...b, id: review.id, action });
+    }
+    await service.decideApproval({
+      ...b,
+      reviewId: review.id,
+      action: 'approve',
+      note: null,
+    });
+    await named(revision.id, 'Rival Plan');
+    return review.id;
+  };
+
+  it("PQ1 mixed package and design rows are the organization's own, in every queue", async () => {
+    const r = await board();
+    const foreign = await otherOrganization();
+    const all = await queue();
+    expect(all.results).toHaveLength(9);
+    expect(new Set(all.results.map((item) => item.target.type))).toEqual(
+      new Set(['PACKAGE_REVISION', 'DESIGN_REVISION'])
+    );
+    expect(JSON.stringify(all)).not.toMatch(
+      /Rival|50400000-0000-4000-8000-00000000000b/
+    );
+    expect(new Set(await ids({ queue: 'APPROVED' }))).toEqual(
+      new Set([r.approved, r.reapproved, r.design])
+    );
+    expect(await ids({ queue: 'APPROVED' }, ORG_B)).toEqual([foreign]);
+    expect(await ids({ search: 'rival' })).toEqual([]);
+    expect(
+      (await queue({}, ORG_B)).results.map((item) => item.target.parentName)
+    ).toEqual(['Rival Plan']);
+  });
+
+  it('PQ2 Pending approval: no decision, a withdrawn approval and a withdrawn refusal; never one approved or refused now', async () => {
+    const r = await board();
+    expect(new Set(await ids({ queue: 'PENDING_APPROVAL' }))).toEqual(
+      new Set([r.pending, r.withdrawnApproval, r.withdrawnRefusal])
+    );
+  });
+
+  it('PQ3/PQ4 Approved and Refused hold the current decision only', async () => {
+    const r = await board();
+    const approved = await ids({ queue: 'APPROVED' });
+    expect(approved).toContain(r.reapproved);
+    expect(approved).not.toContain(r.withdrawnApproval);
+    expect(await ids({ queue: 'REFUSED' })).toEqual([r.refused]);
+    expect(new Set(await ids({ queue: 'NEEDS_REVIEW' }))).toEqual(
+      new Set([r.inReview])
+    );
+    expect(await ids({ queue: 'CANCELLED' })).toEqual([r.cancelled]);
+    // a withdrawal moves a review at once, through another client
+    await decide(r.approved, 'withdraw', hookedService({}).service, A1);
+    expect(await ids({ queue: 'APPROVED' })).not.toContain(r.approved);
+    expect(await ids({ queue: 'PENDING_APPROVAL' })).toContain(r.approved);
+    // most recently decided first
+    expect((await ids({ queue: 'PENDING_APPROVAL' }))[0]).toBe(r.approved);
+  });
+
+  it('PQ5 each row names exactly its own package or design and revision; search finds part of a name in any case', async () => {
+    const packageId = await createPackage();
+    const first = await packageRevision(ORG_A, 'One', 2, packageId);
+    const second = await packageRevision(ORG_A, 'Two', 7, packageId);
+    await named(first.id, 'Summer Launch');
+    const other = await packageRevision(ORG_A, 'Other', 3);
+    const otherPackage = await named(other.id, 'Autumn Promo');
+    const design = await designRevision();
+    const designProject = (
+      await client.contentStudioDesignRevision.findUniqueOrThrow({
+        where: { id: design.id },
+        select: { designProjectId: true },
+      })
+    ).designProjectId;
+    await client.contentStudioDesignProject.update({
+      where: { id: designProject },
+      data: { name: 'Hero Banner' },
+    });
+    const reviews = {
+      first: await requestReview('PACKAGE_REVISION', first.id),
+      second: await requestReview('PACKAGE_REVISION', second.id),
+      other: await requestReview('PACKAGE_REVISION', other.id),
+      design: await requestReview('DESIGN_REVISION', design.id),
+    };
+    const items = (await queue()).results;
+    const of = (id: string) => items.find((item) => item.id === id)!;
+    expect(of(reviews.first.id).target).toEqual({
+      type: 'PACKAGE_REVISION',
+      revisionId: first.id,
+      revisionNumber: 2,
+      parentId: packageId,
+      parentName: 'Summer Launch',
+    });
+    expect(of(reviews.second.id).target).toMatchObject({
+      revisionId: second.id,
+      revisionNumber: 7,
+      parentId: packageId,
+    });
+    expect(of(reviews.other.id).target).toMatchObject({
+      parentId: otherPackage,
+      parentName: 'Autumn Promo',
+    });
+    expect(of(reviews.design.id).target).toEqual({
+      type: 'DESIGN_REVISION',
+      revisionId: design.id,
+      revisionNumber: 1,
+      parentId: designProject,
+      parentName: 'Hero Banner',
+    });
+    expect(new Set(await ids({ search: 'SUMMER' }))).toEqual(
+      new Set([reviews.first.id, reviews.second.id])
+    );
+    expect(await ids({ search: 'banner' })).toEqual([reviews.design.id]);
+    expect(
+      await ids({ search: 'banner', targetType: 'PACKAGE_REVISION' })
+    ).toEqual([]);
+    expect(await ids({ search: 'promo', queue: 'NEEDS_REVIEW' })).toEqual([
+      reviews.other.id,
+    ]);
+  });
+
+  it('PQ6 another revision with the same hash shows nothing of an approval', async () => {
+    const packageId = await createPackage();
+    const first = await packageRevision(ORG_A, 'Same text', 1, packageId);
+    const twin = await packageRevision(ORG_A, 'Same text', 2, packageId);
+    expect(twin.contentHash).toBe(first.contentHash);
+    const approved = await ready(first.id);
+    await decide(approved, 'approve');
+    const pending = await ready(twin.id);
+    expect(await ids({ queue: 'APPROVED' })).toEqual([approved]);
+    expect(await ids({ queue: 'PENDING_APPROVAL' })).toEqual([pending]);
+    const items = (await queue()).results;
+    expect(items.find((item) => item.id === pending)!.approval).toEqual({
+      approved: false,
+      state: 'PENDING_APPROVAL',
+      decidedAt: null,
+    });
+  });
+
+  it('PQ7 a derived queue is paged after it is derived: deterministic, nothing twice, nothing lost', async () => {
+    const approved: string[] = [];
+    const packageId = await createPackage();
+    for (let n = 1; n <= 56; n += 1) {
+      const reviewId = await ready(
+        (
+          await packageRevision(ORG_A, `Page ${n}`, n, packageId)
+        ).id
+      );
+      await decide(reviewId, 'approve');
+      if (n % 7) {
+        approved.push(reviewId);
+      } else {
+        // every seventh is taken back: pending, and never counted approved
+        await decide(reviewId, 'withdraw');
+      }
+    }
+    expect(approved).toHaveLength(48);
+    const first = await queue({ queue: 'APPROVED' });
+    // M5: 48 approved now fit one page; 56 ever approved would not
+    expect([first.pages, first.results.length]).toEqual([1, 48]);
+    // 48 fit one page; 8 more approved make two
+    for (let n = 57; n <= 64; n += 1) {
+      const reviewId = await ready(
+        (
+          await packageRevision(ORG_A, `Page ${n}`, n, packageId)
+        ).id
+      );
+      await decide(reviewId, 'approve');
+      approved.push(reviewId);
+    }
+    const one = await queue({ queue: 'APPROVED' });
+    const two = await queue({ queue: 'APPROVED' }, ORG_A, 2);
+    expect([one.pages, one.results.length, two.results.length]).toEqual([
+      2, 50, 6,
+    ]);
+    const paged = [...one.results, ...two.results].map((item) => item.id);
+    expect(new Set(paged).size).toBe(56);
+    expect(new Set(paged)).toEqual(new Set(approved));
+    // most recently decided first, and the same on every read
+    expect(paged).toEqual([...approved].reverse());
+    expect(await ids({ queue: 'APPROVED' })).toEqual(
+      one.results.map((item) => item.id)
+    );
+    const pending = await queue({ queue: 'PENDING_APPROVAL' });
+    expect([pending.pages, pending.results.length]).toEqual([1, 8]);
+  });
+
+  it('PQ7 the decision scan continues exactly after its cursor on the real ordering', async () => {
+    const r = await board();
+    const repository = repositoryWith(new PrismaTransaction(prisma));
+    const filter = {
+      organizationId: ORG_A,
+      target: {},
+      states: ['READY_FOR_APPROVAL'],
+    };
+    const whole = await repository.listReviewDecisionsForOrganization({
+      ...filter,
+      after: null,
+      take: 100,
+    });
+    expect(whole).toHaveLength(7);
+    const chunks: string[] = [];
+    let after: string | null = null;
+    for (;;) {
+      const chunk: { id: string }[] =
+        await repository.listReviewDecisionsForOrganization({
+          ...filter,
+          after,
+          take: 3,
+        });
+      chunks.push(...chunk.map((row) => row.id));
+      if (chunk.length < 3) {
+        break;
+      }
+      after = chunk[chunk.length - 1].id;
+    }
+    expect(chunks).toEqual(whole.map((row) => row.id));
+    // the decisions of each review, in sequence order, its own only
+    const reapproved = whole.find((row) => row.id === r.reapproved)!;
+    expect(reapproved.approvals).toEqual([
+      { sequence: 1, decision: 'APPROVED' },
+      { sequence: 2, decision: 'WITHDRAWN' },
+      { sequence: 3, decision: 'APPROVED' },
+    ]);
+    expect(Object.keys(reapproved).sort()).toEqual([
+      'approvals',
+      'id',
+      'state',
+    ]);
+  });
+
+  it('PQ8 no row twice from the joins: many decisions, both name relations and a search', async () => {
+    const r = await board();
+    const all = await queue({ search: 'p504' });
+    expect(all.results).toHaveLength(9);
+    expect(new Set(all.results.map((item) => item.id)).size).toBe(9);
+    expect(all.pages).toBe(1);
+    const count = await client.contentStudioReview.count({
+      where: { organizationId: ORG_A },
+    });
+    expect(count).toBe(9);
+    for (const queueName of [
+      'APPROVED',
+      'PENDING_APPROVAL',
+      'REFUSED',
+      'NEEDS_REVIEW',
+      'CANCELLED',
+    ]) {
+      const listed = await ids({ queue: queueName });
+      expect(new Set(listed).size).toBe(listed.length);
+    }
+    expect(r.reapproved).toBeDefined();
   });
 });

@@ -1,6 +1,6 @@
 'use client';
 
-import { FC, useState } from 'react';
+import { FC, useEffect, useState } from 'react';
 import dayjs from 'dayjs';
 import { Button } from '@gitroom/react/form/button';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
@@ -115,21 +115,39 @@ const RevisionView: FC<{
 
 // The saved versions of a package, newest first, one server page at a time,
 // each with whether exactly it is approved (P5-05): never another version's.
-// Restoring copies a version into the draft; the version itself stays as it is
+// Restoring copies a version into the draft; the version itself stays as it
+// is. Opened for one version (a review link, P5-06), it shows exactly that
+// version once the server answered for it, never another one instead
 export const ContentStudioRevisionHistory: FC<{
   packageId: string;
+  initialRevisionId?: string | null;
   canRestore: boolean;
   onRestore: (
     revisionId: string,
     content?: ContentStudioDraft
   ) => Promise<boolean>;
   close: () => void;
-}> = ({ packageId, canRestore, onRestore, close }) => {
+}> = ({
+  packageId,
+  initialRevisionId = null,
+  canRestore,
+  onRestore,
+  close,
+}) => {
   const t = useT();
   const [page, setPage] = useState(1);
   const [viewing, setViewing] = useState<ContentStudioRevisionSummary | null>(
     null
   );
+  // the version a link asks for, until it is shown or left
+  const [linked, setLinked] = useState(initialRevisionId);
+  const linkedDetail = useContentStudioRevision(packageId, linked);
+  useEffect(() => {
+    if (linked && linkedDetail.data?.id === linked) {
+      setViewing(linkedDetail.data);
+      setLinked(null);
+    }
+  }, [linked, linkedDetail.data]);
   const list = useContentStudioRevisions(packageId, page);
   // the newest saved versions (the same request as the list on page 1): the
   // ones a revision request can be resolved by
@@ -140,6 +158,26 @@ export const ContentStudioRevisionHistory: FC<{
       close();
     }
   };
+
+  if (linked) {
+    return linkedDetail.error ? (
+      <div className="flex flex-col gap-[12px]">
+        <div role="alert">
+          {t(
+            'content_studio_linked_revision_error',
+            'This version could not be opened.'
+          )}
+        </div>
+        <div>
+          <Button secondary onClick={() => setLinked(null)}>
+            {t('content_studio_back_to_history', 'Back to history')}
+          </Button>
+        </div>
+      </div>
+    ) : (
+      <LoadingComponent width={40} height={40} />
+    );
+  }
 
   if (viewing) {
     return (
