@@ -134,6 +134,9 @@ describe('design modules: browser-safe boundary', () => {
     expect(library).toEqual([
       'libraries/nestjs-libraries/src/content-studio/brand/brand.kit.ts',
       'libraries/nestjs-libraries/src/content-studio/content.package.draft.ts',
+      // P6-02: the pure Design Creative AI proposal parser, apply and
+      // changes; the model, its prompts and every hash stay server-side
+      'libraries/nestjs-libraries/src/content-studio/design/design.ai.proposal.ts',
       // P4-18: the design block names for the shared layer snapshot; its
       // storage and hashing stay server-side
       'libraries/nestjs-libraries/src/content-studio/design/design.block.ts',

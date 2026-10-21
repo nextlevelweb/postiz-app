@@ -17,16 +17,20 @@ import {
 
 const textHash = (text: string) => sha256Hex(canonicalJson(text));
 
-export interface ContentStudioAIRequestProvenance {
+// What an operation ran on: a package draft at a version, or one saved
+// design revision (P6-02)
+export type ContentStudioAIRequestTarget =
+  | { packageId: string; baseDraftVersion: number }
+  | { designRevisionId: string };
+
+export type ContentStudioAIRequestProvenance = {
   kind: string;
   provider: string;
   model: string;
   promptVersion: string;
-  packageId: string;
-  baseDraftVersion: number;
   context: ContentStudioAIOperationContext;
   request: ContentStudioAITextRequest;
-}
+} & ContentStudioAIRequestTarget;
 
 // Throws CanonicalJsonError for what cannot be hashed deterministically (a
 // JSON schema with fractions or non-plain values); the caller refuses it.
@@ -42,8 +46,14 @@ export function contentStudioAIRequestDescriptor(
     provider: input.provider,
     model: input.model,
     promptVersion: input.promptVersion,
-    packageId: input.packageId,
-    baseDraftVersion: input.baseDraftVersion,
+    // a package operation's descriptor is exactly what it was before design
+    // operations existed
+    ...('designRevisionId' in input
+      ? { designRevisionId: input.designRevisionId }
+      : {
+          packageId: input.packageId,
+          baseDraftVersion: input.baseDraftVersion,
+        }),
     context: input.context,
     request: {
       systemHash: textHash(request.system),

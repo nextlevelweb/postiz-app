@@ -41,6 +41,7 @@ import {
   ReplaceContentStudioAIConnectionCredentialDto,
   UpdateContentStudioAIConnectionDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.ai-connection.dto';
+import { ContentStudioDesignAIService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-ai.service';
 
 // The real MediaService pulls in uploads, Redis and Temporal at import time;
 // the composer serializer needs a DOM. Neither is used by these routes
@@ -98,7 +99,8 @@ const setup = () => {
     {} as ContentStudioDesignLayoutPatternService,
     {} as ContentStudioDesignPageSetService,
     {} as ContentStudioDesignBlockService,
-    {} as ContentStudioReviewService
+    {} as ContentStudioReviewService,
+    {} as ContentStudioDesignAIService
   );
   return { ai, controller, result };
 };
@@ -227,6 +229,8 @@ describe('ContentStudioController AI connection routes', () => {
       'POST /ai/connections/:id/disable',
       'POST /ai/connections/:id/enable',
       'POST /ai/connections/:id/test',
+      // P6-02: a Design Creative AI suggestion, not a connection route
+      'POST /designs/:id/revisions/:revisionId/ai/propose',
       'PUT /ai/connections/:id/credential',
     ]);
     expect(

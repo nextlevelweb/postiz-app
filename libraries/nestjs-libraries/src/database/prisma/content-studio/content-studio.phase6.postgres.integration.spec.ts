@@ -26,6 +26,14 @@ import {
   sha256Hex,
 } from '@gitroom/nestjs-libraries/content-studio/canonical.json';
 import { parseVerifiedContentStudioDesignRevision } from '@gitroom/nestjs-libraries/content-studio/design/design.document.revision';
+import { ContentStudioAIConnectionRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.repository';
+import { ContentStudioAIOperationRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-operation.repository';
+import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
+import { ContentStudioDesignAIService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-ai.service';
+import { ContentStudioAIExecutionService } from '@gitroom/nestjs-libraries/content-studio/ai/ai.execution.service';
+import { ContentStudioAIProviderResolver } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.resolver';
+import { ContentStudioAIResolutionError } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.error';
+import { applyContentStudioDesignAIProposal } from '@gitroom/nestjs-libraries/content-studio/design/design.ai.proposal';
 import { createContentStudioPostgresClient } from '../../../../../../jest.content-studio.postgres.guard';
 
 // The real MediaService pulls in uploads, Redis and Temporal at import time;
@@ -61,6 +69,9 @@ let prisma: PrismaService;
 let service: ContentStudioService;
 let designs: ContentStudioDesignService;
 let designRepository: ContentStudioDesignRepository;
+let designAI: ContentStudioDesignAIService;
+// the provider's answer for the next suggestion (P6-02): no network
+let answer: string;
 
 const createPackage = async (organizationId = ORG_A) =>
   (
@@ -169,6 +180,10 @@ const projectsOf = (organizationId = ORG_A) =>
 
 const cleanPhase6 = async () => {
   const where = { organizationId: { in: ORGS } };
+  // P6-02: AI operations first: they restrict deleting their design revision
+  await client.contentStudioAIUsage.deleteMany({ where });
+  await client.contentStudioAIOperation.deleteMany({ where });
+  await client.contentStudioAIConnection.deleteMany({ where });
   // designs first: their source restricts deleting the package revision
   await client.contentStudioDesignRevision.deleteMany({ where });
   await client.contentStudioDesignProject.deleteMany({ where });
@@ -236,6 +251,63 @@ beforeAll(async () => {
     designs,
     templates,
     pageSets
+  );
+  // P6-02: the real design AI path on the real repositories; only the
+  // provider is a stand-in that answers `answer`
+  const execution = new ContentStudioAIExecutionService(
+    {} as ContentStudioRepository,
+    {
+      resolve: async (where: {
+        organizationId: string;
+        connectionId: string;
+      }) => {
+        const row = await client.contentStudioAIConnection.findFirst({
+          where: {
+            id: where.connectionId,
+            organizationId: where.organizationId,
+          },
+          select: { id: true },
+        });
+        if (!row) {
+          throw new ContentStudioAIResolutionError('NOT_FOUND');
+        }
+        return {
+          connectionId: row.id,
+          provider: 'openai',
+          adapter: {
+            provider: 'openai',
+            validateConnection: async () => ({ ok: true }),
+            generateText: async () => ({
+              text: answer,
+              finishReason: 'stop',
+              usage: { inputTokens: 900, outputTokens: 60, totalTokens: 960 },
+              providerRequestId: 'req_p6ai',
+            }),
+          },
+        };
+      },
+    } as unknown as ContentStudioAIProviderResolver,
+    new ContentStudioAIOperationRepository(
+      new PrismaRepository<'contentStudioAIOperation'>(prisma),
+      new PrismaTransaction(prisma)
+    )
+  );
+  designAI = new ContentStudioDesignAIService(
+    designs,
+    new ContentStudioAIConnectionRepository(
+      new PrismaRepository<'contentStudioAIConnection'>(prisma)
+    ),
+    // no profile is chosen here, so no profile is read
+    new ContentStudioAIWritingService(
+      {} as ContentStudioRepository,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      execution,
+      {} as never
+    ),
+    execution
   );
   await cleanFixtures();
   for (const id of ORGS) {
@@ -538,5 +610,367 @@ describe('P6-01 a design from a saved package revision on PostgreSQL', () => {
       ((await designs.getDesign(ORG_A, created.id)) as { source: unknown })
         .source
     ).toBeNull();
+  });
+});
+
+// P6-02 on a real PostgreSQL: a Design Creative AI suggestion records one AI
+// operation with its usage on the exact design revision, and nothing else:
+// no design revision, project change, review, approval or handoff. The
+// composite foreign key keeps an operation on a revision of its own
+// organization, and Restrict keeps that revision
+describe('P6-02 Design Creative AI suggestions on PostgreSQL', () => {
+  const DOCUMENT = {
+    schemaVersion: 1,
+    brandKit: null,
+    pages: [
+      {
+        id: 'p1',
+        name: '',
+        width: 1080,
+        height: 1080,
+        background: {
+          type: 'solid',
+          color: { type: 'literal', value: '#ffffff' },
+        },
+        layers: [
+          {
+            id: 'l_title',
+            name: 'Title',
+            type: 'text',
+            x: 80,
+            y: 80,
+            width: 900,
+            height: 300,
+            rotation: 0,
+            opacity: 1,
+            visible: true,
+            text: 'Spring sale',
+            font: {
+              type: 'family',
+              family: 'Arial',
+              weight: 400,
+              style: 'normal',
+            },
+            fontSize: 72,
+            lineHeight: 1.2,
+            letterSpacing: 0,
+            color: { type: 'literal', value: '#000000' },
+            align: 'left',
+            verticalAlign: 'top',
+            overflow: 'shrink',
+          },
+        ],
+      },
+    ],
+  };
+  const TEXT_ANSWER = JSON.stringify({
+    summary: 'Warmer.',
+    operations: [{ type: 'set_text', layer: 'TEXT_1', text: 'Spring is here' }],
+  });
+
+  const createConnection = async (organizationId = ORG_A) =>
+    (
+      await client.contentStudioAIConnection.create({
+        data: {
+          organizationId,
+          name: 'P6AI connection',
+          provider: 'openai',
+          sealedCredential: 'sb1.placeholder.not-a-real-envelope',
+          defaultModel: 'gpt-6-luna',
+          credentialUpdatedAt: new Date('2026-10-01T10:00:00.000Z'),
+          createdById: OWNER[organizationId],
+        },
+        select: { id: true },
+      })
+    ).id;
+  const createDesign = async (organizationId = ORG_A) => {
+    const created = (await designs.createDesign({
+      organizationId,
+      userId: OWNER[organizationId],
+      name: 'P6AI design',
+      content: DOCUMENT,
+    })) as { id: string };
+    const revision = await client.contentStudioDesignRevision.findFirstOrThrow({
+      where: { designProjectId: created.id },
+      select: { id: true, contentHash: true },
+    });
+    return { designId: created.id, revision };
+  };
+  const propose = (
+    designId: string,
+    revisionId: string,
+    connectionId: string,
+    organizationId = ORG_A
+  ) =>
+    designAI.proposeDesign({
+      organizationId,
+      userId: OWNER[organizationId],
+      designId,
+      revisionId,
+      intent: 'improve_copy',
+      selection: { connectionId },
+    });
+  // everything of the design, its review and handoffs, to compare before
+  // and after
+  const designState = async (designId: string) => ({
+    project: await client.contentStudioDesignProject.findUniqueOrThrow({
+      where: { id: designId },
+    }),
+    revisions: await client.contentStudioDesignRevision.findMany({
+      where: { designProjectId: designId },
+      orderBy: { revisionNumber: 'asc' },
+    }),
+    reviews: await client.contentStudioReview.count({
+      where: { organizationId: { in: ORGS } },
+    }),
+    approvals: await client.contentStudioApproval.count({
+      where: { organizationId: { in: ORGS } },
+    }),
+    handoffs: await client.contentStudioHandoff.count({
+      where: { organizationId: { in: ORGS } },
+    }),
+  });
+
+  beforeEach(() => {
+    answer = TEXT_ANSWER;
+  });
+
+  it('P6AI-PG1/AO1/AO2/PA1 records one operation and its usage on exactly the revision, and writes no design revision', async () => {
+    const connectionId = await createConnection();
+    const { designId, revision } = await createDesign();
+    const before = await designState(designId);
+    const result = (await propose(designId, revision.id, connectionId)) as {
+      operationId: string;
+      proposal: Parameters<typeof applyContentStudioDesignAIProposal>[1];
+    };
+    expect(await designState(designId)).toEqual(before);
+    const operation = await client.contentStudioAIOperation.findUniqueOrThrow({
+      where: { id: result.operationId },
+      include: { usages: true },
+    });
+    expect(operation).toMatchObject({
+      organizationId: ORG_A,
+      userId: USER_A,
+      connectionId,
+      packageId: null,
+      baseDraftVersion: null,
+      designRevisionId: revision.id,
+      kind: 'design_improve_copy',
+      status: 'succeeded',
+      provider: 'openai',
+      model: 'gpt-6-luna',
+      promptVersion: 'cs-design-improve-copy-v1',
+      errorCode: null,
+      context: {
+        v: 1,
+        design: {
+          designId,
+          revisionId: revision.id,
+          revisionNumber: 1,
+          contentHash: revision.contentHash,
+        },
+      },
+    });
+    expect(operation.resultHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(operation.usages).toEqual([
+      expect.objectContaining({
+        attempt: 1,
+        outcome: 'succeeded',
+        inputTokens: 900,
+        outputTokens: 60,
+        totalTokens: 960,
+        providerRequestId: 'req_p6ai',
+      }),
+    ]);
+    // no text of the design, the prompt or the answer is stored
+    expect(JSON.stringify(operation)).not.toMatch(/Spring|Warmer/);
+    // PA4: applied in the editor and saved, it is an ordinary next revision
+    const saved = (await designs.createRevision({
+      organizationId: ORG_A,
+      designId,
+      userId: USER_A,
+      baseRevisionNumber: 1,
+      content: applyContentStudioDesignAIProposal(
+        parseVerifiedContentStudioDesignRevision(before.revisions[0]),
+        result.proposal,
+        null
+      ),
+    })) as { created: boolean; revision: { revisionNumber: number } };
+    expect(saved).toMatchObject({
+      created: true,
+      revision: { revisionNumber: 2 },
+    });
+    expect(
+      await client.contentStudioReview.count({
+        where: { organizationId: { in: ORGS } },
+      })
+    ).toBe(0);
+  });
+
+  it('P6AI-PG2/AO4 an answer that does not fit records a failed operation and changes no design', async () => {
+    const connectionId = await createConnection();
+    const { designId, revision } = await createDesign();
+    const before = await designState(designId);
+    answer = JSON.stringify({
+      summary: 'x',
+      operations: [{ type: 'delete_layer', layer: 'TEXT_1' }],
+    });
+    expect(await codeOf(propose(designId, revision.id, connectionId))).toBe(
+      'CS_AI_DESIGN_PROPOSAL_INVALID'
+    );
+    answer = 'not json';
+    expect(await codeOf(propose(designId, revision.id, connectionId))).toBe(
+      'CS_AI_DESIGN_PROPOSAL_INVALID'
+    );
+    expect(await designState(designId)).toEqual(before);
+    const operations = await client.contentStudioAIOperation.findMany({
+      where: { designRevisionId: revision.id },
+      include: { usages: true },
+    });
+    expect(operations).toHaveLength(2);
+    for (const operation of operations) {
+      expect(operation).toMatchObject({
+        status: 'failed',
+        errorCode: 'INVALID_RESPONSE',
+        resultHash: null,
+      });
+      expect(operation.usages).toEqual([
+        expect.objectContaining({ outcome: 'failed', inputTokens: 900 }),
+      ]);
+    }
+  });
+
+  it('P6AI-PG3/BR2/M13 a normal save after the suggestion makes it stale: revision 1 is not asked again, revision 2 is used as itself', async () => {
+    const connectionId = await createConnection();
+    const { designId, revision } = await createDesign();
+    await propose(designId, revision.id, connectionId);
+    await designs.createRevision({
+      organizationId: ORG_A,
+      designId,
+      userId: USER_A,
+      baseRevisionNumber: 1,
+      content: {
+        ...DOCUMENT,
+        pages: [{ ...DOCUMENT.pages[0], name: 'Saved by hand' }],
+      },
+    });
+    expect(await codeOf(propose(designId, revision.id, connectionId))).toBe(
+      'CS_AI_DESIGN_BASE_STALE'
+    );
+    const two = await client.contentStudioDesignRevision.findFirstOrThrow({
+      where: { designProjectId: designId, revisionNumber: 2 },
+      select: { id: true },
+    });
+    const result = (await propose(designId, two.id, connectionId)) as {
+      operationId: string;
+      base: { revisionId: string; revisionNumber: number };
+    };
+    expect(result.base).toMatchObject({
+      revisionId: two.id,
+      revisionNumber: 2,
+    });
+    expect(
+      (
+        await client.contentStudioAIOperation.findUniqueOrThrow({
+          where: { id: result.operationId },
+        })
+      ).designRevisionId
+    ).toBe(two.id);
+    // the stale request recorded nothing: one operation per revision asked
+    expect(
+      await client.contentStudioAIOperation.count({
+        where: { designRevisionId: revision.id },
+      })
+    ).toBe(1);
+  });
+
+  it('P6AI-PG4/PS1/PS2 the package provenance of a design stays exactly as it was', async () => {
+    const connectionId = await createConnection();
+    const packageId = await createPackage();
+    const three = await createRevision(packageId, 3, TEXT);
+    const created = await create({ packageId, revisionId: three.id });
+    const revision = await client.contentStudioDesignRevision.findFirstOrThrow({
+      where: { designProjectId: created.id },
+      select: { id: true },
+    });
+    const before = await designState(created.id);
+    answer = JSON.stringify({
+      summary: 'Shorter.',
+      operations: [{ type: 'set_text', layer: 'TEXT_1', text: 'Spring' }],
+    });
+    await propose(created.id, revision.id, connectionId);
+    expect(await designState(created.id)).toEqual(before);
+    expect(before.project).toMatchObject({
+      sourcePackageRevisionId: three.id,
+      sourcePackageContentHash: three.contentHash,
+    });
+    // and the package itself is untouched
+    expect(
+      await client.contentPackageRevision.count({ where: { packageId } })
+    ).toBe(1);
+  });
+
+  it('P6AI-PG5/M17 the AI workflow creates no review, approval or handoff row', async () => {
+    const connectionId = await createConnection();
+    const { designId, revision } = await createDesign();
+    await propose(designId, revision.id, connectionId);
+    const state = await designState(designId);
+    expect([state.reviews, state.approvals, state.handoffs]).toEqual([0, 0, 0]);
+  });
+
+  it('SEC1/AI3/M10 another organization cannot ask for the design, and its connection is not ours', async () => {
+    const mine = await createConnection();
+    const theirs = await createConnection(ORG_B);
+    const { designId, revision } = await createDesign();
+    expect(await codeOf(propose(designId, revision.id, theirs, ORG_B))).toBe(
+      'CS_NOT_FOUND'
+    );
+    expect(await codeOf(propose(designId, revision.id, theirs))).toBe(
+      'CS_AI_CONNECTION_REQUIRED'
+    );
+    expect(
+      await client.contentStudioAIOperation.count({
+        where: { organizationId: { in: ORGS } },
+      })
+    ).toBe(0);
+    await propose(designId, revision.id, mine);
+    expect(
+      await client.contentStudioAIOperation.count({
+        where: { organizationId: { in: ORGS } },
+      })
+    ).toBe(1);
+  });
+
+  it('the foreign key keeps an operation on a revision of its own organization, and Restrict keeps that revision', async () => {
+    const theirs = await createConnection(ORG_B);
+    const mine = await createConnection();
+    const { revision } = await createDesign();
+    const row = (organizationId: string, connectionId: string) => ({
+      id: randomUUID(),
+      organizationId,
+      userId: OWNER[organizationId],
+      connectionId,
+      designRevisionId: revision.id,
+      kind: 'design_restyle',
+      status: 'running',
+      provider: 'openai',
+      model: 'gpt-6-luna',
+      promptVersion: 'cs-design-restyle-v1',
+      context: { v: 1 },
+      requestHash: 'a'.repeat(64),
+    });
+    expect(
+      await codeOf(
+        client.contentStudioAIOperation.create({ data: row(ORG_B, theirs) })
+      )
+    ).toBe('P2003');
+    await client.contentStudioAIOperation.create({ data: row(ORG_A, mine) });
+    expect(
+      await codeOf(
+        client.contentStudioDesignRevision.delete({
+          where: { id: revision.id },
+        })
+      )
+    ).toBe('P2003');
   });
 });

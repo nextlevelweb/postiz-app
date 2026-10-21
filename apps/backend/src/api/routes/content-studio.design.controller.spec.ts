@@ -44,6 +44,8 @@ import {
   ListContentStudioDesignsDto,
   UpdateContentStudioDesignDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design.dto';
+import { ContentStudioDesignAIService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-ai.service';
+import { ContentStudioDesignAIProposalDto } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-ai.dto';
 
 // The real MediaService pulls in uploads, Redis and Temporal at import time;
 // the composer serializer needs a DOM. Neither is used by these routes
@@ -119,7 +121,8 @@ const setup = () => {
     {} as ContentStudioDesignLayoutPatternService,
     {} as ContentStudioDesignPageSetService,
     {} as ContentStudioDesignBlockService,
-    {} as ContentStudioReviewService
+    {} as ContentStudioReviewService,
+    {} as ContentStudioDesignAIService
   );
   return { designs, controller, result };
 };
@@ -146,7 +149,7 @@ const route = (name: string) =>
 describe('ContentStudioController design routes', () => {
   // P4-05 adds the one render route; the other nine are the P4-02 routes
   // P4-06 adds render-all: eleven routes
-  it('DPC1 declares exactly these twelve routes, with 200 for archive, restore, render and render-all', () => {
+  it('DPC1 declares exactly these thirteen routes, with 200 for archive, restore, render and render-all', () => {
     const names = Object.getOwnPropertyNames(ContentStudioController.prototype)
       .filter((name) => /Designs?\b|Design[A-Z]/.test(name))
       // P4-08: the Brand Kit and Media design references live elsewhere;
@@ -173,6 +176,8 @@ describe('ContentStudioController design routes', () => {
       'POST /designs/:id/render-all',
       'POST /designs/:id/restore',
       'POST /designs/:id/revisions',
+      // P6-02: a Design Creative AI suggestion for one saved revision
+      'POST /designs/:id/revisions/:revisionId/ai/propose',
       // P6-01: a design from a saved package revision, under that revision
       'POST /packages/:id/revisions/:revisionId/designs',
     ]);
@@ -190,7 +195,7 @@ describe('ContentStudioController design routes', () => {
   });
 
   // The render route (P4-05) and the render-all route (P4-06) are the only
-  // exceptions
+  // exceptions, with the Design Creative AI suggestion (P6-02)
   it('DPC11/DPC12 has no delete, preview, export, duplicate, template, generate, AI or Media route for designs, and the two render routes', () => {
     const routes = Object.getOwnPropertyNames(ContentStudioController.prototype)
       .filter((name) => name !== 'constructor')
@@ -216,6 +221,10 @@ describe('ContentStudioController design routes', () => {
           !/^(GET|POST|PATCH) \/design-layout-patterns/.test(r) &&
           // P4-18: the design block routes, pinned by their controller spec
           !/^(GET|POST|PATCH) \/design-blocks/.test(r) &&
+          // P6-02: the one AI route, a suggestion for one saved revision
+          // that changes nothing of the design (pinned by the Phase 6
+          // security spec)
+          r !== 'POST /designs/:id/revisions/:revisionId/ai/propose' &&
           /design/i.test(r) &&
           (/^(DELETE|PUT) /.test(r) ||
             /render|preview|export|duplicate|copy|clone|template|generate|ai\b|media|upload|image|font|layout|thumbnail/i.test(
@@ -544,7 +553,8 @@ describe('ContentStudioController design from a package revision (P6-01)', () =>
       {} as ContentStudioDesignLayoutPatternService,
       {} as ContentStudioDesignPageSetService,
       {} as ContentStudioDesignBlockService,
-      {} as ContentStudioReviewService
+      {} as ContentStudioReviewService,
+      {} as ContentStudioDesignAIService
     );
     return { packages, controller, result };
   };
@@ -721,5 +731,177 @@ describe('Design from a package revision DTO validation (P6-01)', () => {
     ['a media id over 64 characters', { ...base, mediaId: 'm'.repeat(65) }],
   ])('refuses a body with %s', async (_name, body) => {
     await rejected(CreateContentStudioDesignFromPackageDto, body);
+  });
+});
+
+// P6-02: a Design Creative AI suggestion. The path names the design and the
+// exact revision; the body the intent, the connection, an instruction and,
+// for copy, the profiles. The design AI service reads everything else
+describe('ContentStudioController Design Creative AI suggestion (P6-02)', () => {
+  const CONNECTION = '55555555-5555-4555-8555-555555555555';
+  const setupAI = () => {
+    const result = { from: 'design ai service' };
+    const designAI = { proposeDesign: jest.fn().mockResolvedValue(result) };
+    const controller = new ContentStudioController(
+      {} as ContentStudioService,
+      {} as ContentStudioHandoffService,
+      {} as ContentStudioAIConnectionService,
+      {} as ContentStudioWritingProfileService,
+      {} as ContentStudioEditorialPolicyService,
+      {} as ContentStudioAudienceProfileService,
+      {} as ContentStudioExpertiseProfileService,
+      {} as ContentStudioAIWritingService,
+      {} as ContentStudioSourceService,
+      {} as ContentStudioSourceIngestionService,
+      {} as ContentStudioBrandKitService,
+      {} as ContentStudioDesignService,
+      {} as ContentStudioRenderFontService,
+      {} as ContentStudioDesignRenderService,
+      {} as ContentStudioDesignReferenceService,
+      {} as ContentStudioDesignTemplateService,
+      {} as ContentStudioDesignStylePresetService,
+      {} as ContentStudioDesignLayoutPatternService,
+      {} as ContentStudioDesignPageSetService,
+      {} as ContentStudioDesignBlockService,
+      {} as ContentStudioReviewService,
+      designAI as unknown as ContentStudioDesignAIService
+    );
+    return { designAI, controller, result };
+  };
+
+  it('API1 is one POST under the exact revision, 200, answered by the design AI service as it is', async () => {
+    expect(route('proposeDesignAI')).toBe(
+      'POST /designs/:id/revisions/:revisionId/ai/propose'
+    );
+    expect(
+      Reflect.getMetadata(HTTP_CODE_METADATA, handler('proposeDesignAI'))
+    ).toBe(200);
+    expect(
+      Reflect.getMetadata(
+        'design:paramtypes',
+        ContentStudioController.prototype,
+        'proposeDesignAI'
+      )[4]
+    ).toBe(ContentStudioDesignAIProposalDto);
+    const { designAI, controller, result } = setupAI();
+    const body = Object.assign(new ContentStudioDesignAIProposalDto(), {
+      intent: 'improve_copy',
+      connectionId: CONNECTION,
+      writingProfileId: ID,
+      editorialPolicy: true,
+      instruction: 'Warmer',
+    });
+    await expect(
+      controller.proposeDesignAI(ORG, USER, ID, REVISION, body)
+    ).resolves.toBe(result);
+    expect(designAI.proposeDesign).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      userId: 'user-1',
+      designId: ID,
+      revisionId: REVISION,
+      intent: 'improve_copy',
+      selection: {
+        connectionId: CONNECTION,
+        writingProfileId: ID,
+        editorialPolicy: true,
+        audienceProfileId: undefined,
+        expertiseProfileId: undefined,
+        instruction: 'Warmer',
+      },
+    });
+  });
+
+  it('SEC2-SEC5 forwards the declared fields only, with the organization and user of the request', async () => {
+    const { designAI, controller } = setupAI();
+    const body = Object.assign(
+      withExtras(new ContentStudioDesignAIProposalDto()),
+      {
+        intent: 'restyle',
+        connectionId: CONNECTION,
+        model: 'gpt-evil',
+        provider: 'anthropic',
+        apiKey: 'sk-evil',
+        content: content(),
+        baseContentHash: 'f'.repeat(64),
+      }
+    );
+    await controller.proposeDesignAI(ORG, USER, ID, REVISION, body);
+    const forwarded = JSON.stringify(designAI.proposeDesign.mock.calls);
+    for (const field of [
+      'org-b',
+      'user-b',
+      'gpt-evil',
+      'anthropic',
+      'sk-evil',
+      MARKER,
+      'f'.repeat(64),
+    ]) {
+      expect(forwarded).not.toContain(field);
+    }
+  });
+});
+
+describe('Design Creative AI DTO validation (P6-02)', () => {
+  const base = {
+    intent: 'improve_copy',
+    connectionId: '55555555-5555-4555-8555-555555555555',
+  };
+
+  it('accepts an intent, a connection, an instruction and profiles, as sent', async () => {
+    const full = {
+      ...base,
+      writingProfileId: ID,
+      editorialPolicy: false,
+      audienceProfileId: ID,
+      expertiseProfileId: ID,
+      instruction: 'Make it feel more premium',
+    };
+    expect({ ...(await run(ContentStudioDesignAIProposalDto, full)) }).toEqual(
+      full
+    );
+  });
+
+  it.each([
+    ['SEC2 an organization', { organizationId: 'org-b' }, 'organizationId'],
+    [
+      'SEC3 a base hash',
+      { baseContentHash: 'f'.repeat(64) },
+      'baseContentHash',
+    ],
+    ['SEC3 a content hash', { contentHash: 'f'.repeat(64) }, 'contentHash'],
+    ['SEC4 a document', { content: content() }, 'content'],
+    ['SEC4 a document by another name', { document: content() }, 'document'],
+    ['SEC5 a model', { model: 'gpt-6.1-sol' }, 'model'],
+    ['SEC5 a provider', { provider: 'openai' }, 'provider'],
+    ['SEC5 an API key', { apiKey: 'sk-x' }, 'apiKey'],
+    ['a revision', { revisionId: REVISION }, 'revisionId'],
+    ['operations', { operations: [] }, 'operations'],
+    ['a proposal', { proposal: {} }, 'proposal'],
+    ['a Media id', { mediaId: 'm1' }, 'mediaId'],
+    ['a URL', { url: 'https://evil.test' }, 'url'],
+    ['sources', { sourceIds: [ID] }, 'sourceIds'],
+    ['an approval', { approved: true }, 'approved'],
+  ])('refuses %s', async (_name, extra, field) => {
+    const message = await rejected(ContentStudioDesignAIProposalDto, {
+      ...base,
+      ...extra,
+    });
+    expect(message).toContain(`property ${field} should not exist`);
+  });
+
+  it.each([
+    ['INT4 an unknown intent', { ...base, intent: 'delete_layers' }],
+    ['an upper-case intent', { ...base, intent: 'IMPROVE_COPY' }],
+    ['no intent', { connectionId: base.connectionId }],
+    ['no connection', { intent: 'restyle' }],
+    ['a connection that is no uuid', { ...base, connectionId: 'default' }],
+    [
+      'an instruction over 2000 characters',
+      { ...base, instruction: 'x'.repeat(2001) },
+    ],
+    ['a profile that is no uuid', { ...base, writingProfileId: 'latest' }],
+    ['a policy that is no boolean', { ...base, editorialPolicy: 'yes' }],
+  ])('refuses a body with %s', async (_name, body) => {
+    await rejected(ContentStudioDesignAIProposalDto, body);
   });
 });

@@ -47,6 +47,7 @@ import {
   SaveContentPackageDraftDto,
   UpdateContentPackageDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.package.dto';
+import { ContentStudioDesignAIService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-ai.service';
 
 // The real MediaService pulls in uploads, Redis and Temporal at import time;
 // the controller only needs the service class it forwards to
@@ -114,7 +115,8 @@ const setup = () => {
     {} as ContentStudioDesignLayoutPatternService,
     {} as ContentStudioDesignPageSetService,
     {} as ContentStudioDesignBlockService,
-    {} as ContentStudioReviewService
+    {} as ContentStudioReviewService,
+    {} as ContentStudioDesignAIService
   );
   return { service, handoffs, controller, result };
 };
@@ -414,6 +416,7 @@ describe('ContentStudioController wiring', () => {
       'POST /designs/:id/render-all',
       'POST /designs/:id/restore',
       'POST /designs/:id/revisions',
+      'POST /designs/:id/revisions/:revisionId/ai/propose',
       'POST /designs/:id/revisions/:revisionId/save-as-template',
       'POST /editorial-policy/revisions',
       'POST /expertise-profiles',
@@ -596,6 +599,7 @@ describe('ContentStudioController handoffs', () => {
       ContentStudioDesignPageSetService,
       ContentStudioDesignBlockService,
       ContentStudioReviewService,
+      ContentStudioDesignAIService,
     ]);
   });
 });
@@ -718,7 +722,8 @@ describe('ContentStudioController revisions', () => {
       .filter((route) => route.includes('/revisions'))
       .sort();
     // the only routes below a revision create a handoff, or a new design
-    // template (P4-11), from it
+    // template (P4-11), from it, or ask a design suggestion for it (P6-02),
+    // which changes nothing
     expect(
       revisionRoutes.filter((route) => /^(PATCH|PUT|DELETE) /.test(route))
     ).toEqual([]);
@@ -746,6 +751,7 @@ describe('ContentStudioController revisions', () => {
       'POST /design-templates/:id/revisions',
       'POST /designs/:id/revisions',
       // P4-11: creates a new template from the revision, changes nothing
+      'POST /designs/:id/revisions/:revisionId/ai/propose',
       'POST /designs/:id/revisions/:revisionId/save-as-template',
       'POST /editorial-policy/revisions',
       'POST /expertise-profiles/:id/revisions',

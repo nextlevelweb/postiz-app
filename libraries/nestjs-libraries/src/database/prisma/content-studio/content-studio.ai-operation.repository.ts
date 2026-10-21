@@ -6,18 +6,21 @@ import { Injectable } from '@nestjs/common';
 import { ContentStudioAIOperationContext } from '@gitroom/nestjs-libraries/content-studio/ai/ai.operation.types';
 
 // A new operation, as the execution service checked and hashed it. There is
-// no field for a prompt, an instruction or a generated text
+// no field for a prompt, an instruction or a generated text. A package
+// operation has packageId and baseDraftVersion, a design operation (P6-02)
+// designRevisionId and neither of the others
 export interface ContentStudioAIOperationCreate {
   id: string;
   organizationId: string;
   userId: string;
   connectionId: string;
-  packageId: string;
+  packageId: string | null;
+  designRevisionId?: string | null;
   kind: string;
   provider: string;
   model: string;
   promptVersion: string;
-  baseDraftVersion: number;
+  baseDraftVersion: number | null;
   context: ContentStudioAIOperationContext;
   requestHash: string;
   startedAt: Date;
@@ -68,6 +71,7 @@ export class ContentStudioAIOperationRepository {
         userId: input.userId,
         connectionId: input.connectionId,
         packageId: input.packageId,
+        designRevisionId: input.designRevisionId ?? null,
         kind: input.kind,
         status: 'running',
         provider: input.provider,
@@ -95,6 +99,7 @@ export class ContentStudioAIOperationRepository {
         userId: true,
         connectionId: true,
         packageId: true,
+        designRevisionId: true,
         kind: true,
         status: true,
         provider: true,

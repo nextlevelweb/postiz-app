@@ -437,9 +437,10 @@ describe('ContentStudioAIConnection schema', () => {
 
 // The API arrived with P2-02 (its routes are pinned by the controller specs),
 // its settings screen with P2-09 in the Brand & AI folder, and with P2-10 the
-// workspace's AI writing dialog, which only reads the connection list
+// workspace's AI writing dialog, which only reads the connection list; with
+// P6-02 the Creative Studio AI suggestions read it the same way
 describe('AI connection surface so far', () => {
-  it('keeps AI connection frontend code in the Brand & AI screen and the AI writing dialog only', () => {
+  it('keeps AI connection frontend code in the Brand & AI screen, the AI writing dialog and the design AI suggestions only', () => {
     const frontend = path.join(
       REPO_ROOT,
       'apps/frontend/src/components/content-studio'
@@ -459,6 +460,9 @@ describe('AI connection surface so far', () => {
     ).toEqual([
       'content-studio.ai-writing.spec.ts',
       'content-studio.ai-writing.tsx',
+      // P6-02: the design AI suggestions read the same connection list
+      'content-studio.design-ai.spec.ts',
+      'content-studio.design-ai.tsx',
     ]);
     const intelligence = path.join(frontend, 'intelligence');
     expect(

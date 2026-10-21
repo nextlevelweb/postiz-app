@@ -22,6 +22,29 @@ export const isContentStudioAIOperationKind = (
   typeof value === 'string' &&
   (CONTENT_STUDIO_AI_OPERATION_KINDS as readonly string[]).includes(value);
 
+// The AI operations Content Studio runs on one saved design revision
+// (P6-02): one kind per Design Creative AI intent. They are recorded like the
+// package operations, but never on a package
+export const CONTENT_STUDIO_AI_DESIGN_OPERATION_KINDS = [
+  'design_improve_copy',
+  'design_tighten_copy',
+  'design_adapt_tone',
+  'design_improve_hierarchy',
+  'design_restyle',
+  'design_rebalance_layout',
+] as const;
+
+export type ContentStudioAIDesignOperationKind =
+  (typeof CONTENT_STUDIO_AI_DESIGN_OPERATION_KINDS)[number];
+
+export const isContentStudioAIDesignOperationKind = (
+  value: unknown
+): value is ContentStudioAIDesignOperationKind =>
+  typeof value === 'string' &&
+  (CONTENT_STUDIO_AI_DESIGN_OPERATION_KINDS as readonly string[]).includes(
+    value
+  );
+
 // Execution is synchronous: an operation is running until its single provider
 // attempt is recorded
 export type ContentStudioAIOperationStatus = 'running' | 'succeeded' | 'failed';
@@ -90,11 +113,23 @@ const sourceRef = z
   })
   .strict();
 
+// The exact design revision a design operation was asked for: the design,
+// the revision with its number and the hash of its stored document. Never
+// the document itself
+const designRef = z
+  .object({
+    designId: z.string().regex(UUID),
+    revisionId: z.string().regex(UUID),
+    revisionNumber,
+    contentHash: z.string().regex(SHA256_HEX),
+  })
+  .strict();
+
 // What an operation was about, as ids only: never user text, a prompt, a
 // generated result, profile or source content or a credential. Built by the
-// server, never taken from a request as it is. The profile, policy and source
-// references were added after the first operations: a context without them
-// is still v1
+// server, never taken from a request as it is. The profile, policy, source
+// and design references were added after the first operations: a context
+// without them is still v1
 const contextV1 = z
   .object({
     v: z.literal(1),
@@ -134,6 +169,9 @@ const contextV1 = z
         'Source repeated'
       )
       .optional(),
+    // a design operation's base revision (P6-02); never with an item or a
+    // source
+    design: designRef.optional(),
   })
   .strict();
 

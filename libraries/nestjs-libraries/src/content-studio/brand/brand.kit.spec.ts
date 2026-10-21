@@ -1021,6 +1021,9 @@ describe('Brand Kit P4-01 scope boundary', () => {
         .filter((file) => /brand-kit|brandKit|BrandKit/.test(code(file)))
         .sort()
     ).toEqual([
+      // P6-02: AI suggestions show and check tokens against the exact
+      // revision's content the workspace holds; nothing is fetched there
+      `${CS}/content-studio.design-ai.tsx`,
       // P4-12: template cards resolve tokens from the exact revisions their
       // documents name (through the same revision route), and a guided use
       // may name another exact revision; neither writes

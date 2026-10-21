@@ -683,6 +683,9 @@ describe('ContentStudioDesignProject schema', () => {
       resolvedRequests: 'ContentStudioReviewRevisionRequest[]',
       // P5-04: an approval decision about this exact revision points to it
       approvals: 'ContentStudioApproval[]',
+      // P6-02: a Design Creative AI operation on this exact revision points
+      // to it
+      aiOperations: 'ContentStudioAIOperation[]',
     });
   });
 

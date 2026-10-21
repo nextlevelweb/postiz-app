@@ -41,6 +41,7 @@ import {
   ListContentStudioDesignLayoutPatternsDto,
   UpdateContentStudioDesignLayoutPatternDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-layout-pattern.dto';
+import { ContentStudioDesignAIService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-ai.service';
 
 // The real MediaService pulls in uploads, Redis and Temporal at import time;
 // the composer serializer needs a DOM. Neither is used by these routes
@@ -113,7 +114,8 @@ const setup = () => {
     patterns as unknown as ContentStudioDesignLayoutPatternService,
     {} as ContentStudioDesignPageSetService,
     {} as ContentStudioDesignBlockService,
-    {} as ContentStudioReviewService
+    {} as ContentStudioReviewService,
+    {} as ContentStudioDesignAIService
   );
   return { patterns, controller, result };
 };
@@ -165,7 +167,7 @@ describe('ContentStudioController design layout pattern routes', () => {
       .filter((name) => name !== 'constructor')
       .map(route);
     // P6-01: one more, a design from a saved package revision
-    expect(all).toHaveLength(140);
+    expect(all).toHaveLength(141);
     expect(
       all.filter(
         (r) =>

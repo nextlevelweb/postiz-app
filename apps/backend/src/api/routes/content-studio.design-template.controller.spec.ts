@@ -45,6 +45,7 @@ import {
   SaveContentStudioDesignAsTemplateDto,
   UpdateContentStudioDesignTemplateDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-template.dto';
+import { ContentStudioDesignAIService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-ai.service';
 
 // The real MediaService pulls in uploads, Redis and Temporal at import time;
 // the composer serializer needs a DOM. Neither is used by these routes
@@ -128,7 +129,8 @@ const setup = () => {
     {} as ContentStudioDesignLayoutPatternService,
     {} as ContentStudioDesignPageSetService,
     {} as ContentStudioDesignBlockService,
-    {} as ContentStudioReviewService
+    {} as ContentStudioReviewService,
+    {} as ContentStudioDesignAIService
   );
   return { templates, controller, result };
 };
@@ -180,7 +182,7 @@ describe('ContentStudioController design template routes', () => {
       .map(route);
     // P4-13 adds the five style preset routes
     // P6-01: one more, a design from a saved package revision
-    expect(all).toHaveLength(140);
+    expect(all).toHaveLength(141);
     expect(
       all.filter(
         (r) =>

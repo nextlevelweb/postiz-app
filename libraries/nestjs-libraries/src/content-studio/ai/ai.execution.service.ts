@@ -19,12 +19,15 @@ import {
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.types';
 import {
   AI_PROMPT_VERSION,
+  ContentStudioAIDesignOperationKind,
   ContentStudioAIOperationContext,
   ContentStudioAIOperationKind,
+  isContentStudioAIDesignOperationKind,
   isContentStudioAIOperationKind,
   parseContentStudioAIOperationContext,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.operation.types';
 import {
+  ContentStudioAIRequestTarget,
   hashContentStudioAIRequest,
   hashContentStudioAIResult,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.operation.hash';
@@ -60,6 +63,27 @@ export interface ContentStudioAIExecutionInput {
   context: ContentStudioAIOperationContext;
   request: ContentStudioAITextRequest;
 }
+
+// The same for one saved design revision (P6-02). The caller has read that
+// revision in the organization; the operation names it, and its context
+// names the same revision with its hash. There is no package or draft
+export interface ContentStudioAIDesignExecutionInput {
+  organizationId: string;
+  userId: string;
+  connectionId: string;
+  designRevisionId: string;
+  kind: ContentStudioAIDesignOperationKind;
+  model: string;
+  promptVersion: string;
+  context: ContentStudioAIOperationContext;
+  request: ContentStudioAITextRequest;
+}
+
+// What both kinds of operation have
+type ExecutionCommon = Omit<
+  ContentStudioAIExecutionInput,
+  'packageId' | 'baseDraftVersion' | 'kind'
+> & { kind: string };
 
 export interface ContentStudioAIExecutionOptions {
   // The caller's own check of the answer (that it parses as what was asked
@@ -151,13 +175,13 @@ function providerUsage(
   };
 }
 
-// Runs one AI operation on a package with an organization connection and
-// records it: what was asked and answered as hashes only, and one usage row
-// for the provider attempt. The generated text is returned, never stored.
-// Everything that can be checked without the provider is checked before the
-// operation exists, so a refused request leaves no row and costs nothing.
-// An operation whose process stops during the provider call stays running;
-// nothing sweeps it yet
+// Runs one AI operation on a package (or, since P6-02, on one saved design
+// revision) with an organization connection and records it: what was asked
+// and answered as hashes only, and one usage row for the provider attempt.
+// The generated text is returned, never stored. Everything that can be
+// checked without the provider is checked before the operation exists, so a
+// refused request leaves no row and costs nothing. An operation whose process
+// stops during the provider call stays running; nothing sweeps it yet
 @Injectable()
 export class ContentStudioAIExecutionService {
   constructor(
@@ -187,6 +211,37 @@ export class ContentStudioAIExecutionService {
     if (contentPackage.draftVersion !== input.baseDraftVersion) {
       throw new ContentStudioAIExecutionError('DRAFT_VERSION_CONFLICT');
     }
+    return this.run(
+      input,
+      { packageId: input.packageId, baseDraftVersion: input.baseDraftVersion },
+      context,
+      options
+    );
+  }
+
+  // A Design Creative AI operation on exactly one saved design revision:
+  // the same single attempt and records, with the revision instead of a
+  // package. Nothing of the design is read or written here
+  async executeForDesign(
+    input: ContentStudioAIDesignExecutionInput,
+    options: ContentStudioAIExecutionOptions = {}
+  ): Promise<{ operationId: string; result: ContentStudioAITextResult }> {
+    const context = this.checkDesignInput(input);
+    return this.run(
+      input,
+      { designRevisionId: input.designRevisionId },
+      context,
+      options
+    );
+  }
+
+  private async run(
+    input: ExecutionCommon,
+    target: ContentStudioAIRequestTarget,
+    context: ContentStudioAIOperationContext,
+    options: ContentStudioAIExecutionOptions
+  ): Promise<{ operationId: string; result: ContentStudioAITextResult }> {
+    const { organizationId } = input;
 
     // a connection that cannot be used ends here, with its own error
     const resolved = await this._contentStudioAIProviderResolver.resolve({
@@ -204,8 +259,7 @@ export class ContentStudioAIExecutionService {
         provider: resolved.provider,
         model: input.model,
         promptVersion: input.promptVersion,
-        packageId: input.packageId,
-        baseDraftVersion: input.baseDraftVersion,
+        ...target,
         context,
         request: input.request,
       });
@@ -220,12 +274,20 @@ export class ContentStudioAIExecutionService {
         organizationId,
         userId: input.userId,
         connectionId: input.connectionId,
-        packageId: input.packageId,
+        ...('designRevisionId' in target
+          ? {
+              packageId: null,
+              designRevisionId: target.designRevisionId,
+              baseDraftVersion: null,
+            }
+          : {
+              packageId: target.packageId,
+              baseDraftVersion: target.baseDraftVersion,
+            }),
         kind: input.kind,
         provider: resolved.provider,
         model: input.model,
         promptVersion: input.promptVersion,
-        baseDraftVersion: input.baseDraftVersion,
         context,
         requestHash,
         startedAt: new Date(),
@@ -360,6 +422,7 @@ export class ContentStudioAIExecutionService {
       !isId(input.connectionId) ||
       !isId(input.packageId) ||
       !isContentStudioAIOperationKind(input.kind) ||
+      !!context?.design ||
       typeof input.model !== 'string' ||
       !input.model ||
       input.model.length > MODEL_ID_MAX ||
@@ -369,6 +432,36 @@ export class ContentStudioAIExecutionService {
       input.baseDraftVersion < 1 ||
       input.baseDraftVersion > INT4_MAX ||
       !context ||
+      !isTextRequest(input.request) ||
+      input.request.model !== input.model
+    ) {
+      throw new ContentStudioAIExecutionError('INVALID_INPUT');
+    }
+    return context;
+  }
+
+  // The same for a design operation: a design kind, a context that names
+  // this revision and nothing of a package (no item, no source)
+  private checkDesignInput(input: ContentStudioAIDesignExecutionInput) {
+    const context = parseContentStudioAIOperationContext(input?.context);
+    if (
+      !isRecord(input) ||
+      'packageId' in input ||
+      'baseDraftVersion' in input ||
+      !isId(input.organizationId) ||
+      !isId(input.userId) ||
+      !isId(input.connectionId) ||
+      !isId(input.designRevisionId) ||
+      !isContentStudioAIDesignOperationKind(input.kind) ||
+      typeof input.model !== 'string' ||
+      !input.model ||
+      input.model.length > MODEL_ID_MAX ||
+      typeof input.promptVersion !== 'string' ||
+      !AI_PROMPT_VERSION.test(input.promptVersion) ||
+      !context ||
+      context.design?.revisionId !== input.designRevisionId ||
+      context.itemId !== undefined ||
+      context.sources !== undefined ||
       !isTextRequest(input.request) ||
       input.request.model !== input.model
     ) {

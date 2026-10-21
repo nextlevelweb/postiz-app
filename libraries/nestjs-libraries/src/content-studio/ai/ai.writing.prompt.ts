@@ -367,6 +367,20 @@ const taskSections = (task: ContentStudioAIWritingTask) => {
   return [section('Task', [`${TASKS[task.kind]} ${position}`]), ...current];
 };
 
+// The organization context sections (writing profile, editorial policy,
+// audience, expertise), in that fixed order, for each one given. Shared with
+// the design prompts (P6-02), which use the same sections for copy
+export const renderContentStudioAIOrganizationContext = (
+  context: Omit<ContentStudioAIWritingContext, 'sources'>
+) => [
+  ...(context.writing ? [writingSection(context.writing)] : []),
+  ...(context.editorialPolicy
+    ? [editorialSection(context.editorialPolicy)]
+    : []),
+  ...(context.audience ? [audienceSection(context.audience)] : []),
+  ...(context.expertise ? [expertiseSection(context.expertise)] : []),
+];
+
 export function buildContentStudioAIWritingPrompt(
   task: ContentStudioAIWritingTask,
   context: ContentStudioAIWritingContext
@@ -387,12 +401,7 @@ export function buildContentStudioAIWritingPrompt(
     context.sources ?? []
   );
   const sections = [
-    ...(context.writing ? [writingSection(context.writing)] : []),
-    ...(context.editorialPolicy
-      ? [editorialSection(context.editorialPolicy)]
-      : []),
-    ...(context.audience ? [audienceSection(context.audience)] : []),
-    ...(context.expertise ? [expertiseSection(context.expertise)] : []),
+    ...renderContentStudioAIOrganizationContext(context),
     ...(sourceMaterial ? [sourceMaterial] : []),
     ...(task.instruction
       ? [

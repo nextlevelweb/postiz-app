@@ -343,3 +343,183 @@ describe('Phase 6 package to design bridge (P6-01)', () => {
     expect(source).not.toMatch(/latest|findFirst|orderBy/);
   });
 });
+
+// Design Creative AI (P6-02) in one place: one route asks one suggestion for
+// one exact saved design revision; the answer is operations on tokens of
+// that document, never a document, and nothing of the design, its review,
+// its provenance, a handoff or Media is written. The behavior is covered by
+// design.ai.proposal.spec.ts, ai.design.prompt.spec.ts,
+// content-studio.design-ai.service.spec.ts, the controller spec, the
+// frontend spec and the PostgreSQL suite
+const DESIGN_AI_SERVICE = `${CS}/content-studio.design-ai.service.ts`;
+const PROPOSAL = `${LIB}/content-studio/design/design.ai.proposal.ts`;
+const DESIGN_PROMPT = `${LIB}/content-studio/ai/ai.design.prompt.ts`;
+const DESIGN_AI_DTO = `${LIB}/dtos/content-studio/content-studio.design-ai.dto.ts`;
+const DESIGN_AI_PANEL =
+  'apps/frontend/src/components/content-studio/content-studio.design-ai.tsx';
+const EXECUTION = `${LIB}/content-studio/ai/ai.execution.service.ts`;
+const DESIGN_AI_FILES = [
+  DESIGN_AI_SERVICE,
+  PROPOSAL,
+  DESIGN_PROMPT,
+  DESIGN_AI_DTO,
+  DESIGN_AI_PANEL,
+];
+const AI_BASE = () => method(CODE.get(DESIGN_SERVICE)!, 'getDesignAIBase');
+
+describe('Phase 6 Design Creative AI (P6-02)', () => {
+  it('one route asks a suggestion for exactly one saved revision, answered by the design AI service', () => {
+    const controller = CODE.get(CONTROLLER)!;
+    expect(
+      controller.match(
+        /@Post\('\/designs\/:id\/revisions\/:revisionId\/ai\/propose'\)/g
+      )
+    ).toHaveLength(1);
+    expect(users(/\.proposeDesign\(/)).toEqual([CONTROLLER]);
+    expect(users(/\.executeForDesign\(/)).toEqual([DESIGN_AI_SERVICE]);
+    expect(users(/\.getDesignAIBase\(/)).toEqual([DESIGN_AI_SERVICE]);
+    // the revision of the route, of the design of the route, never the latest
+    expect(AI_BASE()).toMatch(
+      /getRevisionForProject\(\s*input\.organizationId,\s*project\.id,\s*input\.revisionId\s*\)/
+    );
+    expect(AI_BASE()).toMatch(
+      /row\.revisionNumber !== project\.latestRevisionNumber[\s\S]*throw aiBaseStale\(\)/
+    );
+    expect(AI_BASE()).not.toMatch(/getRevisionByNumber|orderBy|findFirst/);
+  });
+
+  it('P602-1/M15 generation writes no design, revision, render, Media, review or package', () => {
+    for (const part of [CODE.get(DESIGN_AI_SERVICE)!, AI_BASE()]) {
+      expect(part).not.toMatch(
+        /createDesign|createRevision|createProjectWithFirstRevision|CompareAndSwap|updateProject|archiveProject|restoreProject|renameDesign|render|Render|MediaService|uploadMedia|saveDraft|createHandoff/
+      );
+    }
+    // the operation and its usage are the only rows written
+    expect(CODE.get(DESIGN_AI_SERVICE)).not.toMatch(
+      /_operation\b|\.create\(|\.update\(|\.upsert\(|\.delete\(/
+    );
+  });
+
+  it('P602-2/P602-3/P602-4/M3 the prompt shows tokens: no id, Media reference, hash or URL is written into it', () => {
+    const prompt = CODE.get(DESIGN_PROMPT)!;
+    expect(prompt).not.toMatch(
+      /imageRef|mediaId|sha256|contentHash|brandKitId|revisionId|organizationId|https?:/
+    );
+    // ids are only ever looked up to find their token
+    expect(prompt.match(/\.id\b/g)).toEqual(['.id', '.id']);
+  });
+
+  it('P602-3/P602-5/M9/M10 the operations are a fixed list: no image source, mask, Media, URL, new layer, page or deletion', () => {
+    const proposal = CODE.get(PROPOSAL)!;
+    expect(proposal).toMatch(
+      /DESIGN_AI_OPERATION_TYPES = \[\s*'set_text',\s*'set_text_style',\s*'set_shape_style',\s*'set_page_background',\s*'set_bounds',\s*\] as const/
+    );
+    // what the model may write: no field for an image, mask, fit or URL
+    const model = proposal.slice(
+      proposal.indexOf('const modelOperation'),
+      proposal.indexOf('const modelProposal')
+    );
+    expect(model).not.toMatch(
+      /imageRef|mediaId|sha256|mask|focalPoint|fit|url|href|svg|css|html|visible|opacity|rotation|layers|pages|delete|add/i
+    );
+    for (const file of DESIGN_AI_FILES) {
+      expect(CODE.get(file)).not.toMatch(
+        /\bfetch\(|safeFetch|axios|generateImage|images\.generate|dall-?e|imagen|stable.?diffusion|createSafeFetch/i
+      );
+    }
+  });
+
+  it('P602-6 Design Document stays schema version 1, with nothing of AI in it', () => {
+    expect(DESIGN_DOCUMENT_SCHEMA_VERSION).toBe(1);
+    expect(
+      CODE.get(`${LIB}/content-studio/design/design.document.ts`)
+    ).not.toMatch(/AI|proposal|operationId|prompt/);
+    // the revision gains only the back-relation of the operations on it
+    expect(model('ContentStudioDesignRevision')).not.toMatch(
+      /proposal|prompt|aiOperationId|\n\s+model\s+String/
+    );
+    expect(model('ContentStudioDesignRevision')).toMatch(
+      /\n\s+aiOperations\s+ContentStudioAIOperation\[\]\n/
+    );
+    expect(model('ContentStudioDesignProject')).not.toMatch(/ai|AI/);
+  });
+
+  it('P602-7/PS2 the package provenance of a design is read, never written, by the AI path', () => {
+    const service = CODE.get(DESIGN_AI_SERVICE)!;
+    expect(service).not.toMatch(
+      /sourcePackageRevisionId|sourcePackageContentHash/
+    );
+    expect(AI_BASE()).toMatch(/this\.packageSource\(project\)/);
+    expect(AI_BASE()).not.toMatch(
+      /sourcePackageRevisionId:|sourcePackageContentHash:/
+    );
+  });
+
+  it('P602-8/P602-9/M17 no review, approval or handoff: AI asks for none and changes none', () => {
+    for (const part of [CODE.get(DESIGN_AI_SERVICE)!, AI_BASE()]) {
+      expect(part).not.toMatch(
+        /Review|review|Approv|approv|Handoff|handoff|EditorialPolicyService/
+      );
+    }
+    expect(CODE.get(DESIGN_AI_PANEL)).not.toMatch(
+      /approv|reviews\.api|ReviewStatus|handoff/i
+    );
+    expect(users(/\.requireApprovedRevision\(/)).toEqual([
+      `${CS}/content-studio.handoff.service.ts`,
+    ]);
+  });
+
+  it('P602-10 general posting, scheduling, publishing and the public API know nothing of it', () => {
+    expect(
+      users(/DesignAI|design-ai|executeForDesign|design_improve_copy/)
+    ).toEqual(
+      [
+        CONTROLLER,
+        DESIGN_AI_SERVICE,
+        `${LIB}/database/prisma/database.module.ts`,
+        DESIGN_AI_DTO,
+        PROPOSAL,
+        DESIGN_PROMPT,
+        `${LIB}/content-studio/ai/ai.operation.types.ts`,
+        EXECUTION,
+        `${CS}/content-studio.design.service.ts`,
+        DESIGN_AI_PANEL,
+        'apps/frontend/src/components/content-studio/content-studio.design.workspace.tsx',
+      ].sort()
+    );
+  });
+
+  it('P602-11 the new code imports only what the repository already uses: no new dependency', () => {
+    const packages = new Set<string>();
+    for (const file of DESIGN_AI_FILES) {
+      for (const [, specifier] of CODE.get(file)!.matchAll(/from '([^']+)'/g)) {
+        if (!specifier.startsWith('@gitroom/')) {
+          packages.add(specifier);
+        }
+      }
+    }
+    expect(Array.from(packages).sort()).toEqual([
+      '@nestjs/common',
+      'class-validator',
+      'next/link',
+      'react',
+      'zod',
+    ]);
+  });
+
+  it('M18 the connection is the organization one the user chose, read in the organization, with its own model: no environment', () => {
+    const service = CODE.get(DESIGN_AI_SERVICE)!;
+    expect(service).toMatch(
+      /getConnectionForOrganization\(\s*input\.organizationId,\s*selection\.connectionId\s*\)/
+    );
+    expect(service).toMatch(
+      /if \(!connection\) \{\s*throw connectionRequired\(\);/
+    );
+    expect(service).not.toMatch(/process\.env|ConfigService|OPENAI|ANTHROPIC/);
+    expect(service).toMatch(/connection\.defaultModel/);
+    expect(service).not.toMatch(/selection\.model|input\.model/);
+    expect(model('ContentStudioAIOperation')).toMatch(
+      /designRevision\s+ContentStudioDesignRevision\?\s+@relation\(fields: \[designRevisionId, organizationId\], references: \[id, organizationId\], onDelete: Restrict, onUpdate: Restrict\)/
+    );
+  });
+});

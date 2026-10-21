@@ -49,6 +49,7 @@ import {
   UpdateContentStudioReviewCommentDto,
   WithdrawContentStudioReviewApprovalDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.review.dto';
+import { ContentStudioDesignAIService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-ai.service';
 
 // The real MediaService pulls in uploads, Redis and Temporal at import time;
 // the composer serializer needs a DOM. Neither is used by these routes
@@ -112,7 +113,8 @@ const setup = () => {
     {} as ContentStudioDesignLayoutPatternService,
     {} as ContentStudioDesignPageSetService,
     {} as ContentStudioDesignBlockService,
-    reviews as unknown as ContentStudioReviewService
+    reviews as unknown as ContentStudioReviewService,
+    {} as ContentStudioDesignAIService
   );
   return { reviews, controller, result };
 };
@@ -169,7 +171,7 @@ const TRANSITIONS = [
 // request organization and user only, the strict DTOs. The service has its
 // own spec
 describe('ContentStudioController review routes', () => {
-  it('RE8/P501-13/C16/P502-6/API10/P504-4/P504-5 declares exactly these seventeen routes (122 -> 128 -> 133 -> 135 -> 139, 140 with P6-01): no delete, event, edit of a decision or reopen route', () => {
+  it('RE8/P501-13/C16/P502-6/API10/P504-4/P504-5 declares exactly these seventeen routes (122 -> 128 -> 133 -> 135 -> 139 -> 140 with P6-01, 141 with P6-02): no delete, event, edit of a decision or reopen route', () => {
     const names = Object.getOwnPropertyNames(
       ContentStudioController.prototype
     ).filter((name) => /Review(?!sion)/.test(name));
@@ -210,7 +212,7 @@ describe('ContentStudioController review routes', () => {
     }
     const all = allRoutes();
     // P6-01: one more, a design from a saved package revision
-    expect(all).toHaveLength(140);
+    expect(all).toHaveLength(141);
     expect(
       all.filter(
         (r) =>

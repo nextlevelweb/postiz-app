@@ -255,7 +255,9 @@ const PROVIDER_FAILURES: Record<
   ],
 };
 
-const fromAIError = (err: unknown) => {
+// Shared with Design Creative AI (P6-02), which maps its connection,
+// execution and provider failures to the same codes
+export const fromAIError = (err: unknown) => {
   if (err instanceof ContentStudioAIGroundingError) {
     return groundingInvalid();
   }
@@ -390,8 +392,9 @@ const verified = <C>(
   }
 };
 
-// The answer may not be cut off or refused, whatever its text says
-const assertComplete = (result: ContentStudioAITextResult) => {
+// The answer may not be cut off or refused, whatever its text says. Shared
+// with Design Creative AI (P6-02)
+export const assertComplete = (result: ContentStudioAITextResult) => {
   if (result.finishReason === 'content_filter') {
     throw new ContentStudioAIProviderError('CONTENT_REJECTED');
   }
@@ -832,11 +835,42 @@ export class ContentStudioAIWritingService {
     }
   }
 
+  // The organization context of a Design Creative AI copy suggestion
+  // (P6-02): the current revision of every selected profile and of the
+  // policy, exactly as for writing, without sources. The ids must already
+  // be checked as uuids
+  async resolveProfileContext(
+    organizationId: string,
+    selection: Pick<
+      Selection,
+      | 'writingProfileId'
+      | 'editorialPolicy'
+      | 'audienceProfileId'
+      | 'expertiseProfileId'
+    >
+  ) {
+    const { context, refs } = await this.resolveContext(organizationId, {
+      ...selection,
+      sourceIds: [],
+    });
+    return { context, refs };
+  }
+
   // The current revision of every selected profile and of the policy, in a
   // fixed order, then the current version of every selected source, in the
   // order chosen, each read once. A later revision or version does not
   // change this run
-  private async resolveContext(organizationId: string, selection: Selection) {
+  private async resolveContext(
+    organizationId: string,
+    selection: Pick<
+      Selection,
+      | 'writingProfileId'
+      | 'editorialPolicy'
+      | 'audienceProfileId'
+      | 'expertiseProfileId'
+      | 'sourceIds'
+    >
+  ) {
     const writing = await this.profile(
       organizationId,
       'writing',

@@ -1474,6 +1474,9 @@ describe('Design Document P4-02 persistence boundary', () => {
         )
         .sort()
     ).toEqual([
+      // P6-02: AI suggestions are applied into the draft document as one
+      // editor step; they save no design revision
+      `${CS}/content-studio.design-ai.tsx`,
       // P4-18: blocks are copied out of and into the draft document, and the
       // library hands the draft on; neither saves a design revision
       `${CS}/content-studio.design-blocks.tsx`,

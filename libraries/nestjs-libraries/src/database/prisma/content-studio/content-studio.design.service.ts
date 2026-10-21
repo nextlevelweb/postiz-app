@@ -96,6 +96,16 @@ const brandReferenceIntegrityError = () =>
     },
     500
   );
+// A suggestion is only ever made for the current revision: the editor saves
+// over it, so an older one could never be applied
+const aiBaseStale = () =>
+  new HttpException(
+    {
+      msg: 'This revision is no longer the current revision of the design.',
+      code: 'CS_AI_DESIGN_BASE_STALE',
+    },
+    409
+  );
 const sourceIntegrityError = () =>
   new HttpException(
     {
@@ -519,6 +529,61 @@ export class ContentStudioDesignService {
     return this.revisionDetail(row);
   }
 
+  // What Design Creative AI (P6-02) works from, read only: exactly this
+  // saved revision of an active design of the organization, which must still
+  // be its current revision, verified as stored; the exact Brand Kit
+  // revision it names with the same checks as a save (or null); and the
+  // package revision the design was created from (P6-01), if any. Never the
+  // latest revision in place of the one asked for, never another kit
+  // revision. Nothing is written
+  async getDesignAIBase(input: {
+    organizationId: string;
+    designId: string;
+    revisionId: string;
+  }) {
+    this.assertId(input.designId);
+    this.assertId(input.revisionId);
+    const project =
+      await this._contentStudioDesignRepository.getProjectDetailForOrganization(
+        input.organizationId,
+        input.designId
+      );
+    if (!project) {
+      throw notFound();
+    }
+    const source = this.packageSource(project);
+    const row = await this._contentStudioDesignRepository.getRevisionForProject(
+      input.organizationId,
+      project.id,
+      input.revisionId
+    );
+    if (!row) {
+      throw notFound();
+    }
+    if (project.archivedAt) {
+      throw designArchived();
+    }
+    if (row.revisionNumber !== project.latestRevisionNumber) {
+      throw aiBaseStale();
+    }
+    const revision = this.revisionDetail(row);
+    const brand = await this.brandKitContent(
+      input.organizationId,
+      revision.content
+    );
+    return {
+      designId: project.id,
+      revision: {
+        id: revision.id,
+        revisionNumber: revision.revisionNumber,
+        contentHash: revision.contentHash,
+      },
+      document: revision.content,
+      brand,
+      source,
+    };
+  }
+
   // A design document as any design of the organization may hold it: valid
   // Design Document v1 whose Brand Kit reference, if any, is an exact intact
   // revision of the organization's kit holding every token it uses. The same
@@ -537,6 +602,15 @@ export class ContentStudioDesignService {
     organizationId: string,
     document: ContentStudioDesignDocumentV1
   ) {
+    await this.brandKitContent(organizationId, document);
+  }
+
+  // The checks above, answering the verified content of that exact kit
+  // revision, or null when the document names none
+  private async brandKitContent(
+    organizationId: string,
+    document: ContentStudioDesignDocumentV1
+  ) {
     const { colorTokenIds, typographyTokenIds } =
       collectContentStudioDesignBrandTokenRefs(document);
     const reference = document.brandKit;
@@ -544,7 +618,7 @@ export class ContentStudioDesignService {
       if (colorTokenIds.length || typographyTokenIds.length) {
         throw brandReferenceInvalid();
       }
-      return;
+      return null;
     }
     const brandKit =
       await this._contentStudioBrandKitRepository.getBrandKitForOrganization(
@@ -585,6 +659,7 @@ export class ContentStudioDesignService {
     ) {
       throw brandReferenceInvalid();
     }
+    return content;
   }
 
   // Line endings normalized, trimmed, 1-200 characters, no NUL or unpaired

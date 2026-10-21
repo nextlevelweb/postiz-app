@@ -162,10 +162,27 @@ describe('ContentStudioAIOperationRepository: operations', () => {
     ).resolves.toEqual({ id: OPERATION });
     const [[args]] = operation.create.mock.calls;
     expect(args).toEqual({
-      data: { ...createInput, status: 'running' },
+      // a package operation names no design revision (P6-02)
+      data: { ...createInput, designRevisionId: null, status: 'running' },
       select: { id: true },
     });
     expect(JSON.stringify(args)).not.toMatch(TEXT_FIELDS);
+  });
+
+  it('P602 OR13 creates a design operation on its revision, without a package or draft version', async () => {
+    const { repository, operation } = setup();
+    const design = {
+      ...createInput,
+      packageId: null,
+      baseDraftVersion: null,
+      designRevisionId: '55555555-5555-4555-8555-555555555555',
+      kind: 'design_restyle',
+    };
+    await repository.createRunningOperation(design);
+    const [[args]] = operation.create.mock.calls;
+    expect(args.data).toEqual({ ...design, status: 'running' });
+    expect(args.data.packageId).toBeNull();
+    expect(args.data.baseDraftVersion).toBeNull();
   });
 
   it('OR4/OR5 reads an operation of the organization only', async () => {
@@ -406,13 +423,15 @@ describe('ContentStudioAIOperation and ContentStudioAIUsage schema', () => {
       organizationId: 'String',
       userId: 'String',
       connectionId: 'String',
-      packageId: 'String',
+      // P6-02: a package operation or a design operation, never both
+      packageId: 'String?',
+      designRevisionId: 'String?',
       kind: 'String',
       status: 'String',
       provider: 'String',
       model: 'String',
       promptVersion: 'String',
-      baseDraftVersion: 'Int',
+      baseDraftVersion: 'Int?',
       context: 'Json',
       requestHash: 'String',
       resultHash: 'String?',
@@ -422,7 +441,8 @@ describe('ContentStudioAIOperation and ContentStudioAIUsage schema', () => {
       organization: 'Organization',
       user: 'User',
       connection: 'ContentStudioAIConnection',
-      package: 'ContentPackage',
+      package: 'ContentPackage?',
+      designRevision: 'ContentStudioDesignRevision?',
       usages: 'ContentStudioAIUsage[]',
     });
     expect(fields('ContentStudioAIUsage')).toEqual({
@@ -453,9 +473,16 @@ describe('ContentStudioAIOperation and ContentStudioAIUsage schema', () => {
     expect(operation).toMatch(
       /connection\s+ContentStudioAIConnection\s+@relation\(fields: \[connectionId, organizationId\], references: \[id, organizationId\]\)/
     );
+    // optional since P6-02, with the foreign key actions of the required
+    // relation it was (Restrict, Cascade)
     expect(operation).toMatch(
-      /package\s+ContentPackage\s+@relation\(fields: \[packageId, organizationId\], references: \[id, organizationId\]\)/
+      /package\s+ContentPackage\?\s+@relation\(fields: \[packageId, organizationId\], references: \[id, organizationId\], onDelete: Restrict, onUpdate: Cascade\)/
     );
+    // P6-02: a design operation's exact revision, of the same organization
+    expect(operation).toMatch(
+      /designRevision\s+ContentStudioDesignRevision\?\s+@relation\(fields: \[designRevisionId, organizationId\], references: \[id, organizationId\], onDelete: Restrict, onUpdate: Restrict\)/
+    );
+    expect(operation).toMatch(/@@index\(\[designRevisionId\]\)/);
     expect(operation).toMatch(
       /organization\s+Organization\s+@relation\(fields: \[organizationId\], references: \[id\]\)/
     );
@@ -471,6 +498,9 @@ describe('ContentStudioAIOperation and ContentStudioAIUsage schema', () => {
       /@@unique\(\[id, organizationId\]\)/
     );
     expect(block('ContentPackage')).toMatch(
+      /@@unique\(\[id, organizationId\]\)/
+    );
+    expect(block('ContentStudioDesignRevision')).toMatch(
       /@@unique\(\[id, organizationId\]\)/
     );
   });
@@ -520,6 +550,9 @@ describe('ContentStudioAIOperation and ContentStudioAIUsage schema', () => {
       /operations\s+ContentStudioAIOperation\[\]/
     );
     expect(block('ContentPackage')).toMatch(
+      /aiOperations\s+ContentStudioAIOperation\[\]/
+    );
+    expect(block('ContentStudioDesignRevision')).toMatch(
       /aiOperations\s+ContentStudioAIOperation\[\]/
     );
     expect(schema).not.toMatch(/enum ContentStudioAI/);

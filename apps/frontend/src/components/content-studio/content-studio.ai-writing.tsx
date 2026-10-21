@@ -281,9 +281,10 @@ export const aiWritingErrorMessage = (
   }
 };
 
-// Usable for writing: enabled, with a stored key, of a provider in the
-// catalog. Anything else is left out, never tried
-const usable = (
+// Usable for writing (and for design suggestions, P6-02): enabled, with a
+// stored key, of a provider in the catalog. Anything else is left out, never
+// tried
+export const usable = (
   connection: ContentStudioAIConnection,
   providers: ContentStudioAIProviderInfo[]
 ) =>
@@ -305,7 +306,7 @@ const initialModel = (
     : provider.defaultModel;
 };
 
-const ProfileChoice: FC<{
+export const ProfileChoice: FC<{
   base: ContentStudioProfilesPath;
   label: string;
   value: string;

@@ -85,6 +85,7 @@ import { DesignStylePresets } from '@gitroom/frontend/components/content-studio/
 import { DesignCreativeLibrary } from '@gitroom/frontend/components/content-studio/content-studio.design-library';
 import { ContentStudioReviewStatus } from '@gitroom/frontend/components/content-studio/content-studio.review.status';
 import { DesignPackageSource } from '@gitroom/frontend/components/content-studio/content-studio.design-package';
+import { DesignAISuggestions } from '@gitroom/frontend/components/content-studio/content-studio.design-ai';
 import { ContentStudioRevisionApprovalBadge } from '@gitroom/frontend/components/content-studio/content-studio.review.approval';
 import { contentStudioLinkedRevisionId } from '@gitroom/frontend/components/content-studio/content-studio.reviews.api';
 
@@ -1454,6 +1455,9 @@ export const ContentStudioDesignWorkspace: FC<{
     () => (opened.data ? parseDesign(opened.data.content) : null),
     [opened.data]
   );
+  // the exact Brand Kit revision of the saved current document, for the AI
+  // suggestions (P6-02)
+  const currentBrand = useDesignBrand(currentDocument?.brandKit ?? null);
   const currentId = currentRevision?.id;
   useEffect(() => {
     if (!linked || !currentId || opened.data?.id !== linked) {
@@ -1768,6 +1772,29 @@ export const ContentStudioDesignWorkspace: FC<{
           canEdit={false}
           onBeginEdit={() => undefined}
           edit={null}
+        />
+      )}
+
+      {/* AI suggestions (P6-02): for the saved current revision only, applied
+          into the editor's draft and never saved by themselves */}
+      {!design.archivedAt && (
+        <DesignAISuggestions
+          base={
+            shown.historical
+              ? null
+              : {
+                  designId: design.id,
+                  revisionId: currentRevision.id,
+                  revisionNumber: currentRevision.revisionNumber,
+                  contentHash: currentRevision.contentHash,
+                }
+          }
+          document={currentDocument}
+          brand={currentBrand.content}
+          brandReady={
+            !currentDocument.brandKit || currentBrand.status === 'ready'
+          }
+          editor={editor}
         />
       )}
 

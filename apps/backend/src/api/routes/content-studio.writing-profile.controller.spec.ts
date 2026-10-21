@@ -43,6 +43,7 @@ import {
   ListContentStudioWritingProfilesDto,
   UpdateContentStudioWritingProfileDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.writing-profile.dto';
+import { ContentStudioDesignAIService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-ai.service';
 
 // The real MediaService pulls in uploads, Redis and Temporal at import time;
 // the composer serializer needs a DOM. Neither is used by these routes
@@ -112,7 +113,8 @@ const setup = () => {
     {} as ContentStudioDesignLayoutPatternService,
     {} as ContentStudioDesignPageSetService,
     {} as ContentStudioDesignBlockService,
-    {} as ContentStudioReviewService
+    {} as ContentStudioReviewService,
+    {} as ContentStudioDesignAIService
   );
   return { profiles, controller, result };
 };

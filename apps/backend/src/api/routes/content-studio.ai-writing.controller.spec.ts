@@ -40,6 +40,7 @@ import {
   ContentStudioAIItemProposalDto,
   ContentStudioAIThreadProposalDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.ai-writing.dto';
+import { ContentStudioDesignAIService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-ai.service';
 
 // The real MediaService pulls in uploads, Redis and Temporal at import time;
 // the composer serializer needs a DOM. Neither is used by these routes
@@ -97,7 +98,8 @@ const setup = () => {
     {} as ContentStudioDesignLayoutPatternService,
     {} as ContentStudioDesignPageSetService,
     {} as ContentStudioDesignBlockService,
-    {} as ContentStudioReviewService
+    {} as ContentStudioReviewService,
+    {} as ContentStudioDesignAIService
   );
   return { writing, controller, result };
 };
@@ -159,11 +161,16 @@ describe('ContentStudioController AI writing routes', () => {
     );
     expect(
       routes.filter((r) =>
-        /generate|execute|operation|usage|openai|anthropic|openrouter|\/ai\/(?!item$|thread$|providers$|connections)/.test(
+        /generate|execute|operation|usage|openai|anthropic|openrouter|\/ai\/(?!item$|thread$|providers$|connections|propose$)/.test(
           r
         )
       )
     ).toEqual([]);
+    // P6-02: the one other AI route is the design suggestion of one saved
+    // design revision
+    expect(routes.filter((r) => /\/ai\/propose$/.test(r))).toEqual([
+      'POST /designs/:id/revisions/:revisionId/ai/propose',
+    ]);
   });
 
   it('CT3/CT4/CT5 proposes an item for the request organization, user and route package, with the declared fields only', async () => {

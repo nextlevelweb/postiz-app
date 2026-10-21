@@ -44,6 +44,7 @@ import { ContentStudioDesignLayoutPatternService } from '@gitroom/nestjs-librari
 import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-page-set.service';
 import { ContentStudioDesignBlockService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-block.service';
 import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
+import { ContentStudioDesignAIService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-ai.service';
 import {
   CreateContentStudioProjectDto,
   ListContentStudioProjectsDto,
@@ -109,6 +110,7 @@ import {
   ListContentStudioDesignsDto,
   UpdateContentStudioDesignDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design.dto';
+import { ContentStudioDesignAIProposalDto } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.design-ai.dto';
 import {
   CreateContentStudioDesignTemplateDto,
   CreateContentStudioDesignTemplateRevisionDto,
@@ -203,7 +205,8 @@ export class ContentStudioController {
     private _contentStudioDesignLayoutPatternService: ContentStudioDesignLayoutPatternService,
     private _contentStudioDesignPageSetService: ContentStudioDesignPageSetService,
     private _contentStudioDesignBlockService: ContentStudioDesignBlockService,
-    private _contentStudioReviewService: ContentStudioReviewService
+    private _contentStudioReviewService: ContentStudioReviewService,
+    private _contentStudioDesignAIService: ContentStudioDesignAIService
   ) {}
 
   @Get('/projects')
@@ -1086,6 +1089,38 @@ export class ContentStudioController {
         description: body.description,
       }
     );
+  }
+
+  // Design Creative AI (P6-02): one suggestion for exactly this saved
+  // revision, which must be the design's current one. The body holds the
+  // intent, the AI connection, an optional instruction and, for copy, the
+  // profiles; the model comes from the connection. Any member may ask;
+  // nothing of the design is changed here: an accepted suggestion is saved
+  // from the editor like any edit. 200, since nothing is created to keep
+  @Post('/designs/:id/revisions/:revisionId/ai/propose')
+  @HttpCode(200)
+  proposeDesignAI(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Param('revisionId') revisionId: string,
+    @Body() body: ContentStudioDesignAIProposalDto
+  ) {
+    return this._contentStudioDesignAIService.proposeDesign({
+      organizationId: org.id,
+      userId: user.id,
+      designId: id,
+      revisionId,
+      intent: body.intent,
+      selection: {
+        connectionId: body.connectionId,
+        writingProfileId: body.writingProfileId,
+        editorialPolicy: body.editorialPolicy,
+        audienceProfileId: body.audienceProfileId,
+        expertiseProfileId: body.expertiseProfileId,
+        instruction: body.instruction,
+      },
+    });
   }
 
   // Design templates: the built-in ones (code, read-only) and the

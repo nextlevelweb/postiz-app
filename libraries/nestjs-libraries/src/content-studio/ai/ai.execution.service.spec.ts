@@ -22,6 +22,10 @@ import {
   hashContentStudioAIRequest,
   hashContentStudioAIResult,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.operation.hash';
+import {
+  canonicalJson,
+  sha256Hex,
+} from '@gitroom/nestjs-libraries/content-studio/canonical.json';
 
 // No database and no provider: the package repository, the operation
 // repository, the resolver and its adapter are mocks. Every argument handed
@@ -958,5 +962,159 @@ describe('ContentStudioAIExecutionService source', () => {
     expect(connection).not.toMatch(
       /ContentStudioAIExecutionService|ContentStudioAIOperationRepository|generateText/
     );
+  });
+});
+
+// P6-02: the same single attempt and records for one saved design revision
+describe('ContentStudioAIExecutionService: design operations', () => {
+  const REVISION = '77777777-7777-4777-8777-777777777777';
+  const DESIGN = '88888888-8888-4888-8888-888888888888';
+  const designContext = (revisionId = REVISION) => ({
+    v: 1 as const,
+    design: {
+      designId: DESIGN,
+      revisionId,
+      revisionNumber: 4,
+      contentHash: 'c'.repeat(64),
+    },
+  });
+  const designInput = (overrides: Record<string, unknown> = {}) => ({
+    organizationId: ORG,
+    userId: USER,
+    connectionId: CONNECTION,
+    designRevisionId: REVISION,
+    kind: 'design_restyle' as const,
+    model: 'gpt-6.1-sol',
+    promptVersion: 'cs-design-restyle-v1',
+    context: designContext(),
+    request: {
+      model: 'gpt-6.1-sol',
+      system: SYSTEM,
+      prompt: PROMPT,
+      output: { type: 'text' as const },
+      maxOutputTokens: 500,
+    },
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    uuid.mockReset();
+    uuid.mockReturnValue(OPERATION as ReturnType<typeof randomUUID>);
+  });
+
+  it('P602 EX1 records a design operation on its revision, without a package, and never reads a package', async () => {
+    const ctx = setup();
+    await expect(ctx.service.executeForDesign(designInput())).resolves.toEqual({
+      operationId: OPERATION,
+      result: providerResult(),
+    });
+    expect(ctx.packages.getPackageForOrganization).not.toHaveBeenCalled();
+    const [[created]] = ctx.operations.createRunningOperation.mock
+      .calls as unknown as [[Record<string, unknown>]];
+    expect(created).toEqual({
+      id: OPERATION,
+      organizationId: ORG,
+      userId: USER,
+      connectionId: CONNECTION,
+      packageId: null,
+      designRevisionId: REVISION,
+      baseDraftVersion: null,
+      kind: 'design_restyle',
+      provider: 'openai',
+      model: 'gpt-6.1-sol',
+      promptVersion: 'cs-design-restyle-v1',
+      context: designContext(),
+      requestHash: hashContentStudioAIRequest({
+        kind: 'design_restyle',
+        provider: 'openai',
+        model: 'gpt-6.1-sol',
+        promptVersion: 'cs-design-restyle-v1',
+        designRevisionId: REVISION,
+        context: designContext(),
+        request: designInput().request,
+      }),
+      startedAt: expect.any(Date),
+    });
+    expect(ctx.operations.completeSucceededWithUsage).toHaveBeenCalledTimes(1);
+    expect(persisted(ctx.operations)).not.toMatch(MARKERS);
+  });
+
+  it('P602 EX2 refuses a package kind, a context of another revision, an item or source, or package fields, before anything', async () => {
+    const ctx = setup();
+    for (const overrides of [
+      { kind: 'rewrite_item' },
+      { kind: 'design_delete' },
+      { context: designContext('99999999-9999-4999-8999-999999999999') },
+      { context: { v: 1 } },
+      { context: { ...designContext(), itemId: 'main' } },
+      { designRevisionId: 'latest' },
+      { packageId: PACKAGE },
+      { baseDraftVersion: 3 },
+      {
+        model: 'gpt-6.1-sol',
+        request: { ...designInput().request, model: 'other' },
+      },
+    ]) {
+      await expect(
+        ctx.service.executeForDesign(designInput(overrides) as never)
+      ).rejects.toEqual(new ContentStudioAIExecutionError('INVALID_INPUT'));
+    }
+    expect(ctx.resolver.resolve).not.toHaveBeenCalled();
+    expect(ctx.operations.createRunningOperation).not.toHaveBeenCalled();
+  });
+
+  it('P602 EX3 a package operation can never carry a design kind or a design context', async () => {
+    const ctx = setup();
+    for (const overrides of [
+      { kind: 'design_restyle' as never },
+      { context: { v: 1 as const, ...designContext() } },
+    ]) {
+      await expect(ctx.service.execute(input(overrides))).rejects.toEqual(
+        new ContentStudioAIExecutionError('INVALID_INPUT')
+      );
+    }
+    expect(ctx.operations.createRunningOperation).not.toHaveBeenCalled();
+  });
+
+  it('P602 EX4 a package request hash is exactly what it was before design operations', () => {
+    const base = {
+      kind: 'generate_item',
+      provider: 'openai',
+      model: 'gpt-6.1-sol',
+      promptVersion: 'cs-item-v1',
+      context: { v: 1 as const, itemId: 'item-1' },
+      request: input().request,
+    };
+    // the descriptor as it was written before P6-02, field for field
+    const textHash = (text: string) => sha256Hex(canonicalJson(text));
+    const before = sha256Hex(
+      canonicalJson({
+        v: 1,
+        kind: base.kind,
+        provider: base.provider,
+        model: base.model,
+        promptVersion: base.promptVersion,
+        packageId: PACKAGE,
+        baseDraftVersion: 3,
+        context: base.context,
+        request: {
+          systemHash: textHash(SYSTEM),
+          promptHash: textHash(PROMPT),
+          output: { type: 'text' },
+          maxOutputTokens: 500,
+          temperature: null,
+        },
+      })
+    );
+    expect(
+      hashContentStudioAIRequest({
+        ...base,
+        packageId: PACKAGE,
+        baseDraftVersion: 3,
+      })
+    ).toBe(before);
+    expect(
+      hashContentStudioAIRequest({ ...base, designRevisionId: REVISION })
+    ).not.toBe(before);
   });
 });
