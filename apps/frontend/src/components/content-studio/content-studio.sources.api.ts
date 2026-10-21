@@ -10,22 +10,29 @@ import {
 } from '@gitroom/frontend/components/content-studio/content-studio.api';
 
 // Sources of the organization: pages it tracks, with their captured versions
-// as provenance. A source is never a statement that its text is true. The
-// browser only names a source (kind, name, URL) and asks the server to
-// capture it; every version and its provenance come from the server's own
-// fetch. Lists and the source carry metadata only: a version's blocks are
-// loaded for the one version opened
+// as provenance, and feeds (RSS or Atom) that find pages. A source is never a
+// statement that its text is true. The browser only names a source (kind,
+// name, URL) and asks the server to capture it; every version, every page a
+// feed found and their provenance come from the server's own fetch. Lists and
+// the source carry metadata only: a version's blocks are loaded for the one
+// version opened
+
+// A page has versions; a feed has none: its captures find pages, each one an
+// ordinary page source
+export type ContentStudioSourceKind = 'url' | 'feed';
 
 export interface ContentStudioSourceSummary {
   id: string;
   kind: string;
   name: string;
   canonicalUrl: string | null;
-  // 0 until the first capture
+  // 0 until the first capture; always 0 for a feed
   latestVersionNumber: number;
   archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  // a feed's last successful capture; null for a page
+  lastCapturedAt: string | null;
 }
 
 export interface ContentStudioSourceList {
@@ -85,6 +92,48 @@ export interface ContentStudioSourceRefreshResult {
   version: ContentStudioSourceVersionSummary;
 }
 
+// What one feed capture did, in counts only
+export interface ContentStudioFeedCaptureCounts {
+  entriesSeen: number;
+  entriesIgnored: number;
+  entriesSkipped: number;
+  entriesAccepted: number;
+  sourcesCreated: number;
+  versionsCreated: number;
+  unchanged: number;
+  failed: number;
+  archived: number;
+}
+
+export interface ContentStudioFeedCaptureResult {
+  source: ContentStudioSourceSummary;
+  capture: ContentStudioFeedCaptureCounts;
+}
+
+// A page a feed found, with when this feed listed it. The entry's title and
+// date are what the feed said, as plain text; the page's own text is in its
+// own source
+export interface ContentStudioSourceDiscovery {
+  id: string;
+  entryTitle: string | null;
+  publishedAt: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  source: {
+    id: string;
+    name: string;
+    canonicalUrl: string;
+    latestVersionNumber: number;
+    archivedAt: string | null;
+  };
+}
+
+export interface ContentStudioSourceDiscoveryList {
+  pages: number;
+  total: number;
+  results: ContentStudioSourceDiscovery[];
+}
+
 // The limit the API enforces
 export const SOURCE_NAME_MAX = 200;
 
@@ -96,6 +145,8 @@ export const sourcePath = (id: string) =>
   `${SOURCES_PATH}/${encodeURIComponent(id)}`;
 export const sourceVersionsPath = (id: string, page: number) =>
   `${sourcePath(id)}/versions?page=${page}`;
+export const sourceDiscoveriesPath = (id: string, page: number) =>
+  `${sourcePath(id)}/discoveries?page=${page}`;
 const sourceVersionPath = (id: string, versionId: string) =>
   `${sourcePath(id)}/versions/${encodeURIComponent(versionId)}`;
 
@@ -126,6 +177,24 @@ export const useContentStudioSourceVersions = (id: string, page: number) => {
     [fetch]
   );
   return useSWR(sourceVersionsPath(id, page), load, swrOptions);
+};
+
+// The pages a feed found, newest first; loaded for a feed only
+export const useContentStudioSourceDiscoveries = (
+  id: string,
+  page: number,
+  enabled: boolean
+) => {
+  const fetch = useFetch();
+  const load = useCallback(
+    (path: string) => request<ContentStudioSourceDiscoveryList>(fetch, path),
+    [fetch]
+  );
+  return useSWR(
+    enabled ? sourceDiscoveriesPath(id, page) : null,
+    load,
+    swrOptions
+  );
 };
 
 // Loaded only for the version the user opens. A version never changes, so
@@ -161,7 +230,8 @@ export const useContentStudioSourceActions = () => {
           (key.startsWith(`${SOURCES_PATH}?`) ||
             (!!id &&
               (key === sourcePath(id) ||
-                key.startsWith(`${sourcePath(id)}/versions?`))))
+                key.startsWith(`${sourcePath(id)}/versions?`) ||
+                key.startsWith(`${sourcePath(id)}/discoveries?`))))
       ),
     [mutate]
   );
@@ -170,13 +240,17 @@ export const useContentStudioSourceActions = () => {
     () => ({
       refresh,
       // a new source has no capture yet: nothing is fetched here
-      createSource: async (name: string, url: string) => {
+      createSource: async (
+        kind: ContentStudioSourceKind,
+        name: string,
+        url: string
+      ) => {
         const created = await request<ContentStudioSourceSummary>(
           fetch,
           SOURCES_PATH,
           {
             method: 'POST',
-            body: JSON.stringify({ kind: 'url', name, url }),
+            body: JSON.stringify({ kind, name, url }),
           }
         );
         await refresh();
@@ -198,13 +272,12 @@ export const useContentStudioSourceActions = () => {
         await request(fetch, `${sourcePath(id)}/restore`, { method: 'POST' });
         await refresh(id);
       },
-      // No body: the server fetches the source's own stored URL
+      // No body: the server fetches the source's own stored URL. A page
+      // answers with its new version, a feed with what its capture did
       captureSource: async (id: string) => {
-        const result = await request<ContentStudioSourceRefreshResult>(
-          fetch,
-          `${sourcePath(id)}/refresh`,
-          { method: 'POST' }
-        );
+        const result = await request<
+          ContentStudioSourceRefreshResult | ContentStudioFeedCaptureResult
+        >(fetch, `${sourcePath(id)}/refresh`, { method: 'POST' });
         await refresh(id);
         return result;
       },
@@ -270,6 +343,11 @@ export const sourceErrorMessage = (t: Translate, error: unknown) => {
       return t(
         'content_studio_source_error_content_invalid',
         'The source content could not be processed.'
+      );
+    case 'CS_SOURCE_FEED_INVALID':
+      return t(
+        'content_studio_source_error_feed_invalid',
+        'This address did not answer with an RSS or Atom feed that can be read.'
       );
     case 'CS_SOURCE_TOO_LARGE':
       return t(

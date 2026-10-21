@@ -146,9 +146,11 @@ const refusedFields = async (metatype: unknown, body: object) => {
   }
 };
 
+// ten since P8-01 added the discoveries of a feed (read only)
 const NINE_ROUTES = [
   'GET /sources',
   'GET /sources/:id',
+  'GET /sources/:id/discoveries',
   'GET /sources/:id/versions',
   'GET /sources/:id/versions/:versionId',
   'PATCH /sources/:id',
@@ -159,7 +161,7 @@ const NINE_ROUTES = [
 ];
 
 describe('Phase 3 source authorization', () => {
-  it('P3TRUST1 there are exactly the nine source routes', () => {
+  it('P3TRUST1 there are exactly the ten source routes', () => {
     expect(sourceHandlers.map(routeOf).sort()).toEqual(NINE_ROUTES);
   });
 
@@ -475,7 +477,7 @@ describe('Phase 3 AI operations and source material', () => {
 describe('Phase 3 Source Library trust surface', () => {
   const api = SOURCE.frontendApi;
 
-  it('P3UI1 the browser calls only the nine source routes', () => {
+  it('P3UI1 the browser calls only the ten source routes', () => {
     expect(
       Array.from(api.matchAll(/['`](\/content-studio[^'`]*)['`]/g)).map(
         (m) => m[1]
@@ -486,6 +488,8 @@ describe('Phase 3 Source Library trust surface', () => {
     ).map((m) => m[1]);
     expect([...new Set(suffixes)].sort()).toEqual([
       '/archive',
+      // a feed's pages (P8-01), read only
+      '/discoveries',
       '/refresh',
       '/restore',
       '/versions',
@@ -499,7 +503,7 @@ describe('Phase 3 Source Library trust surface', () => {
   it('P3UI1/34/92 it cannot forge a version: create sends kind, name and url; rename its name; capture nothing', () => {
     expect(
       Array.from(api.matchAll(/JSON\.stringify\(([^)]*)\)/g)).map((m) => m[1])
-    ).toEqual(["{ kind: 'url', name, url }", '{ name }']);
+    ).toEqual(['{ kind, name, url }', '{ name }']);
     expect(api).toMatch(
       /`\$\{sourcePath\(id\)\}\/refresh`,\s*\{ method: 'POST' \}/
     );

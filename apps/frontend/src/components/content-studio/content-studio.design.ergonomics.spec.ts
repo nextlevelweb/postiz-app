@@ -1620,8 +1620,9 @@ describe('Editor ergonomics: static boundaries', () => {
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P6-01: one more, a design from a saved package revision; P6-02 one
-      // more, a Design Creative AI suggestion
-    ).toHaveLength(141);
+      // more, a Design Creative AI suggestion; P8-01 one more, the pages a
+      // feed source found
+    ).toHaveLength(142);
     const api = source('content-studio.designs.api.ts');
     expect(api).not.toMatch(
       // (thumbnail is the Media list's own field, from P4-08)

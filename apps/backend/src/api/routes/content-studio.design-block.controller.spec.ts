@@ -164,7 +164,8 @@ describe('ContentStudioController design block routes', () => {
       .filter((name) => name !== 'constructor')
       .map(route);
     // P6-01: one more, a design from a saved package revision
-    expect(all).toHaveLength(141);
+    // P8-01: one more, the pages a feed source found
+    expect(all).toHaveLength(142);
     expect(
       all.filter(
         (r) =>

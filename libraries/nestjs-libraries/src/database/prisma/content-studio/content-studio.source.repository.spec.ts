@@ -199,6 +199,7 @@ const SOURCE_FIELDS = {
   archivedAt: true,
   createdAt: true,
   updatedAt: true,
+  lastCapturedAt: true,
 };
 const VERSION_FIELDS = {
   id: true,
@@ -420,13 +421,16 @@ describe('ContentStudioSourceRepository: sources', () => {
       'countVersionsForSource',
       'createSource',
       'getSourceByCanonicalUrlForOrganization',
+      'getSourceForCapture',
       'getSourceForOrganization',
       'getVersionByNumber',
       'getVersionDetailByNumber',
       'getVersionForSource',
       'getVersionsByIdsForOrganization',
+      'listFeedsDueForCapture',
       'listSourcesForOrganization',
       'listVersionsForSource',
+      'markFeedCaptured',
       'restoreSource',
       'updateSourceName',
     ]);
@@ -778,9 +782,13 @@ describe('ContentStudioSource schema', () => {
       createdById: 'String',
       createdAt: 'DateTime',
       updatedAt: 'DateTime',
+      // a feed's last successful capture (P8-01)
+      lastCapturedAt: 'DateTime?',
       organization: 'Organization',
       createdBy: 'User',
       versions: 'ContentStudioSourceVersion[]',
+      feedDiscoveries: 'ContentStudioSourceDiscovery[]',
+      discoveredBy: 'ContentStudioSourceDiscovery[]',
     });
     expect(block('ContentStudioSource')).toMatch(
       /latestVersionNumber\s+Int\s+@default\(0\)/

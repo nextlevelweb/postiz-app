@@ -21,6 +21,7 @@ const SOURCES_DIRECTORY =
   'libraries/nestjs-libraries/src/content-studio/sources';
 const LAYER_FILES = [
   'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.repository.ts',
+  'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-discovery.repository.ts',
   'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.service.ts',
   'libraries/nestjs-libraries/src/dtos/content-studio/content-studio.source.dto.ts',
 ];
@@ -63,6 +64,7 @@ const schemaFields = (model: string) => {
 const MODEL_FIELDS = [
   ...schemaFields('ContentStudioSource'),
   ...schemaFields('ContentStudioSourceVersion'),
+  ...schemaFields('ContentStudioSourceDiscovery'),
 ];
 
 const identifiers = (text: string) =>
@@ -74,6 +76,7 @@ describe('Source layer boundaries', () => {
       [
         `${SOURCES_DIRECTORY}/source.content.ts`,
         `${SOURCES_DIRECTORY}/source.extract.ts`,
+        `${SOURCES_DIRECTORY}/source.feed.ts`,
         `${SOURCES_DIRECTORY}/source.types.ts`,
         `${SOURCES_DIRECTORY}/source.url.ts`,
         `${SOURCES_DIRECTORY}/source.version.ts`,
@@ -151,10 +154,12 @@ describe('Source layer boundaries', () => {
       /^class-validator$/,
       /^class-transformer$/,
       /^@gitroom\/nestjs-libraries\/content-studio\/(canonical\.json|editorial\/writing\.profile|sources\/source\.[a-z]+)$/,
-      /^@gitroom\/nestjs-libraries\/database\/prisma\/(prisma\.service|content-studio\/content-studio\.source\.repository)$/,
+      /^@gitroom\/nestjs-libraries\/database\/prisma\/(prisma\.service|content-studio\/content-studio\.source(-discovery)?\.repository)$/,
       /^@gitroom\/nestjs-libraries\/dtos\/content-studio\/content-studio\.project\.dto$/,
       // the inert HTML parser of the extractor
       /^parse5$/,
+      // the inert XML parser of feeds (P8-01): it parses a string only
+      /^fast-xml-parser$/,
     ];
     for (const file of SOURCE_FILES) {
       const text = read(file);
@@ -193,7 +198,7 @@ describe('Source layer boundaries', () => {
       /^@prisma\/client$/,
       /^crypto$/,
       /^@gitroom\/nestjs-libraries\/dtos\/webhooks\/safe\.fetch$/,
-      /^@gitroom\/nestjs-libraries\/database\/prisma\/content-studio\/content-studio\.source\.(repository|service)$/,
+      /^@gitroom\/nestjs-libraries\/database\/prisma\/content-studio\/content-studio\.source(-discovery)?\.(repository|service)$/,
       /^@gitroom\/nestjs-libraries\/content-studio\/sources\/source\.[a-z]+$/,
     ];
     expect(
@@ -203,8 +208,9 @@ describe('Source layer boundaries', () => {
     expect(body).not.toMatch(
       /\bfetch\(|\brequire\(|\bimport\(|XMLHttpRequest|WebSocket|axios|undici|createSafeFetch|\bdns\b|\bnet\.|lookup\(|process\.env|console\.|Logger/
     );
-    // one call, with the fixed policy constants
-    expect(body.match(/\bsafeFetch\(/g)).toHaveLength(1);
+    // two calls, each with its fixed policy constants: a page's and (P8-01)
+    // a feed's
+    expect(body.match(/\bsafeFetch\(/g)).toHaveLength(2);
   });
 
   it('67 keeps the controller source routes free of fetching and version writes', () => {

@@ -16,6 +16,7 @@ import {
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
+import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import {
   ContentStudioSourceIngestionService,
   SOURCE_FETCH_ALLOWED_CONTENT_TYPES,
@@ -173,8 +174,13 @@ const setup = () => {
       },
     } as unknown as PrismaTransaction
   );
-  const ingestion = new ContentStudioSourceIngestionService(repository);
-  const sources = new ContentStudioSourceService(repository);
+  // page refreshes never reach discoveries (feed capture has its own suite)
+  const discoveries = {} as ContentStudioSourceDiscoveryRepository;
+  const ingestion = new ContentStudioSourceIngestionService(
+    repository,
+    discoveries
+  );
+  const sources = new ContentStudioSourceService(repository, discoveries);
   const addSource = async (overrides: Row = {}) => {
     await repository.createSource({
       id: SOURCE,
@@ -198,7 +204,13 @@ const refresh = (
     userId: USER,
     sourceId: SOURCE,
     ...overrides,
-  } as { organizationId: string; userId: string; sourceId: string });
+  } as { organizationId: string; userId: string; sourceId: string }) as Promise<
+    // the sources here are pages: a refresh answers with their new version
+    Extract<
+      Awaited<ReturnType<ContentStudioSourceIngestionService['refreshSource']>>,
+      { version: unknown }
+    >
+  >;
 
 const httpError = async (promise: Promise<unknown>) => {
   const err = await promise.then(
@@ -463,7 +475,9 @@ describe('ContentStudioSourceIngestionService: SafeFetch', () => {
     expect(text).not.toMatch(
       /createSafeFetch|\bfetch\(|axios|undici|node:http|from 'https?'|from '(node:)?dns|lookup\(|net\.isIP|isBlocked|127\.0\.0\.1|169\.254|10\.0\.0|192\.168|localhost|isPrivate|allowHttp|allowedPorts|maxRedirects|process\.env|headers:/
     );
-    expect(text.match(/\bsafeFetch\(/g)).toHaveLength(1);
+    // two calls, each with its fixed policy constants: a page's and (P8-01)
+    // a feed's
+    expect(text.match(/\bsafeFetch\(/g)).toHaveLength(2);
   });
 
   it.each<[SafeFetchErrorCategory, number, string]>([
@@ -587,6 +601,7 @@ describe('ContentStudioSourceIngestionService: provenance', () => {
       archivedAt: null,
       createdAt: expect.any(Date),
       updatedAt: expect.any(Date),
+      lastCapturedAt: null,
     });
     expect(Object.keys(result.version).sort()).toEqual([
       'contentHash',

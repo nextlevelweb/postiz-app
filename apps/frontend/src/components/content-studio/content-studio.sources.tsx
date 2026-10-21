@@ -14,6 +14,8 @@ import { ContentStudioPager } from '@gitroom/frontend/components/content-studio/
 import { useSingleFlight } from '@gitroom/frontend/components/content-studio/content-studio.projects.modal';
 import { formatDate } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
 import {
+  ContentStudioFeedCaptureCounts,
+  ContentStudioSourceKind,
   ContentStudioSourceSummary,
   SOURCE_NAME_MAX,
   sourceErrorCode,
@@ -42,8 +44,39 @@ export const formatSourceBytes = (bytes: number) => {
 export const useSourceKindLabel = () => {
   const t = useT();
   return (kind: string) =>
-    kind === 'url' ? t('content_studio_source_kind_url', 'URL') : kind;
+    kind === 'url'
+      ? t('content_studio_source_kind_url', 'Web page')
+      : kind === 'feed'
+      ? t('content_studio_source_kind_feed', 'Feed')
+      : kind;
 };
+
+// What a feed capture did, in fixed words and counts only: never a page
+// title or address
+export const feedCaptureMessage = (
+  t: (key: string, fallback: string) => string,
+  capture: ContentStudioFeedCaptureCounts
+) =>
+  [
+    t('content_studio_feed_captured', 'Feed captured.'),
+    `${t('content_studio_feed_captured_pages', 'Pages found')}: ${
+      capture.entriesAccepted
+    }.`,
+    `${t('content_studio_feed_captured_new', 'New sources')}: ${
+      capture.sourcesCreated
+    }.`,
+    `${t('content_studio_feed_captured_versions', 'New versions')}: ${
+      capture.versionsCreated
+    }.`,
+    ...(capture.failed
+      ? [
+          `${t(
+            'content_studio_feed_captured_failed',
+            'Pages not captured this time'
+          )}: ${capture.failed}.`,
+        ]
+      : []),
+  ].join(' ');
 
 // The stored URL, as a plain outgoing link: showing it fetches nothing
 export const SourceUrl: FC<{ url: string | null; className?: string }> = ({
@@ -70,12 +103,14 @@ export const SourceUrl: FC<{ url: string | null; className?: string }> = ({
   );
 };
 
-// A new URL source: its name and address only. It is not captured here;
-// that is a separate, explicit action
+// A new source: its type, name and address only. It is not captured here;
+// that is a separate, explicit action. A feed is an RSS or Atom address: its
+// captures find pages, each one kept as a page source of its own
 const AddSourceForm: FC<{ close: () => void }> = ({ close }) => {
   const t = useT();
   const toaster = useToaster();
   const { createSource } = useContentStudioSourceActions();
+  const [kind, setKind] = useState<ContentStudioSourceKind>('url');
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [urlInvalid, setUrlInvalid] = useState(false);
@@ -96,7 +131,7 @@ const AddSourceForm: FC<{ close: () => void }> = ({ close }) => {
       }
       await run('create', async () => {
         try {
-          await createSource(name.trim(), address);
+          await createSource(kind, name.trim(), address);
           toaster.show(
             t('content_studio_source_added', 'Source added.'),
             'success'
@@ -108,11 +143,55 @@ const AddSourceForm: FC<{ close: () => void }> = ({ close }) => {
         }
       });
     },
-    [name, address, run, createSource, toaster, close, t]
+    [kind, name, address, run, createSource, toaster, close, t]
   );
+
+  const kinds: Array<[ContentStudioSourceKind, string, string]> = [
+    [
+      'url',
+      t('content_studio_source_kind_url', 'Web page'),
+      t(
+        'content_studio_source_kind_url_hint',
+        'One page, captured as versions when you capture it.'
+      ),
+    ],
+    [
+      'feed',
+      t('content_studio_source_kind_feed_option', 'Feed (RSS or Atom)'),
+      t(
+        'content_studio_source_kind_feed_hint',
+        'A news or blog feed. Each capture adds the pages it lists as web page sources.'
+      ),
+    ],
+  ];
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-[16px] min-w-0">
+      <fieldset className="flex flex-col gap-[8px] min-w-0">
+        <legend className="text-[14px] mb-[6px]">
+          {t('content_studio_source_type', 'Source type')}
+        </legend>
+        {kinds.map(([value, label, hint]) => (
+          <label
+            key={value}
+            className="flex items-start gap-[8px] cursor-pointer border border-newTableBorder rounded-[8px] px-[10px] py-[8px]"
+          >
+            <input
+              type="radio"
+              name="source-kind"
+              value={value}
+              checked={kind === value}
+              onChange={() => setKind(value)}
+            />
+            <span className="flex flex-col gap-[4px] min-w-0">
+              <span className="font-[600] break-words">{label}</span>
+              <span className="text-[12px] text-textItemBlur break-words">
+                {hint}
+              </span>
+            </span>
+          </label>
+        ))}
+      </fieldset>
       <Input
         label="Name"
         translationKey="content_studio_source_name"
@@ -276,9 +355,11 @@ export const useSourceCommands = (onCaptured?: () => void) => {
     (source: ContentStudioSourceSummary) =>
       run(source.id, 'capture', async () => {
         try {
-          await actions.captureSource(source.id);
+          const result = await actions.captureSource(source.id);
           toaster.show(
-            t('content_studio_source_captured', 'Source captured.'),
+            'capture' in result
+              ? feedCaptureMessage(t, result.capture)
+              : t('content_studio_source_captured', 'Source captured.'),
             'success'
           );
           onCaptured?.();
@@ -360,7 +441,8 @@ export const useSourceCommands = (onCaptured?: () => void) => {
 };
 
 // Capture now before the first capture, Refresh after it: both ask the server
-// to fetch the stored URL and keep what it gets as the next version
+// to fetch the stored URL and keep what it gets as the next version. A feed:
+// Capture feed, then Refresh feed, which find and capture its pages
 export const CaptureButton: FC<{
   source: ContentStudioSourceSummary;
   busy?: SourceTask;
@@ -368,7 +450,11 @@ export const CaptureButton: FC<{
 }> = ({ source, busy, onClick }) => {
   const t = useT();
   const label =
-    source.latestVersionNumber > 0
+    source.kind === 'feed'
+      ? source.lastCapturedAt
+        ? t('content_studio_feed_refresh', 'Refresh feed')
+        : t('content_studio_feed_capture', 'Capture feed')
+      : source.latestVersionNumber > 0
       ? t('content_studio_source_refresh', 'Refresh')
       : t('content_studio_source_capture', 'Capture now');
   return (
@@ -385,12 +471,24 @@ export const CaptureButton: FC<{
   );
 };
 
-// Active, Archived, Not captured yet or Version N: nothing about whether the
-// source is right
+// Active, Archived, Not captured yet or Version N (a feed: when it was last
+// captured): nothing about whether the source is right
 export const SourceStatus: FC<{ source: ContentStudioSourceSummary }> = ({
   source,
 }) => {
   const t = useT();
+  if (source.kind === 'feed') {
+    return (
+      <span>
+        {source.lastCapturedAt
+          ? `${t(
+              'content_studio_feed_last_captured',
+              'Last captured'
+            )}: ${formatDate(source.lastCapturedAt)}`
+          : t('content_studio_source_not_captured', 'Not captured yet')}
+      </span>
+    );
+  }
   return (
     <span>
       {source.latestVersionNumber > 0

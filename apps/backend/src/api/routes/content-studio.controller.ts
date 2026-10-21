@@ -96,6 +96,7 @@ import {
   CreateContentStudioSourceDto,
   ListContentStudioSourcesDto,
   ListContentStudioSourceVersionsDto,
+  ListContentStudioSourceDiscoveriesDto,
   UpdateContentStudioSourceDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.source.dto';
 import {
@@ -636,10 +637,11 @@ export class ContentStudioController {
   }
 
   // Sources: pages an organization tracks, with their captured versions as
-  // provenance. Every member may manage them; the organization and the user
-  // come from the request only. No route takes a version, a URL to fetch or
-  // fetch options: refresh fetches the stored URL of the source, and versions
-  // come from that server-side ingestion only
+  // provenance, and feeds that find pages (P8-01). Every member may manage
+  // them; the organization and the user come from the request only. No route
+  // takes a version, a URL to fetch or fetch options: refresh fetches the
+  // stored URL of the source, and versions and discoveries come from that
+  // server-side ingestion only
   @Get('/sources')
   listSources(
     @GetOrgFromRequest() org: Organization,
@@ -707,6 +709,21 @@ export class ContentStudioController {
     });
   }
 
+  // The pages a feed source found, with when it listed them: metadata of
+  // their own sources only, never their text
+  @Get('/sources/:id/discoveries')
+  listSourceDiscoveries(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Query() query: ListContentStudioSourceDiscoveriesDto
+  ) {
+    return this._contentStudioSourceService.listDiscoveries({
+      organizationId: org.id,
+      sourceId: id,
+      page: query.page,
+    });
+  }
+
   @Post('/sources/:id/archive')
   @HttpCode(200)
   archiveSource(
@@ -725,8 +742,9 @@ export class ContentStudioController {
     return this._contentStudioSourceService.restoreSource(org.id, id);
   }
 
-  // Fetches the source's own stored URL and stores the capture as its next
-  // version. No body: nothing about the fetch comes from the request
+  // Fetches the source's own stored URL: a page's capture becomes its next
+  // version, a feed's capture records and captures the pages it lists. No
+  // body: nothing about the fetch comes from the request
   @Post('/sources/:id/refresh')
   @HttpCode(200)
   refreshSource(

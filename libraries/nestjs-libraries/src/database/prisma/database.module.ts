@@ -75,6 +75,7 @@ import { ContentStudioExpertiseProfileRepository } from '@gitroom/nestjs-librari
 import { ContentStudioExpertiseProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.service';
 import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
+import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 import { ContentStudioBrandKitRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.repository';
@@ -181,6 +182,7 @@ import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/p
     ContentStudioExpertiseProfileService,
     ContentStudioAIWritingService,
     ContentStudioSourceRepository,
+    ContentStudioSourceDiscoveryRepository,
     ContentStudioSourceService,
     ContentStudioSourceIngestionService,
     ContentStudioBrandKitRepository,

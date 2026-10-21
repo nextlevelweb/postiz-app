@@ -7,6 +7,7 @@ import {
   SafeFetchErrorCategory,
 } from '@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
+import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import {
   toPublicContentStudioSource,
   toPublicContentStudioSourceVersion,
@@ -21,7 +22,17 @@ import {
   parseContentStudioSourceVersionInput,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.version';
 import { ContentStudioSourceUrlError } from '@gitroom/nestjs-libraries/content-studio/sources/source.url';
-import { CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
+import {
+  CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION,
+  CONTENT_STUDIO_SOURCE_NAME_MAX,
+} from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
+import {
+  ContentStudioSourceFeed,
+  ContentStudioSourceFeedEntry,
+  ContentStudioSourceFeedError,
+  parseContentStudioSourceFeed,
+  SOURCE_FEED_MEDIA_TYPES,
+} from '@gitroom/nestjs-libraries/content-studio/sources/source.feed';
 
 // The one place Content Studio fetches a source, and only through safeFetch:
 // it refuses private, loopback, link-local and reserved destinations, checks
@@ -38,6 +49,19 @@ export const SOURCE_FETCH_ALLOWED_CONTENT_TYPES = [
   'application/xhtml+xml',
   'text/plain',
 ];
+// A feed (P8-01) is fetched the same way, with its own XML types and a larger
+// cap (feeds can carry whole articles), still far below SafeFetch's ceiling.
+// No text/plain, octet-stream or HTML: only what declares itself XML
+export const FEED_FETCH_MAX_BYTES = 5_242_880;
+export const FEED_FETCH_TIMEOUT_MS = 15_000;
+export const FEED_FETCH_ALLOWED_CONTENT_TYPES = [...SOURCE_FEED_MEDIA_TYPES];
+// The pages of one feed capture are captured this many at a time
+export const FEED_CAPTURE_CONCURRENCY = 5;
+// A scheduled scan reads a feed again once it was not read for this long
+// (an hourly scan, so a feed read by hand in between is not read twice)
+export const FEED_CAPTURE_INTERVAL_MS = 50 * 60 * 1000;
+// Feeds handed to the schedule per scan page
+export const FEED_SCAN_PAGE_SIZE = 200;
 
 // Fixed messages only: never the URL, a host, an address, the page or the
 // SafeFetch error itself
@@ -94,6 +118,9 @@ const versionConflict = () =>
     'CS_SOURCE_VERSION_CONFLICT',
     'The source changed. Reload it and try again.'
   );
+// Not XML, a document type, not RSS or Atom: nothing of the feed is quoted
+const feedInvalid = () =>
+  error(422, 'CS_SOURCE_FEED_INVALID', 'The feed could not be read.');
 
 // One answer per thing the member can do about it: the address cannot be
 // fetched (blocked, refused scheme or port, bad redirect), the page is too
@@ -128,17 +155,107 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const isUniqueConstraintError = (err: unknown) =>
   err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
 
-// Refreshes a source: fetches its stored URL once and appends the capture as
-// its next immutable version. Any member may refresh; the organization and
-// the user come from the request, the URL from the stored source only. A
-// failed fetch or a page that cannot be processed adds no version. Two
-// refreshes of the same version both fetch, but only one is stored: the other
-// gets a conflict and is never retried by itself, since one request is one
-// capture
+interface SourceRow {
+  id: string;
+  kind: string;
+  name: string;
+  canonicalUrl: string | null;
+  latestVersionNumber: number;
+  archivedAt: Date | null;
+}
+
+// What one feed capture did, in counts only: never a URL, a title or a
+// source id. entriesAccepted = versionsCreated + unchanged + failed + archived
+export interface ContentStudioFeedCaptureSummary {
+  // entries in the feed
+  entriesSeen: number;
+  // entries past the capture limit, not read
+  entriesIgnored: number;
+  // read, but no https page link, a page listed before, or the address of
+  // a source that is not a page (a feed)
+  entriesSkipped: number;
+  // pages recorded as discovered by this feed
+  entriesAccepted: number;
+  // page sources this capture created
+  sourcesCreated: number;
+  // pages captured as a new version (a new source's first one included)
+  versionsCreated: number;
+  // pages captured with nothing new: no version
+  unchanged: number;
+  // pages that could not be captured this time: no version
+  failed: number;
+  // pages whose source is archived: recorded, not captured
+  archived: number;
+}
+
+type EntryOutcome =
+  | 'skipped'
+  | 'versionCreated'
+  | 'unchanged'
+  | 'failed'
+  | 'archived';
+
+// `items` run through `work` at most `limit` at a time; the results keep the
+// order of the items. The first error stops new work and is thrown once the
+// running ones end
+const inBatches = async <T, R>(
+  items: T[],
+  limit: number,
+  work: (item: T) => Promise<R>
+) => {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  let failure: { error: unknown } | null = null;
+  const lane = async () => {
+    while (!failure && next < items.length) {
+      const index = next;
+      next += 1;
+      try {
+        results[index] = await work(items[index]);
+      } catch (error) {
+        failure = failure ?? { error };
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, lane)
+  );
+  if (failure) {
+    throw (failure as { error: unknown }).error;
+  }
+  return results;
+};
+
+// The name a page found in a feed starts with: the entry's title, else its
+// host. The organization may rename it; a capture never does
+const discoveredSourceName = (entry: ContentStudioSourceFeedEntry) =>
+  entry.title ??
+  new URL(entry.url).hostname.slice(0, CONTENT_STUDIO_SOURCE_NAME_MAX);
+
+// Ingestion: the only code that fetches a source and the only one that adds
+// versions. Any member may refresh; the organization and the user come from
+// the request, the URL from the stored source only. Nothing is retried here
+// (a scheduled capture may be retried by its workflow).
+//
+// A `url` source: its stored URL is fetched once and the capture appended as
+// its next immutable version. A failed fetch or a page that cannot be
+// processed adds no version. Two refreshes of the same version both fetch,
+// but only one is stored: the other gets a conflict, since one request is
+// one capture.
+//
+// A `feed` source (P8-01): its stored URL is fetched once, as XML, and read
+// (source.feed.ts). Each page its first entries link to becomes (or is) an
+// ordinary `url` source of the organization, found by its canonical URL, so
+// a page listed by several feeds is one source; the sighting is recorded as
+// a discovery of this feed, and the page is captured like a refresh, except
+// that a capture equal to the page's current version (same blocks, title and
+// extraction) adds no version. A page that cannot be captured is counted and
+// left for the next capture; the others are kept. The feed gets no version
 @Injectable()
 export class ContentStudioSourceIngestionService {
   constructor(
-    private _contentStudioSourceRepository: ContentStudioSourceRepository
+    private _contentStudioSourceRepository: ContentStudioSourceRepository,
+    private _contentStudioSourceDiscoveryRepository: ContentStudioSourceDiscoveryRepository
   ) {}
 
   async refreshSource(input: {
@@ -163,9 +280,118 @@ export class ContentStudioSourceIngestionService {
     switch (source.kind) {
       case 'url':
         break;
+      case 'feed':
+        return this.captureFeed(input.organizationId, source, input.userId);
       default:
         throw kindUnsupported();
     }
+
+    const result = await this.captureUrl(
+      input.organizationId,
+      source,
+      input.userId,
+      'always'
+    );
+    const current =
+      await this._contentStudioSourceRepository.getSourceForOrganization(
+        input.organizationId,
+        source.id
+      );
+    if (!current) {
+      throw integrityError();
+    }
+    return {
+      source: toPublicContentStudioSource(current),
+      version: toPublicContentStudioSourceVersion(result.version),
+    };
+  }
+
+  // For the feed capture schedule only (no route reaches it): the live feeds
+  // due for a capture, one page at a time. `next` is where the following
+  // page starts, null after the last one
+  async listFeedsDueForCapture(input: { afterId: string | null }) {
+    const rows =
+      await this._contentStudioSourceRepository.listFeedsDueForCapture({
+        capturedBefore: new Date(Date.now() - FEED_CAPTURE_INTERVAL_MS),
+        afterId:
+          typeof input.afterId === 'string' && UUID.test(input.afterId)
+            ? input.afterId
+            : null,
+        take: FEED_SCAN_PAGE_SIZE,
+      });
+    return {
+      feeds: rows.map((row) => ({
+        organizationId: row.organizationId,
+        sourceId: row.id,
+      })),
+      next:
+        rows.length === FEED_SCAN_PAGE_SIZE ? rows[rows.length - 1].id : null,
+    };
+  }
+
+  // For the feed capture schedule only: one feed, read from the database
+  // right before its capture, so only the stored URL of a live feed of that
+  // organization is ever fetched. Anything else (gone, archived, another
+  // kind) is skipped, never an error to retry. The captures are recorded in
+  // the name of the member who created the feed
+  async captureScheduledFeed(input: {
+    organizationId: string;
+    sourceId: string;
+  }) {
+    if (
+      typeof input.organizationId !== 'string' ||
+      typeof input.sourceId !== 'string' ||
+      !UUID.test(input.sourceId)
+    ) {
+      return { status: 'skipped' as const };
+    }
+    const source =
+      await this._contentStudioSourceRepository.getSourceForCapture(
+        input.organizationId,
+        input.sourceId
+      );
+    if (!source || source.archivedAt || source.kind !== 'feed') {
+      return { status: 'skipped' as const };
+    }
+    const { capture } = await this.captureFeed(
+      input.organizationId,
+      source,
+      source.createdById
+    );
+    return { status: 'captured' as const, capture };
+  }
+
+  // One capture of a page source. `always` appends every capture, as a
+  // refresh does; `if-changed` (feed captures) adds no version when the page
+  // gives exactly what its current version holds, and treats a version that
+  // another capture appended meanwhile as that capture
+  private async captureUrl(
+    organizationId: string,
+    source: SourceRow,
+    userId: string,
+    mode: 'always'
+  ): Promise<{
+    status: 'created';
+    version: Parameters<typeof toPublicContentStudioSourceVersion>[0];
+  }>;
+  private async captureUrl(
+    organizationId: string,
+    source: SourceRow,
+    userId: string,
+    mode: 'if-changed'
+  ): Promise<
+    | {
+        status: 'created';
+        version: Parameters<typeof toPublicContentStudioSourceVersion>[0];
+      }
+    | { status: 'unchanged' }
+  >;
+  private async captureUrl(
+    organizationId: string,
+    source: SourceRow,
+    userId: string,
+    mode: 'always' | 'if-changed'
+  ) {
     if (!source.canonicalUrl) {
       throw integrityError();
     }
@@ -250,17 +476,36 @@ export class ContentStudioSourceIngestionService {
       throw err;
     }
 
+    if (mode === 'if-changed' && expectedLatestVersionNumber > 0) {
+      const current =
+        await this._contentStudioSourceRepository.getVersionByNumber(
+          organizationId,
+          source.id,
+          expectedLatestVersionNumber
+        );
+      if (!current) {
+        throw integrityError();
+      }
+      if (
+        current.contentHash === version.contentHash &&
+        current.title === version.title &&
+        current.extractionVersion === version.extractionVersion
+      ) {
+        return { status: 'unchanged' as const };
+      }
+    }
+
     let result;
     try {
       result =
         await this._contentStudioSourceRepository.appendVersionWithCompareAndSwap(
           {
-            organizationId: input.organizationId,
+            organizationId,
             sourceId: source.id,
             expectedLatestVersionNumber,
             versionId: randomUUID(),
             version,
-            createdById: input.userId,
+            createdById: userId,
           }
         );
     } catch (err) {
@@ -271,26 +516,199 @@ export class ContentStudioSourceIngestionService {
     }
 
     switch (result.status) {
-      case 'created': {
-        const current =
-          await this._contentStudioSourceRepository.getSourceForOrganization(
-            input.organizationId,
-            source.id
-          );
-        if (!current) {
-          throw integrityError();
-        }
-        return {
-          source: toPublicContentStudioSource(current),
-          version: toPublicContentStudioSourceVersion(result.version),
-        };
-      }
+      case 'created':
+        return { status: 'created' as const, version: result.version };
       case 'not-found':
         throw notFound();
       case 'archived':
         throw sourceArchived();
       default:
+        // another capture of the same page went first: for a feed capture
+        // that capture is this one's result
+        if (mode === 'if-changed') {
+          return { status: 'unchanged' as const };
+        }
         throw versionConflict();
     }
+  }
+
+  // One capture of a live feed source of the organization (see the class)
+  private async captureFeed(
+    organizationId: string,
+    feed: SourceRow,
+    userId: string
+  ) {
+    if (!feed.canonicalUrl) {
+      throw integrityError();
+    }
+    let fetched;
+    try {
+      fetched = await safeFetch(feed.canonicalUrl, {
+        method: 'GET',
+        allowedContentTypes: FEED_FETCH_ALLOWED_CONTENT_TYPES,
+        maxBytes: FEED_FETCH_MAX_BYTES,
+        timeoutMs: FEED_FETCH_TIMEOUT_MS,
+      });
+    } catch (err) {
+      throw fromSafeFetchError(err);
+    }
+    // the time of this capture: every page it lists was seen then
+    const capturedAt = new Date();
+    if (
+      fetched.redirects.length
+        ? fetched.redirects[0].url !== fetched.requestedUrl
+        : fetched.finalUrl !== fetched.requestedUrl
+    ) {
+      throw fetchFailed();
+    }
+
+    let parsed: ContentStudioSourceFeed;
+    try {
+      parsed = parseContentStudioSourceFeed({
+        contentType: fetched.headers.contentType,
+        body: fetched.body,
+      });
+    } catch (err) {
+      if (!(err instanceof ContentStudioSourceFeedError)) {
+        throw feedInvalid();
+      }
+      throw err.code === 'UNSUPPORTED_MEDIA_TYPE' ||
+        err.code === 'UNSUPPORTED_CHARSET'
+        ? contentTypeUnsupported()
+        : feedInvalid();
+    }
+
+    const outcomes = await inBatches(
+      parsed.entries,
+      FEED_CAPTURE_CONCURRENCY,
+      (entry) =>
+        this.captureFeedEntry(
+          organizationId,
+          feed.id,
+          entry,
+          userId,
+          capturedAt
+        )
+    );
+    const count = (outcome: EntryOutcome) =>
+      outcomes.filter((item) => item.outcome === outcome).length;
+    const capture: ContentStudioFeedCaptureSummary = {
+      entriesSeen: parsed.entriesSeen,
+      entriesIgnored: parsed.entriesIgnored,
+      entriesSkipped: parsed.entriesSkipped + count('skipped'),
+      entriesAccepted: outcomes.length - count('skipped'),
+      sourcesCreated: outcomes.filter((item) => item.created).length,
+      versionsCreated: count('versionCreated'),
+      unchanged: count('unchanged'),
+      failed: count('failed'),
+      archived: count('archived'),
+    };
+
+    await this._contentStudioSourceRepository.markFeedCaptured(
+      organizationId,
+      feed.id,
+      capturedAt
+    );
+    const current =
+      await this._contentStudioSourceRepository.getSourceForOrganization(
+        organizationId,
+        feed.id
+      );
+    if (!current) {
+      throw integrityError();
+    }
+    return { source: toPublicContentStudioSource(current), capture };
+  }
+
+  // One page of a feed: its source (found or created), the discovery, then
+  // its capture. A page that cannot be captured is a counted failure, never
+  // the feed's: what was recorded stays
+  private async captureFeedEntry(
+    organizationId: string,
+    feedSourceId: string,
+    entry: ContentStudioSourceFeedEntry,
+    userId: string,
+    capturedAt: Date
+  ): Promise<{ outcome: EntryOutcome; created: boolean }> {
+    const page = await this.pageSource(organizationId, entry, userId);
+    if (!page) {
+      return { outcome: 'skipped', created: false };
+    }
+    await this._contentStudioSourceDiscoveryRepository.recordDiscovery({
+      organizationId,
+      feedSourceId,
+      discoveredSourceId: page.source.id,
+      entryId: entry.entryId,
+      entryTitle: entry.title,
+      publishedAt: entry.publishedAt,
+      seenAt: capturedAt,
+    });
+    if (page.source.archivedAt) {
+      return { outcome: 'archived', created: page.created };
+    }
+    try {
+      const result = await this.captureUrl(
+        organizationId,
+        page.source,
+        userId,
+        'if-changed'
+      );
+      return {
+        outcome: result.status === 'created' ? 'versionCreated' : 'unchanged',
+        created: page.created,
+      };
+    } catch (err) {
+      if (err instanceof HttpException) {
+        return { outcome: 'failed', created: page.created };
+      }
+      throw err;
+    }
+  }
+
+  // The organization's `url` source of the entry's page, created when there
+  // is none. One canonical URL is one source: a source created meanwhile by
+  // another capture or a member is used, never a second one. The address of
+  // a source of another kind is no page
+  private async pageSource(
+    organizationId: string,
+    entry: ContentStudioSourceFeedEntry,
+    userId: string
+  ): Promise<{ source: SourceRow; created: boolean } | null> {
+    const existing =
+      await this._contentStudioSourceRepository.getSourceByCanonicalUrlForOrganization(
+        organizationId,
+        entry.url
+      );
+    if (existing) {
+      return existing.kind === 'url'
+        ? { source: existing, created: false }
+        : null;
+    }
+    try {
+      return {
+        source: await this._contentStudioSourceRepository.createSource({
+          id: randomUUID(),
+          organizationId,
+          kind: 'url',
+          name: discoveredSourceName(entry),
+          canonicalUrl: entry.url,
+          createdById: userId,
+        }),
+        created: true,
+      };
+    } catch (err) {
+      if (!isUniqueConstraintError(err)) {
+        throw err;
+      }
+    }
+    const raced =
+      await this._contentStudioSourceRepository.getSourceByCanonicalUrlForOrganization(
+        organizationId,
+        entry.url
+      );
+    if (!raced) {
+      throw integrityError();
+    }
+    return raced.kind === 'url' ? { source: raced, created: false } : null;
   }
 }

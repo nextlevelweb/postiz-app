@@ -106,6 +106,17 @@ export function parseContentStudioSourceContentType(header: unknown): {
   mediaType: ContentStudioSourceMediaType;
   charset: string | null;
 } {
+  return parseContentStudioSourceMediaType(header, SOURCE_EXTRACT_MEDIA_TYPES);
+}
+
+// The same rules for another list of media types (feeds read XML types)
+export function parseContentStudioSourceMediaType<T extends string>(
+  header: unknown,
+  mediaTypes: readonly T[]
+): {
+  mediaType: T;
+  charset: string | null;
+} {
   if (
     typeof header !== 'string' ||
     header.length > 1024 ||
@@ -134,7 +145,7 @@ export function parseContentStudioSourceContentType(header: unknown): {
   }
 
   const mediaType = parts[0].trim().toLowerCase();
-  const known = SOURCE_EXTRACT_MEDIA_TYPES.find((type) => type === mediaType);
+  const known = mediaTypes.find((type) => type === mediaType);
   if (!known) {
     throw new ContentStudioSourceExtractionError('UNSUPPORTED_MEDIA_TYPE');
   }
@@ -215,8 +226,11 @@ export function contentStudioSourceMetaCharset(
 }
 
 // Strict decoding: bytes that are not valid in the charset are refused. NUL
-// becomes U+FFFD, as HTML parsing does
-function decodeBody(body: Uint8Array, charset: ContentStudioSourceCharset) {
+// becomes U+FFFD, as HTML parsing does. A UTF-8 byte order mark is dropped
+export function decodeContentStudioSourceBody(
+  body: Uint8Array,
+  charset: ContentStudioSourceCharset
+) {
   let text: string;
   try {
     text = new TextDecoder(charset, { fatal: true }).decode(body);
@@ -577,7 +591,7 @@ export function extractContentStudioSource(input: {
       ? null
       : contentStudioSourceMetaCharset(input.body));
   const charset = label === null ? 'utf-8' : contentStudioSourceCharset(label);
-  const text = decodeBody(input.body, charset);
+  const text = decodeContentStudioSourceBody(input.body, charset);
   const { title, blocks } =
     mediaType === 'text/plain'
       ? { title: null, blocks: extractPlainText(text) }

@@ -1,9 +1,14 @@
 // What a Content Studio source can be. The database keeps the kind as text,
 // so a later phase adds a kind here (with its ingestion) instead of migrating
-// an enum. Only `url` exists for now: a web page an organization tracks.
+// an enum:
+// - `url`: a web page an organization tracks, captured as versions;
+// - `feed` (P8-01): an RSS or Atom feed. It is a way to find web pages, not
+//   content: a capture records the pages its entries link to as ordinary
+//   `url` sources (each with its own versions) and which feed listed them,
+//   and the feed itself never gets a version.
 // Like the editorial parsers this file uses no Node-only module
 
-export const CONTENT_STUDIO_SOURCE_KINDS = ['url'] as const;
+export const CONTENT_STUDIO_SOURCE_KINDS = ['url', 'feed'] as const;
 
 export type ContentStudioSourceKind =
   (typeof CONTENT_STUDIO_SOURCE_KINDS)[number];

@@ -580,7 +580,8 @@ describe('Source Library: list', () => {
   it('SL6/SL7/SL8 shows the name, the URL as a safe outgoing link and the kind', async () => {
     await renderList();
     const beta = row('Beta');
-    expect(within(beta).getByText('URL')).toBeTruthy();
+    // the page kind reads "Web page" next to "Feed" (P8-01)
+    expect(within(beta).getByText('Web page')).toBeTruthy();
     const link = within(beta).getByText('https://beta.test/report');
     expect(link.tagName).toBe('A');
     expect(link.getAttribute('href')).toBe('https://beta.test/report');
@@ -676,12 +677,20 @@ describe('Source Library: list', () => {
 
 // ============================================================================
 describe('Source Library: add a source', () => {
-  it('SC-UI1 Add source opens a dialog with a name and a URL only', async () => {
+  it('SC-UI1 Add source opens a dialog with a type, a name and a URL only', async () => {
     await renderList();
     const root = await openAdd();
     expect(field('Name', root)).toBeTruthy();
     expect(field('URL', root)).toBeTruthy();
-    expect(root.querySelectorAll('input')).toHaveLength(2);
+    // the source type (P8-01): Web page, checked, or Feed
+    const kinds = Array.from(
+      root.querySelectorAll<HTMLInputElement>('input[type="radio"]')
+    );
+    expect(kinds.map((input) => [input.value, input.checked])).toEqual([
+      ['url', true],
+      ['feed', false],
+    ]);
+    expect(root.querySelectorAll('input')).toHaveLength(4);
     expect(root.querySelectorAll('textarea, select')).toHaveLength(0);
   });
 
@@ -1321,7 +1330,7 @@ describe('Source Library: source page', () => {
     expect(link.tagName).toBe('A');
     expect(link.getAttribute('rel')).toBe('noopener noreferrer');
     expect(screen.getByText('Active')).toBeTruthy();
-    expect(screen.getByText('URL')).toBeTruthy();
+    expect(screen.getByText('Web page')).toBeTruthy();
     expect(screen.getAllByText('Version 2').length).toBeGreaterThan(0);
     expect(
       screen.getByRole('link', { name: 'Sources' }).getAttribute('href')
@@ -1861,7 +1870,7 @@ describe('Source Library: API surface', () => {
   it('145/M1/M3 the writes: exact method, path and body', async () => {
     const actions = await probe();
     await act(async () => {
-      await actions().createSource('N', 'https://n.test/');
+      await actions().createSource('url', 'N', 'https://n.test/');
       await actions().renameSource(B.id, 'R');
       await actions().archiveSource(B.id);
       await actions().restoreSource(B.id);
@@ -1945,7 +1954,7 @@ describe('Source Library: API surface', () => {
     const aiList = () =>
       gets('/content-studio/sources?page=1&archived=false').length;
     const steps: Array<() => Promise<unknown>> = [
-      () => actions.createSource('N', 'https://n.test/'),
+      () => actions.createSource('url', 'N', 'https://n.test/'),
       () => actions.captureSource(A.id),
       () => actions.renameSource(A.id, 'A2'),
       () => actions.archiveSource(A.id),
@@ -2040,9 +2049,8 @@ describe('Source Library: source surface', () => {
     ).toEqual(['POST', 'PATCH', 'POST', 'POST', 'POST']);
     // the only body of a rename is its name
     expect(sources.api).toContain('body: JSON.stringify({ name })');
-    expect(sources.api).toContain(
-      "body: JSON.stringify({ kind: 'url', name, url })"
-    );
+    // the kind the member chose: a page or (P8-01) a feed
+    expect(sources.api).toContain('body: JSON.stringify({ kind, name, url })');
     expect(all.match(/JSON\.stringify\(/g)).toHaveLength(2);
     expect(all).not.toMatch(/<textarea|contentEditable|contenteditable/);
     expect(copy.join(' ')).not.toMatch(

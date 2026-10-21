@@ -2,6 +2,7 @@ import { HttpException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
+import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import {
   CONTENT_STUDIO_SOURCE_NAME_MAX,
   isContentStudioSourceKind,
@@ -47,11 +48,21 @@ const integrityError = () =>
     },
     500
   );
+const kindUnsupported = () =>
+  new HttpException(
+    {
+      msg: 'This source type has no discoveries.',
+      code: 'CS_SOURCE_KIND_UNSUPPORTED',
+    },
+    400
+  );
 
 // Source and version ids are Prisma uuid() values; anything else cannot exist
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // the page size of every Content Studio list
 const PAGE_SIZE = 20;
+// the pages a feed found, a longer list of small rows
+const DISCOVERY_PAGE_SIZE = 50;
 const UNPAIRED_SURROGATE =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
@@ -69,6 +80,8 @@ interface SourceRow {
   archivedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  // feeds only (P8-01)
+  lastCapturedAt?: Date | null;
 }
 
 interface VersionRow {
@@ -100,6 +113,8 @@ export const toPublicContentStudioSource = (row: SourceRow) => ({
   archivedAt: row.archivedAt,
   createdAt: row.createdAt,
   updatedAt: row.updatedAt,
+  // a feed's last successful capture; null for a page source
+  lastCapturedAt: row.lastCapturedAt ?? null,
 });
 
 export const toPublicContentStudioSourceVersion = (row: VersionRow) => ({
@@ -128,7 +143,8 @@ export const toPublicContentStudioSourceVersion = (row: VersionRow) => ({
 @Injectable()
 export class ContentStudioSourceService {
   constructor(
-    private _contentStudioSourceRepository: ContentStudioSourceRepository
+    private _contentStudioSourceRepository: ContentStudioSourceRepository,
+    private _contentStudioSourceDiscoveryRepository: ContentStudioSourceDiscoveryRepository
   ) {}
 
   async listSources(input: {
@@ -306,6 +322,71 @@ export class ContentStudioSourceService {
       throw err;
     }
     return { ...toPublicContentStudioSourceVersion(row), content };
+  }
+
+  // The pages a feed source found (P8-01), newest first sighting first, with
+  // their page source's summary and when this feed listed them. Read for a
+  // feed only, archived or not. A row is used only once it proves to be what
+  // a capture writes (this feed, a `url` source, both of this organization);
+  // anything else is reported, never repaired or left out
+  async listDiscoveries(input: {
+    organizationId: string;
+    sourceId: string;
+    page: number;
+  }) {
+    const feed = await this.getRow(input.organizationId, input.sourceId);
+    if (feed.kind === 'url') {
+      throw kindUnsupported();
+    }
+    if (feed.kind !== 'feed') {
+      throw integrityError();
+    }
+    const [rows, count] = await Promise.all([
+      this._contentStudioSourceDiscoveryRepository.listDiscoveriesForFeed({
+        organizationId: input.organizationId,
+        feedSourceId: feed.id,
+        skip: (input.page - 1) * DISCOVERY_PAGE_SIZE,
+        take: DISCOVERY_PAGE_SIZE,
+      }),
+      this._contentStudioSourceDiscoveryRepository.countDiscoveriesForFeed(
+        input.organizationId,
+        feed.id
+      ),
+    ]);
+    return {
+      pages: Math.ceil(count / DISCOVERY_PAGE_SIZE),
+      total: count,
+      results: rows.map((row) => {
+        const page = row.discoveredSource;
+        if (
+          row.organizationId !== input.organizationId ||
+          row.feedSourceId !== feed.id ||
+          !page ||
+          page.organizationId !== input.organizationId ||
+          page.kind !== 'url' ||
+          !page.canonicalUrl ||
+          !(row.firstSeenAt instanceof Date) ||
+          !(row.lastSeenAt instanceof Date) ||
+          row.lastSeenAt < row.firstSeenAt
+        ) {
+          throw integrityError();
+        }
+        return {
+          id: row.id,
+          entryTitle: row.entryTitle,
+          publishedAt: row.publishedAt,
+          firstSeenAt: row.firstSeenAt,
+          lastSeenAt: row.lastSeenAt,
+          source: {
+            id: page.id,
+            name: page.name,
+            canonicalUrl: page.canonicalUrl,
+            latestVersionNumber: page.latestVersionNumber,
+            archivedAt: page.archivedAt,
+          },
+        };
+      }),
+    };
   }
 
   // Trimmed, 1-200 characters, no NUL or unpaired surrogate

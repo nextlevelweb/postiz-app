@@ -64,3 +64,13 @@ export class ListContentStudioSourceVersionsDto {
   @Transform(toQueryInteger)
   page: number = 1;
 }
+
+// The pages a feed found: one page of them, nothing else
+export class ListContentStudioSourceDiscoveriesDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(PAGE_MAX)
+  @Transform(toQueryInteger)
+  page: number = 1;
+}

@@ -42,6 +42,7 @@ import {
   CreateContentStudioSourceDto,
   ListContentStudioSourcesDto,
   ListContentStudioSourceVersionsDto,
+  ListContentStudioSourceDiscoveriesDto,
   UpdateContentStudioSourceDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.source.dto';
 import { ContentStudioDesignAIService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-ai.service';
@@ -79,6 +80,7 @@ const setup = () => {
     getVersion: jest.fn().mockResolvedValue(result),
     archiveSource: jest.fn().mockResolvedValue(result),
     restoreSource: jest.fn().mockResolvedValue(result),
+    listDiscoveries: jest.fn().mockResolvedValue(result),
   };
   const ingestion = {
     refreshSource: jest.fn().mockResolvedValue(result),
@@ -149,7 +151,7 @@ const allRoutes = () =>
     .map(route);
 
 describe('ContentStudioController source routes', () => {
-  it('SRC1-SRC8/CR1 declares exactly these nine routes, with 200 for archive, restore and refresh', () => {
+  it('SRC1-SRC8/CR1 declares exactly these ten routes, with 200 for archive, restore and refresh', () => {
     expect(
       allRoutes()
         .filter((r) => / \/sources/.test(r))
@@ -157,6 +159,8 @@ describe('ContentStudioController source routes', () => {
     ).toEqual([
       'GET /sources',
       'GET /sources/:id',
+      // the pages a feed found (P8-01), read only
+      'GET /sources/:id/discoveries',
       'GET /sources/:id/versions',
       'GET /sources/:id/versions/:versionId',
       'PATCH /sources/:id',
@@ -251,6 +255,29 @@ describe('ContentStudioController source routes', () => {
     });
   });
 
+  it('TEN1/TEN2/M17 P8-01 lists the pages a feed found for the request organization, the path id and page only', async () => {
+    const { sources, ingestion, controller, result } = setup();
+    const query = withExtras(
+      Object.assign(new ListContentStudioSourceDiscoveriesDto(), { page: 2 })
+    );
+    await expect(
+      controller.listSourceDiscoveries(ORG, ID, query)
+    ).resolves.toBe(result);
+    expect(sources.listDiscoveries).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      sourceId: ID,
+      page: 2,
+    });
+    expect(ingestion.refreshSource).not.toHaveBeenCalled();
+    // a feed is captured through the one refresh route, like a page
+    await controller.refreshSource(ORG, USER, ID);
+    expect(ingestion.refreshSource).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      userId: 'user-1',
+      sourceId: ID,
+    });
+  });
+
   it('SRC7/SRC8 archives and restores for any member of the request organization', async () => {
     const { sources, controller } = setup();
     await controller.archiveSource(ORG, ID);
@@ -272,6 +299,9 @@ describe('ContentStudioController source routes', () => {
     expect(types('listSourceVersions')[2]).toBe(
       ListContentStudioSourceVersionsDto
     );
+    expect(types('listSourceDiscoveries')[2]).toBe(
+      ListContentStudioSourceDiscoveriesDto
+    );
     const text = fs
       .readFileSync(
         path.join(__dirname, 'content-studio.controller.ts'),
@@ -283,7 +313,7 @@ describe('ContentStudioController source routes', () => {
       text.indexOf("@Get('/sources')"),
       text.indexOf("@Get('/writing-profiles')")
     );
-    expect(block.match(/@(Get|Post|Patch|Put|Delete)\(/g)).toHaveLength(9);
+    expect(block.match(/@(Get|Post|Patch|Put|Delete)\(/g)).toHaveLength(10);
     expect(block).not.toMatch(
       /AIConnection|AIExecution|Role\.|assertManager|actor|users|appendVersion|safeFetch|fetch\(/
     );
@@ -444,6 +474,28 @@ describe('Source DTO validation', () => {
     for (const query of [{ page: '-1' }, { page: '0' }, { archived: 'true' }]) {
       await rejected(ListContentStudioSourceVersionsDto, query, 'query');
     }
+    // P8-01: the pages a feed found, one page of them and nothing else
+    expect({
+      ...(await run(ListContentStudioSourceDiscoveriesDto, {}, 'query')),
+    }).toEqual({ page: 1 });
+    expect({
+      ...(await run(
+        ListContentStudioSourceDiscoveriesDto,
+        { page: '7' },
+        'query'
+      )),
+    }).toEqual({ page: 7 });
+    for (const query of [
+      { page: '0' },
+      { page: '100001' },
+      { page: 'x' },
+      { organizationId: 'org-b' },
+      { feedSourceId: ID },
+      { kind: 'feed' },
+      { sort: 'score' },
+    ]) {
+      await rejected(ListContentStudioSourceDiscoveriesDto, query, 'query');
+    }
   });
 });
 
@@ -484,6 +536,7 @@ describe('Source trusted-provenance boundary', () => {
       'export class CreateContentStudioSourceDto',
       'export class UpdateContentStudioSourceDto',
       'export class ListContentStudioSourceVersionsDto',
+      'export class ListContentStudioSourceDiscoveriesDto',
     ]);
     const body = await rejected(CreateContentStudioSourceDto, {
       ...CREATE,

@@ -10,9 +10,11 @@ import { ContentStudioPager } from '@gitroom/frontend/components/content-studio/
 import { formatDate } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
 import {
   ContentStudioSourceBlock,
+  ContentStudioSourceDetail as SourceDetailData,
   ContentStudioSourceVersionSummary,
   sourceErrorCode,
   useContentStudioSource,
+  useContentStudioSourceDiscoveries,
   useContentStudioSourceVersion,
   useContentStudioSourceVersions,
 } from '@gitroom/frontend/components/content-studio/content-studio.sources.api';
@@ -20,6 +22,7 @@ import {
   CaptureButton,
   formatSourceBytes,
   SOURCE_LIBRARY_PATH,
+  sourcePagePath,
   SourceStatus,
   SourceUrl,
   useSourceCommands,
@@ -349,6 +352,154 @@ const SourceHistory: FC<{
   );
 };
 
+// A page found by a feed: its capture state, in words
+const PageStatus: FC<{
+  page: { latestVersionNumber: number; archivedAt: string | null };
+}> = ({ page }) => {
+  const t = useT();
+  if (page.archivedAt) {
+    return <span>{t('content_studio_archived', 'Archived')}</span>;
+  }
+  return (
+    <span>
+      {page.latestVersionNumber > 0
+        ? `${t('content_studio_revision', 'Version')} ${
+            page.latestVersionNumber
+          }`
+        : t('content_studio_source_not_captured', 'Not captured yet')}
+    </span>
+  );
+};
+
+// The pages a feed found, newest first sighting first, one server page at a
+// time. The entry's title and date are what the feed said, shown as plain
+// text; each page opens as its own source, with its own captures
+const FeedDiscoveries: FC<{ feed: SourceDetailData }> = ({ feed }) => {
+  const t = useT();
+  const [page, setPage] = useState(1);
+  const list = useContentStudioSourceDiscoveries(feed.id, page, true);
+  if (list.error) {
+    return (
+      <div role="alert" className="flex flex-col items-start gap-[8px]">
+        <div>
+          {t(
+            'content_studio_feed_discoveries_load_error',
+            'The pages of this feed could not be loaded.'
+          )}
+        </div>
+        <Button secondary onClick={() => list.mutate()}>
+          {t('content_studio_retry', 'Try again')}
+        </Button>
+      </div>
+    );
+  }
+  if (!list.data) {
+    return <LoadingComponent width={40} height={40} />;
+  }
+  if (!list.data.results.length) {
+    return (
+      <div className="text-textItemBlur">
+        {feed.lastCapturedAt
+          ? t(
+              'content_studio_feed_no_discoveries',
+              'The last capture found no pages with an HTTPS link.'
+            )
+          : t(
+              'content_studio_feed_no_discoveries_yet',
+              'No pages yet. Capture the feed to find its pages.'
+            )}
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-[12px]">
+      <div className="text-[13px] text-textItemBlur">
+        {t('content_studio_feed_discoveries_total', 'Pages found')}:{' '}
+        {list.data.total}
+      </div>
+      <ul className="flex flex-col gap-[8px]">
+        {list.data.results.map((discovery) => (
+          <li
+            key={discovery.id}
+            className="flex flex-col gap-[4px] border border-newTableBorder rounded-[8px] p-[12px] min-w-0"
+          >
+            <Link
+              href={sourcePagePath(discovery.source.id)}
+              className="font-[600] break-words hover:underline"
+            >
+              {discovery.entryTitle ?? discovery.source.name}
+            </Link>
+            <SourceUrl
+              url={discovery.source.canonicalUrl}
+              className="text-[13px] text-textItemBlur"
+            />
+            <div className="text-[12px] text-textItemBlur flex flex-wrap gap-x-[12px] gap-y-[2px]">
+              <span>
+                {t('content_studio_feed_published', 'Published')}:{' '}
+                {discovery.publishedAt
+                  ? formatDate(discovery.publishedAt)
+                  : t('content_studio_feed_no_date', 'No date in the feed')}
+              </span>
+              <span>
+                {t('content_studio_feed_first_seen', 'First seen')}:{' '}
+                {formatDate(discovery.firstSeenAt)}
+              </span>
+              <span>
+                {t('content_studio_feed_last_seen', 'Last seen')}:{' '}
+                {formatDate(discovery.lastSeenAt)}
+              </span>
+              <PageStatus page={discovery.source} />
+            </div>
+          </li>
+        ))}
+      </ul>
+      {list.data.pages > 1 && (
+        <ContentStudioPager
+          page={page}
+          pages={list.data.pages}
+          setPage={setPage}
+        />
+      )}
+    </div>
+  );
+};
+
+// A feed's own state: when it was last read, and that it is read again on a
+// schedule while it is active. It has no versions of its own
+const FeedCapture: FC<{ feed: SourceDetailData }> = ({ feed }) => {
+  const t = useT();
+  return (
+    <section className="flex flex-col gap-[12px] min-w-0">
+      <h2 className="text-[16px] font-[600]">
+        {t('content_studio_feed_capture_heading', 'Feed capture')}
+      </h2>
+      <dl className="grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-[12px]">
+        <Fact label={t('content_studio_feed_last_captured', 'Last captured')}>
+          {feed.lastCapturedAt
+            ? formatDate(feed.lastCapturedAt)
+            : t('content_studio_source_not_captured', 'Not captured yet')}
+        </Fact>
+        <Fact
+          label={t(
+            'content_studio_feed_automatic_capture',
+            'Automatic capture'
+          )}
+        >
+          {feed.archivedAt
+            ? t('content_studio_feed_automatic_paused', 'Paused while archived')
+            : t('content_studio_feed_automatic_hourly', 'About every hour')}
+        </Fact>
+      </dl>
+      <div className="text-[13px] text-textItemBlur">
+        {t(
+          'content_studio_feed_note',
+          'A capture reads the first 25 entries of the feed, in the order the feed lists them. Each page they link to is kept as a web page source with its own versions; a page that has not changed gets no new version.'
+        )}
+      </div>
+    </section>
+  );
+};
+
 // One source: what it is, its current capture and its history. An archived
 // source stays fully readable. Opening it fetches nothing from the source
 // itself, and loads no captured text until a version is opened
@@ -481,52 +632,66 @@ export const ContentStudioSourceDetail: FC<{ sourceId: string }> = ({
         )}
       </div>
 
-      <section className="flex flex-col gap-[12px] min-w-0">
-        <h2 className="text-[16px] font-[600]">
-          {t('content_studio_source_current_capture', 'Current capture')}
-        </h2>
-        {source.currentVersion ? (
-          <>
-            <VersionFacts version={source.currentVersion} />
-            <ProvenanceDetails version={source.currentVersion} />
-            <div>
-              <Button
-                secondary
-                onClick={() => setViewing(source.currentVersion)}
-              >
-                {t(
-                  'content_studio_source_view_content',
-                  'View extracted content'
-                )}
-              </Button>
-            </div>
-          </>
-        ) : (
-          <div className="text-textItemBlur">
-            {t('content_studio_source_not_captured', 'Not captured yet')}
-          </div>
-        )}
-      </section>
-
-      {viewing ? (
-        <SourceVersionView
-          key={viewing.id}
-          sourceId={source.id}
-          version={viewing}
-          onBack={() => setViewing(null)}
-        />
+      {source.kind === 'feed' ? (
+        <>
+          <FeedCapture feed={source} />
+          <section className="flex flex-col gap-[12px] min-w-0">
+            <h2 className="text-[16px] font-[600]">
+              {t('content_studio_feed_discoveries', 'Pages found in this feed')}
+            </h2>
+            <FeedDiscoveries feed={source} />
+          </section>
+        </>
       ) : (
-        <section className="flex flex-col gap-[12px] min-w-0">
-          <h2 className="text-[16px] font-[600]">
-            {t('content_studio_source_history', 'Version history')}
-          </h2>
-          <SourceHistory
-            history={history}
-            page={page}
-            setPage={setPage}
-            onView={setViewing}
-          />
-        </section>
+        <>
+          <section className="flex flex-col gap-[12px] min-w-0">
+            <h2 className="text-[16px] font-[600]">
+              {t('content_studio_source_current_capture', 'Current capture')}
+            </h2>
+            {source.currentVersion ? (
+              <>
+                <VersionFacts version={source.currentVersion} />
+                <ProvenanceDetails version={source.currentVersion} />
+                <div>
+                  <Button
+                    secondary
+                    onClick={() => setViewing(source.currentVersion)}
+                  >
+                    {t(
+                      'content_studio_source_view_content',
+                      'View extracted content'
+                    )}
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <div className="text-textItemBlur">
+                {t('content_studio_source_not_captured', 'Not captured yet')}
+              </div>
+            )}
+          </section>
+
+          {viewing ? (
+            <SourceVersionView
+              key={viewing.id}
+              sourceId={source.id}
+              version={viewing}
+              onBack={() => setViewing(null)}
+            />
+          ) : (
+            <section className="flex flex-col gap-[12px] min-w-0">
+              <h2 className="text-[16px] font-[600]">
+                {t('content_studio_source_history', 'Version history')}
+              </h2>
+              <SourceHistory
+                history={history}
+                page={page}
+                setPage={setPage}
+                onView={setViewing}
+              />
+            </section>
+          )}
+        </>
       )}
     </div>
   );

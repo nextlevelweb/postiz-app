@@ -62,6 +62,7 @@ model Organization {
   contentStudioExpertiseProfileRevisions ContentStudioExpertiseProfileRevision[]
   contentStudioSources                   ContentStudioSource[]
   contentStudioSourceVersions            ContentStudioSourceVersion[]
+  contentStudioSourceDiscoveries         ContentStudioSourceDiscovery[]
   contentStudioBrandKit                  ContentStudioBrandKit?
   contentStudioBrandKitRevisions         ContentStudioBrandKitRevision[]
   contentStudioDesignProjects            ContentStudioDesignProject[]
@@ -2280,30 +2281,67 @@ model ContentStudioExpertiseProfileRevision {
   @@index([createdById])
 }
 
-// A source an organization tracks (a web page for now), with its captures in
-// immutable versions. Provenance only, never verified fact: a stored source
-// does not make any claim true. The canonical URL is the source's identity,
-// once per organization; it is never changed after creation
+// A source an organization tracks, with its captures in immutable versions.
+// Provenance only, never verified fact: a stored source does not make any
+// claim true. The canonical URL is the source's identity, once per
+// organization (whatever its kind); it is never changed after creation. A
+// `url` source is a web page with versions. A `feed` source (P8-01) is an RSS
+// or Atom feed: it never has a version, its captures record the pages it
+// lists as discoveries of ordinary `url` sources, and lastCapturedAt is when
+// it was last read successfully (null for a `url` source and before the
+// first feed capture)
 model ContentStudioSource {
-  id                  String                       @id @default(uuid())
+  id                  String                         @id @default(uuid())
   organizationId      String
   kind                String
   name                String
   canonicalUrl        String?
-  latestVersionNumber Int                          @default(0)
+  latestVersionNumber Int                            @default(0)
   archivedAt          DateTime?
   createdById         String
-  createdAt           DateTime                     @default(now())
-  updatedAt           DateTime                     @updatedAt
-  organization        Organization                 @relation(fields: [organizationId], references: [id])
-  createdBy           User                         @relation("ContentStudioSourceCreatedBy", fields: [createdById], references: [id])
+  createdAt           DateTime                       @default(now())
+  updatedAt           DateTime                       @updatedAt
+  lastCapturedAt      DateTime?
+  organization        Organization                   @relation(fields: [organizationId], references: [id])
+  createdBy           User                           @relation("ContentStudioSourceCreatedBy", fields: [createdById], references: [id])
   versions            ContentStudioSourceVersion[]
+  feedDiscoveries     ContentStudioSourceDiscovery[] @relation("ContentStudioSourceDiscoveryFeed")
+  discoveredBy        ContentStudioSourceDiscovery[] @relation("ContentStudioSourceDiscoveryDiscovered")
 
   @@unique([id, organizationId])
   @@unique([organizationId, canonicalUrl])
   @@index([organizationId, archivedAt])
   @@index([organizationId, kind])
   @@index([createdById])
+  @@index([kind, archivedAt, id])
+}
+
+// That a feed source listed a page (P8-01): which feed, which `url` source of
+// the same organization, when this feed first and last listed it, and what
+// the entry said about it at its last sighting (id, title, date). Discovery
+// metadata only, never content or a statement about the page: the page's
+// text is in its own versions. One row per feed and page, so a page listed
+// by two feeds is one source with two rows. The service checks that the feed
+// is a `feed` and the page a `url` source; the composite keys keep both in
+// the row's organization. Sources are never deleted, so neither is this
+model ContentStudioSourceDiscovery {
+  id                 String              @id @default(uuid())
+  organizationId     String
+  feedSourceId       String
+  discoveredSourceId String
+  entryId            String?
+  entryTitle         String?
+  publishedAt        DateTime?
+  firstSeenAt        DateTime
+  lastSeenAt         DateTime
+  organization       Organization        @relation(fields: [organizationId], references: [id])
+  feedSource         ContentStudioSource @relation("ContentStudioSourceDiscoveryFeed", fields: [feedSourceId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
+  discoveredSource   ContentStudioSource @relation("ContentStudioSourceDiscoveryDiscovered", fields: [discoveredSourceId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([organizationId, feedSourceId, discoveredSourceId])
+  @@index([organizationId, firstSeenAt])
+  @@index([feedSourceId, firstSeenAt])
+  @@index([discoveredSourceId])
 }
 
 // One capture of a source: where it was requested and where it ended up, when,

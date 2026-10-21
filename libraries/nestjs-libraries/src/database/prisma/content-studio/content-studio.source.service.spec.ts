@@ -5,6 +5,7 @@ import { HttpException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
+import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { parseContentStudioSourceVersionInput } from '@gitroom/nestjs-libraries/content-studio/sources/source.version';
 import { CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
@@ -59,6 +60,7 @@ const sourceRow = (overrides: Record<string, unknown> = {}) => ({
   archivedAt: null as Date | null,
   createdAt: T0,
   updatedAt: T0,
+  lastCapturedAt: null as Date | null,
   ...overrides,
 });
 const versionSummaryRow = (overrides: Record<string, unknown> = {}) => {
@@ -136,7 +138,8 @@ const setup = () => {
     appendVersionWithCompareAndSwap: jest.fn(),
   };
   const service = new ContentStudioSourceService(
-    repository as unknown as ContentStudioSourceRepository
+    repository as unknown as ContentStudioSourceRepository,
+    {} as ContentStudioSourceDiscoveryRepository
   );
   return { repository, service };
 };
@@ -196,6 +199,7 @@ const SUMMARY_KEYS = [
   'createdAt',
   'id',
   'kind',
+  'lastCapturedAt',
   'latestVersionNumber',
   'name',
   'updatedAt',
@@ -258,14 +262,48 @@ describe('ContentStudioSourceService: create', () => {
       archivedAt: null,
       createdAt: T0,
       updatedAt: T0,
+      lastCapturedAt: null,
     });
     expect(repository.appendVersionWithCompareAndSwap).not.toHaveBeenCalled();
   });
 
-  it('SS4 refuses any kind but url', async () => {
+  it('SK2/72/73 P8-01 creates a feed like a page: same name and URL rules, no fetch, and one canonical URL is one source whatever its kind', async () => {
+    const { repository, service } = setup();
+    await service.createSource(
+      createInput({ kind: 'feed', url: 'HTTPS://Example.com:443/news/a#x' })
+    );
+    expect(repository.createSource).toHaveBeenCalledWith({
+      id: NEW_ID,
+      organizationId: ORG,
+      kind: 'feed',
+      name: 'Example news',
+      canonicalUrl: URL_A,
+      createdById: USER,
+    });
+    expect(repository.appendVersionWithCompareAndSwap).not.toHaveBeenCalled();
+    // a page at that address already exists: the feed is refused
+    repository.getSourceByCanonicalUrlForOrganization.mockResolvedValueOnce(
+      sourceRow()
+    );
+    expect(
+      await httpError(service.createSource(createInput({ kind: 'feed' })))
+    ).toEqual({
+      status: 409,
+      body: {
+        msg: 'This source already exists.',
+        code: 'CS_SOURCE_ALREADY_EXISTS',
+      },
+    });
+  });
+
+  it('SS4/SK3 refuses any kind but url and feed', async () => {
     const { repository, service } = setup();
     for (const kind of [
       'URL',
+      'Feed',
+      'FEED',
+      'feeds',
+      'atom',
       'web',
       'website',
       'rss',
@@ -728,6 +766,7 @@ describe('ContentStudioSourceService source', () => {
       'getRow',
       'getSource',
       'getVersion',
+      'listDiscoveries',
       'listSources',
       'listVersions',
       'renameSource',

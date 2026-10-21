@@ -14,6 +14,7 @@ const SOURCE_SUMMARY = {
   archivedAt: true,
   createdAt: true,
   updatedAt: true,
+  lastCapturedAt: true,
 } as const;
 
 // Version lists, the current version and the compare-and-swap never load the
@@ -97,6 +98,21 @@ export class ContentStudioSourceRepository {
     });
   }
 
+  // What a capture needs, with who created the source: a scheduled feed
+  // capture (P8-01) records its captures in the feed creator's name
+  getSourceForCapture(organizationId: string, id: string) {
+    return this._source.model.contentStudioSource.findFirst({
+      where: {
+        id,
+        organizationId,
+      },
+      select: {
+        ...SOURCE_SUMMARY,
+        createdById: true,
+      },
+    });
+  }
+
   // Archived sources included: the URL stays taken until the source is gone,
   // which it never is
   getSourceByCanonicalUrlForOrganization(
@@ -173,6 +189,54 @@ export class ContentStudioSourceRepository {
       data: {
         archivedAt: null,
       },
+    });
+  }
+
+  // A feed that was just read (P8-01). Only a live feed: one archived during
+  // the capture keeps what it had
+  markFeedCaptured(organizationId: string, id: string, capturedAt: Date) {
+    return this._source.model.contentStudioSource.updateMany({
+      where: {
+        id,
+        organizationId,
+        kind: 'feed',
+        archivedAt: null,
+      },
+      data: {
+        lastCapturedAt: capturedAt,
+      },
+    });
+  }
+
+  // For the feed capture schedule only (no route reaches it): live feeds of
+  // every live organization not read since `capturedBefore`, one page after
+  // `afterId` in id order, so a scan walks every feed once. Ids only
+  listFeedsDueForCapture(input: {
+    capturedBefore: Date;
+    afterId: string | null;
+    take: number;
+  }) {
+    return this._source.model.contentStudioSource.findMany({
+      where: {
+        kind: 'feed',
+        archivedAt: null,
+        ...(input.afterId ? { id: { gt: input.afterId } } : {}),
+        OR: [
+          { lastCapturedAt: null },
+          { lastCapturedAt: { lt: input.capturedBefore } },
+        ],
+        organization: {
+          deletedAt: null,
+        },
+      },
+      orderBy: {
+        id: 'asc',
+      },
+      select: {
+        id: true,
+        organizationId: true,
+      },
+      take: input.take,
     });
   }
 

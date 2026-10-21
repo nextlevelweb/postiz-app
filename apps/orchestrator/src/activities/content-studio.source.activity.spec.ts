@@ -1,0 +1,138 @@
+import fs from 'fs';
+import path from 'path';
+import { HttpException } from '@nestjs/common';
+import { ApplicationFailure } from '@temporalio/activity';
+import { ContentStudioSourceActivity } from './content-studio.source.activity';
+import type { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
+
+// The feed capture activities (P8-01): ids in, the shared ingestion service
+// out, and every refusal turned into a Temporal failure that says whether
+// another attempt can help
+const ORG = '11111111-1111-4111-8111-111111111111';
+const FEED = '33333333-3333-4333-8333-333333333333';
+const MARKER = 'ACTIVITY_PRIVATE_URL_MARKER_123';
+
+const setup = () => {
+  const ingestion = {
+    listFeedsDueForCapture: jest.fn(),
+    captureScheduledFeed: jest.fn(),
+  };
+  const activity = new ContentStudioSourceActivity(
+    ingestion as unknown as ContentStudioSourceIngestionService
+  );
+  return { ingestion, activity };
+};
+
+const failure = async (promise: Promise<unknown>) => {
+  const err = await promise.then(
+    () => {
+      throw new Error('expected a failure');
+    },
+    (e: unknown) => e
+  );
+  expect(err).toBeInstanceOf(ApplicationFailure);
+  return err as ApplicationFailure;
+};
+
+describe('ContentStudioSourceActivity', () => {
+  it('TM5 lists and captures through the same ingestion service as the refresh route', async () => {
+    const { ingestion, activity } = setup();
+    ingestion.listFeedsDueForCapture.mockResolvedValue({
+      feeds: [],
+      next: null,
+    });
+    ingestion.captureScheduledFeed.mockResolvedValue({ status: 'skipped' });
+    await expect(
+      activity.listContentStudioFeedsForCapture({ afterId: null })
+    ).resolves.toEqual({ feeds: [], next: null });
+    await expect(
+      activity.captureContentStudioFeed({ organizationId: ORG, sourceId: FEED })
+    ).resolves.toEqual({ status: 'skipped' });
+    expect(ingestion.listFeedsDueForCapture).toHaveBeenCalledWith({
+      afterId: null,
+    });
+    expect(ingestion.captureScheduledFeed).toHaveBeenCalledWith({
+      organizationId: ORG,
+      sourceId: FEED,
+    });
+  });
+
+  it.each([
+    ['CS_SOURCE_FETCH_FAILED', 502],
+    ['CS_SOURCE_FETCH_TIMEOUT', 504],
+  ])('TM6 %s may succeed later: a retryable failure', async (code, status) => {
+    const { ingestion, activity } = setup();
+    ingestion.captureScheduledFeed.mockRejectedValue(
+      new HttpException({ msg: `fixed ${MARKER}`, code }, status)
+    );
+    const err = await failure(
+      activity.captureContentStudioFeed({ organizationId: ORG, sourceId: FEED })
+    );
+    expect(err.nonRetryable).toBe(false);
+    expect(err.type).toBe(code);
+    expect(err.message).toBe('The Content Studio feed could not be captured.');
+  });
+
+  it.each([
+    ['CS_SOURCE_FEED_INVALID', 422],
+    ['CS_SOURCE_FETCH_BLOCKED', 400],
+    ['CS_SOURCE_URL_INVALID', 400],
+    ['CS_SOURCE_FETCH_TOO_LARGE', 413],
+    ['CS_SOURCE_CONTENT_TYPE_UNSUPPORTED', 415],
+    ['CS_SOURCE_INTEGRITY_ERROR', 500],
+    ['CS_SOURCE_KIND_UNSUPPORTED', 400],
+  ])(
+    'TM4/TM7 %s fails the same way again: never retried',
+    async (code, status) => {
+      const { ingestion, activity } = setup();
+      ingestion.captureScheduledFeed.mockRejectedValue(
+        new HttpException({ msg: `fixed ${MARKER}`, code }, status)
+      );
+      const err = await failure(
+        activity.captureContentStudioFeed({
+          organizationId: ORG,
+          sourceId: FEED,
+        })
+      );
+      expect(err.nonRetryable).toBe(true);
+      expect(err.type).toBe(code);
+      expect(JSON.stringify(err)).not.toContain(MARKER);
+      expect(err.message).not.toContain(MARKER);
+    }
+  );
+
+  it('an error that is not a refusal (the database) is left to the retry policy as it is', async () => {
+    const { ingestion, activity } = setup();
+    const db = new Error('connection reset');
+    ingestion.captureScheduledFeed.mockRejectedValue(db);
+    await expect(
+      activity.captureContentStudioFeed({ organizationId: ORG, sourceId: FEED })
+    ).rejects.toBe(db);
+  });
+
+  it('a refusal without a code is still a fixed, non-retryable failure', async () => {
+    const { ingestion, activity } = setup();
+    ingestion.captureScheduledFeed.mockRejectedValue(
+      new HttpException('plain', 400)
+    );
+    const err = await failure(
+      activity.captureContentStudioFeed({ organizationId: ORG, sourceId: FEED })
+    );
+    expect([err.type, err.nonRetryable]).toEqual([
+      'CS_SOURCE_CAPTURE_FAILED',
+      true,
+    ]);
+  });
+
+  it('P801-1/P801-5 fetches nothing and uses no AI itself', () => {
+    const text = fs
+      .readFileSync(
+        path.join(__dirname, 'content-studio.source.activity.ts'),
+        'utf8'
+      )
+      .replace(/^\s*\/\/.*$/gm, '');
+    expect(text).not.toMatch(
+      /safeFetch|\bfetch\(|axios|undici|rss-parser|PrismaRepository|prisma\.|AIExecution|openai|anthropic/i
+    );
+  });
+});

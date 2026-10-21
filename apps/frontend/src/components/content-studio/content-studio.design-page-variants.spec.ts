@@ -720,8 +720,9 @@ describe('Size variant boundaries', () => {
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P6-01: one more, a design from a saved package revision; P6-02 one
-      // more, a Design Creative AI suggestion
-    ).toHaveLength(141);
+      // more, a Design Creative AI suggestion; P8-01 one more, the pages a
+      // feed source found
+    ).toHaveLength(142);
     expect(controller).not.toMatch(/variant|campaign|resize|responsive/i);
   });
 
