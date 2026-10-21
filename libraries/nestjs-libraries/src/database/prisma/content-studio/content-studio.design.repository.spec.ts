@@ -137,7 +137,11 @@ const setup = () => {
 
 const create = (
   repository: ContentStudioDesignRepository,
-  overrides: Partial<{ organizationId: string; designProjectId: string }> = {}
+  overrides: Partial<{
+    organizationId: string;
+    designProjectId: string;
+    source: { packageRevisionId: string; contentHash: string } | null;
+  }> = {}
 ) =>
   repository.createProjectWithFirstRevision({
     designProjectId: overrides.designProjectId ?? PROJECT,
@@ -146,6 +150,7 @@ const create = (
     name: 'Brand voice',
     createdById: USER,
     revision: stored('a'),
+    source: overrides.source ?? null,
   });
 
 const save = (
@@ -176,6 +181,9 @@ describe('ContentStudioDesignRepository: create', () => {
         name: 'Brand voice',
         latestRevisionNumber: 1,
         createdById: USER,
+        // PV4: a design created on its own has no source, written as such
+        sourcePackageRevisionId: null,
+        sourcePackageContentHash: null,
       }),
     ]);
     expect(Object.keys(state.projects[0])).not.toEqual(
@@ -204,6 +212,58 @@ describe('ContentStudioDesignRepository: create', () => {
     expect(Object.keys(result.revision)).not.toContain('content');
   });
 
+  it('PV1/PV5/P6PG1 writes the package revision a design came from with the project, in the same transaction', async () => {
+    const { repository, transaction, state } = setup();
+    const result = await create(repository, {
+      source: { packageRevisionId: 'pkg-rev-3', contentHash: 'c'.repeat(64) },
+    });
+    expect(transaction.$transaction).toHaveBeenCalledTimes(1);
+    expect(state.projects).toEqual([
+      expect.objectContaining({
+        id: PROJECT,
+        sourcePackageRevisionId: 'pkg-rev-3',
+        sourcePackageContentHash: 'c'.repeat(64),
+      }),
+    ]);
+    // the creation answer is the summary, as before
+    expect(Object.keys(result.project)).not.toContain(
+      'sourcePackageRevisionId'
+    );
+  });
+
+  it('P6PG6 leaves no project, and so no source, when the first revision of a design from a package cannot be written', async () => {
+    const { repository, revision, state } = setup();
+    revision.create.mockRejectedValueOnce(new Error('database down'));
+    await expect(
+      create(repository, {
+        source: { packageRevisionId: 'pkg-rev-3', contentHash: 'c'.repeat(64) },
+      })
+    ).rejects.toThrow('database down');
+    expect(state.projects).toEqual([]);
+    expect(state.revisions).toEqual([]);
+  });
+
+  it('PV7 reads the detail with the source through its relation, scoped to the organization', async () => {
+    const { repository, project } = setup();
+    await repository.getProjectDetailForOrganization(ORG, PROJECT);
+    expect(project.findFirst).toHaveBeenCalledWith({
+      where: { id: PROJECT, organizationId: ORG },
+      select: expect.objectContaining({
+        sourcePackageRevisionId: true,
+        sourcePackageContentHash: true,
+        sourcePackageRevision: {
+          select: {
+            id: true,
+            packageId: true,
+            revisionNumber: true,
+            contentHash: true,
+            package: { select: { name: true } },
+          },
+        },
+      }),
+    });
+  });
+
   it('DPR5 leaves no project when its first revision cannot be written', async () => {
     const { repository, revision, state } = setup();
     revision.create.mockRejectedValueOnce(new Error('database down'));
@@ -222,6 +282,7 @@ describe('ContentStudioDesignRepository: create', () => {
       'countRevisionsForProject',
       'createProjectWithFirstRevision',
       'createRevisionWithCompareAndSwap',
+      'getProjectDetailForOrganization',
       'getProjectForOrganization',
       'getRevisionByNumber',
       'getRevisionForProject',
@@ -593,6 +654,11 @@ describe('ContentStudioDesignProject schema', () => {
       renders: 'ContentStudioDesignRender[]',
       // P4-06: render-all batches of the design point to it
       renderBatches: 'ContentStudioDesignRenderBatch[]',
+      // P6-01: the saved package revision a design was created from, and its
+      // hash, outside the document (null for a design made on its own)
+      sourcePackageRevisionId: 'String?',
+      sourcePackageContentHash: 'String?',
+      sourcePackageRevision: 'ContentPackageRevision?',
     });
     expect(fields('ContentStudioDesignRevision')).toEqual({
       id: 'String',

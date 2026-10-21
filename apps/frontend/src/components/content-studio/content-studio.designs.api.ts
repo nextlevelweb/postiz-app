@@ -66,9 +66,41 @@ export interface ContentStudioDesignRevisionDetail
   approval?: ContentStudioRevisionApprovalStatus;
 }
 
+// The saved package revision a design was created from (P6-01), as the
+// server verified it: exactly that revision, never the package's latest
+export interface ContentStudioDesignSource {
+  packageId: string;
+  packageName: string;
+  packageRevisionId: string;
+  packageRevisionNumber: number;
+  packageContentHash: string;
+}
+
 export interface ContentStudioDesignDetail extends ContentStudioDesignSummary {
   currentRevision: ContentStudioDesignRevisionDetail;
+  // null for a design created on its own
+  source?: ContentStudioDesignSource | null;
 }
+
+// Where a design from a saved package revision starts (P6-01): one canvas
+// size, one page set or one exact template revision. For a template: the
+// field the item's text goes into, the values of its other fields and,
+// optionally, one Media of the item with the image field it goes into. Ids
+// only: the server reads the text, the Media and every hash itself
+export type ContentStudioPackageDesignStart =
+  | { canvas: string }
+  | { pageSetId: string }
+  | {
+      templateSource: 'system' | 'organization';
+      templateId: string;
+      templateRevisionId?: string;
+      templateRevisionNumber?: number;
+      textSlotId?: string;
+      // the other fields: text, or an image reference the server made
+      values?: Record<string, string | ContentStudioDesignMediaRef>;
+      mediaId?: string;
+      imageSlotId?: string;
+    };
 
 // One exact Brand Kit revision of the organization, verified by the server
 export interface ContentStudioBrandKitRevisionDetail {
@@ -384,6 +416,34 @@ export const useContentStudioDesignActions = () => {
         await refresh();
         return created;
       },
+      // a new design from exactly one saved package revision and one of its
+      // thread items, by their ids (P6-01): the server reads the text
+      createDesignFromPackageRevision: async (
+        packageId: string,
+        revisionId: string,
+        {
+          name,
+          itemId,
+          start,
+        }: {
+          name: string;
+          itemId: string;
+          start: ContentStudioPackageDesignStart;
+        }
+      ) => {
+        const created = await request<ContentStudioDesignSummary>(
+          fetch,
+          `/content-studio/packages/${encodeURIComponent(
+            packageId
+          )}/revisions/${encodeURIComponent(revisionId)}/designs`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ name, itemId, ...start }),
+          }
+        );
+        await refresh();
+        return created;
+      },
       // the name only: the document changes through a revision
       renameDesign: async (id: string, name: string) => {
         await request(fetch, designPath(id), {
@@ -510,6 +570,45 @@ export const designErrorMessage = (
             'content_studio_design_update_error',
             'Something went wrong while updating the design.'
           );
+  }
+};
+
+// Why a design could not be made from a saved package revision (P6-01).
+// The codes of the starting point are told by their own messages
+export const designFromPackageErrorMessage = (t: Translate, error: unknown) => {
+  switch (designErrorCode(error)) {
+    case 'CS_NOT_FOUND':
+      return t(
+        'content_studio_design_source_not_found',
+        'This package version or starting point is no longer available.'
+      );
+    case 'CS_STORED_REVISION_INVALID':
+      return t(
+        'content_studio_design_source_integrity',
+        'This package version could not be read safely.'
+      );
+    case 'CS_DESIGN_SOURCE_ITEM_NOT_FOUND':
+      return t(
+        'content_studio_design_source_item_missing',
+        'The selected post is not part of this version.'
+      );
+    case 'CS_DESIGN_SOURCE_SLOT_INVALID':
+      return t(
+        'content_studio_design_source_slot_invalid',
+        'Choose a template field for the package text.'
+      );
+    case 'CS_DESIGN_SOURCE_MEDIA_INVALID':
+      return t(
+        'content_studio_design_source_media_invalid',
+        'The selected package image cannot be used.'
+      );
+    case 'CS_DESIGN_MEDIA_UNAVAILABLE':
+      return t(
+        'content_studio_design_media_unavailable',
+        'This media item cannot be used in a design.'
+      );
+    default:
+      return designErrorMessage(t, error, 'create');
   }
 };
 

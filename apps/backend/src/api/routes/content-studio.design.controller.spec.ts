@@ -38,6 +38,7 @@ import { ContentStudioDesignBlockService } from '@gitroom/nestjs-libraries/datab
 import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 import {
   CreateContentStudioDesignDto,
+  CreateContentStudioDesignFromPackageDto,
   CreateContentStudioDesignRevisionDto,
   ListContentStudioDesignRevisionsDto,
   ListContentStudioDesignsDto,
@@ -145,7 +146,7 @@ const route = (name: string) =>
 describe('ContentStudioController design routes', () => {
   // P4-05 adds the one render route; the other nine are the P4-02 routes
   // P4-06 adds render-all: eleven routes
-  it('DPC1 declares exactly these eleven routes, with 200 for archive, restore, render and render-all', () => {
+  it('DPC1 declares exactly these twelve routes, with 200 for archive, restore, render and render-all', () => {
     const names = Object.getOwnPropertyNames(ContentStudioController.prototype)
       .filter((name) => /Designs?\b|Design[A-Z]/.test(name))
       // P4-08: the Brand Kit and Media design references live elsewhere;
@@ -172,6 +173,8 @@ describe('ContentStudioController design routes', () => {
       'POST /designs/:id/render-all',
       'POST /designs/:id/restore',
       'POST /designs/:id/revisions',
+      // P6-01: a design from a saved package revision, under that revision
+      'POST /packages/:id/revisions/:revisionId/designs',
     ]);
     for (const name of [
       'archiveDesign',
@@ -507,5 +510,216 @@ describe('Design DTO validation', () => {
       { page: '-1' },
       'query'
     );
+  });
+});
+
+// P6-01: a new design from a saved package revision. The path names the
+// package and the revision; the body only ids, a name and the starting
+// point. The package service reads the text and the hash itself
+describe('ContentStudioController design from a package revision (P6-01)', () => {
+  const PACKAGE = '44444444-4444-4444-8444-444444444444';
+  const setupPackages = () => {
+    const result = { from: 'package service' };
+    const packages = {
+      createDesignFromRevision: jest.fn().mockResolvedValue(result),
+    };
+    const controller = new ContentStudioController(
+      packages as unknown as ContentStudioService,
+      {} as ContentStudioHandoffService,
+      {} as ContentStudioAIConnectionService,
+      {} as ContentStudioWritingProfileService,
+      {} as ContentStudioEditorialPolicyService,
+      {} as ContentStudioAudienceProfileService,
+      {} as ContentStudioExpertiseProfileService,
+      {} as ContentStudioAIWritingService,
+      {} as ContentStudioSourceService,
+      {} as ContentStudioSourceIngestionService,
+      {} as ContentStudioBrandKitService,
+      {} as ContentStudioDesignService,
+      {} as ContentStudioRenderFontService,
+      {} as ContentStudioDesignRenderService,
+      {} as ContentStudioDesignReferenceService,
+      {} as ContentStudioDesignTemplateService,
+      {} as ContentStudioDesignStylePresetService,
+      {} as ContentStudioDesignLayoutPatternService,
+      {} as ContentStudioDesignPageSetService,
+      {} as ContentStudioDesignBlockService,
+      {} as ContentStudioReviewService
+    );
+    return { packages, controller, result };
+  };
+
+  it('API2/API4 is one POST under the exact revision, answered by the package service as it is', async () => {
+    expect(route('createDesignFromPackageRevision')).toBe(
+      'POST /packages/:id/revisions/:revisionId/designs'
+    );
+    expect(
+      Reflect.getMetadata(
+        HTTP_CODE_METADATA,
+        handler('createDesignFromPackageRevision')
+      )
+    ).toBeUndefined();
+    expect(
+      Reflect.getMetadata(
+        'design:paramtypes',
+        ContentStudioController.prototype,
+        'createDesignFromPackageRevision'
+      )[4]
+    ).toBe(CreateContentStudioDesignFromPackageDto);
+    const { packages, controller, result } = setupPackages();
+    const body = Object.assign(new CreateContentStudioDesignFromPackageDto(), {
+      name: 'Spring',
+      itemId: 'main',
+      templateSource: 'system',
+      templateId: 'system:square-post',
+      templateRevisionNumber: 2,
+      textSlotId: 'body',
+      values: { headline: 'H' },
+      mediaId: 'm1',
+      imageSlotId: 'photo',
+    });
+    await expect(
+      controller.createDesignFromPackageRevision(
+        ORG,
+        USER,
+        PACKAGE,
+        REVISION,
+        body
+      )
+    ).resolves.toBe(result);
+    expect(packages.createDesignFromRevision).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      userId: 'user-1',
+      packageId: PACKAGE,
+      revisionId: REVISION,
+      name: 'Spring',
+      itemId: 'main',
+      canvas: undefined,
+      pageSetId: undefined,
+      templateSource: 'system',
+      templateId: 'system:square-post',
+      templateRevisionId: undefined,
+      templateRevisionNumber: 2,
+      values: { headline: 'H' },
+      textSlotId: 'body',
+      mediaId: 'm1',
+      imageSlotId: 'photo',
+    });
+  });
+
+  it('SEC4/SEC5/SEC6 forwards the declared fields only, with the organization and user of the request', async () => {
+    const { packages, controller } = setupPackages();
+    const body = Object.assign(
+      withExtras(new CreateContentStudioDesignFromPackageDto()),
+      {
+        name: 'Spring',
+        itemId: 'main',
+        canvas: 'square',
+        text: 'forged copy',
+        content: content(),
+        sourcePackageRevisionId: 'other',
+        sourcePackageContentHash: 'f'.repeat(64),
+        packageId: 'other',
+      }
+    );
+    await controller.createDesignFromPackageRevision(
+      ORG,
+      USER,
+      PACKAGE,
+      REVISION,
+      body
+    );
+    const [[input]] = packages.createDesignFromRevision.mock.calls;
+    expect(input).toMatchObject({
+      organizationId: 'org-a',
+      userId: 'user-1',
+      packageId: PACKAGE,
+      revisionId: REVISION,
+    });
+    expect(JSON.stringify(input)).not.toMatch(
+      /forged copy|org-b|user-b|"other"|ffffffff|DESIGN_DOCUMENT_PRIVATE/
+    );
+  });
+
+  it('API1 the manual design create route is unchanged: it never takes a package source', () => {
+    const text = fs.readFileSync(
+      path.join(__dirname, 'content-studio.controller.ts'),
+      'utf8'
+    );
+    const manual = text.slice(
+      text.indexOf("@Post('/designs')"),
+      text.indexOf("@Get('/designs/:id')")
+    );
+    expect(manual).not.toMatch(/source|package|Package/);
+  });
+});
+
+describe('Design from a package revision DTO validation (P6-01)', () => {
+  const base = { name: 'Spring', itemId: 'main', canvas: 'square' };
+
+  it('accepts ids, a name and one starting point, as sent', async () => {
+    expect({
+      ...(await run(CreateContentStudioDesignFromPackageDto, base)),
+    }).toEqual(base);
+    const template = {
+      name: 'Spring',
+      itemId: 'main',
+      templateSource: 'organization',
+      templateId: ID,
+      templateRevisionId: REVISION,
+      textSlotId: 'title',
+      values: { other: 'x' },
+      mediaId: 'm1',
+      imageSlotId: 'photo',
+    };
+    expect({
+      ...(await run(CreateContentStudioDesignFromPackageDto, template)),
+    }).toEqual(template);
+  });
+
+  it.each([
+    [
+      'SEC4 a source hash',
+      { sourcePackageContentHash: 'f'.repeat(64) },
+      'sourcePackageContentHash',
+    ],
+    ['SEC4 a content hash', { contentHash: 'f'.repeat(64) }, 'contentHash'],
+    ['SEC5 package text', { text: 'forged' }, 'text'],
+    ['SEC5 a copy', { copy: { global: {} } }, 'copy'],
+    ['SEC5 a document', { content: content() }, 'content'],
+    ['SEC6 an organization', { organizationId: 'org-b' }, 'organizationId'],
+    ['a creator', { createdById: 'u' }, 'createdById'],
+    [
+      'a source revision',
+      { sourcePackageRevisionId: REVISION },
+      'sourcePackageRevisionId',
+    ],
+    ['a package', { packageId: ID }, 'packageId'],
+    ['a review', { reviewId: ID }, 'reviewId'],
+    ['an approval', { approved: true }, 'approved'],
+    ['a Brand Kit revision', { brandKitRevisionId: ID }, 'brandKitRevisionId'],
+    ['an image reference', { sha256: 'a'.repeat(64) }, 'sha256'],
+  ])('API5 refuses %s', async (_name, extra, field) => {
+    const message = await rejected(CreateContentStudioDesignFromPackageDto, {
+      ...base,
+      ...extra,
+    });
+    expect(message).toContain(`property ${field} should not exist`);
+  });
+
+  it.each([
+    ['API3 no item', { name: 'Spring', canvas: 'square' }],
+    ['no name', { itemId: 'main', canvas: 'square' }],
+    ['an item id over 32 characters', { ...base, itemId: 'i'.repeat(33) }],
+    ['a size that is not offered', { ...base, canvas: 'huge' }],
+    ['an unknown template source', { ...base, templateSource: 'public' }],
+    [
+      'a fractional template revision',
+      { ...base, templateRevisionNumber: 1.5 },
+    ],
+    ['values that are not an object', { ...base, values: 'x' }],
+    ['a media id over 64 characters', { ...base, mediaId: 'm'.repeat(65) }],
+  ])('refuses a body with %s', async (_name, body) => {
+    await rejected(CreateContentStudioDesignFromPackageDto, body);
   });
 });

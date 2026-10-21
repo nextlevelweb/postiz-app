@@ -427,6 +427,8 @@ describe('ContentStudioController wiring', () => {
       'POST /packages/:id/archive',
       'POST /packages/:id/restore',
       'POST /packages/:id/revisions',
+      // P6-01: a new design from a saved revision: it changes no revision
+      'POST /packages/:id/revisions/:revisionId/designs',
       'POST /packages/:id/revisions/:revisionId/handoffs',
       'POST /projects',
       'POST /projects/:id/archive',
@@ -748,6 +750,8 @@ describe('ContentStudioController revisions', () => {
       'POST /editorial-policy/revisions',
       'POST /expertise-profiles/:id/revisions',
       'POST /packages/:id/revisions',
+      // P6-01: a new design from a saved revision: it changes no revision
+      'POST /packages/:id/revisions/:revisionId/designs',
       'POST /packages/:id/revisions/:revisionId/handoffs',
       'POST /writing-profiles/:id/revisions',
     ]);

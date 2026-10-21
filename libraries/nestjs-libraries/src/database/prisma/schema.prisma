@@ -1975,6 +1975,7 @@ model ContentPackageRevision {
   reviews            ContentStudioReview[]
   resolvedRequests   ContentStudioReviewRevisionRequest[]
   approvals          ContentStudioApproval[]
+  designProjects     ContentStudioDesignProject[]
 
   @@unique([packageId, revisionNumber])
   @@unique([id, organizationId])
@@ -2375,25 +2376,34 @@ model ContentStudioBrandKitRevision {
 
 // A named design of an organization. The design document itself lives in
 // immutable revisions; the project row holds only its name, archive state and
-// the number of the latest revision
+// the number of the latest revision. A design created from a saved Content
+// Package revision (P6-01) keeps which one, with that revision's contentHash,
+// written with the project and never changed: a record of where its first
+// document came from, not a link (the package and the design change apart
+// from then on). Both null is a design created on its own, as every design
+// before P6-01
 model ContentStudioDesignProject {
-  id                   String                           @id @default(uuid())
-  organizationId       String
-  name                 String
-  latestRevisionNumber Int
-  archivedAt           DateTime?
-  createdById          String
-  createdAt            DateTime                         @default(now())
-  updatedAt            DateTime                         @updatedAt
-  organization         Organization                     @relation(fields: [organizationId], references: [id])
-  createdBy            User                             @relation("ContentStudioDesignProjectCreatedBy", fields: [createdById], references: [id])
-  revisions            ContentStudioDesignRevision[]
-  renders              ContentStudioDesignRender[]
-  renderBatches        ContentStudioDesignRenderBatch[]
+  id                       String                           @id @default(uuid())
+  organizationId           String
+  name                     String
+  latestRevisionNumber     Int
+  archivedAt               DateTime?
+  createdById              String
+  createdAt                DateTime                         @default(now())
+  updatedAt                DateTime                         @updatedAt
+  sourcePackageRevisionId  String?
+  sourcePackageContentHash String?
+  organization             Organization                     @relation(fields: [organizationId], references: [id])
+  createdBy                User                             @relation("ContentStudioDesignProjectCreatedBy", fields: [createdById], references: [id])
+  sourcePackageRevision    ContentPackageRevision?          @relation(fields: [sourcePackageRevisionId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
+  revisions                ContentStudioDesignRevision[]
+  renders                  ContentStudioDesignRender[]
+  renderBatches            ContentStudioDesignRenderBatch[]
 
   @@unique([id, organizationId])
   @@index([organizationId, archivedAt])
   @@index([createdById])
+  @@index([sourcePackageRevisionId])
 }
 
 model ContentStudioDesignRevision {

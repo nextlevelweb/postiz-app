@@ -6,6 +6,9 @@ import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/pr
 import { ContentStudioGroundingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.grounding.service';
 import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
+import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
+import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
+import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-page-set.service';
 import { parseContentPackageDraft } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 import * as canonical from '@gitroom/nestjs-libraries/content-studio/canonical.json';
 
@@ -158,7 +161,12 @@ const setup = () => {
     media as unknown as ContentStudioMediaService,
     grounding as unknown as ContentStudioGroundingService,
     reviews as unknown as ContentStudioReviewService,
-    policy as unknown as ContentStudioEditorialPolicyService
+    policy as unknown as ContentStudioEditorialPolicyService,
+    // designs from a revision (P6-01) are pinned in
+    // content-studio.design-package.spec.ts, with the real design services
+    {} as ContentStudioDesignService,
+    {} as ContentStudioDesignTemplateService,
+    {} as ContentStudioDesignPageSetService
   );
   return { repository, media, grounding, reviews, policy, service };
 };

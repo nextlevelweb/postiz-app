@@ -35,8 +35,11 @@ import {
   ContentStudioDesignMediaRef,
   DESIGN_CANVAS_PRESETS,
   DESIGN_NAME_MAX,
+  designErrorCode,
+  designFromPackageErrorMessage,
   newContentStudioDesignDocument,
   useContentStudioBrandKitRevisions,
+  useContentStudioDesignActions,
 } from '@gitroom/frontend/components/content-studio/content-studio.designs.api';
 import {
   ContentStudioDesignTemplateBrand,
@@ -237,6 +240,39 @@ const TemplateBrandChoice: FC<{
   );
 };
 
+// A design from a saved package revision (P6-01): the version, the thread
+// item as the server returned it with that version, and how the caller
+// shows one of its Media (this library shows none itself). Shown only: the
+// server reads the text and the Media again
+export interface ContentStudioTemplatePackageSource {
+  packageId: string;
+  revisionId: string;
+  revisionNumber: number;
+  item: { id: string; text: string; mediaIds: string[] };
+  mediaTile: (mediaId: string) => ReactNode;
+}
+
+// The field a package's text goes into unless the person picks another:
+// the first text field of several lines, else the first text field
+export const defaultPackageTextSlotId = (
+  slots: ContentStudioDesignTemplateSlot[]
+) => {
+  const texts = slots.filter((slot) => slot.type === 'text');
+  return (
+    texts.find((slot) => slot.type === 'text' && slot.multiline)?.id ??
+    texts[0]?.id ??
+    null
+  );
+};
+
+const PACKAGE_SOURCE_ERRORS = [
+  'CS_STORED_REVISION_INVALID',
+  'CS_DESIGN_SOURCE_ITEM_NOT_FOUND',
+  'CS_DESIGN_SOURCE_SLOT_INVALID',
+  'CS_DESIGN_SOURCE_MEDIA_INVALID',
+  'CS_DESIGN_MEDIA_UNAVAILABLE',
+];
+
 // A new design from exactly the chosen template revision: its name and,
 // when the revision has guidance, its fields in their order. A text field
 // starts with the template's own text; an image field keeps the template's
@@ -244,19 +280,33 @@ const TemplateBrandChoice: FC<{
 // where the template allows it, another exact Brand Kit revision may be
 // chosen. Only the identities, the name, the values of the revision's own
 // fields and the chosen Brand Kit revision id are sent; the server copies
-// and fills the template's document. It opens once it exists
+// and fills the template's document. It opens once it exists.
+// With a package source (P6-01) the item's text goes into the text field
+// chosen for it, exactly as saved and not editable here, and one Media of
+// the item may go into an image field; the other fields are filled as
+// above. Only ids are sent for both; another Brand Kit revision is not
+// offered
 export const UseTemplateForm: FC<{
   choice: ContentStudioDesignTemplateChoice;
   defaultName: string;
   close: () => void;
   content?: unknown;
   guidance?: unknown;
-}> = ({ choice, defaultName, close, content, guidance: rawGuidance }) => {
+  packageSource?: ContentStudioTemplatePackageSource;
+}> = ({
+  choice,
+  defaultName,
+  close,
+  content,
+  guidance: rawGuidance,
+  packageSource,
+}) => {
   const t = useT();
   const toaster = useToaster();
   const router = useRouter();
   const modals = useModals();
   const { instantiateTemplate } = useContentStudioDesignTemplateActions();
+  const { createDesignFromPackageRevision } = useContentStudioDesignActions();
   const [name, setName] = useState(defaultName);
   const { busy, run } = useSingleFlight();
   const document = useMemo(() => parseTemplateDocument(content), [content]);
@@ -271,10 +321,20 @@ export const UseTemplateForm: FC<{
   );
   const slots = guidance && guidance !== 'invalid' ? guidance.slots : [];
   const rebinding =
+    !packageSource &&
     !!guidance &&
     guidance !== 'invalid' &&
     guidance.brandRebinding &&
     !!document?.brandKit;
+  // the field the package text goes into, and the package image chosen for
+  // an image field
+  const [packageSlotId, setPackageSlotId] = useState<string | null>(() =>
+    packageSource ? defaultPackageTextSlotId(slots) : null
+  );
+  const [packageImage, setPackageImage] = useState<{
+    slotId: string;
+    mediaId: string;
+  } | null>(null);
   const guided = !!slots.length || rebinding;
   const [texts, setTexts] = useState<Record<string, string>>(() =>
     document
@@ -292,7 +352,13 @@ export const UseTemplateForm: FC<{
   const [brandRevisionId, setBrandRevisionId] = useState<string | null>(null);
   const missing = (slot: ContentStudioDesignTemplateSlot) =>
     slot.required &&
-    (slot.type === 'text' ? !(texts[slot.id] ?? '').trim() : !images[slot.id]);
+    (slot.type === 'text'
+      ? !(
+          (packageSource && slot.id === packageSlotId
+            ? packageSource.item.text
+            : texts[slot.id]) ?? ''
+        ).trim()
+      : !images[slot.id] && packageImage?.slotId !== slot.id);
   const valid =
     validText(name, DESIGN_NAME_MAX, true) &&
     guidance !== 'invalid' &&
@@ -306,9 +372,15 @@ export const UseTemplateForm: FC<{
         return;
       }
       // the revision's own fields only, in its order: every text field and
-      // each chosen image
+      // each chosen image (never the ones the package fills)
       const values: Record<string, ContentStudioDesignTemplateValue> = {};
       for (const slot of slots) {
+        if (
+          packageSource &&
+          (slot.id === packageSlotId || slot.id === packageImage?.slotId)
+        ) {
+          continue;
+        }
         if (slot.type === 'text') {
           values[slot.id] = texts[slot.id] ?? '';
         } else if (images[slot.id]) {
@@ -317,6 +389,51 @@ export const UseTemplateForm: FC<{
             sha256: images[slot.id].sha256,
           };
         }
+      }
+      if (packageSource) {
+        await run('use', async () => {
+          try {
+            const created = await createDesignFromPackageRevision(
+              packageSource.packageId,
+              packageSource.revisionId,
+              {
+                name: name.trim(),
+                itemId: packageSource.item.id,
+                start: {
+                  templateSource: choice.source,
+                  templateId: choice.templateId,
+                  ...(choice.source === 'system'
+                    ? { templateRevisionNumber: choice.revisionNumber }
+                    : { templateRevisionId: choice.revisionId }),
+                  ...(packageSlotId ? { textSlotId: packageSlotId } : {}),
+                  values,
+                  ...(packageImage
+                    ? {
+                        mediaId: packageImage.mediaId,
+                        imageSlotId: packageImage.slotId,
+                      }
+                    : {}),
+                },
+              }
+            );
+            toaster.show(
+              t('content_studio_design_created', 'Design created.'),
+              'success'
+            );
+            // the history and this form: the new design opens instead
+            modals.closeAll();
+            router.push(designPagePath(created.id));
+          } catch (err) {
+            const code = designErrorCode(err);
+            toaster.show(
+              PACKAGE_SOURCE_ERRORS.includes(String(code))
+                ? designFromPackageErrorMessage(t, err)
+                : designTemplateErrorMessage(t, err),
+              'warning'
+            );
+          }
+        });
+        return;
       }
       await run('use', async () => {
         try {
@@ -350,6 +467,11 @@ export const UseTemplateForm: FC<{
       images,
       run,
       instantiateTemplate,
+      createDesignFromPackageRevision,
+      packageSource,
+      packageSlotId,
+      packageImage,
+      modals,
       choice,
       name,
       guided,
@@ -368,9 +490,12 @@ export const UseTemplateForm: FC<{
       children: (closePicker: () => void) => (
         <DesignMediaPicker
           close={closePicker}
-          onPicked={(ref) =>
-            setImages((current) => ({ ...current, [slot.id]: ref }))
-          }
+          onPicked={(ref) => {
+            setImages((current) => ({ ...current, [slot.id]: ref }));
+            setPackageImage((current) =>
+              current?.slotId === slot.id ? null : current
+            );
+          }}
         />
       ),
     });
@@ -390,6 +515,44 @@ export const UseTemplateForm: FC<{
           )}
         </div>
       )}
+      {!!packageSource &&
+        guidance !== 'invalid' &&
+        (packageSlotId ? (
+          slots.filter((slot) => slot.type === 'text').length > 1 && (
+            <fieldset className="flex flex-col gap-[6px] min-w-0">
+              <legend className="text-[14px] mb-[6px]">
+                {`${t(
+                  'content_studio_template_package_text_field',
+                  'Field for the text of version'
+                )} ${packageSource.revisionNumber}`}
+              </legend>
+              {slots
+                .filter((slot) => slot.type === 'text')
+                .map((slot) => (
+                  <label
+                    key={slot.id}
+                    className="flex items-center gap-[8px] cursor-pointer"
+                  >
+                    <input
+                      type="radio"
+                      name="package-text-field"
+                      value={slot.id}
+                      checked={packageSlotId === slot.id}
+                      onChange={() => setPackageSlotId(slot.id)}
+                    />
+                    {slot.label}
+                  </label>
+                ))}
+            </fieldset>
+          )
+        ) : (
+          <div className="text-[13px] text-textItemBlur">
+            {t(
+              'content_studio_template_package_text_layer',
+              'This template has no text field: the text is added as a text layer on the first page, exactly as saved.'
+            )}
+          </div>
+        ))}
       {!!slots.length && (
         <fieldset className="flex flex-col gap-[12px] min-w-0">
           <legend className="text-[14px] font-[600] mb-[6px]">
@@ -398,7 +561,28 @@ export const UseTemplateForm: FC<{
           {slots.map((slot) => (
             <GuidedField key={slot.id} slot={slot} missing={missing(slot)}>
               {(describedBy) =>
-                slot.type === 'text' ? (
+                packageSource && slot.id === packageSlotId ? (
+                  <div
+                    role="group"
+                    aria-label={slot.label}
+                    aria-describedby={describedBy}
+                    className="flex flex-col gap-[6px] text-[14px] min-w-0"
+                  >
+                    <span>
+                      {slot.label}
+                      {` · ${t(
+                        'content_studio_template_package_text_from',
+                        'From version'
+                      )} ${packageSource.revisionNumber}`}
+                    </span>
+                    <div
+                      data-package-text
+                      className="whitespace-pre-wrap break-words max-h-[160px] overflow-y-auto border border-newTableBorder rounded-[8px] p-[10px] text-[13px]"
+                    >
+                      {packageSource.item.text}
+                    </div>
+                  </div>
+                ) : slot.type === 'text' ? (
                   <label className="flex flex-col gap-[6px] text-[14px]">
                     <span>
                       {slot.label}
@@ -459,7 +643,12 @@ export const UseTemplateForm: FC<{
                         )})`}
                     </span>
                     <span className="text-[13px] text-textItemBlur">
-                      {images[slot.id]
+                      {packageImage?.slotId === slot.id
+                        ? t(
+                            'content_studio_template_package_image_chosen',
+                            'An image of the package is chosen.'
+                          )
+                        : images[slot.id]
                         ? t(
                             'content_studio_template_image_chosen',
                             'A new image is chosen.'
@@ -469,6 +658,41 @@ export const UseTemplateForm: FC<{
                             'The template image is used.'
                           )}
                     </span>
+                    {!!packageSource?.item.mediaIds.length && (
+                      <div className="flex flex-wrap gap-[8px]">
+                        {packageSource.item.mediaIds.map((mediaId, index) => (
+                          <button
+                            key={mediaId}
+                            type="button"
+                            aria-pressed={
+                              packageImage?.slotId === slot.id &&
+                              packageImage.mediaId === mediaId
+                            }
+                            aria-label={`${t(
+                              'content_studio_template_package_image',
+                              'Use package image'
+                            )} ${index + 1}: ${slot.label}`}
+                            className={clsx(
+                              'rounded-[8px] border-[2px]',
+                              packageImage?.slotId === slot.id &&
+                                packageImage.mediaId === mediaId
+                                ? 'border-[var(--brand-primary,#612ad5)]'
+                                : 'border-transparent'
+                            )}
+                            onClick={() => {
+                              setPackageImage({ slotId: slot.id, mediaId });
+                              setImages((current) => {
+                                const next = { ...current };
+                                delete next[slot.id];
+                                return next;
+                              });
+                            }}
+                          >
+                            {packageSource.mediaTile(mediaId)}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <div className="flex flex-wrap gap-[8px]">
                       <Button
                         type="button"
@@ -484,7 +708,8 @@ export const UseTemplateForm: FC<{
                           'Choose image'
                         )}
                       </Button>
-                      {!!images[slot.id] && (
+                      {(!!images[slot.id] ||
+                        packageImage?.slotId === slot.id) && (
                         <Button
                           type="button"
                           secondary
@@ -492,13 +717,16 @@ export const UseTemplateForm: FC<{
                             'content_studio_template_image_reset',
                             'Use the template image'
                           )}: ${slot.label}`}
-                          onClick={() =>
+                          onClick={() => {
                             setImages((current) => {
                               const next = { ...current };
                               delete next[slot.id];
                               return next;
-                            })
-                          }
+                            });
+                            setPackageImage((current) =>
+                              current?.slotId === slot.id ? null : current
+                            );
+                          }}
                         >
                           {t(
                             'content_studio_template_image_reset',
@@ -551,10 +779,18 @@ export const UseTemplateForm: FC<{
         </div>
       )}
       <div className="text-[13px] text-textItemBlur">
-        {t(
-          'content_studio_template_use_hint',
-          'The new design starts as a copy of this template revision. Later changes to either one do not affect the other.'
-        )}
+        {packageSource
+          ? `${t(
+              'content_studio_template_package_hint',
+              'The new design starts as a copy of this template revision with the text of package version'
+            )} ${packageSource.revisionNumber}. ${t(
+              'content_studio_design_package_independent',
+              'Later changes to the package or the design do not affect the other.'
+            )}`
+          : t(
+              'content_studio_template_use_hint',
+              'The new design starts as a copy of this template revision. Later changes to either one do not affect the other.'
+            )}
       </div>
       <div className="flex gap-[8px] justify-end">
         <Button type="button" secondary onClick={close}>

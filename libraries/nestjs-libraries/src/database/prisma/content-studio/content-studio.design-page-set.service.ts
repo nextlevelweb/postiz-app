@@ -20,6 +20,7 @@ import {
   getContentStudioSystemDesignPageSet,
   listContentStudioSystemDesignPageSets,
 } from '@gitroom/nestjs-libraries/content-studio/design/design.system.page.sets';
+import { ContentStudioDesignFromPackage } from '@gitroom/nestjs-libraries/content-studio/design/design.package.source';
 
 // Fixed messages only: never page set names, pages, ids, zod or Prisma
 // errors. A page set of another organization is a plain 404
@@ -269,13 +270,16 @@ export class ContentStudioDesignPageSetService {
   // the design and its revision 1 together, under the same checks as any
   // new design. The design holds nothing of the page set. A request that
   // also brings a document of its own is refused: the page set is the only
-  // source of the pages
+  // source of the pages. A design from a saved package revision (P6-01)
+  // gets the text of its thread item as a layer on the first page: a page
+  // set has no fields to put it in
   async createDesignFromPageSet(input: {
     organizationId: string;
     userId: string;
     name: unknown;
     pageSetId: unknown;
     content: unknown;
+    fromPackage?: ContentStudioDesignFromPackage;
   }) {
     if (input.content !== undefined || typeof input.pageSetId !== 'string') {
       throw invalidRequest();
@@ -293,6 +297,16 @@ export class ContentStudioDesignPageSetService {
       taken.add(id);
       return id;
     });
+    if (input.fromPackage) {
+      return this._contentStudioDesignService.createDesignFromPackage({
+        organizationId: input.organizationId,
+        userId: input.userId,
+        name: input.name,
+        fromPackage: input.fromPackage,
+        document: { schemaVersion: 1, brandKit: null, pages },
+        textPlaced: false,
+      });
+    }
     return this._contentStudioDesignService.createDesign({
       organizationId: input.organizationId,
       userId: input.userId,

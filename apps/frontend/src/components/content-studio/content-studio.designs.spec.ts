@@ -2313,7 +2313,7 @@ describe('Creative Studio: frontend boundaries', () => {
     );
     const routesUsed = Array.from(
       api.matchAll(/['`](\/(?:content-studio|media)[^'`]*)['`]/g),
-      (m) => m[1]
+      (m) => m[1].replace(/\s+/g, '')
     );
     expect(routesUsed.sort()).toEqual(
       [
@@ -2323,10 +2323,14 @@ describe('Creative Studio: frontend boundaries', () => {
         '/content-studio/brand-kit',
         '/media?${params.toString()}',
         '/content-studio/media/${encodeURIComponent(mediaId)}/design-ref',
+        // P6-01: a new design from exactly one saved package revision
+        '/content-studio/packages/${encodeURIComponent(packageId)}/revisions/${encodeURIComponent(revisionId)}/designs',
       ].sort()
     );
-    // P4-17: a new design from a page set is a second POST to /designs
+    // P4-17: a new design from a page set is a second POST to /designs;
+    // P6-01: one from a package revision a third
     expect(api.match(/method: '(\w+)'/g)).toEqual([
+      "method: 'POST'",
       "method: 'POST'",
       "method: 'POST'",
       "method: 'PATCH'",
@@ -2357,6 +2361,8 @@ describe('Creative Studio: frontend boundaries', () => {
       '{ name, content }',
       // P4-17: a page set by its id only, never pages
       '{ name, pageSetId }',
+      // P6-01: ids only, never the package text or a hash
+      '{ name, itemId, ...start }',
       '{ name }',
       '{ revisionId, pageId }',
       '{ baseRevisionNumber, content }',

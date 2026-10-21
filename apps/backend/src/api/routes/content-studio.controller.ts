@@ -103,6 +103,7 @@ import {
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.brand-kit.dto';
 import {
   CreateContentStudioDesignDto,
+  CreateContentStudioDesignFromPackageDto,
   CreateContentStudioDesignRevisionDto,
   ListContentStudioDesignRevisionsDto,
   ListContentStudioDesignsDto,
@@ -430,6 +431,38 @@ export class ContentStudioController {
       organizationId: org.id,
       packageId: id,
       revisionId,
+    });
+  }
+
+  // A new design from exactly this saved revision (P6-01): the package
+  // service reads the revision and the thread item the body names; the body
+  // holds only identities, a name and the starting point. Not a handoff:
+  // nothing of the package changes and no approval is asked for
+  @Post('/packages/:id/revisions/:revisionId/designs')
+  createDesignFromPackageRevision(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('id') id: string,
+    @Param('revisionId') revisionId: string,
+    @Body() body: CreateContentStudioDesignFromPackageDto
+  ) {
+    return this._contentStudioService.createDesignFromRevision({
+      organizationId: org.id,
+      userId: user.id,
+      packageId: id,
+      revisionId,
+      name: body.name,
+      itemId: body.itemId,
+      canvas: body.canvas,
+      pageSetId: body.pageSetId,
+      templateSource: body.templateSource,
+      templateId: body.templateId,
+      templateRevisionId: body.templateRevisionId,
+      templateRevisionNumber: body.templateRevisionNumber,
+      values: body.values,
+      textSlotId: body.textSlotId,
+      mediaId: body.mediaId,
+      imageSlotId: body.imageSlotId,
     });
   }
 

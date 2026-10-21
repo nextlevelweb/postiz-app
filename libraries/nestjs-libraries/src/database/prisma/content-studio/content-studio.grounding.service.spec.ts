@@ -10,6 +10,9 @@ import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/p
 import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.service';
 import { ContentStudioHandoffRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.repository';
 import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
+import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
+import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
+import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-page-set.service';
 import {
   ContentStudioGroundingError,
   ContentStudioGroundingService,
@@ -309,7 +312,10 @@ const setup = (stored: object = v1Draft()) => {
     grounding,
     // never reached: the draft and its grounding only
     {} as ContentStudioReviewService,
-    {} as ContentStudioEditorialPolicyService
+    {} as ContentStudioEditorialPolicyService,
+    {} as ContentStudioDesignService,
+    {} as ContentStudioDesignTemplateService,
+    {} as ContentStudioDesignPageSetService
   );
   const save = (draft: unknown, baseDraftVersion = state.draftVersion) =>
     service.saveDraft({

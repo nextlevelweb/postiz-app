@@ -5,6 +5,9 @@ import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/pris
 import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.media.service';
 import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
+import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
+import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
+import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-page-set.service';
 import {
   ContentStudioGroundingError,
   ContentStudioGroundingService,
@@ -27,6 +30,10 @@ import {
   ContentPackageRevisionIntegrityError,
   parseVerifiedContentPackageRevision,
 } from '@gitroom/nestjs-libraries/content-studio/content.package.revision';
+import {
+  contentStudioDesignPackageItem,
+  ContentStudioDesignFromPackageError,
+} from '@gitroom/nestjs-libraries/content-studio/design/design.package.source';
 import { ContentPackageRevisionOrigin } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.package.dto';
 
 export const CONTENT_STUDIO_PAGE_SIZE = 20;
@@ -152,6 +159,15 @@ const revisionStateInvalid = () =>
     500
   );
 
+const designSourceItemNotFound = () =>
+  new HttpException(
+    {
+      msg: 'The selected post of this package version is not available.',
+      code: 'CS_DESIGN_SOURCE_ITEM_NOT_FOUND',
+    },
+    400
+  );
+
 // Two revisions took the same number: the compare-and-swap normally stops
 // this first, so it is the same "package changed" conflict
 const isUniqueConstraintError = (err: unknown) =>
@@ -210,7 +226,10 @@ export class ContentStudioService {
     private _contentStudioMediaService: ContentStudioMediaService,
     private _contentStudioGroundingService: ContentStudioGroundingService,
     private _contentStudioReviewService: ContentStudioReviewService,
-    private _contentStudioEditorialPolicyService: ContentStudioEditorialPolicyService
+    private _contentStudioEditorialPolicyService: ContentStudioEditorialPolicyService,
+    private _contentStudioDesignService: ContentStudioDesignService,
+    private _contentStudioDesignTemplateService: ContentStudioDesignTemplateService,
+    private _contentStudioDesignPageSetService: ContentStudioDesignPageSetService
   ) {}
 
   listProjects(organizationId: string, archived: boolean) {
@@ -635,6 +654,115 @@ export class ContentStudioService {
           input.organizationId
         ),
     };
+  }
+
+  // A new design from exactly one saved revision of a package (P6-01): the
+  // revision is read here, of this organization and this package, and must
+  // still be exactly what was stored; the thread item is named by its id.
+  // Its text and Media are read from that revision only, never from the
+  // draft, a newer revision or the request, and the design keeps the
+  // revision's id and contentHash as where it came from. It starts from one
+  // of the fixed canvas sizes, a page set or a template, through the design
+  // services that make those, and is then an ordinary design with no review.
+  // Nothing of the package changes; any revision may be used, of an
+  // archived package too, as often as wanted, with no review or approval
+  // asked for: a design is not a handoff. A body naming more than one
+  // starting point, or template fields without a template, is refused
+  // before anything is read
+  async createDesignFromRevision(input: {
+    organizationId: string;
+    userId: string;
+    packageId: string;
+    revisionId: string;
+    name: unknown;
+    itemId: unknown;
+    canvas?: unknown;
+    pageSetId?: unknown;
+    templateSource?: unknown;
+    templateId?: unknown;
+    templateRevisionId?: unknown;
+    templateRevisionNumber?: unknown;
+    values?: unknown;
+    textSlotId?: unknown;
+    mediaId?: unknown;
+    imageSlotId?: unknown;
+  }) {
+    const starts = [input.canvas, input.pageSetId, input.templateId].filter(
+      (start) => start !== undefined
+    );
+    const templateOnly = [
+      input.templateSource,
+      input.templateRevisionId,
+      input.templateRevisionNumber,
+      input.values,
+      input.textSlotId,
+      input.mediaId,
+      input.imageSlotId,
+    ];
+    if (
+      starts.length !== 1 ||
+      (input.templateId === undefined &&
+        templateOnly.some((field) => field !== undefined))
+    ) {
+      throw invalidRequest();
+    }
+    const row = await this._contentStudioRepository.getRevisionForPackage(
+      input.organizationId,
+      input.packageId,
+      input.revisionId
+    );
+    if (!row) {
+      throw notFound();
+    }
+    const content = this.verifiedRevisionContent(row);
+    let item;
+    try {
+      item = contentStudioDesignPackageItem(content, input.itemId);
+    } catch (err) {
+      if (err instanceof ContentStudioDesignFromPackageError) {
+        throw designSourceItemNotFound();
+      }
+      throw err;
+    }
+    const fromPackage = {
+      source: { packageRevisionId: row.id, contentHash: row.contentHash },
+      item,
+    };
+    const design = {
+      organizationId: input.organizationId,
+      userId: input.userId,
+      name: input.name,
+    };
+    if (input.templateId !== undefined) {
+      return this._contentStudioDesignTemplateService.instantiateTemplate({
+        ...design,
+        source: input.templateSource,
+        templateId: input.templateId,
+        revisionId: input.templateRevisionId,
+        revisionNumber: input.templateRevisionNumber,
+        values: input.values,
+        fromPackage: {
+          ...fromPackage,
+          textSlotId: input.textSlotId,
+          mediaId: input.mediaId,
+          imageSlotId: input.imageSlotId,
+        },
+      });
+    }
+    if (input.pageSetId !== undefined) {
+      return this._contentStudioDesignPageSetService.createDesignFromPageSet({
+        ...design,
+        pageSetId: input.pageSetId,
+        content: undefined,
+        fromPackage,
+      });
+    }
+    return this._contentStudioDesignService.createDesignFromPackage({
+      ...design,
+      fromPackage,
+      preset: input.canvas,
+      textPlaced: false,
+    });
   }
 
   // The saved draft at exactly baseDraftVersion: a draft saved since is the

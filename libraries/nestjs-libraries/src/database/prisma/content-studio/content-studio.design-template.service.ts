@@ -34,6 +34,12 @@ import {
   parseVerifiedContentStudioDesignTemplateGuidance,
   storedContentStudioDesignTemplateGuidance,
 } from '@gitroom/nestjs-libraries/content-studio/design/design.template.guidance.revision';
+import {
+  contentStudioDesignTemplateTextSlots,
+  ContentStudioDesignFromPackage,
+  ContentStudioDesignFromPackageError,
+  fillContentStudioDesignSemanticSlots,
+} from '@gitroom/nestjs-libraries/content-studio/design/design.package.source';
 
 // Fixed messages only: never template text, names, ids, zod or Prisma
 // errors. A template of another organization is a plain 404
@@ -137,6 +143,22 @@ const brandReferenceNotFound = () =>
     {
       msg: 'The selected Brand Kit revision is not available.',
       code: 'CS_DESIGN_BRAND_REFERENCE_NOT_FOUND',
+    },
+    400
+  );
+const sourceSlotInvalid = () =>
+  new HttpException(
+    {
+      msg: 'The package text or image cannot go into the chosen template field.',
+      code: 'CS_DESIGN_SOURCE_SLOT_INVALID',
+    },
+    400
+  );
+const sourceMediaInvalid = () =>
+  new HttpException(
+    {
+      msg: 'The selected package media item cannot be used for this design.',
+      code: 'CS_DESIGN_SOURCE_MEDIA_INVALID',
     },
     400
   );
@@ -622,7 +644,13 @@ export class ContentStudioDesignTemplateService {
   // uses, or nothing changes (never the latest revision, never a mapping of
   // tokens, never part of it). The design service then creates the design
   // and its revision 1 together, under the same checks as any new design;
-  // the design holds no guidance and nothing of the template
+  // the design holds no guidance and nothing of the template.
+  // A design from a saved package revision (P6-01) is the same, with the
+  // thread item the package service read: its text, exactly, goes into the
+  // text field chosen for it (a template without text fields gets it as a
+  // layer on the first page), and one Media of that item, when chosen, into
+  // the image field chosen for it, referenced by the server now. The rest of
+  // the fields are filled as above; another Brand Kit revision is not offered
   async instantiateTemplate(input: {
     organizationId: string;
     userId: string;
@@ -633,6 +661,11 @@ export class ContentStudioDesignTemplateService {
     name: unknown;
     values?: unknown;
     brandKitRevisionId?: unknown;
+    fromPackage?: ContentStudioDesignFromPackage & {
+      textSlotId?: unknown;
+      mediaId?: unknown;
+      imageSlotId?: unknown;
+    };
   }) {
     const revision = await this.templateRevision(input);
     let values: Record<string, ContentStudioDesignTemplateValue>;
@@ -645,8 +678,39 @@ export class ContentStudioDesignTemplateService {
       throw err;
     }
     const rebind = input.brandKitRevisionId !== undefined;
-    if (rebind && typeof input.brandKitRevisionId !== 'string') {
+    if (
+      rebind &&
+      (typeof input.brandKitRevisionId !== 'string' || input.fromPackage)
+    ) {
       throw invalidRequest();
+    }
+    // the package's text and image in their fields; the image is the one
+    // the server references now, so the check of field images below skips it
+    const fromPackage = input.fromPackage;
+    let packageImageSlot: string | undefined;
+    if (fromPackage) {
+      const image =
+        fromPackage.mediaId === undefined
+          ? undefined
+          : await this.packageMediaReference(input.organizationId, fromPackage);
+      try {
+        values = fillContentStudioDesignSemanticSlots({
+          guidance: revision.guidance,
+          values,
+          text: fromPackage.item.text,
+          textSlotId: fromPackage.textSlotId,
+          image,
+          imageSlotId: fromPackage.imageSlotId,
+        });
+      } catch (err) {
+        if (err instanceof ContentStudioDesignFromPackageError) {
+          throw sourceSlotInvalid();
+        }
+        throw err;
+      }
+      packageImageSlot = image
+        ? (fromPackage.imageSlotId as string)
+        : undefined;
     }
     // every field checked, with no Media or Brand Kit read yet; a Brand Kit
     // revision is refused here when the template does not allow one
@@ -662,7 +726,11 @@ export class ContentStudioDesignTemplateService {
     });
     for (const slot of revision.guidance?.slots ?? []) {
       const value = values[slot.id];
-      if (slot.type === 'image' && value !== undefined) {
+      if (
+        slot.type === 'image' &&
+        value !== undefined &&
+        slot.id !== packageImageSlot
+      ) {
         await this.assertMediaReference(
           input.organizationId,
           value as { mediaId: string; sha256: string }
@@ -683,12 +751,44 @@ export class ContentStudioDesignTemplateService {
       });
       await this.assertBrandCompatible(input.organizationId, content);
     }
+    if (fromPackage) {
+      return this._contentStudioDesignService.createDesignFromPackage({
+        organizationId: input.organizationId,
+        userId: input.userId,
+        name: input.name,
+        fromPackage: { source: fromPackage.source, item: fromPackage.item },
+        document: content,
+        textPlaced: !!contentStudioDesignTemplateTextSlots(revision.guidance)
+          .length,
+      });
+    }
     return this._contentStudioDesignService.createDesign({
       organizationId: input.organizationId,
       userId: input.userId,
       name: input.name,
       content,
     });
+  }
+
+  // The image of one Media of the package's thread item, exactly as the
+  // design reference service makes it for the organization now. A Media the
+  // item does not have is refused before anything is read; a missing or
+  // foreign one like any field image (a Media not ready says so)
+  private async packageMediaReference(
+    organizationId: string,
+    fromPackage: ContentStudioDesignFromPackage & { mediaId?: unknown }
+  ) {
+    if (
+      typeof fromPackage.mediaId !== 'string' ||
+      !fromPackage.item.mediaIds.includes(fromPackage.mediaId)
+    ) {
+      throw sourceMediaInvalid();
+    }
+    return this.mediaReference(
+      organizationId,
+      fromPackage.mediaId,
+      sourceMediaInvalid
+    );
   }
 
   private customize(input: {
@@ -732,24 +832,36 @@ export class ContentStudioDesignTemplateService {
     organizationId: string,
     value: { mediaId: string; sha256: string }
   ) {
-    let reference;
-    try {
-      reference =
-        await this._contentStudioDesignReferenceService.getMediaReference(
-          organizationId,
-          value.mediaId
-        );
-    } catch (err) {
-      if (errorCode(err) === 'CS_NOT_FOUND') {
-        throw mediaInvalid();
-      }
-      throw err;
-    }
+    const reference = await this.mediaReference(
+      organizationId,
+      value.mediaId,
+      mediaInvalid
+    );
     if (
       reference.mediaId !== value.mediaId ||
       reference.sha256 !== value.sha256
     ) {
       throw mediaInvalid();
+    }
+  }
+
+  // The reference the design reference service makes for a Media of the
+  // organization now; a missing or foreign one is the caller's refusal
+  private async mediaReference(
+    organizationId: string,
+    mediaId: string,
+    refusal: () => HttpException
+  ) {
+    try {
+      return await this._contentStudioDesignReferenceService.getMediaReference(
+        organizationId,
+        mediaId
+      );
+    } catch (err) {
+      if (errorCode(err) === 'CS_NOT_FOUND') {
+        throw refusal();
+      }
+      throw err;
     }
   }
 

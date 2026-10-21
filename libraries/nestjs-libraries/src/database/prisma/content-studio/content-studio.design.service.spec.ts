@@ -226,6 +226,18 @@ const setup = (
       async (organizationId: string, id: string): Promise<unknown> =>
         organizationId === ORG && id === DESIGN ? project : null
     ),
+    // the detail with where the design came from (P6-01): here, nowhere
+    getProjectDetailForOrganization: jest.fn(
+      async (organizationId: string, id: string): Promise<unknown> =>
+        organizationId === ORG && id === DESIGN && project
+          ? {
+              ...project,
+              sourcePackageRevisionId: null,
+              sourcePackageContentHash: null,
+              sourcePackageRevision: null,
+            }
+          : null
+    ),
     createProjectWithFirstRevision: jest.fn(
       async (input: {
         designProjectId: string;
@@ -428,6 +440,8 @@ describe('ContentStudioDesignService: create', () => {
       name: 'Spring\ncampaign',
       createdById: USER,
       revision: storedOf(),
+      // PV4: a design created on its own has no package source
+      source: null,
     });
     expect(kits.getBrandKitForOrganization).not.toHaveBeenCalled();
     expect(result).toEqual({
@@ -566,7 +580,9 @@ describe('ContentStudioDesignService: create', () => {
       'organizationId',
       'revision',
       'revisionId',
+      'source',
     ]);
+    expect(input.source).toBeNull();
     expect(input).toMatchObject({
       organizationId: ORG,
       createdById: USER,
@@ -830,6 +846,8 @@ describe('ContentStudioDesignService: projects', () => {
     expect(designs.getRevisionByNumber).toHaveBeenCalledWith(ORG, DESIGN, 2);
     expect(design).toEqual({
       ...projectRow(),
+      // PV4: a design created on its own says so
+      source: null,
       currentRevision: { ...summaryOf(revisionRow()), content: normalized() },
     });
     expect(JSON.stringify(design)).not.toMatch(/11111111|55555555/);

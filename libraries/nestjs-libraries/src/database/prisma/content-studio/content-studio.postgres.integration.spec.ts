@@ -14,6 +14,9 @@ import { ContentStudioMediaService } from '@gitroom/nestjs-libraries/database/pr
 import { ContentStudioGroundingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.grounding.service';
 import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.service';
 import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.service';
+import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
+import { ContentStudioDesignTemplateService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-template.service';
+import { ContentStudioDesignPageSetService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-page-set.service';
 import { parseContentPackageDraft } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 import {
   canonicalJson,
@@ -556,7 +559,10 @@ describe('tenant constraints enforced by PostgreSQL', () => {
       {} as ContentStudioMediaService,
       {} as ContentStudioGroundingService,
       {} as ContentStudioReviewService,
-      {} as ContentStudioEditorialPolicyService
+      {} as ContentStudioEditorialPolicyService,
+      {} as ContentStudioDesignService,
+      {} as ContentStudioDesignTemplateService,
+      {} as ContentStudioDesignPageSetService
     );
     const refused = await service
       .createPackage({

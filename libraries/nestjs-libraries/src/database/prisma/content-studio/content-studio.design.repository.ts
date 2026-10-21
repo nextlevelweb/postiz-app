@@ -22,6 +22,28 @@ const REVISION_SUMMARY = {
   createdAt: true,
 } as const;
 
+// The detail of a design also says which saved package revision it was
+// created from (P6-01), read through the relation of the same organization:
+// the stored id and hash next to that revision's own
+const PROJECT_DETAIL = {
+  ...PROJECT_SUMMARY,
+  sourcePackageRevisionId: true,
+  sourcePackageContentHash: true,
+  sourcePackageRevision: {
+    select: {
+      id: true,
+      packageId: true,
+      revisionNumber: true,
+      contentHash: true,
+      package: {
+        select: {
+          name: true,
+        },
+      },
+    },
+  },
+} as const;
+
 const REVISION_DETAIL = {
   ...REVISION_SUMMARY,
   content: true,
@@ -40,7 +62,10 @@ interface StoredRevision {
 // restored; its history stays readable. The project row holds the name, the
 // archive state and the latest revision number; the design documents are
 // revisions, only ever created (with their project, or by the
-// compare-and-swap), never updated or deleted, and nothing is deleted at all
+// compare-and-swap), never updated or deleted, and nothing is deleted at all.
+// The package revision a design came from (P6-01) is written with the
+// project, by the same statement, and never changed: no method here updates
+// it
 @Injectable()
 export class ContentStudioDesignRepository {
   constructor(
@@ -90,7 +115,20 @@ export class ContentStudioDesignRepository {
     });
   }
 
-  // The project and its first revision, or neither
+  // The design with where it came from: null when it has no such project
+  getProjectDetailForOrganization(organizationId: string, id: string) {
+    return this._project.model.contentStudioDesignProject.findFirst({
+      where: {
+        id,
+        organizationId,
+      },
+      select: PROJECT_DETAIL,
+    });
+  }
+
+  // The project and its first revision, or neither. The source is the exact
+  // package revision the service read for it, or null for a design created
+  // on its own
   createProjectWithFirstRevision(input: {
     designProjectId: string;
     revisionId: string;
@@ -98,6 +136,7 @@ export class ContentStudioDesignRepository {
     name: string;
     createdById: string;
     revision: StoredRevision;
+    source: { packageRevisionId: string; contentHash: string } | null;
   }) {
     return this._transaction.model.$transaction(async (tx) => {
       const project = await tx.contentStudioDesignProject.create({
@@ -107,6 +146,8 @@ export class ContentStudioDesignRepository {
           name: input.name,
           latestRevisionNumber: 1,
           createdById: input.createdById,
+          sourcePackageRevisionId: input.source?.packageRevisionId ?? null,
+          sourcePackageContentHash: input.source?.contentHash ?? null,
         },
         select: PROJECT_SUMMARY,
       });

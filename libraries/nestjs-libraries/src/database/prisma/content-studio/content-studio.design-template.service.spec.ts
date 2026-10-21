@@ -244,9 +244,16 @@ const matches = (row: Row, where: Row = {}): boolean =>
     }
     return row[key] === value;
   });
+// a relation (a nested select) of a row that has none reads as null, like
+// Prisma: the design a template makes has no package source (P6-01)
 const pick = (row: Row, select?: Row) =>
   select
-    ? Object.fromEntries(Object.keys(select).map((key) => [key, row[key]]))
+    ? Object.fromEntries(
+        Object.keys(select).map((key) => [
+          key,
+          typeof select[key] === 'object' ? row[key] ?? null : row[key],
+        ])
+      )
     : { ...row };
 
 const setup = () => {

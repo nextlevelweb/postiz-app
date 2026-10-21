@@ -41,6 +41,41 @@ const validName = (name: string) => {
   );
 };
 
+// One of the fixed canvas sizes a new design can start from
+export const DesignCanvasChoice: FC<{
+  value: string;
+  onChange: (presetId: string) => void;
+}> = ({ value, onChange }) => {
+  const t = useT();
+  return (
+    <fieldset className="flex flex-col gap-[8px]">
+      <legend className="text-[14px] mb-[6px]">
+        {t('content_studio_design_canvas', 'Canvas size')}
+      </legend>
+      {DESIGN_CANVAS_PRESETS.map((preset) => (
+        <label
+          key={preset.id}
+          className="flex items-center gap-[8px] cursor-pointer"
+        >
+          <input
+            type="radio"
+            name="preset"
+            value={preset.id}
+            checked={value === preset.id}
+            onChange={() => onChange(preset.id)}
+          />
+          <span>
+            {t(`content_studio_design_preset_${preset.id}`, preset.label)}{' '}
+            <span className="text-textItemBlur">
+              {preset.width} × {preset.height}
+            </span>
+          </span>
+        </label>
+      ))}
+    </fieldset>
+  );
+};
+
 // A new design: its name and one of the fixed canvas sizes, or a page set
 // (P4-17). A canvas size starts it as one empty white page; a page set as
 // its blank pages, which the server makes from the page set's id. No Brand
@@ -152,31 +187,7 @@ const CreateDesignForm: FC<{ close: () => void }> = ({ close }) => {
       {start === 'pageSet' ? (
         <DesignPageSetPicker value={pageSetId} onChange={setPageSetId} />
       ) : (
-        <fieldset className="flex flex-col gap-[8px]">
-          <legend className="text-[14px] mb-[6px]">
-            {t('content_studio_design_canvas', 'Canvas size')}
-          </legend>
-          {DESIGN_CANVAS_PRESETS.map((preset) => (
-            <label
-              key={preset.id}
-              className="flex items-center gap-[8px] cursor-pointer"
-            >
-              <input
-                type="radio"
-                name="preset"
-                value={preset.id}
-                checked={presetId === preset.id}
-                onChange={() => setPresetId(preset.id)}
-              />
-              <span>
-                {t(`content_studio_design_preset_${preset.id}`, preset.label)}{' '}
-                <span className="text-textItemBlur">
-                  {preset.width} × {preset.height}
-                </span>
-              </span>
-            </label>
-          ))}
-        </fieldset>
+        <DesignCanvasChoice value={presetId} onChange={setPresetId} />
       )}
       <div className="flex gap-[8px] justify-end">
         <Button type="button" secondary onClick={close}>

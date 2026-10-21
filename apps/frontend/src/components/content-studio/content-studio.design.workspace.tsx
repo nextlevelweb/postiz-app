@@ -84,6 +84,7 @@ import { SaveAsTemplateForm } from '@gitroom/frontend/components/content-studio/
 import { DesignStylePresets } from '@gitroom/frontend/components/content-studio/content-studio.design-style-presets';
 import { DesignCreativeLibrary } from '@gitroom/frontend/components/content-studio/content-studio.design-library';
 import { ContentStudioReviewStatus } from '@gitroom/frontend/components/content-studio/content-studio.review.status';
+import { DesignPackageSource } from '@gitroom/frontend/components/content-studio/content-studio.design-package';
 import { ContentStudioRevisionApprovalBadge } from '@gitroom/frontend/components/content-studio/content-studio.review.approval';
 import { contentStudioLinkedRevisionId } from '@gitroom/frontend/components/content-studio/content-studio.reviews.api';
 
@@ -1619,6 +1620,10 @@ export const ContentStudioDesignWorkspace: FC<{
               {formatDate(design.updatedAt)}
             </span>
           </div>
+          {/* where the design came from (P6-01): that exact version */}
+          {!!design.source && (
+            <DesignPackageSource source={design.source} onOpen={leaveEdit} />
+          )}
         </div>
         <div className="flex flex-wrap gap-[8px]">
           <DesignLifecycleActions

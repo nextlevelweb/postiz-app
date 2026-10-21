@@ -150,7 +150,8 @@ describe('ContentStudioController design page set routes', () => {
     const all = Object.getOwnPropertyNames(ContentStudioController.prototype)
       .filter((name) => name !== 'constructor')
       .map(route);
-    expect(all).toHaveLength(139);
+    // P6-01: one more, a design from a saved package revision
+    expect(all).toHaveLength(140);
     expect(
       all.filter(
         (r) =>

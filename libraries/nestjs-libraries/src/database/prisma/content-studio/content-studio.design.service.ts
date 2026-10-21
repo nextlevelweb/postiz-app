@@ -20,6 +20,12 @@ import {
   ContentStudioBrandKitIntegrityError,
   parseVerifiedContentStudioBrandKitRevision,
 } from '@gitroom/nestjs-libraries/content-studio/brand/brand.kit.revision';
+import {
+  contentStudioDesignBlankDocument,
+  ContentStudioDesignFromPackage,
+  ContentStudioDesignPackageSource,
+  withContentStudioDesignPackageText,
+} from '@gitroom/nestjs-libraries/content-studio/design/design.package.source';
 
 // Fixed messages only: never design text, names, ids, zod or Prisma errors.
 // A design of another organization is a plain 404, and so is a Brand Kit
@@ -90,16 +96,30 @@ const brandReferenceIntegrityError = () =>
     },
     500
   );
+const sourceIntegrityError = () =>
+  new HttpException(
+    {
+      msg: 'Where this design came from could not be read safely.',
+      code: 'CS_DESIGN_SOURCE_INTEGRITY_ERROR',
+    },
+    500
+  );
 
 // Design and revision ids are Prisma uuid() values; anything else cannot
 // exist
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 // revision numbers are PostgreSQL integers
 const INT4_MAX = 2_147_483_647;
 // the page size of every Content Studio list
 const PAGE_SIZE = 20;
 const UNPAIRED_SURROGATE =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+// Page and layer ids as the editor makes them: p_ or l_ and 20 hex
+// characters
+const newId = (prefix: 'p' | 'l') => () =>
+  `${prefix}_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
 
 // Two saves took the same number: the compare-and-swap normally stops this
 // first, so it is the same conflict
@@ -121,6 +141,20 @@ interface RevisionRow {
   schemaVersion: number;
   contentHash: string;
   createdAt: Date;
+}
+
+// A project with the package revision it was created from, as stored and as
+// that revision is now (read through the relation of the same organization)
+interface ProjectDetailRow extends ProjectRow {
+  sourcePackageRevisionId: string | null;
+  sourcePackageContentHash: string | null;
+  sourcePackageRevision: {
+    id: string;
+    packageId: string;
+    revisionNumber: number;
+    contentHash: string;
+    package: { name: string };
+  } | null;
 }
 
 // Built field by field: no organization, creator or stored text leaves
@@ -147,7 +181,10 @@ const revisionSummary = (row: RevisionRow) => ({
 // revision is saved only once that exact revision of the organization's kit is
 // found, intact and has every token the document uses; nothing is copied from
 // it and nothing follows a later revision. Nothing here renders, lays out,
-// generates, fetches or looks at Media
+// generates, fetches or looks at Media. A design created from a saved package
+// revision (P6-01) keeps that revision and its hash from creation on; the
+// detail shows it only while both still match that exact revision, never
+// another revision of the package
 @Injectable()
 export class ContentStudioDesignService {
   constructor(
@@ -180,12 +217,15 @@ export class ContentStudioDesignService {
   }
 
   // The project and its first revision are created together, after the
-  // Brand Kit reference checked out
+  // Brand Kit reference checked out. A source is only ever the exact package
+  // revision the server read for this design (P6-01), stored with the
+  // project in the same transaction; without one the design has none
   async createDesign(input: {
     organizationId: string;
     userId: string;
     name: unknown;
     content: unknown;
+    source?: ContentStudioDesignPackageSource;
   }) {
     const name = this.designName(input.name);
     const content = this.parseContent(input.content);
@@ -200,6 +240,12 @@ export class ContentStudioDesignService {
         name,
         createdById: input.userId,
         revision: stored,
+        source: input.source
+          ? {
+              packageRevisionId: input.source.packageRevisionId,
+              contentHash: input.source.contentHash,
+            }
+          : null,
       });
     return {
       ...projectSummary(project),
@@ -207,9 +253,64 @@ export class ContentStudioDesignService {
     };
   }
 
-  // An archived design stays readable, with its current document
+  // A new design from one thread item of one saved package revision
+  // (P6-01), as the package service read and verified them: the document a
+  // template or a page set made for it, or else one blank page of a fixed
+  // size, with the item's text exactly as saved in a new layer on the first
+  // page unless a template field already holds it. Then created like any
+  // other design, under the same checks, with the revision it came from
+  async createDesignFromPackage(input: {
+    organizationId: string;
+    userId: string;
+    name: unknown;
+    fromPackage: ContentStudioDesignFromPackage;
+    document?: ContentStudioDesignDocumentV1;
+    preset?: unknown;
+    textPlaced: boolean;
+  }) {
+    const document =
+      input.document ??
+      contentStudioDesignBlankDocument(input.preset, newId('p')());
+    if (!document) {
+      throw invalidRequest();
+    }
+    let content = document;
+    if (!input.textPlaced) {
+      try {
+        content = withContentStudioDesignPackageText(
+          document,
+          input.fromPackage.item.text,
+          newId('l')
+        );
+      } catch (err) {
+        if (err instanceof ContentStudioDesignDocumentError) {
+          throw err.code === 'TOO_LARGE' ? designTooLarge() : designInvalid();
+        }
+        throw err;
+      }
+    }
+    return this.createDesign({
+      organizationId: input.organizationId,
+      userId: input.userId,
+      name: input.name,
+      content,
+      source: input.fromPackage.source,
+    });
+  }
+
+  // An archived design stays readable, with its current document and where
+  // it came from (P6-01)
   async getDesign(organizationId: string, id: string) {
-    const project = await this.getRow(organizationId, id);
+    this.assertId(id);
+    const project =
+      await this._contentStudioDesignRepository.getProjectDetailForOrganization(
+        organizationId,
+        id
+      );
+    if (!project) {
+      throw notFound();
+    }
+    const source = this.packageSource(project);
     const current =
       await this._contentStudioDesignRepository.getRevisionByNumber(
         organizationId,
@@ -221,6 +322,7 @@ export class ContentStudioDesignService {
     }
     return {
       ...projectSummary(project),
+      source,
       currentRevision: this.revisionDetail(current),
     };
   }
@@ -529,6 +631,38 @@ export class ContentStudioDesignService {
       throw notFound();
     }
     return row;
+  }
+
+  // The package revision a design was created from: null for a design made
+  // on its own (both stored fields null), else exactly the revision stored,
+  // of the same organization, whose contentHash is still the one stored
+  // with the design. Anything else is reported, never repaired or replaced
+  // by another revision of the package
+  private packageSource(row: ProjectDetailRow) {
+    const revision = row.sourcePackageRevision;
+    if (
+      row.sourcePackageRevisionId === null &&
+      row.sourcePackageContentHash === null &&
+      revision === null
+    ) {
+      return null;
+    }
+    if (
+      !revision ||
+      revision.id !== row.sourcePackageRevisionId ||
+      typeof row.sourcePackageContentHash !== 'string' ||
+      !SHA256_HEX.test(row.sourcePackageContentHash) ||
+      revision.contentHash !== row.sourcePackageContentHash
+    ) {
+      throw sourceIntegrityError();
+    }
+    return {
+      packageId: revision.packageId,
+      packageName: revision.package.name,
+      packageRevisionId: revision.id,
+      packageRevisionNumber: revision.revisionNumber,
+      packageContentHash: revision.contentHash,
+    };
   }
 
   // A revision must still be exactly what was stored; anything else is

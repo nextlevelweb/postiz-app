@@ -16,6 +16,8 @@ import { ContentStudioMediaTile } from '@gitroom/frontend/components/content-stu
 import { ContentStudioReviewStatus } from '@gitroom/frontend/components/content-studio/content-studio.review.status';
 import { ContentStudioRevisionApprovalBadge } from '@gitroom/frontend/components/content-studio/content-studio.review.approval';
 import { ContentStudioGroundingPanel } from '@gitroom/frontend/components/content-studio/content-studio.grounding';
+import { useModals } from '@gitroom/frontend/components/layout/new-modal';
+import { CreateDesignFromPackageForm } from '@gitroom/frontend/components/content-studio/content-studio.design-package';
 
 // One revision, read-only: its text as plain text and its Media as they are
 // now, its grounding exactly as saved in it (P3-11), and the review of
@@ -25,7 +27,9 @@ import { ContentStudioGroundingPanel } from '@gitroom/frontend/components/conten
 // versions of this package (P5-02). Where the server says a handoff
 // requires approval (P5-07), exactly this version can be used in a post once
 // it says this version is approved; the server decides again when it is
-// handed off. Nothing here can change a revision
+// handed off. Any saved version, of any age, can start a new design
+// (P6-01): exactly this version, never the draft, and with no approval
+// asked for. Nothing here can change a revision
 const RevisionView: FC<{
   packageId: string;
   revision: ContentStudioRevisionSummary;
@@ -44,8 +48,31 @@ const RevisionView: FC<{
   onUseInPost,
 }) => {
   const t = useT();
+  const modals = useModals();
   const detail = useContentStudioRevision(packageId, revision.id);
   const media = new Map(Object.entries(detail.data?.media || {}));
+  // exactly this version as the server returned it, or nothing yet
+  const saved = detail.data?.id === revision.id ? detail.data : null;
+  const createDesign = () =>
+    saved &&
+    modals.openModal({
+      title: `${t(
+        'content_studio_create_design_from_version',
+        'Create design from version'
+      )} ${revision.revisionNumber}`,
+      children: (close: () => void) => (
+        <CreateDesignFromPackageForm
+          version={{
+            packageId,
+            revisionId: saved.id,
+            revisionNumber: saved.revisionNumber,
+            thread: saved.content.copy.global.thread,
+            media: saved.media,
+          }}
+          close={close}
+        />
+      ),
+    });
   // the status of exactly this version, or none
   const approval =
     detail.data?.approval?.targetRevisionId === revision.id
@@ -79,6 +106,17 @@ const RevisionView: FC<{
             {t('content_studio_use_in_post', 'Use in Post')}
           </Button>
         )}
+        <Button
+          secondary
+          disabled={!saved}
+          aria-label={`${t(
+            'content_studio_create_design_from_version',
+            'Create design from version'
+          )} ${revision.revisionNumber}`}
+          onClick={createDesign}
+        >
+          {t('content_studio_create_design', 'Create design')}
+        </Button>
       </div>
       {handoffRequiresApproval && !approval.approved && (
         <div className="text-textItemBlur">
