@@ -433,7 +433,7 @@ describe('Source Library: a feed', () => {
     ).toBeTruthy();
   });
 
-  it('UI5/UI6/119 lists the pages it found as links to their own source, with published, first and last seen', async () => {
+  it('UI5/UI6/119 lists the pages it found as links to their own source, with published, found and last seen', async () => {
     await renderFeed();
     expect(
       screen.getByRole('heading', { name: 'Pages found in this feed' })
@@ -446,20 +446,21 @@ describe('Source Library: a feed', () => {
       `/content-studio/sources/${PAGE_ID}`
     );
     const item = first.closest('li') as HTMLElement;
-    expect(within(item).getByText(`Published: ${date(T1)}`)).toBeTruthy();
-    expect(within(item).getByText(`First seen: ${date(T1)}`)).toBeTruthy();
-    expect(within(item).getByText(`Last seen: ${date(T2)}`)).toBeTruthy();
-    expect(within(item).getByText('Version 2')).toBeTruthy();
+    // P8-02: the row News Radar shares
+    expect(within(item).getByText(`Published ${date(T1)}`)).toBeTruthy();
+    expect(within(item).getByText(`Found ${date(T1)}`)).toBeTruthy();
+    expect(within(item).getByText(`Last seen ${date(T2)}`)).toBeTruthy();
+    expect(within(item).getByText('Captured')).toBeTruthy();
+    expect(within(item).queryByText('Archived')).toBeNull();
     // no entry title: the page source's name; no date: said so
     const second = screen.getByRole('link', { name: 'news.test' });
     expect(second.getAttribute('href')).toBe(
       `/content-studio/sources/${PAGE_2_ID}`
     );
     const secondItem = second.closest('li') as HTMLElement;
-    expect(
-      within(secondItem).getByText('Published: No date in the feed')
-    ).toBeTruthy();
-    expect(within(secondItem).getByText('Not captured yet')).toBeTruthy();
+    expect(within(secondItem).getByText('Published Unknown')).toBeTruthy();
+    expect(within(secondItem).getByText('Not captured')).toBeTruthy();
+    expect(within(secondItem).queryByText(/failed/i)).toBeNull();
     // pages of pages
     expect(screen.getByRole('button', { name: /next/i })).toBeTruthy();
   });
@@ -498,6 +499,21 @@ describe('Source Library: a feed', () => {
     expect(
       screen.getByText('The last capture found no pages with an HTTPS link.')
     ).toBeTruthy();
+  });
+
+  it('FE20 a live feed links to its own News Radar; an archived one does not', async () => {
+    await renderFeed();
+    expect(
+      screen
+        .getByRole('link', { name: 'Show in News Radar' })
+        .getAttribute('href')
+    ).toBe(`/content-studio/research?feed=${FEED_ID}`);
+    cleanup();
+    feed = summary({ archivedAt: T1 });
+    await renderFeed();
+    expect(
+      screen.queryByRole('link', { name: 'Show in News Radar' })
+    ).toBeNull();
   });
 
   it('an archived feed shows automatic capture paused and offers no capture', async () => {

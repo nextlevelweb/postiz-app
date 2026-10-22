@@ -1,6 +1,7 @@
 import { PrismaRepository } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { ContentStudioDiscoveryCaptureState } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
 
 const isUniqueConstraintError = (err: unknown) =>
   err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
@@ -26,6 +27,50 @@ const DISCOVERY_SUMMARY = {
     },
   },
 } as const;
+
+// News Radar (P8-02): a discovery with the feed that found it, by name
+const RADAR_DISCOVERY_SUMMARY = {
+  ...DISCOVERY_SUMMARY,
+  feedSource: {
+    select: {
+      id: true,
+      organizationId: true,
+      kind: true,
+      name: true,
+      archivedAt: true,
+    },
+  },
+} as const;
+
+// Newest first sighting first. One capture sees all its pages at once, so
+// the feed's dates order a capture's pages (undated last); id breaks the
+// remaining ties so pages never overlap
+const DISCOVERY_ORDER = [
+  { firstSeenAt: 'desc' as const },
+  { publishedAt: { sort: 'desc' as const, nulls: 'last' as const } },
+  { id: 'asc' as const },
+];
+
+export interface ContentStudioRadarFilter {
+  organizationId: string;
+  seenSince: Date | null;
+  feedSourceId: string | null;
+  captureState: ContentStudioDiscoveryCaptureState | null;
+}
+
+const radarWhere = (
+  input: ContentStudioRadarFilter
+): Prisma.ContentStudioSourceDiscoveryWhereInput => ({
+  organizationId: input.organizationId,
+  ...(input.seenSince ? { firstSeenAt: { gte: input.seenSince } } : {}),
+  ...(input.feedSourceId ? { feedSourceId: input.feedSourceId } : {}),
+  feedSource: { archivedAt: null },
+  ...(input.captureState === 'captured'
+    ? { discoveredSource: { latestVersionNumber: { gte: 1 } } }
+    : input.captureState === 'not-captured'
+    ? { discoveredSource: { latestVersionNumber: 0 } }
+    : {}),
+});
 
 // Discoveries (P8-01): that a feed source listed a page source of the same
 // organization. Every query filters on organizationId itself. A discovery is
@@ -98,7 +143,6 @@ export class ContentStudioSourceDiscoveryRepository {
     }
   }
 
-  // Newest first sighting first; id breaks ties so pages never overlap
   listDiscoveriesForFeed(input: {
     organizationId: string;
     feedSourceId: string;
@@ -110,7 +154,7 @@ export class ContentStudioSourceDiscoveryRepository {
         organizationId: input.organizationId,
         feedSourceId: input.feedSourceId,
       },
-      orderBy: [{ firstSeenAt: 'desc' }, { id: 'asc' }],
+      orderBy: DISCOVERY_ORDER,
       select: DISCOVERY_SUMMARY,
       skip: input.skip,
       take: input.take,
@@ -123,6 +167,32 @@ export class ContentStudioSourceDiscoveryRepository {
         organizationId,
         feedSourceId,
       },
+    });
+  }
+
+  // News Radar (P8-02): what the organization's live feeds found, read only.
+  // The list and its count share one filter: a first sighting at or after
+  // `seenSince` (any time when null), one feed when named, and a page with or
+  // without a version when asked. A discovery of an archived feed is never
+  // part of it; an archived page is
+  listDiscoveriesForOrganization(
+    input: ContentStudioRadarFilter & {
+      skip: number;
+      take: number;
+    }
+  ) {
+    return this._discovery.model.contentStudioSourceDiscovery.findMany({
+      where: radarWhere(input),
+      orderBy: DISCOVERY_ORDER,
+      select: RADAR_DISCOVERY_SUMMARY,
+      skip: input.skip,
+      take: input.take,
+    });
+  }
+
+  countDiscoveriesForOrganization(input: ContentStudioRadarFilter) {
+    return this._discovery.model.contentStudioSourceDiscovery.count({
+      where: radarWhere(input),
     });
   }
 }

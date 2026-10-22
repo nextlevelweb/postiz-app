@@ -1,14 +1,23 @@
 import {
   IsBoolean,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
+  IsUUID,
   Max,
   MaxLength,
   Min,
 } from 'class-validator';
 import { Transform, TransformFnParams } from 'class-transformer';
-import { CONTENT_STUDIO_SOURCE_NAME_MAX } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
+import {
+  CONTENT_STUDIO_DISCOVERY_CAPTURE_STATES,
+  CONTENT_STUDIO_DISCOVERY_WINDOWS,
+  CONTENT_STUDIO_SOURCE_KINDS,
+  CONTENT_STUDIO_SOURCE_NAME_MAX,
+  ContentStudioDiscoveryCaptureState,
+  ContentStudioDiscoveryWindow,
+} from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
 import { CONTENT_STUDIO_SOURCE_URL_MAX_BYTES } from '@gitroom/nestjs-libraries/content-studio/sources/source.url';
 import { toQueryBoolean } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.project.dto';
 
@@ -30,6 +39,11 @@ export class ListContentStudioSourcesDto {
   @IsBoolean()
   @Transform(toQueryBoolean)
   archived: boolean = false;
+
+  // One kind only (P8-02); without it every kind, as before
+  @IsOptional()
+  @IsIn(CONTENT_STUDIO_SOURCE_KINDS)
+  kind?: string;
 }
 
 // The kind and the URL are checked and canonicalized by the service, not here.
@@ -73,4 +87,31 @@ export class ListContentStudioSourceDiscoveriesDto {
   @Max(PAGE_MAX)
   @Transform(toQueryInteger)
   page: number = 1;
+}
+
+// News Radar (P8-02): what the organization's live feeds found. The window is
+// named, never a timestamp: the server reads it as a first sighting at or
+// after now minus the window, 7 days when absent. A feed narrows it to one
+// feed of the organization; a capture state to pages with or without a
+// version. There is no field for an organization, an order, a kind, a search
+// or archived feeds
+export class ListContentStudioDiscoveriesDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(PAGE_MAX)
+  @Transform(toQueryInteger)
+  page: number = 1;
+
+  @IsOptional()
+  @IsIn(CONTENT_STUDIO_DISCOVERY_WINDOWS)
+  since?: ContentStudioDiscoveryWindow;
+
+  @IsOptional()
+  @IsUUID()
+  feedSourceId?: string;
+
+  @IsOptional()
+  @IsIn(CONTENT_STUDIO_DISCOVERY_CAPTURE_STATES)
+  captureState?: ContentStudioDiscoveryCaptureState;
 }

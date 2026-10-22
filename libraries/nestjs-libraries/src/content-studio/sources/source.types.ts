@@ -21,6 +21,31 @@ export const isContentStudioSourceKind = (
   typeof value === 'string' &&
   (CONTENT_STUDIO_SOURCE_KINDS as readonly string[]).includes(value);
 
+// News Radar (P8-02): how far back a first sighting may be, by name. The
+// server turns a window into a time; 'all' has no bound
+export const CONTENT_STUDIO_DISCOVERY_WINDOWS = [
+  '24h',
+  '7d',
+  '30d',
+  'all',
+] as const;
+
+export type ContentStudioDiscoveryWindow =
+  (typeof CONTENT_STUDIO_DISCOVERY_WINDOWS)[number];
+
+export const CONTENT_STUDIO_DISCOVERY_DEFAULT_WINDOW: ContentStudioDiscoveryWindow =
+  '7d';
+
+// A found page with a version (captured) or without one (not captured: never
+// fetched yet, failing, or archived before its capture). Never "failed"
+export const CONTENT_STUDIO_DISCOVERY_CAPTURE_STATES = [
+  'captured',
+  'not-captured',
+] as const;
+
+export type ContentStudioDiscoveryCaptureState =
+  (typeof CONTENT_STUDIO_DISCOVERY_CAPTURE_STATES)[number];
+
 // The organization's own label for a source, trimmed. Not the page title:
 // that is captured per version
 export const CONTENT_STUDIO_SOURCE_NAME_MAX = 200;

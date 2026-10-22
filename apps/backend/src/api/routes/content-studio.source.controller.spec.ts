@@ -43,6 +43,7 @@ import {
   ListContentStudioSourcesDto,
   ListContentStudioSourceVersionsDto,
   ListContentStudioSourceDiscoveriesDto,
+  ListContentStudioDiscoveriesDto,
   UpdateContentStudioSourceDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.source.dto';
 import { ContentStudioDesignAIService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-ai.service';
@@ -81,6 +82,7 @@ const setup = () => {
     archiveSource: jest.fn().mockResolvedValue(result),
     restoreSource: jest.fn().mockResolvedValue(result),
     listDiscoveries: jest.fn().mockResolvedValue(result),
+    listOrganizationDiscoveries: jest.fn().mockResolvedValue(result),
   };
   const ingestion = {
     refreshSource: jest.fn().mockResolvedValue(result),
@@ -210,6 +212,39 @@ describe('ContentStudioController source routes', () => {
     });
   });
 
+  it('K1/K5 lists one kind only when asked, still for the request organization', async () => {
+    const { sources, controller } = setup();
+    await controller.listSources(
+      ORG,
+      Object.assign(new ListContentStudioSourcesDto(), {
+        page: 1,
+        archived: false,
+        kind: 'feed',
+        organizationId: 'org-b',
+      })
+    );
+    expect(sources.listSources).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      archived: false,
+      kind: 'feed',
+      page: 1,
+    });
+    // without a kind: exactly the previous call, every kind
+    await controller.listSources(
+      ORG,
+      Object.assign(new ListContentStudioSourcesDto(), {
+        page: 1,
+        archived: false,
+      })
+    );
+    expect(sources.listSources.mock.calls[1][0]).toEqual({
+      organizationId: 'org-a',
+      archived: false,
+      kind: undefined,
+      page: 1,
+    });
+  });
+
   it('SRC2 creates for the request organization and user with kind, name and url only', async () => {
     const { sources, controller } = setup();
     const body = withExtras(new CreateContentStudioSourceDto());
@@ -302,6 +337,7 @@ describe('ContentStudioController source routes', () => {
     expect(types('listSourceDiscoveries')[2]).toBe(
       ListContentStudioSourceDiscoveriesDto
     );
+    expect(types('listDiscoveries')[1]).toBe(ListContentStudioDiscoveriesDto);
     const text = fs
       .readFileSync(
         path.join(__dirname, 'content-studio.controller.ts'),
@@ -313,7 +349,8 @@ describe('ContentStudioController source routes', () => {
       text.indexOf("@Get('/sources')"),
       text.indexOf("@Get('/writing-profiles')")
     );
-    expect(block.match(/@(Get|Post|Patch|Put|Delete)\(/g)).toHaveLength(10);
+    // the ten source routes and News Radar (P8-02)
+    expect(block.match(/@(Get|Post|Patch|Put|Delete)\(/g)).toHaveLength(11);
     expect(block).not.toMatch(
       /AIConnection|AIExecution|Role\.|assertManager|actor|users|appendVersion|safeFetch|fetch\(/
     );
@@ -460,9 +497,18 @@ describe('Source DTO validation', () => {
       { page: '1.5' },
       { page: 'abc' },
       { organizationId: 'org-b' },
-      { kind: 'url' },
+      // P8-02: one known kind, exactly
+      { kind: 'rss' },
+      { kind: 'URL' },
+      { kind: '' },
+      { kind: 'constructor' },
     ]) {
       await rejected(ListContentStudioSourcesDto, query, 'query');
+    }
+    for (const kind of ['url', 'feed']) {
+      expect({
+        ...(await run(ListContentStudioSourcesDto, { kind }, 'query')),
+      }).toEqual({ page: 1, archived: false, kind });
     }
     expect({
       ...(await run(
@@ -537,6 +583,7 @@ describe('Source trusted-provenance boundary', () => {
       'export class UpdateContentStudioSourceDto',
       'export class ListContentStudioSourceVersionsDto',
       'export class ListContentStudioSourceDiscoveriesDto',
+      'export class ListContentStudioDiscoveriesDto',
     ]);
     const body = await rejected(CreateContentStudioSourceDto, {
       ...CREATE,
@@ -619,5 +666,100 @@ describe('ContentStudioController source refresh', () => {
     expect(refreshBlock()).not.toMatch(
       /CheckPolicies|UseGuards|Sections\.|Role\.|assertManager|users|AIConnection|AIExecution|safeFetch|fetch\(|url/i
     );
+  });
+});
+
+// News Radar (P8-02): what the organization's live feeds found
+describe('ContentStudioController News Radar', () => {
+  const FEED = '44444444-4444-4444-8444-444444444444';
+
+  it('is GET /discoveries, read only, for the request organization with the declared filters only', async () => {
+    expect(route('listDiscoveries')).toBe('GET /discoveries');
+    expect(allRoutes().filter((r) => / \/discoveries/.test(r))).toEqual([
+      'GET /discoveries',
+    ]);
+    const { sources, ingestion, controller, result } = setup();
+    const query = Object.assign(new ListContentStudioDiscoveriesDto(), {
+      page: 3,
+      since: '30d',
+      feedSourceId: FEED,
+      captureState: 'not-captured',
+      organizationId: 'org-b',
+      sort: 'publishedAt',
+    });
+    await expect(controller.listDiscoveries(ORG, query)).resolves.toBe(result);
+    expect(sources.listOrganizationDiscoveries).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      page: 3,
+      since: '30d',
+      feedSourceId: FEED,
+      captureState: 'not-captured',
+    });
+    expect(ingestion.refreshSource).not.toHaveBeenCalled();
+    const text = fs
+      .readFileSync(
+        path.join(__dirname, 'content-studio.controller.ts'),
+        'utf8'
+      )
+      .replace(/^\s*\/\/.*$/gm, '');
+    const start = text.indexOf("@Get('/discoveries')");
+    const block = text.slice(start, text.indexOf('\n  }\n', start));
+    expect(block).toContain(
+      '_contentStudioSourceService.listOrganizationDiscoveries'
+    );
+    expect(block).not.toMatch(
+      /Ingestion|refresh|captureFeed|captureUrl|capture\(|fetch|AIConnection|AIExecution|Package|Role\.|users/i
+    );
+  });
+
+  it('parses the Radar query exactly: a named window, a feed id, a capture state and a page', async () => {
+    expect({
+      ...(await run(ListContentStudioDiscoveriesDto, {}, 'query')),
+    }).toEqual({ page: 1 });
+    expect({
+      ...(await run(
+        ListContentStudioDiscoveriesDto,
+        {
+          page: '2',
+          since: 'all',
+          feedSourceId: FEED,
+          captureState: 'captured',
+        },
+        'query'
+      )),
+    }).toEqual({
+      page: 2,
+      since: 'all',
+      feedSourceId: FEED,
+      captureState: 'captured',
+    });
+    for (const since of ['24h', '7d', '30d', 'all']) {
+      expect(
+        (await run(ListContentStudioDiscoveriesDto, { since }, 'query')).since
+      ).toBe(since);
+    }
+    for (const query of [
+      { page: '0' },
+      { page: '100001' },
+      { page: '1.5' },
+      { since: '1h' },
+      { since: '7D' },
+      { since: '2026-10-01T00:00:00.000Z' },
+      { since: '' },
+      { feedSourceId: 'not-a-uuid' },
+      { feedSourceId: '' },
+      { captureState: 'failed' },
+      { captureState: 'all' },
+      { captureState: 'Captured' },
+      { organizationId: 'org-b' },
+      { kind: 'feed' },
+      { orderBy: 'publishedAt' },
+      { sort: 'score' },
+      { where: '{}' },
+      { search: 'x' },
+      { archived: 'true' },
+    ]) {
+      await rejected(ListContentStudioDiscoveriesDto, query, 'query');
+    }
   });
 });

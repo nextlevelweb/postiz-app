@@ -341,6 +341,8 @@ describe('ContentStudioController wiring', () => {
       'GET /designs/:id',
       'GET /designs/:id/revisions',
       'GET /designs/:id/revisions/:revisionId',
+      // P8-02: News Radar, what the live feeds found
+      'GET /discoveries',
       'GET /editorial-policy',
       'GET /editorial-policy/revisions',
       'GET /editorial-policy/revisions/:revisionId',

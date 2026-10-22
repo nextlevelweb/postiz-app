@@ -211,8 +211,17 @@ const setup = () => {
     ) as Row[];
     return [...rows].sort((a, b) => {
       for (const rule of rules) {
-        const [key, dir] = Object.entries(rule)[0];
-        const result = compare(a[key], b[key]) * (dir === 'desc' ? -1 : 1);
+        const [key, how] = Object.entries(rule)[0];
+        // { sort, nulls }: a missing value goes first or last, either way
+        const { sort, nulls } =
+          typeof how === 'object' ? (how as Row) : { sort: how, nulls: null };
+        const [x, y] = [value(a, key), value(b, key)];
+        const result =
+          x === null || y === null
+            ? x === y
+              ? 0
+              : (x === null ? 1 : -1) * (nulls === 'first' ? -1 : 1)
+            : compare(x, y) * (sort === 'desc' ? -1 : 1);
         if (result) {
           return result;
         }
@@ -1401,6 +1410,51 @@ describe('feed discoveries: the read', () => {
     );
   });
 
+  it('P8-02 one capture is one first sighting: its pages are ordered by their feed date, undated last, then id', async () => {
+    const t = setup();
+    t.addFeed();
+    const w = web();
+    // the feed dates its entries 00:00, 01:00, 02:00 and 03:00 in feed order
+    w.feeds.set(FEED_URL, rss([page(1), page(2), page(3), page(4)]));
+    for (const n of [1, 2, 3, 4]) {
+      w.pages.set(page(n), html(`Page ${n}`));
+    }
+    await capture(t);
+    expect(new Set(t.state.discoveries.map((d) => +d.firstSeenAt)).size).toBe(
+      1
+    );
+    // the feed dropped the date of page 3 at a later sighting
+    t.state.discoveries.find(
+      (d) => d.discoveredSourceId === sourceByUrl(t, page(3)).id
+    )!.publishedAt = null;
+    const urls = async () =>
+      (
+        await t.service.listDiscoveries({
+          organizationId: ORG,
+          sourceId: FEED,
+          page: 1,
+        })
+      ).results.map((d) => d.source.canonicalUrl);
+    expect(await urls()).toEqual([page(4), page(2), page(1), page(3)]);
+    // the same date: id decides, ascending
+    for (const d of t.state.discoveries) {
+      d.publishedAt = new Date('2026-10-20T00:00:00Z');
+    }
+    const byId = [...t.state.discoveries]
+      .sort((a, b) => (a.id < b.id ? -1 : 1))
+      .map(
+        (d) =>
+          t.state.sources.find((s) => s.id === d.discoveredSourceId)!
+            .canonicalUrl
+      );
+    expect(await urls()).toEqual(byId);
+    expect(t.discovery.findMany.mock.calls.at(-1)![0].orderBy).toEqual([
+      { firstSeenAt: 'desc' },
+      { publishedAt: { sort: 'desc', nulls: 'last' } },
+      { id: 'asc' },
+    ]);
+  });
+
   it('TEN2/M13 another organization reads the feed as missing; SK4 a page has no discoveries', async () => {
     const t = await capturedFeed();
     expect(
@@ -1454,6 +1508,29 @@ describe('feed discoveries: the read', () => {
         take: 50,
       })
     ).toHaveLength(2);
+  });
+
+  it("P8-02 a row of another feed in a feed's list is an integrity error", async () => {
+    const t = await capturedFeed();
+    const list = t.discovery.findMany.getMockImplementation()!;
+    t.discovery.findMany.mockImplementationOnce(async (args) =>
+      (await list(args)).map((row: Row) => ({ ...row, feedSourceId: FEED_B }))
+    );
+    expect(
+      await refusal(
+        t.service.listDiscoveries({
+          organizationId: ORG,
+          sourceId: FEED,
+          page: 1,
+        })
+      )
+    ).toEqual({
+      status: 500,
+      body: {
+        msg: 'Stored source data could not be verified.',
+        code: 'CS_SOURCE_INTEGRITY_ERROR',
+      },
+    });
   });
 
   it('93/TEN4/TEN5/M20 a row that is not what a capture writes is an integrity error, never shown or repaired', async () => {

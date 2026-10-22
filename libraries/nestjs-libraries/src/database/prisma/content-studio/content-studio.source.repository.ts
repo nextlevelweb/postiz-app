@@ -57,9 +57,11 @@ export class ContentStudioSourceRepository {
     private _transaction: PrismaTransaction
   ) {}
 
+  // Every kind unless one is named (P8-02)
   listSourcesForOrganization(input: {
     organizationId: string;
     archived: boolean;
+    kind?: string;
     skip: number;
     take: number;
   }) {
@@ -67,6 +69,7 @@ export class ContentStudioSourceRepository {
       where: {
         organizationId: input.organizationId,
         archivedAt: input.archived ? { not: null } : null,
+        ...(input.kind ? { kind: input.kind } : {}),
       },
       // id breaks ties so pages never overlap
       orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
@@ -79,11 +82,13 @@ export class ContentStudioSourceRepository {
   countSourcesForOrganization(input: {
     organizationId: string;
     archived: boolean;
+    kind?: string;
   }) {
     return this._source.model.contentStudioSource.count({
       where: {
         organizationId: input.organizationId,
         archivedAt: input.archived ? { not: null } : null,
+        ...(input.kind ? { kind: input.kind } : {}),
       },
     });
   }

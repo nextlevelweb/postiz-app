@@ -446,6 +446,38 @@ describe('ContentStudioSourceService: list', () => {
       take: 20,
     });
   });
+
+  it('K1/K2 P8-02 passes one kind to the list and its count; none keeps every kind', async () => {
+    const { repository, service } = setup();
+    await service.listSources({
+      organizationId: ORG,
+      archived: false,
+      kind: 'feed',
+      page: 1,
+    });
+    expect(repository.listSourcesForOrganization).toHaveBeenLastCalledWith({
+      organizationId: ORG,
+      archived: false,
+      kind: 'feed',
+      skip: 0,
+      take: 20,
+    });
+    expect(repository.countSourcesForOrganization).toHaveBeenLastCalledWith({
+      organizationId: ORG,
+      archived: false,
+      kind: 'feed',
+    });
+    await service.listSources({
+      organizationId: ORG,
+      archived: false,
+      page: 1,
+    });
+    expect(
+      (repository.countSourcesForOrganization.mock.calls as unknown[][]).at(
+        -1
+      )![0]
+    ).toStrictEqual({ organizationId: ORG, archived: false, kind: undefined });
+  });
 });
 
 describe('ContentStudioSourceService: detail and lifecycle', () => {
@@ -767,11 +799,13 @@ describe('ContentStudioSourceService source', () => {
       'getSource',
       'getVersion',
       'listDiscoveries',
+      'listOrganizationDiscoveries',
       'listSources',
       'listVersions',
       'renameSource',
       'restoreSource',
       'sourceName',
+      'toPublicDiscovery',
     ]);
     expect(text).not.toMatch(/appendVersionWithCompareAndSwap/);
   });

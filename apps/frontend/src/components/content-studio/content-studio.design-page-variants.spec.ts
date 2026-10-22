@@ -722,7 +722,8 @@ describe('Size variant boundaries', () => {
       // P6-01: one more, a design from a saved package revision; P6-02 one
       // more, a Design Creative AI suggestion; P8-01 one more, the pages a
       // feed source found
-    ).toHaveLength(142);
+      // P8-02: one more, News Radar across feeds
+    ).toHaveLength(143);
     expect(controller).not.toMatch(/variant|campaign|resize|responsive/i);
   });
 

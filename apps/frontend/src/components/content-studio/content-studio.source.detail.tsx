@@ -8,6 +8,8 @@ import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
 import { ContentStudioPager } from '@gitroom/frontend/components/content-studio/content-studio.package.list';
 import { formatDate } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
+import { ContentStudioDiscoveryRow } from '@gitroom/frontend/components/content-studio/content-studio.discovery.row';
+import { radarFeedPagePath } from '@gitroom/frontend/components/content-studio/content-studio.research.api';
 import {
   ContentStudioSourceBlock,
   ContentStudioSourceDetail as SourceDetailData,
@@ -22,7 +24,6 @@ import {
   CaptureButton,
   formatSourceBytes,
   SOURCE_LIBRARY_PATH,
-  sourcePagePath,
   SourceStatus,
   SourceUrl,
   useSourceCommands,
@@ -352,28 +353,10 @@ const SourceHistory: FC<{
   );
 };
 
-// A page found by a feed: its capture state, in words
-const PageStatus: FC<{
-  page: { latestVersionNumber: number; archivedAt: string | null };
-}> = ({ page }) => {
-  const t = useT();
-  if (page.archivedAt) {
-    return <span>{t('content_studio_archived', 'Archived')}</span>;
-  }
-  return (
-    <span>
-      {page.latestVersionNumber > 0
-        ? `${t('content_studio_revision', 'Version')} ${
-            page.latestVersionNumber
-          }`
-        : t('content_studio_source_not_captured', 'Not captured yet')}
-    </span>
-  );
-};
-
-// The pages a feed found, newest first sighting first, one server page at a
-// time. The entry's title and date are what the feed said, shown as plain
-// text; each page opens as its own source, with its own captures
+// The pages a feed found, newest first sighting first (a capture's pages by
+// their feed date), one server page at a time, in the row News Radar uses.
+// The entry's title and date are what the feed said, shown as plain text;
+// each page opens as its own source, with its own captures
 const FeedDiscoveries: FC<{ feed: SourceDetailData }> = ({ feed }) => {
   const t = useT();
   const [page, setPage] = useState(1);
@@ -419,38 +402,11 @@ const FeedDiscoveries: FC<{ feed: SourceDetailData }> = ({ feed }) => {
       </div>
       <ul className="flex flex-col gap-[8px]">
         {list.data.results.map((discovery) => (
-          <li
+          <ContentStudioDiscoveryRow
             key={discovery.id}
-            className="flex flex-col gap-[4px] border border-newTableBorder rounded-[8px] p-[12px] min-w-0"
-          >
-            <Link
-              href={sourcePagePath(discovery.source.id)}
-              className="font-[600] break-words hover:underline"
-            >
-              {discovery.entryTitle ?? discovery.source.name}
-            </Link>
-            <SourceUrl
-              url={discovery.source.canonicalUrl}
-              className="text-[13px] text-textItemBlur"
-            />
-            <div className="text-[12px] text-textItemBlur flex flex-wrap gap-x-[12px] gap-y-[2px]">
-              <span>
-                {t('content_studio_feed_published', 'Published')}:{' '}
-                {discovery.publishedAt
-                  ? formatDate(discovery.publishedAt)
-                  : t('content_studio_feed_no_date', 'No date in the feed')}
-              </span>
-              <span>
-                {t('content_studio_feed_first_seen', 'First seen')}:{' '}
-                {formatDate(discovery.firstSeenAt)}
-              </span>
-              <span>
-                {t('content_studio_feed_last_seen', 'Last seen')}:{' '}
-                {formatDate(discovery.lastSeenAt)}
-              </span>
-              <PageStatus page={discovery.source} />
-            </div>
-          </li>
+            discovery={discovery}
+            lastSeen
+          />
         ))}
       </ul>
       {list.data.pages > 1 && (
@@ -496,6 +452,15 @@ const FeedCapture: FC<{ feed: SourceDetailData }> = ({ feed }) => {
           'A capture reads the first 25 entries of the feed, in the order the feed lists them. Each page they link to is kept as a web page source with its own versions; a page that has not changed gets no new version.'
         )}
       </div>
+      {/* News Radar shows live feeds only */}
+      {!feed.archivedAt && (
+        <Link
+          href={radarFeedPagePath(feed.id)}
+          className="self-start text-[14px] underline hover:no-underline"
+        >
+          {t('content_studio_radar_show_feed', 'Show in News Radar')}
+        </Link>
+      )}
     </section>
   );
 };

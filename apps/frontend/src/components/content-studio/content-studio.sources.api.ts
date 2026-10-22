@@ -139,8 +139,14 @@ export const SOURCE_NAME_MAX = 200;
 
 export const SOURCES_PATH = '/content-studio/sources';
 
-export const sourcesListPath = (archived: boolean, page: number) =>
-  `${SOURCES_PATH}?page=${page}&archived=${archived}`;
+export const sourcesListPath = (
+  archived: boolean,
+  page: number,
+  kind?: ContentStudioSourceKind
+) =>
+  `${SOURCES_PATH}?page=${page}&archived=${archived}${
+    kind ? `&kind=${kind}` : ''
+  }`;
 export const sourcePath = (id: string) =>
   `${SOURCES_PATH}/${encodeURIComponent(id)}`;
 export const sourceVersionsPath = (id: string, page: number) =>
@@ -150,14 +156,18 @@ export const sourceDiscoveriesPath = (id: string, page: number) =>
 const sourceVersionPath = (id: string, versionId: string) =>
   `${sourcePath(id)}/versions/${encodeURIComponent(versionId)}`;
 
-// One summary page
-export const useContentStudioSources = (archived: boolean, page: number) => {
+// One summary page; of one kind when named
+export const useContentStudioSources = (
+  archived: boolean,
+  page: number,
+  kind?: ContentStudioSourceKind
+) => {
   const fetch = useFetch();
   const load = useCallback(
     (path: string) => request<ContentStudioSourceList>(fetch, path),
     [fetch]
   );
-  return useSWR(sourcesListPath(archived, page), load, swrOptions);
+  return useSWR(sourcesListPath(archived, page, kind), load, swrOptions);
 };
 
 export const useContentStudioSource = (id: string) => {

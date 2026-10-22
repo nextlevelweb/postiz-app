@@ -1920,8 +1920,10 @@ describe('AI writing: source surface', () => {
       api.indexOf('export const useContentStudioSources ='),
       api.indexOf('export const useContentStudioSource =')
     );
+    // P8-02: one kind when named (News Radar's feed choice); the dialog
+    // names none, so it lists every kind as before
     expect(listHook).toContain(
-      'useSWR(sourcesListPath(archived, page), load, swrOptions)'
+      'useSWR(sourcesListPath(archived, page, kind), load, swrOptions)'
     );
     expect(listHook).not.toMatch(/method:|mutate|\/versions|\/refresh/);
     expect(api).not.toMatch(/localStorage|sessionStorage|console\./);

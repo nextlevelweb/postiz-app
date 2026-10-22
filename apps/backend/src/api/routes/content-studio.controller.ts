@@ -97,6 +97,7 @@ import {
   ListContentStudioSourcesDto,
   ListContentStudioSourceVersionsDto,
   ListContentStudioSourceDiscoveriesDto,
+  ListContentStudioDiscoveriesDto,
   UpdateContentStudioSourceDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.source.dto';
 import {
@@ -650,6 +651,7 @@ export class ContentStudioController {
     return this._contentStudioSourceService.listSources({
       organizationId: org.id,
       archived: query.archived,
+      kind: query.kind,
       page: query.page,
     });
   }
@@ -756,6 +758,22 @@ export class ContentStudioController {
       organizationId: org.id,
       userId: user.id,
       sourceId: id,
+    });
+  }
+
+  // News Radar (P8-02): what the organization's live feeds found, across
+  // feeds, newest first. Read only: nothing is fetched, captured or marked
+  @Get('/discoveries')
+  listDiscoveries(
+    @GetOrgFromRequest() org: Organization,
+    @Query() query: ListContentStudioDiscoveriesDto
+  ) {
+    return this._contentStudioSourceService.listOrganizationDiscoveries({
+      organizationId: org.id,
+      page: query.page,
+      since: query.since,
+      feedSourceId: query.feedSourceId,
+      captureState: query.captureState,
     });
   }
 

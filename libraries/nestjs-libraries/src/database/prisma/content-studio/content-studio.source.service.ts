@@ -4,7 +4,10 @@ import { randomUUID } from 'crypto';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import {
+  CONTENT_STUDIO_DISCOVERY_DEFAULT_WINDOW,
   CONTENT_STUDIO_SOURCE_NAME_MAX,
+  ContentStudioDiscoveryCaptureState,
+  ContentStudioDiscoveryWindow,
   isContentStudioSourceKind,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
 import {
@@ -63,6 +66,15 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PAGE_SIZE = 20;
 // the pages a feed found, a longer list of small rows
 const DISCOVERY_PAGE_SIZE = 50;
+const HOUR = 60 * 60 * 1000;
+// News Radar (P8-02): how far back a first sighting may be; 'all' is unbounded
+const DISCOVERY_WINDOW_MS: Record<ContentStudioDiscoveryWindow, number | null> =
+  {
+    '24h': 24 * HOUR,
+    '7d': 7 * 24 * HOUR,
+    '30d': 30 * 24 * HOUR,
+    all: null,
+  };
 const UNPAIRED_SURROGATE =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
@@ -150,11 +162,13 @@ export class ContentStudioSourceService {
   async listSources(input: {
     organizationId: string;
     archived: boolean;
+    kind?: string;
     page: number;
   }) {
     const filter = {
       organizationId: input.organizationId,
       archived: input.archived,
+      kind: input.kind,
     };
     const [rows, count] = await Promise.all([
       this._contentStudioSourceRepository.listSourcesForOrganization({
@@ -357,33 +371,75 @@ export class ContentStudioSourceService {
       pages: Math.ceil(count / DISCOVERY_PAGE_SIZE),
       total: count,
       results: rows.map((row) => {
-        const page = row.discoveredSource;
+        if (row.feedSourceId !== feed.id) {
+          throw integrityError();
+        }
+        return this.toPublicDiscovery(input.organizationId, row);
+      }),
+    };
+  }
+
+  // News Radar (P8-02): one page of what the organization's live feeds found,
+  // one row per feed and page (a page two feeds found is two rows), newest
+  // first sighting first. Read only. A named feed must be a feed of the
+  // organization; an archived one has nothing here. Every row is checked as
+  // it is read, and one that is not what a capture writes fails the request
+  async listOrganizationDiscoveries(input: {
+    organizationId: string;
+    page: number;
+    since?: ContentStudioDiscoveryWindow;
+    feedSourceId?: string;
+    captureState?: ContentStudioDiscoveryCaptureState;
+  }) {
+    if (input.feedSourceId !== undefined) {
+      const feed = await this.getRow(input.organizationId, input.feedSourceId);
+      if (feed.kind === 'url') {
+        throw kindUnsupported();
+      }
+      if (feed.kind !== 'feed') {
+        throw integrityError();
+      }
+    }
+    const window =
+      DISCOVERY_WINDOW_MS[
+        input.since ?? CONTENT_STUDIO_DISCOVERY_DEFAULT_WINDOW
+      ];
+    const filter = {
+      organizationId: input.organizationId,
+      seenSince: window === null ? null : new Date(Date.now() - window),
+      feedSourceId: input.feedSourceId ?? null,
+      captureState: input.captureState ?? null,
+    };
+    const [rows, count] = await Promise.all([
+      this._contentStudioSourceDiscoveryRepository.listDiscoveriesForOrganization(
+        {
+          ...filter,
+          skip: (input.page - 1) * DISCOVERY_PAGE_SIZE,
+          take: DISCOVERY_PAGE_SIZE,
+        }
+      ),
+      this._contentStudioSourceDiscoveryRepository.countDiscoveriesForOrganization(
+        filter
+      ),
+    ]);
+    return {
+      pages: Math.ceil(count / DISCOVERY_PAGE_SIZE),
+      total: count,
+      results: rows.map((row) => {
+        const feed = row.feedSource;
         if (
-          row.organizationId !== input.organizationId ||
-          row.feedSourceId !== feed.id ||
-          !page ||
-          page.organizationId !== input.organizationId ||
-          page.kind !== 'url' ||
-          !page.canonicalUrl ||
-          !(row.firstSeenAt instanceof Date) ||
-          !(row.lastSeenAt instanceof Date) ||
-          row.lastSeenAt < row.firstSeenAt
+          !feed ||
+          feed.id !== row.feedSourceId ||
+          feed.organizationId !== input.organizationId ||
+          feed.kind !== 'feed' ||
+          feed.archivedAt !== null ||
+          (filter.feedSourceId !== null && feed.id !== filter.feedSourceId)
         ) {
           throw integrityError();
         }
         return {
-          id: row.id,
-          entryTitle: row.entryTitle,
-          publishedAt: row.publishedAt,
-          firstSeenAt: row.firstSeenAt,
-          lastSeenAt: row.lastSeenAt,
-          source: {
-            id: page.id,
-            name: page.name,
-            canonicalUrl: page.canonicalUrl,
-            latestVersionNumber: page.latestVersionNumber,
-            archivedAt: page.archivedAt,
-          },
+          ...this.toPublicDiscovery(input.organizationId, row),
+          feed: { id: feed.id, name: feed.name },
         };
       }),
     };
@@ -418,6 +474,59 @@ export class ContentStudioSourceService {
     if (typeof id !== 'string' || !UUID.test(id)) {
       throw notFound();
     }
+  }
+
+  // A discovery as a capture writes it, or an integrity error: of the
+  // organization, a url page (archived or not) with its URL, last seen at or
+  // after first seen. Built field by field: no organization, feed id, entry
+  // id or page text
+  private toPublicDiscovery(
+    organizationId: string,
+    row: {
+      id: string;
+      organizationId: string;
+      entryTitle: string | null;
+      publishedAt: Date | null;
+      firstSeenAt: Date;
+      lastSeenAt: Date;
+      discoveredSource: {
+        id: string;
+        organizationId: string;
+        kind: string;
+        name: string;
+        canonicalUrl: string | null;
+        latestVersionNumber: number;
+        archivedAt: Date | null;
+      } | null;
+    }
+  ) {
+    const page = row.discoveredSource;
+    if (
+      row.organizationId !== organizationId ||
+      !page ||
+      page.organizationId !== organizationId ||
+      page.kind !== 'url' ||
+      !page.canonicalUrl ||
+      !(row.firstSeenAt instanceof Date) ||
+      !(row.lastSeenAt instanceof Date) ||
+      row.lastSeenAt < row.firstSeenAt
+    ) {
+      throw integrityError();
+    }
+    return {
+      id: row.id,
+      entryTitle: row.entryTitle,
+      publishedAt: row.publishedAt,
+      firstSeenAt: row.firstSeenAt,
+      lastSeenAt: row.lastSeenAt,
+      source: {
+        id: page.id,
+        name: page.name,
+        canonicalUrl: page.canonicalUrl,
+        latestVersionNumber: page.latestVersionNumber,
+        archivedAt: page.archivedAt,
+      },
+    };
   }
 
   private async getRow(organizationId: string, id: string) {

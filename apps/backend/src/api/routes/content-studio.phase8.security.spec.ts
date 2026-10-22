@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import {
@@ -333,7 +334,8 @@ describe('P8-01 routes', () => {
     )!;
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(142);
+      // P8-02: one more, News Radar across feeds
+    ).toHaveLength(143);
     const handler = controller.slice(
       controller.indexOf("@Get('/sources/:id/discoveries')"),
       controller.indexOf("@Post('/sources/:id/archive')")
@@ -345,6 +347,171 @@ describe('P8-01 routes', () => {
     expect(handler).not.toMatch(/@Body|safeFetch|ingestion/i);
     expect(controller).not.toMatch(
       /\/feeds?\b|\/capture\b|\/discoveries\/:|\/radar/
+    );
+  });
+});
+
+// News Radar (P8-02): a read model over the P8-01 discoveries, their feeds
+// and their pages, nothing else. The behavior is covered by
+// content-studio.news-radar.spec.ts, the controller and frontend specs and
+// the PostgreSQL suite; these keep the decisions from drifting
+const RADAR_BACKEND = {
+  service:
+    'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.service.ts',
+  repository:
+    'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-discovery.repository.ts',
+  dto: 'libraries/nestjs-libraries/src/dtos/content-studio/content-studio.source.dto.ts',
+};
+const RADAR_FRONTEND = [
+  'apps/frontend/src/components/content-studio/content-studio.research.tsx',
+  'apps/frontend/src/components/content-studio/content-studio.research.api.ts',
+  'apps/frontend/src/components/content-studio/content-studio.discovery.row.tsx',
+  'apps/frontend/src/app/(app)/(site)/content-studio/research/page.tsx',
+];
+const between = (text: string, start: string, end: string) => {
+  const from = text.indexOf(start);
+  const to = text.indexOf(end, from + start.length);
+  expect([start, from > -1 && to > from]).toEqual([start, true]);
+  return text.slice(from, to);
+};
+const radarCode = () => {
+  const service = CODE.get(RADAR_BACKEND.service)!;
+  const repository = CODE.get(RADAR_BACKEND.repository)!;
+  const controller = CODE.get(
+    'apps/backend/src/api/routes/content-studio.controller.ts'
+  )!;
+  return {
+    method: between(
+      service,
+      'async listOrganizationDiscoveries(',
+      'private toPublicDiscovery('
+    ),
+    repository: [
+      between(repository, 'const radarWhere', '});\n'),
+      repository.slice(repository.indexOf('listDiscoveriesForOrganization(')),
+    ].join('\n'),
+    handler: between(controller, "@Get('/discoveries')", '\n  }\n'),
+    frontend: RADAR_FRONTEND.map((file) => CODE.get(file)!).join('\n'),
+  };
+};
+
+describe('P8-02 News Radar', () => {
+  it('P802-1 the organization-wide Radar only reads: no write, capture, fetch or mark', () => {
+    const { method, repository, handler } = radarCode();
+    for (const part of [method, repository, handler]) {
+      expect(part).not.toMatch(
+        /\.(create|createMany|update|updateMany|upsert|delete|deleteMany)\(|\$transaction|recordDiscovery|markFeedCaptured|appendVersion|refreshSource|captureFeed|captureUrl|safeFetch|fetch\(|Ingestion|lastSeenAt:|readAt|unread/
+      );
+    }
+    expect(handler).toMatch(
+      /listOrganizationDiscoveries\(\{\s*organizationId: org\.id,\s*page: query\.page,\s*since: query\.since,\s*feedSourceId: query\.feedSourceId,\s*captureState: query\.captureState,\s*\}\)/
+    );
+    // the window is the first sighting; the list and its count share one filter
+    expect(repository).toMatch(/firstSeenAt: \{ gte: input\.seenSince \}/);
+    expect(repository).toMatch(/feedSource: \{ archivedAt: null \}/);
+    expect(repository.match(/where: radarWhere\(input\)/g)).toHaveLength(2);
+  });
+
+  it('P802-2/P802-3/P802-4 no AI, package creation, network or feed capture in the Radar', () => {
+    const { method, repository, handler, frontend } = radarCode();
+    const own = frontend.replace(
+      "from '@gitroom/frontend/components/content-studio/content-studio.package.list'",
+      ''
+    );
+    for (const part of [method, repository, handler, own]) {
+      expect(part).not.toMatch(
+        /AIConnection|AIExecution|AIOperation|AIUsage|ai[-.]writing|ai\.execution|openai|anthropic|embedding|\bscore|relevance|sentiment|\btopic|cluster|competitor|summari[sz]/i
+      );
+      expect(part).not.toMatch(
+        /createPackage|ContentPackage|package\.service|\/packages|createDesign|handoff|review/i
+      );
+      expect(part).not.toMatch(
+        /safeFetch|source\.ingestion|source\.feed|useContentStudioSourceActions|\/refresh|favicon|og:image|XMLHttpRequest|axios|window\.open|new Image/i
+      );
+    }
+    expect(own).not.toMatch(
+      /refreshInterval|setInterval|WebSocket|EventSource/
+    );
+    expect(own).not.toMatch(/dangerouslySetInnerHTML|innerHTML/);
+  });
+
+  it('P802-5 schema.prisma is byte-identical to its P8-01 version', () => {
+    // P8-02 changes no schema; a later phase that does updates this pin
+    expect(createHash('sha256').update(schema).digest('hex')).toBe(
+      '1889855c5215d44c33e67f86ac01ccb9a90cbff40699a74bf7607d2f62ea8d6e'
+    );
+    // the Radar reads the P8-01 indexes
+    expect(model('ContentStudioSourceDiscovery')).toMatch(
+      /@@index\(\[organizationId, firstSeenAt\]\)\s*@@index\(\[feedSourceId, firstSeenAt\]\)/
+    );
+  });
+
+  it('P802-6/P802-7 no News Radar model and no read or unread state', () => {
+    expect(schema).not.toMatch(
+      /model \w*(Radar|Research|ReadState|Unread)\w* \{/i
+    );
+    expect(schema).not.toMatch(/\b(readAt|unread|isRead|seenBy)\b/i);
+    expect(
+      users(/\.contentStudio(News)?Radar\w*\.|NewsRadarItem|RadarItem/)
+    ).toEqual([]);
+    const controller = CODE.get(
+      'apps/backend/src/api/routes/content-studio.controller.ts'
+    )!;
+    expect(controller).not.toMatch(/\/read\b|\/unread|\/mark|\/seen/);
+  });
+
+  it('P802-8 the source kind filter is optional: without it the list is the P3 one', () => {
+    const dto = between(
+      CODE.get(RADAR_BACKEND.dto)!,
+      'export class ListContentStudioSourcesDto',
+      'export class CreateContentStudioSourceDto'
+    );
+    expect(dto).toMatch(
+      /@IsOptional\(\)\s*@IsIn\(CONTENT_STUDIO_SOURCE_KINDS\)\s*kind\?: string;/
+    );
+    const sources = CODE.get(
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.repository.ts'
+    )!;
+    expect(
+      sources.match(/\.\.\.\(input\.kind \? \{ kind: input\.kind \} : \{\}\),/g)
+    ).toHaveLength(2);
+  });
+
+  it('P802-9 exactly 143 routes: one new read route, GET /discoveries', () => {
+    const controller = CODE.get(
+      'apps/backend/src/api/routes/content-studio.controller.ts'
+    )!;
+    expect(
+      controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
+    ).toHaveLength(143);
+    expect(controller.match(/@Get\('\/discoveries'\)/g)).toHaveLength(1);
+    expect(controller).not.toMatch(
+      /@(Post|Put|Patch|Delete)\('\/discoveries|\/research|\/radar/
+    );
+  });
+
+  it('P802-10 no deferred Phase 7 work and no deferred Phase 8 work', () => {
+    const { frontend } = radarCode();
+    const controller = CODE.get(
+      'apps/backend/src/api/routes/content-studio.controller.ts'
+    )!;
+    expect(controller).not.toMatch(
+      /duplicate|\/library|snippet|\/export|\/import/i
+    );
+    expect(
+      fs.existsSync(
+        path.join(
+          REPO_ROOT,
+          'apps/frontend/src/app/(app)/(site)/content-studio/library'
+        )
+      )
+    ).toBe(false);
+    expect(
+      raw('libraries/nestjs-libraries/src/content-studio/brand/brand.kit.ts')
+    ).not.toMatch(/logo:|logos:/);
+    // no search, selection, bulk action, capture-all or tabs in the Radar
+    expect(frontend).not.toMatch(
+      /type="search"|search=|checkbox|bulk|captureAll|Capture all|role="tablist"/i
     );
   });
 });

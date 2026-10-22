@@ -2104,7 +2104,18 @@ describe('Source Library: source surface', () => {
   });
 
   it('no research, News Radar, citations, trust score or AI summary', () => {
-    expect(all).not.toMatch(
+    // P8-02: News Radar is its own page; a live feed only links to it
+    const radarLink = [
+      "import { radarFeedPagePath } from '@gitroom/frontend/components/content-studio/content-studio.research.api';",
+      'href={radarFeedPagePath(feed.id)}',
+      "{t('content_studio_radar_show_feed', 'Show in News Radar')}",
+    ];
+    for (const exact of radarLink) {
+      expect(sources.detail.split(exact)).toHaveLength(2);
+    }
+    expect(
+      radarLink.reduce((text, exact) => text.replace(exact, ''), all)
+    ).not.toMatch(
       /research|radar|citation|trustScore|summari[sz]|openai|anthropic|\/ai\//i
     );
   });

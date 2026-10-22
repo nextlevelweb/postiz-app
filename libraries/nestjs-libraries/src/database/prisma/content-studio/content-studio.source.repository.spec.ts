@@ -319,6 +319,64 @@ describe('ContentStudioSourceRepository: sources', () => {
     ).toBe(0);
   });
 
+  it('K1-K3/K5 P8-02 lists and counts one kind when asked; without a kind exactly as before', async () => {
+    const { repository, source } = setup();
+    await create(repository);
+    const feed = (id: string, organizationId: string) =>
+      repository.createSource({
+        id,
+        organizationId,
+        kind: 'feed',
+        name: 'Example feed',
+        canonicalUrl: 'https://example.com/feed.xml',
+        createdById: USER,
+      });
+    await feed(OTHER_SOURCE, ORG);
+    await feed('66666666-6666-4666-8666-666666666666', OTHER_ORG);
+    const ids = async (kind?: string) =>
+      (
+        await repository.listSourcesForOrganization({
+          organizationId: ORG,
+          archived: false,
+          kind,
+          skip: 0,
+          take: 20,
+        })
+      )
+        .map((row) => row.id)
+        .sort();
+    expect(await ids()).toEqual([SOURCE, OTHER_SOURCE].sort());
+    expect(await ids('feed')).toEqual([OTHER_SOURCE]);
+    expect(await ids('url')).toEqual([SOURCE]);
+    expect(
+      await repository.countSourcesForOrganization({
+        organizationId: ORG,
+        archived: false,
+        kind: 'feed',
+      })
+    ).toBe(1);
+    expect(
+      await repository.countSourcesForOrganization({
+        organizationId: OTHER_ORG,
+        archived: false,
+        kind: 'url',
+      })
+    ).toBe(0);
+    // the query a missing kind sends is the P3 one, key for key
+    const calls = source.findMany.mock.calls.map(([args]) => args.where);
+    expect(calls[0]).toStrictEqual({ organizationId: ORG, archivedAt: null });
+    expect(calls[1]).toStrictEqual({
+      organizationId: ORG,
+      archivedAt: null,
+      kind: 'feed',
+    });
+    expect(source.count.mock.calls[0][0].where).toStrictEqual({
+      organizationId: ORG,
+      archivedAt: null,
+      kind: 'feed',
+    });
+  });
+
   it('SR6/SR7 reads a source of the organization only', async () => {
     const { repository, source } = setup();
     await create(repository);

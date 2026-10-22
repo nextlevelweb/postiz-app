@@ -23,6 +23,7 @@ import {
 import { CreateContentStudioPackageModal } from '@gitroom/frontend/components/content-studio/content-studio.package.modal';
 import { ContentStudioProjectsModal } from '@gitroom/frontend/components/content-studio/content-studio.projects.modal';
 import { REVIEW_QUEUE_PAGE } from '@gitroom/frontend/components/content-studio/content-studio.reviews.api';
+import { RADAR_PAGE } from '@gitroom/frontend/components/content-studio/content-studio.research.api';
 
 // The Content Studio home: packages of the organization, filtered by project
 // and archive state on the server, one summary page at a time
@@ -127,6 +128,12 @@ export const ContentStudioHome: FC = () => {
             className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
           >
             {t('content_studio_sources', 'Sources')}
+          </Link>
+          <Link
+            href={RADAR_PAGE}
+            className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
+          >
+            {t('content_studio_news_radar', 'News Radar')}
           </Link>
           <Link
             href="/content-studio/designs"
