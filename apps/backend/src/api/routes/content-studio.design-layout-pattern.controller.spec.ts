@@ -169,7 +169,8 @@ describe('ContentStudioController design layout pattern routes', () => {
     // P6-01: one more, a design from a saved package revision
     // P8-01: one more, the pages a feed source found
     // P8-02: one more, News Radar across feeds
-    expect(all).toHaveLength(143);
+    // P8-04A: one more, what changed in a source version
+    expect(all).toHaveLength(144);
     expect(
       all.filter(
         (r) =>

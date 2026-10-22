@@ -74,6 +74,8 @@ describe('Source layer boundaries', () => {
   it('finds the Source production files it guards', () => {
     expect(SOURCE_FILES.sort()).toEqual(
       [
+        // what changed between two versions (P8-04A), pure
+        `${SOURCES_DIRECTORY}/source.change.ts`,
         `${SOURCES_DIRECTORY}/source.content.ts`,
         `${SOURCES_DIRECTORY}/source.extract.ts`,
         `${SOURCES_DIRECTORY}/source.feed.ts`,

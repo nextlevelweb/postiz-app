@@ -771,6 +771,34 @@ describe('feed capture: dedup and repeated captures', () => {
     expect((await capture(t)).capture.versionsCreated).toBe(1);
   });
 
+  it('P804A-8/M31 a page captured by another extraction version is captured again; the same capture with other bytes or redirects is not', async () => {
+    const t = setup();
+    t.addFeed();
+    const w = web();
+    w.feeds.set(FEED_URL, rss([page(1)]));
+    w.pages.set(page(1), html('One'));
+    await capture(t);
+    const id = sourceByUrl(t, page(1)).id;
+    // other bytes with the same blocks and title: the same capture
+    w.pages.set(page(1), html('One') + '<!-- build 42 -->');
+    expect((await capture(t)).capture).toMatchObject({
+      versionsCreated: 0,
+      unchanged: 1,
+    });
+    // the stored version was made by an earlier extractor
+    versionsOf(t, id)[0].extractionVersion = 'content-studio-source-v1';
+    expect((await capture(t)).capture).toMatchObject({
+      versionsCreated: 1,
+      unchanged: 0,
+    });
+    expect(versionsOf(t, id).map((v) => v.extractionVersion)).toEqual([
+      'content-studio-source-v1',
+      'content-studio-source-v2',
+    ]);
+    // the same capture again: nothing new
+    expect((await capture(t)).capture.versionsCreated).toBe(0);
+  });
+
   it('DS8 the same page in two feeds is one source with one discovery per feed', async () => {
     const t = setup();
     t.addFeed();

@@ -712,6 +712,21 @@ export class ContentStudioController {
     });
   }
 
+  // What changed in one version since an earlier different capture (P8-04A):
+  // the server chooses what it is compared with. Read only
+  @Get('/sources/:id/versions/:versionId/changes')
+  getSourceVersionChanges(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Param('versionId') versionId: string
+  ) {
+    return this._contentStudioSourceService.getVersionChanges({
+      organizationId: org.id,
+      sourceId: id,
+      versionId,
+    });
+  }
+
   // The pages a feed source found, with when it listed them: metadata of
   // their own sources only, never their text
   @Get('/sources/:id/discoveries')

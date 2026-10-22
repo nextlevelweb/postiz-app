@@ -478,6 +478,9 @@ describe('ContentStudioSourceRepository: sources', () => {
       'countSourcesForOrganization',
       'countVersionsForSource',
       'createSource',
+      // reads (P8-04A)
+      'getFirstRepeatOfVersion',
+      'getPreviousDifferentVersion',
       'getSourceByCanonicalUrlForOrganization',
       'getSourceForCapture',
       'getSourceForOrganization',

@@ -153,6 +153,8 @@ const NINE_ROUTES = [
   'GET /sources/:id/discoveries',
   'GET /sources/:id/versions',
   'GET /sources/:id/versions/:versionId',
+  // what changed in a version (P8-04A), read only
+  'GET /sources/:id/versions/:versionId/changes',
   'PATCH /sources/:id',
   'POST /sources',
   'POST /sources/:id/archive',
@@ -161,7 +163,7 @@ const NINE_ROUTES = [
 ];
 
 describe('Phase 3 source authorization', () => {
-  it('P3TRUST1 there are exactly the ten source routes', () => {
+  it('P3TRUST1 there are exactly the eleven source routes', () => {
     expect(sourceHandlers.map(routeOf).sort()).toEqual(NINE_ROUTES);
   });
 
@@ -477,7 +479,7 @@ describe('Phase 3 AI operations and source material', () => {
 describe('Phase 3 Source Library trust surface', () => {
   const api = SOURCE.frontendApi;
 
-  it('P3UI1 the browser calls only the ten source routes', () => {
+  it('P3UI1 the browser calls only the eleven source routes', () => {
     expect(
       Array.from(api.matchAll(/['`](\/content-studio[^'`]*)['`]/g)).map(
         (m) => m[1]
@@ -494,6 +496,12 @@ describe('Phase 3 Source Library trust surface', () => {
       '/restore',
       '/versions',
     ]);
+    // what changed in a version (P8-04A), read only
+    expect(
+      Array.from(
+        api.matchAll(/\$\{sourceVersionPath\([a-zA-Z, ]+\)\}(\/[a-z]+)/g)
+      ).map((m) => m[1])
+    ).toEqual(['/changes']);
     expect(
       Array.from(api.matchAll(/method: '([A-Z]+)'/g)).map((m) => m[1])
     ).toEqual(['POST', 'PATCH', 'POST', 'POST', 'POST']);

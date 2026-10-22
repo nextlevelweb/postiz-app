@@ -79,6 +79,7 @@ const setup = () => {
     renameSource: jest.fn().mockResolvedValue(result),
     listVersions: jest.fn().mockResolvedValue(result),
     getVersion: jest.fn().mockResolvedValue(result),
+    getVersionChanges: jest.fn().mockResolvedValue(result),
     archiveSource: jest.fn().mockResolvedValue(result),
     restoreSource: jest.fn().mockResolvedValue(result),
     listDiscoveries: jest.fn().mockResolvedValue(result),
@@ -153,7 +154,7 @@ const allRoutes = () =>
     .map(route);
 
 describe('ContentStudioController source routes', () => {
-  it('SRC1-SRC8/CR1 declares exactly these ten routes, with 200 for archive, restore and refresh', () => {
+  it('SRC1-SRC8/CR1 declares exactly these eleven routes, with 200 for archive, restore and refresh', () => {
     expect(
       allRoutes()
         .filter((r) => / \/sources/.test(r))
@@ -165,6 +166,8 @@ describe('ContentStudioController source routes', () => {
       'GET /sources/:id/discoveries',
       'GET /sources/:id/versions',
       'GET /sources/:id/versions/:versionId',
+      // what changed in a version (P8-04A), read only
+      'GET /sources/:id/versions/:versionId/changes',
       'PATCH /sources/:id',
       'POST /sources',
       'POST /sources/:id/archive',
@@ -370,8 +373,8 @@ describe('ContentStudioController source routes', () => {
       text.indexOf("@Get('/sources')"),
       text.indexOf("@Get('/writing-profiles')")
     );
-    // the ten source routes and News Radar (P8-02)
-    expect(block.match(/@(Get|Post|Patch|Put|Delete)\(/g)).toHaveLength(11);
+    // the eleven source routes and News Radar (P8-02)
+    expect(block.match(/@(Get|Post|Patch|Put|Delete)\(/g)).toHaveLength(12);
     expect(block).not.toMatch(
       /AIConnection|AIExecution|Role\.|assertManager|actor|users|appendVersion|safeFetch|fetch\(/
     );
@@ -725,6 +728,81 @@ describe('ContentStudioController source refresh', () => {
 });
 
 // News Radar (P8-02): what the organization's live feeds found
+// What changed in one version (P8-04A): the path ids and the request
+// organization only. The server chooses what the version is compared with
+describe('ContentStudioController source version changes', () => {
+  const ARGS = () =>
+    Reflect.getMetadata(
+      ROUTE_ARGS_METADATA,
+      ContentStudioController,
+      'getSourceVersionChanges'
+    ) as Record<string, { index: number; data?: string }>;
+
+  it('R1 is GET /sources/:id/versions/:versionId/changes, with the default 200', () => {
+    expect(route('getSourceVersionChanges')).toBe(
+      'GET /sources/:id/versions/:versionId/changes'
+    );
+    expect(
+      Reflect.getMetadata(
+        HTTP_CODE_METADATA,
+        handler('getSourceVersionChanges')
+      )
+    ).toBeUndefined();
+  });
+
+  it('R2/R3 compares for the request organization, with the path ids only', async () => {
+    const { sources, ingestion, controller, result } = setup();
+    expect(await controller.getSourceVersionChanges(ORG, ID, VERSION)).toBe(
+      result
+    );
+    expect(sources.getVersionChanges).toHaveBeenCalledTimes(1);
+    expect(sources.getVersionChanges).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      sourceId: ID,
+      versionId: VERSION,
+    });
+    // read only: no capture
+    expect(ingestion.refreshSource).not.toHaveBeenCalled();
+  });
+
+  it('R4/P804A-11 takes no body, query, header or request: no baseline, hash or content can be sent', () => {
+    const args = ARGS();
+    const keys = Object.keys(args);
+    expect(keys).toHaveLength(3);
+    expect(
+      keys.filter(
+        (key) =>
+          key.startsWith(`${RouteParamtypes.BODY}:`) ||
+          key.startsWith(`${RouteParamtypes.QUERY}:`) ||
+          key.startsWith(`${RouteParamtypes.HEADERS}:`) ||
+          key.startsWith(`${RouteParamtypes.REQUEST}:`)
+      )
+    ).toEqual([]);
+    expect(
+      keys
+        .filter((key) => key.startsWith(`${RouteParamtypes.PARAM}:`))
+        .map((key) => args[key].data)
+        .sort()
+    ).toEqual(['id', 'versionId']);
+    const text = fs.readFileSync(
+      path.join(__dirname, 'content-studio.controller.ts'),
+      'utf8'
+    );
+    const block = text.slice(
+      text.indexOf("@Get('/sources/:id/versions/:versionId/changes')"),
+      text.indexOf("@Get('/sources/:id/discoveries')")
+    );
+    expect(block).toContain('getVersionChanges({');
+    expect(block).not.toMatch(
+      /@Body|@Query|@Headers|@Req|Dto|before|baseline|hash|\bcontent\b|refresh|ingest|\bAI/
+    );
+  });
+
+  it('R5 is the 144th route', () => {
+    expect(allRoutes()).toHaveLength(144);
+  });
+});
+
 describe('ContentStudioController News Radar', () => {
   const FEED = '44444444-4444-4444-8444-444444444444';
 

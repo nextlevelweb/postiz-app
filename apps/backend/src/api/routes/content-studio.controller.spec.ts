@@ -368,6 +368,7 @@ describe('ContentStudioController wiring', () => {
       'GET /sources/:id/discoveries',
       'GET /sources/:id/versions',
       'GET /sources/:id/versions/:versionId',
+      'GET /sources/:id/versions/:versionId/changes',
       'GET /writing-profiles',
       'GET /writing-profiles/:id',
       'GET /writing-profiles/:id/revisions',

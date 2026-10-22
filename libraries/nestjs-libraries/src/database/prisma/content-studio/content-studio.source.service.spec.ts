@@ -798,6 +798,9 @@ describe('ContentStudioSourceService source', () => {
       'getRow',
       'getSource',
       'getVersion',
+      // read only (P8-04A)
+      'getVersionChanges',
+      'intactContent',
       'listDiscoveries',
       'listOrganizationDiscoveries',
       'listSources',

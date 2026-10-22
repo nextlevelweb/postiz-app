@@ -346,7 +346,8 @@ describe('P8-01 routes', () => {
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-02: one more, News Radar across feeds
-    ).toHaveLength(143);
+      // P8-04A: one more, what changed in a source version
+    ).toHaveLength(144);
     const handler = controller.slice(
       controller.indexOf("@Get('/sources/:id/discoveries')"),
       controller.indexOf("@Post('/sources/:id/archive')")
@@ -499,13 +500,13 @@ describe('P8-02 News Radar', () => {
     expect(sources.match(/where: sourceListWhere\(input\)/g)).toHaveLength(2);
   });
 
-  it('P802-9 exactly 143 routes: one new read route, GET /discoveries', () => {
+  it('P802-9 one new read route, GET /discoveries (143; 144 with P8-04A)', () => {
     const controller = CODE.get(
       'apps/backend/src/api/routes/content-studio.controller.ts'
     )!;
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(143);
+    ).toHaveLength(144);
     expect(controller.match(/@Get\('\/discoveries'\)/g)).toHaveLength(1);
     expect(controller).not.toMatch(
       /@(Post|Put|Patch|Delete)\('\/discoveries|\/research|\/radar/
@@ -617,7 +618,8 @@ describe('P8-03 research into content', () => {
     )!;
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(143);
+      // P8-04A: one more, what changed in a source version
+    ).toHaveLength(144);
     // the routes of sources: the P8-02 ones, nothing to resolve or keep a
     // selection with
     expect(
@@ -633,6 +635,8 @@ describe('P8-03 research into content', () => {
       'PATCH /sources/:id',
       'GET /sources/:id/versions',
       'GET /sources/:id/versions/:versionId',
+      // P8-04A, read only
+      'GET /sources/:id/versions/:versionId/changes',
       'GET /sources/:id/discoveries',
       'POST /sources/:id/archive',
       'POST /sources/:id/restore',
@@ -777,5 +781,195 @@ describe('P8-03 research into content', () => {
     ).toMatch(
       /UUID\.test\(id\) && !ids\.includes\(id\)[\s\S]*RESEARCH_SOURCES_MAX/
     );
+  });
+});
+
+// What changed in a source version (P8-04A): one same-capture rule shared
+// with feed captures, a pure comparison, one read route and Source detail
+// only. Nothing is stored, no AI is asked, News Radar is untouched
+const CHANGE = {
+  module: `${SOURCES}/source.change.ts`,
+  ingestion: `${SOURCES}/ingestion/source.ingestion.service.ts`,
+  service: HANDOFF.service,
+  repository: HANDOFF.repository,
+  controller: 'apps/backend/src/api/routes/content-studio.controller.ts',
+  api: `${FRONTEND}/content-studio.sources.api.ts`,
+  detail: `${FRONTEND}/content-studio.source.detail.tsx`,
+};
+const change = (key: keyof typeof CHANGE) => CODE.get(CHANGE[key])!;
+
+describe('P8-04A source change detection', () => {
+  it('P804A-1/P804A-7 no schema change: no change model, table or field', () => {
+    expect(createHash('sha256').update(schema).digest('hex')).toBe(
+      '1889855c5215d44c33e67f86ac01ccb9a90cbff40699a74bf7607d2f62ea8d6e'
+    );
+    expect(schema).not.toMatch(/model \w*(Change|Diff|Comparison)\w* \{/);
+    expect(schema).not.toMatch(
+      /\b(lastContentChangedAt|lastChangedAt|contentChangedAt|previousHash|previousVersionId|changeKind|changeClass|isDuplicate|repeatOf|sameCapture)\b/i
+    );
+  });
+
+  it('P804A-2/P804A-3 one new read route, 144 in all; it reads only', () => {
+    const controller = change('controller');
+    expect(
+      controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
+    ).toHaveLength(144);
+    expect(controller.match(/\/changes'/g)).toEqual(["/changes'"]);
+    const handler = between(
+      controller,
+      "@Get('/sources/:id/versions/:versionId/changes')",
+      '\n  }\n'
+    );
+    expect(handler).toMatch(
+      /getVersionChanges\(\{\s*organizationId: org\.id,\s*sourceId: id,\s*versionId,\s*\}\)/
+    );
+    const method = between(
+      change('service'),
+      'async getVersionChanges(',
+      'async listDiscoveries('
+    );
+    expect(method).not.toMatch(
+      /appendVersion|\.create|\.update|\.delete|markFeedCaptured|\$transaction/
+    );
+  });
+
+  it('P804A-4/P804A-5 no AI, network or capture in the comparison', () => {
+    for (const key of ['module', 'service', 'repository'] as const) {
+      expect([
+        key,
+        change(key).match(
+          /ai-connection|ai-operation|ai-writing|AIConnection|AIOperation|AIUsage|openai|anthropic|embedding|vector|safeFetch|\bfetch\(/gi
+        ),
+      ]).toEqual([key, null]);
+    }
+    const method = between(
+      change('service'),
+      'async getVersionChanges(',
+      'async listDiscoveries('
+    );
+    expect(method).not.toMatch(
+      /ingestion|refresh|captureUrl|captureFeed|safeFetch/i
+    );
+    // the service is its one caller
+    expect(users(/compareContentStudioSourceVersions\(/)).toEqual(
+      [CHANGE.module, CHANGE.service].sort()
+    );
+    expect(
+      change('service').match(/compareContentStudioSourceVersions\(/g)
+    ).toHaveLength(1);
+  });
+
+  it('P804A-6 News Radar and the research handoff do not read changes', () => {
+    for (const file of [
+      ...RADAR_FRONTEND,
+      `${FRONTEND}/content-studio.discovery.row.tsx`,
+      `${FRONTEND}/content-studio.source.picker.tsx`,
+      `${FRONTEND}/content-studio.package.modal.tsx`,
+      `${FRONTEND}/content-studio.workspace.tsx`,
+    ]) {
+      expect([
+        file,
+        CODE.get(file)!.match(
+          /VersionChanges|\/changes|what_changed|Updated|lastContentChanged/g
+        ),
+      ]).toEqual([file, null]);
+    }
+    expect(users(/useContentStudioSourceVersionChanges\(/)).toEqual([
+      CHANGE.detail,
+    ]);
+    expect(radarCode().method).not.toMatch(/change/i);
+  });
+
+  it('P804A-8/M31 feed captures and change detection share one same-capture rule', () => {
+    expect(change('module')).toMatch(
+      /export const isSameContentStudioSourceCapture = \(\s*a: ContentStudioSourceCaptureIdentity,\s*b: ContentStudioSourceCaptureIdentity\s*\) =>\s*a\.contentHash === b\.contentHash &&\s*a\.title === b\.title &&\s*a\.extractionVersion === b\.extractionVersion;/
+    );
+    const ingestion = change('ingestion');
+    expect(ingestion).toMatch(
+      /if \(isSameContentStudioSourceCapture\(current, version\)\) \{\s*return \{ status: 'unchanged' as const \};/
+    );
+    // no second copy of the rule in the Source layer
+    const backend = PRODUCTION.filter(
+      (file) =>
+        file.startsWith(`${SOURCES}/`) ||
+        /content-studio\.source[\w.-]*\.ts$/.test(file)
+    );
+    for (const pattern of [
+      /\.contentHash === \w+\.contentHash/,
+      /\.extractionVersion === \w+\.extractionVersion/,
+    ]) {
+      expect(backend.filter((file) => pattern.test(CODE.get(file)!))).toEqual([
+        CHANGE.module,
+      ]);
+    }
+  });
+
+  it('P804A-9/M32 a refresh still always appends: only feed captures skip a repeat', () => {
+    const ingestion = change('ingestion');
+    expect(
+      between(
+        ingestion,
+        'async refreshSource(',
+        'async listFeedsDueForCapture('
+      )
+    ).toMatch(
+      /this\.captureUrl\(\s*input\.organizationId,\s*source,\s*input\.userId,\s*'always'\s*\)/
+    );
+    expect(ingestion).toMatch(
+      /if \(mode === 'if-changed' && expectedLatestVersionNumber > 0\) \{/
+    );
+    // the one caller with if-changed is a feed's page
+    expect(
+      between(
+        ingestion,
+        'private async captureFeedEntry(',
+        'private async pageSource('
+      )
+    ).toMatch(
+      /this\.captureUrl\(\s*organizationId,\s*page\.source,\s*userId,\s*'if-changed'\s*\)/
+    );
+    expect(
+      ingestion.match(/this\.captureUrl\([^)]*'(always|if-changed)'\s*\)/g)
+    ).toHaveLength(2);
+  });
+
+  it('P804A-10 blocks are compared by type, level and text, never by id', () => {
+    const module = change('module');
+    expect(module).toMatch(
+      /const fingerprint = \(block: ContentStudioSourceBlock\) =>\s*canonicalJson\(\{ type: block\.type, level: block\.level, text: block\.text \}\);/
+    );
+    expect(module).not.toMatch(/\.id\b/);
+  });
+
+  it('P804A-11 the browser names the version only: no baseline, hash or content', () => {
+    const api = change('api');
+    expect(
+      between(api, 'export const sourceVersionChangesPath', ';\n')
+    ).toMatch(/`\$\{sourceVersionPath\(id, versionId\)\}\/changes`$/);
+    expect(
+      between(
+        api,
+        'export const useContentStudioSourceVersionChanges',
+        '\n};\n'
+      )
+    ).not.toMatch(/method:|body:|before|baseline|hash|\?\w+=/);
+    // the browser shows the answer: it does not compare or classify
+    expect(change('detail')).not.toMatch(
+      /contentHash ===|extractionVersion !==|isSameContentStudioSourceCapture|diffContentStudioSourceBlocks|Uint16Array/
+    );
+  });
+
+  it('P804A-12 no raw SQL', () => {
+    for (const key of [
+      'module',
+      'service',
+      'repository',
+      'ingestion',
+    ] as const) {
+      expect([
+        key,
+        change(key).match(/\$queryRaw|\$executeRaw|Prisma\.sql/g),
+      ]).toEqual([key, null]);
+    }
   });
 });

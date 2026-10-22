@@ -416,6 +416,76 @@ export class ContentStudioSourceRepository {
     });
   }
 
+  // The newest earlier version of the source that is not the same capture as
+  // the given one (other blocks, title or extraction), metadata only
+  // (P8-04A). Written as "any of them differs" so a null title is compared as
+  // a value: in SQL `title <> 'x'` is never true for a null title
+  getPreviousDifferentVersion(input: {
+    organizationId: string;
+    sourceId: string;
+    versionNumber: number;
+    contentHash: string;
+    title: string | null;
+    extractionVersion: string;
+  }) {
+    return this._version.model.contentStudioSourceVersion.findFirst({
+      where: {
+        organizationId: input.organizationId,
+        sourceId: input.sourceId,
+        versionNumber: { lt: input.versionNumber },
+        OR: [
+          { contentHash: { not: input.contentHash } },
+          { extractionVersion: { not: input.extractionVersion } },
+          ...(input.title === null
+            ? [{ title: { not: null } }]
+            : [{ title: { not: input.title } }, { title: null }]),
+        ],
+      },
+      orderBy: {
+        versionNumber: 'desc',
+      },
+      select: VERSION_SUMMARY,
+    });
+  }
+
+  // The first of a run of the same captures (P8-04A): the oldest version
+  // before the given one that is the same capture, after `afterVersionNumber`
+  // (the newest earlier different capture, or none). Read from the rows, so a
+  // gap in the numbers changes nothing. Metadata only
+  getFirstRepeatOfVersion(input: {
+    organizationId: string;
+    sourceId: string;
+    versionNumber: number;
+    afterVersionNumber: number | null;
+    contentHash: string;
+    title: string | null;
+    extractionVersion: string;
+  }) {
+    return this._version.model.contentStudioSourceVersion.findFirst({
+      where: {
+        organizationId: input.organizationId,
+        sourceId: input.sourceId,
+        versionNumber: {
+          lt: input.versionNumber,
+          ...(input.afterVersionNumber === null
+            ? {}
+            : { gt: input.afterVersionNumber }),
+        },
+        contentHash: input.contentHash,
+        title: input.title,
+        extractionVersion: input.extractionVersion,
+      },
+      orderBy: {
+        versionNumber: 'asc',
+      },
+      select: {
+        id: true,
+        versionNumber: true,
+        fetchedAt: true,
+      },
+    });
+  }
+
   // The versions a package's grounding names, with their content, in one
   // query: only versions of this organization, by exact id. Never the latest
   // version of a source; of the source itself only its name

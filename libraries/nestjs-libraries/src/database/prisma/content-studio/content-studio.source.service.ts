@@ -19,6 +19,10 @@ import {
   ContentStudioSourceIntegrityError,
   parseVerifiedContentStudioSourceVersion,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.version';
+import {
+  compareContentStudioSourceVersions,
+  ContentStudioComparedSourceVersion,
+} from '@gitroom/nestjs-libraries/content-studio/sources/source.change';
 
 // Fixed messages only: never a URL, source text, id, zod or Prisma error. A
 // source of another organization is a plain 404
@@ -61,6 +65,15 @@ const kindUnsupported = () =>
   new HttpException(
     {
       msg: 'This source type has no discoveries.',
+      code: 'CS_SOURCE_KIND_UNSUPPORTED',
+    },
+    400
+  );
+
+const kindHasNoVersions = () =>
+  new HttpException(
+    {
+      msg: 'This source type has no versions.',
       code: 'CS_SOURCE_KIND_UNSUPPORTED',
     },
     400
@@ -336,16 +349,135 @@ export class ContentStudioSourceService {
     if (!row) {
       throw notFound();
     }
-    let content;
-    try {
-      content = parseVerifiedContentStudioSourceVersion(row);
-    } catch (err) {
-      if (err instanceof ContentStudioSourceIntegrityError) {
+    return {
+      ...toPublicContentStudioSourceVersion(row),
+      content: this.intactContent(row),
+    };
+  }
+
+  // What changed in one version of a page source (P8-04A). The server
+  // chooses what it is compared with, the request names the version only:
+  // the first capture of the newest earlier run of captures that is not the
+  // same capture (blocks, title and extraction). So repeats a refresh added
+  // are skipped both ways: v1 A, v2 A, v3 B compares v3 with v1, and v2 is a
+  // repeat of v1 with no earlier change. The two versions compared are proven
+  // to be what was stored before anything is compared; every other version is
+  // matched by its stored blocks hash, title and extraction only, never read
+  // or shown. Readable when the source is archived. Read only: nothing is
+  // fetched, captured, stored or asked of an AI
+  async getVersionChanges(input: {
+    organizationId: string;
+    sourceId: string;
+    versionId: string;
+  }) {
+    this.assertId(input.sourceId);
+    this.assertId(input.versionId);
+    const source = await this.getRow(input.organizationId, input.sourceId);
+    // a feed has no versions, whatever is stored for it
+    if (source.kind !== 'url') {
+      throw kindHasNoVersions();
+    }
+    const row = await this._contentStudioSourceRepository.getVersionForSource(
+      input.organizationId,
+      source.id,
+      input.versionId
+    );
+    if (!row) {
+      throw notFound();
+    }
+    const after = { ...row, content: this.intactContent(row) };
+
+    // a version's run: the captures it repeats, back to the newest earlier
+    // different capture
+    const scope = {
+      organizationId: input.organizationId,
+      sourceId: source.id,
+    };
+    const capture = (version: {
+      versionNumber: number;
+      contentHash: string;
+      title: string | null;
+      extractionVersion: string;
+    }) => ({
+      ...scope,
+      versionNumber: version.versionNumber,
+      contentHash: version.contentHash,
+      title: version.title,
+      extractionVersion: version.extractionVersion,
+    });
+    const previous =
+      await this._contentStudioSourceRepository.getPreviousDifferentVersion(
+        capture(row)
+      );
+    const repeatOf =
+      await this._contentStudioSourceRepository.getFirstRepeatOfVersion({
+        ...capture(row),
+        afterVersionNumber: previous ? previous.versionNumber : null,
+      });
+    let before:
+      | (ContentStudioComparedSourceVersion & {
+          id: string;
+          versionNumber: number;
+          fetchedAt: Date;
+        })
+      | null = null;
+    if (previous) {
+      const earlier =
+        await this._contentStudioSourceRepository.getPreviousDifferentVersion(
+          capture(previous)
+        );
+      const first =
+        await this._contentStudioSourceRepository.getFirstRepeatOfVersion({
+          ...capture(previous),
+          afterVersionNumber: earlier ? earlier.versionNumber : null,
+        });
+      const baseline =
+        await this._contentStudioSourceRepository.getVersionForSource(
+          input.organizationId,
+          source.id,
+          (first ?? previous).id
+        );
+      if (!baseline) {
         throw integrityError();
       }
-      throw err;
+      before = { ...baseline, content: this.intactContent(baseline) };
     }
-    return { ...toPublicContentStudioSourceVersion(row), content };
+
+    const summary = (version: {
+      id: string;
+      versionNumber: number;
+      fetchedAt: Date;
+      title: string | null;
+      extractionVersion: string;
+    }) => ({
+      id: version.id,
+      versionNumber: version.versionNumber,
+      fetchedAt: version.fetchedAt,
+      title: version.title,
+      extractionVersion: version.extractionVersion,
+    });
+    const comparison = compareContentStudioSourceVersions(before, after);
+    return {
+      source: {
+        id: source.id,
+        name: source.name,
+        canonicalUrl: source.canonicalUrl,
+      },
+      after: summary(row),
+      before: before ? summary(before) : null,
+      repeatOf: repeatOf
+        ? {
+            id: repeatOf.id,
+            versionNumber: repeatOf.versionNumber,
+            fetchedAt: repeatOf.fetchedAt,
+          }
+        : null,
+      change: comparison.change,
+      titleChanged: comparison.titleChanged,
+      sameFetchedBytes: comparison.sameFetchedBytes,
+      counts: comparison.counts,
+      blocks: comparison.blocks,
+    };
   }
 
   // The pages a feed source found (P8-01), newest first sighting first, with
@@ -455,7 +587,6 @@ export class ContentStudioSourceService {
     };
   }
 
-  // Trimmed, 1-200 characters, no NUL or unpaired surrogate
   // Trimmed; blank is none. Plain text matched as it is: never a pattern
   private search(value: unknown) {
     if (value === undefined || value === null) {
@@ -472,6 +603,7 @@ export class ContentStudioSourceService {
     return value.trim() || undefined;
   }
 
+  // Trimmed, 1-200 characters, no NUL or unpaired surrogate
   private sourceName(name: unknown) {
     const trimmed = typeof name === 'string' ? name.trim() : '';
     if (
@@ -553,6 +685,23 @@ export class ContentStudioSourceService {
         archivedAt: page.archivedAt,
       },
     };
+  }
+
+  // A stored version's blocks, proven to be exactly what was written; anything
+  // else is reported, never repaired, and never quoted
+  private intactContent(row: {
+    schemaVersion: number;
+    content: string;
+    contentHash: string;
+  }) {
+    try {
+      return parseVerifiedContentStudioSourceVersion(row);
+    } catch (err) {
+      if (err instanceof ContentStudioSourceIntegrityError) {
+        throw integrityError();
+      }
+      throw err;
+    }
   }
 
   private async getRow(organizationId: string, id: string) {

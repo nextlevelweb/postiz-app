@@ -87,6 +87,49 @@ export interface ContentStudioSourceVersionDetail
   };
 }
 
+// What changed in one version (P8-04A), as the server compared it: with the
+// first capture of the newest earlier run that is not the same capture
+// (blocks, title and extraction), chosen by the server. The browser only
+// shows it
+export type ContentStudioSourceChange =
+  | 'no_earlier_change'
+  | 'content_changed'
+  | 'title_changed'
+  | 'extraction_changed';
+
+export interface ContentStudioComparedVersion {
+  id: string;
+  versionNumber: number;
+  fetchedAt: string;
+  title: string | null;
+  extractionVersion: string;
+}
+
+// Added and removed blocks in document order; kept ones as a count only
+export type ContentStudioSourceBlockChange =
+  | ({ change: 'added' | 'removed' } & Omit<ContentStudioSourceBlock, 'id'>)
+  | { change: 'unchanged'; count: number };
+
+export interface ContentStudioSourceVersionChanges {
+  source: { id: string; name: string; canonicalUrl: string | null };
+  after: ContentStudioComparedVersion;
+  before: ContentStudioComparedVersion | null;
+  // the oldest earlier version this one is the same capture as
+  repeatOf: { id: string; versionNumber: number; fetchedAt: string } | null;
+  change: ContentStudioSourceChange;
+  titleChanged: boolean;
+  // both fetched bodies had the same hash
+  sameFetchedBytes: boolean;
+  counts: {
+    added: number;
+    removed: number;
+    unchanged: number;
+    beforeBlocks: number;
+    afterBlocks: number;
+  };
+  blocks: ContentStudioSourceBlockChange[];
+}
+
 export interface ContentStudioSourceRefreshResult {
   source: ContentStudioSourceSummary;
   version: ContentStudioSourceVersionSummary;
@@ -177,6 +220,8 @@ export const sourceDiscoveriesPath = (id: string, page: number) =>
   `${sourcePath(id)}/discoveries?page=${page}`;
 const sourceVersionPath = (id: string, versionId: string) =>
   `${sourcePath(id)}/versions/${encodeURIComponent(versionId)}`;
+export const sourceVersionChangesPath = (id: string, versionId: string) =>
+  `${sourceVersionPath(id, versionId)}/changes`;
 
 // One summary page; of one kind when named, and only the sources whose name
 // or URL holds the search when there is one (P8-03): searched by the server,
@@ -251,6 +296,28 @@ export const useContentStudioSourceVersion = (
     ...swrOptions,
     revalidateIfStale: false,
   });
+};
+
+// Loaded only for the version whose changes the user opens. Versions never
+// change, but a later capture never changes what an earlier one is compared
+// with either, so the answer is never revalidated
+export const useContentStudioSourceVersionChanges = (
+  id: string,
+  versionId: string | null
+) => {
+  const fetch = useFetch();
+  const load = useCallback(
+    (path: string) => request<ContentStudioSourceVersionChanges>(fetch, path),
+    [fetch]
+  );
+  return useSWR(
+    versionId ? sourceVersionChangesPath(id, versionId) : null,
+    load,
+    {
+      ...swrOptions,
+      revalidateIfStale: false,
+    }
+  );
 };
 
 // Source writes: one request each, never retried (a capture repeated after a

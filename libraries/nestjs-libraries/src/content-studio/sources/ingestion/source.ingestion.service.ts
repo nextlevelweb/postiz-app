@@ -22,6 +22,7 @@ import {
   parseContentStudioSourceVersionInput,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.version';
 import { ContentStudioSourceUrlError } from '@gitroom/nestjs-libraries/content-studio/sources/source.url';
+import { isSameContentStudioSourceCapture } from '@gitroom/nestjs-libraries/content-studio/sources/source.change';
 import {
   CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION,
   CONTENT_STUDIO_SOURCE_NAME_MAX,
@@ -486,11 +487,8 @@ export class ContentStudioSourceIngestionService {
       if (!current) {
         throw integrityError();
       }
-      if (
-        current.contentHash === version.contentHash &&
-        current.title === version.title &&
-        current.extractionVersion === version.extractionVersion
-      ) {
+      // the one rule of a repeated capture, the one change detection uses
+      if (isSameContentStudioSourceCapture(current, version)) {
         return { status: 'unchanged' as const };
       }
     }

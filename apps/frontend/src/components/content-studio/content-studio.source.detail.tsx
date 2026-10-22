@@ -19,6 +19,7 @@ import {
   useContentStudioSource,
   useContentStudioSourceDiscoveries,
   useContentStudioSourceVersion,
+  useContentStudioSourceVersionChanges,
   useContentStudioSourceVersions,
 } from '@gitroom/frontend/components/content-studio/content-studio.sources.api';
 import {
@@ -37,8 +38,45 @@ const HEADING_SIZE: Record<number, string> = {
   3: 'text-[16px]',
 };
 
-// Captured text, read-only, as plain React text: a `<script>` in it is just
-// characters, and instructions in it are just text. Block ids are keys only
+// One captured block as plain React text: a `<script>` in it is just
+// characters, and instructions in it are just text
+const SourceBlockText: FC<{
+  block: Omit<ContentStudioSourceBlock, 'id'>;
+}> = ({ block }) => {
+  switch (block.type) {
+    case 'heading':
+      return (
+        <p
+          className={clsx(
+            'font-[600] break-words',
+            HEADING_SIZE[block.level ?? 0] || 'text-[14px]'
+          )}
+        >
+          {block.text}
+        </p>
+      );
+    case 'list_item':
+      return (
+        <p
+          className="flex gap-[8px] break-words"
+          style={{ paddingLeft: `${(block.level ?? 0) * 20}px` }}
+        >
+          <span aria-hidden="true">•</span>
+          <span className="min-w-0 whitespace-pre-wrap">{block.text}</span>
+        </p>
+      );
+    case 'quote':
+      return (
+        <blockquote className="border-l-[3px] border-newTableBorder pl-[12px] italic whitespace-pre-wrap break-words">
+          {block.text}
+        </blockquote>
+      );
+    default:
+      return <p className="whitespace-pre-wrap break-words">{block.text}</p>;
+  }
+};
+
+// Captured text, read-only. Block ids are keys only
 export const ContentStudioSourceBlocks: FC<{
   blocks: ContentStudioSourceBlock[];
 }> = ({ blocks }) => {
@@ -55,50 +93,9 @@ export const ContentStudioSourceBlocks: FC<{
   }
   return (
     <div className="flex flex-col gap-[8px] min-w-0">
-      {blocks.map((block) => {
-        switch (block.type) {
-          case 'heading':
-            return (
-              <p
-                key={block.id}
-                className={clsx(
-                  'font-[600] break-words',
-                  HEADING_SIZE[block.level ?? 0] || 'text-[14px]'
-                )}
-              >
-                {block.text}
-              </p>
-            );
-          case 'list_item':
-            return (
-              <p
-                key={block.id}
-                className="flex gap-[8px] break-words"
-                style={{ paddingLeft: `${(block.level ?? 0) * 20}px` }}
-              >
-                <span aria-hidden="true">•</span>
-                <span className="min-w-0 whitespace-pre-wrap">
-                  {block.text}
-                </span>
-              </p>
-            );
-          case 'quote':
-            return (
-              <blockquote
-                key={block.id}
-                className="border-l-[3px] border-newTableBorder pl-[12px] italic whitespace-pre-wrap break-words"
-              >
-                {block.text}
-              </blockquote>
-            );
-          default:
-            return (
-              <p key={block.id} className="whitespace-pre-wrap break-words">
-                {block.text}
-              </p>
-            );
-        }
-      })}
+      {blocks.map((block) => (
+        <SourceBlockText key={block.id} block={block} />
+      ))}
     </div>
   );
 };
@@ -270,6 +267,188 @@ const SourceVersionView: FC<{
   );
 };
 
+// What changed in one version, exactly as the server compared it, with the
+// earlier capture the server chose. Nothing is worked out here; kept blocks
+// are a count only
+const SourceChangeView: FC<{
+  sourceId: string;
+  version: { id: string; versionNumber: number };
+  onBack: () => void;
+}> = ({ sourceId, version, onBack }) => {
+  const t = useT();
+  const changes = useContentStudioSourceVersionChanges(sourceId, version.id);
+  const code = sourceErrorCode(changes.error);
+  const noTitle = t('content_studio_source_no_title', 'No title captured');
+  const data = changes.data;
+
+  return (
+    <section className="flex flex-col gap-[16px] min-w-0">
+      <div className="flex flex-wrap items-center gap-[8px]">
+        <h2 className="flex-1 text-[16px] font-[600]">
+          {data?.before
+            ? `${t('content_studio_revision', 'Version')} ${
+                data.after.versionNumber
+              } ${t(
+                'content_studio_source_compared_with',
+                'compared with'
+              )} ${t('content_studio_revision', 'Version')} ${
+                data.before.versionNumber
+              }`
+            : `${t('content_studio_revision', 'Version')} ${
+                version.versionNumber
+              }`}
+        </h2>
+        <Button secondary onClick={onBack}>
+          {t('content_studio_back_to_history', 'Back to history')}
+        </Button>
+      </div>
+      {changes.error ? (
+        <div role="alert">
+          {code === 'CS_SOURCE_INTEGRITY_ERROR'
+            ? t(
+                'content_studio_source_error_integrity',
+                'Stored source data could not be read safely.'
+              )
+            : code === 'CS_NOT_FOUND'
+            ? t(
+                'content_studio_source_version_missing',
+                'This source version is no longer available.'
+              )
+            : t(
+                'content_studio_source_changes_load_error',
+                'Changes could not be loaded.'
+              )}
+        </div>
+      ) : !data ? (
+        <LoadingComponent width={40} height={40} />
+      ) : (
+        <>
+          <div className="text-[12px] text-textItemBlur flex flex-wrap gap-x-[12px]">
+            <span>
+              {t('content_studio_revision', 'Version')}{' '}
+              {data.after.versionNumber}: {formatDate(data.after.fetchedAt)}
+            </span>
+            {!!data.before && (
+              <span>
+                {t('content_studio_revision', 'Version')}{' '}
+                {data.before.versionNumber}: {formatDate(data.before.fetchedAt)}
+              </span>
+            )}
+          </div>
+          {!!data.repeatOf && (
+            <p>
+              {t(
+                'content_studio_source_repeat_of',
+                'Same content, title and extraction as Version'
+              )}{' '}
+              {data.repeatOf.versionNumber} (
+              {formatDate(data.repeatOf.fetchedAt)}).
+            </p>
+          )}
+          {data.change === 'no_earlier_change' ? (
+            <p className="text-textItemBlur">
+              {t(
+                'content_studio_source_no_earlier_change',
+                'No earlier different capture to compare with.'
+              )}
+            </p>
+          ) : (
+            <>
+              <div className="flex flex-col gap-[4px]">
+                <p className="font-[600]">
+                  {data.change === 'content_changed'
+                    ? t(
+                        'content_studio_source_content_changed',
+                        'Content changed'
+                      )
+                    : data.change === 'title_changed'
+                    ? t(
+                        'content_studio_source_title_changed',
+                        'Only the title changed'
+                      )
+                    : `${t(
+                        'content_studio_source_extraction_changed',
+                        'Captured with a different extraction version'
+                      )}: ${data.before?.extractionVersion} → ${
+                        data.after.extractionVersion
+                      }.`}
+                </p>
+                {data.change === 'extraction_changed' && (
+                  <p>
+                    {t(
+                      'content_studio_source_extraction_hint',
+                      'Differences may come from the extractor, not the page.'
+                    )}
+                    {data.sameFetchedBytes &&
+                      ` ${t(
+                        'content_studio_source_same_fetched_bytes',
+                        'The fetched page bytes were identical, so the visible differences come from extraction.'
+                      )}`}
+                  </p>
+                )}
+                {data.titleChanged && (
+                  <p className="break-words">
+                    {t('content_studio_source_title', 'Title')}:{' '}
+                    {data.before?.title ?? noTitle} →{' '}
+                    {data.after.title ?? noTitle}
+                  </p>
+                )}
+              </div>
+              <p className="text-[13px] text-textItemBlur">
+                +{data.counts.added}{' '}
+                {t('content_studio_source_blocks_added', 'blocks added')} · −
+                {data.counts.removed}{' '}
+                {t('content_studio_source_blocks_removed', 'removed')} ·{' '}
+                {data.counts.unchanged}{' '}
+                {t('content_studio_source_blocks_unchanged', 'unchanged')}
+              </p>
+              <ol className="flex flex-col gap-[8px] min-w-0">
+                {data.blocks.map((block, index) =>
+                  block.change === 'unchanged' ? (
+                    <li
+                      key={index}
+                      className="text-[12px] text-textItemBlur border border-dashed border-newTableBorder rounded-[8px] px-[12px] py-[6px]"
+                    >
+                      {block.count}{' '}
+                      {t(
+                        'content_studio_source_unchanged_blocks',
+                        'unchanged blocks'
+                      )}
+                    </li>
+                  ) : (
+                    <li
+                      key={index}
+                      className={clsx(
+                        'flex flex-col gap-[4px] border-l-[3px] pl-[12px] min-w-0',
+                        block.change === 'added'
+                          ? 'border-textColor/60 bg-boxFocused'
+                          : 'border-newTableBorder text-textItemBlur'
+                      )}
+                    >
+                      <span className="text-[12px] font-[600]">
+                        {block.change === 'added'
+                          ? t('content_studio_source_block_added', 'Added')
+                          : t('content_studio_source_block_removed', 'Removed')}
+                      </span>
+                      <div
+                        className={clsx(
+                          block.change === 'removed' && 'line-through'
+                        )}
+                      >
+                        <SourceBlockText block={block} />
+                      </div>
+                    </li>
+                  )
+                )}
+              </ol>
+            </>
+          )}
+        </>
+      )}
+    </section>
+  );
+};
+
 // The captures of a source, newest first, one server page at a time.
 // Metadata only: the text is loaded for the version opened
 const SourceHistory: FC<{
@@ -277,7 +456,8 @@ const SourceHistory: FC<{
   page: number;
   setPage: (page: number) => void;
   onView: (version: ContentStudioSourceVersionSummary) => void;
-}> = ({ history, page, setPage, onView }) => {
+  onCompare: (version: ContentStudioSourceVersionSummary) => void;
+}> = ({ history, page, setPage, onView, onCompare }) => {
   const t = useT();
   if (history.error) {
     return (
@@ -340,6 +520,20 @@ const SourceHistory: FC<{
             >
               {t('content_studio_view_source', 'View')}
             </Button>
+            {version.versionNumber >= 2 && (
+              <Button
+                secondary
+                aria-label={`${t(
+                  'content_studio_source_what_changed_in',
+                  'What changed in'
+                )} ${t('content_studio_revision', 'Version')} ${
+                  version.versionNumber
+                }`}
+                onClick={() => onCompare(version)}
+              >
+                {t('content_studio_source_what_changed', 'What changed')}
+              </Button>
+            )}
           </li>
         ))}
       </ul>
@@ -479,6 +673,19 @@ export const ContentStudioSourceDetail: FC<{ sourceId: string }> = ({
     id: string;
     versionNumber: number;
   } | null>(null);
+  // the version whose changes are open, instead of the history
+  const [comparing, setComparing] = useState<{
+    id: string;
+    versionNumber: number;
+  } | null>(null);
+  const view = (version: { id: string; versionNumber: number } | null) => {
+    setComparing(null);
+    setViewing(version);
+  };
+  const compare = (version: { id: string; versionNumber: number }) => {
+    setViewing(null);
+    setComparing(version);
+  };
   const detail = useContentStudioSource(sourceId);
   const history = useContentStudioSourceVersions(sourceId, page);
   // a new capture is the newest version: show the first page
@@ -619,16 +826,23 @@ export const ContentStudioSourceDetail: FC<{ sourceId: string }> = ({
               <>
                 <VersionFacts version={source.currentVersion} />
                 <ProvenanceDetails version={source.currentVersion} />
-                <div>
-                  <Button
-                    secondary
-                    onClick={() => setViewing(source.currentVersion)}
-                  >
+                <div className="flex flex-wrap gap-[8px]">
+                  <Button secondary onClick={() => view(source.currentVersion)}>
                     {t(
                       'content_studio_source_view_content',
                       'View extracted content'
                     )}
                   </Button>
+                  {source.latestVersionNumber >= 2 && (
+                    <Button
+                      secondary
+                      onClick={() =>
+                        source.currentVersion && compare(source.currentVersion)
+                      }
+                    >
+                      {t('content_studio_source_what_changed', 'What changed')}
+                    </Button>
+                  )}
                 </div>
               </>
             ) : (
@@ -638,7 +852,14 @@ export const ContentStudioSourceDetail: FC<{ sourceId: string }> = ({
             )}
           </section>
 
-          {viewing ? (
+          {comparing ? (
+            <SourceChangeView
+              key={comparing.id}
+              sourceId={source.id}
+              version={comparing}
+              onBack={() => setComparing(null)}
+            />
+          ) : viewing ? (
             <SourceVersionView
               key={viewing.id}
               sourceId={source.id}
@@ -654,7 +875,8 @@ export const ContentStudioSourceDetail: FC<{ sourceId: string }> = ({
                 history={history}
                 page={page}
                 setPage={setPage}
-                onView={setViewing}
+                onView={view}
+                onCompare={compare}
               />
             </section>
           )}
