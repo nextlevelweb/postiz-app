@@ -4,17 +4,15 @@ import { FC, ReactNode } from 'react';
 import Link from 'next/link';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { formatDate } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
-import { ContentStudioSourceDiscovery } from '@gitroom/frontend/components/content-studio/content-studio.sources.api';
-import { sourcePagePath } from '@gitroom/frontend/components/content-studio/content-studio.sources';
-
-// The host of a stored page URL, read here: nothing is stored or fetched
-const hostOf = (url: string) => {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return url;
-  }
-};
+import {
+  contentStudioSourceHost,
+  ContentStudioSourceDiscovery,
+} from '@gitroom/frontend/components/content-studio/content-studio.sources.api';
+import {
+  ContentStudioCaptureBadge,
+  sourcePagePath,
+} from '@gitroom/frontend/components/content-studio/content-studio.sources';
+import { ContentStudioUseInContent } from '@gitroom/frontend/components/content-studio/content-studio.package.modal';
 
 const Badge: FC<{ children: ReactNode }> = ({ children }) => (
   <span className="px-[8px] rounded-full border border-newTableBorder text-[12px]">
@@ -26,7 +24,8 @@ const Badge: FC<{ children: ReactNode }> = ({ children }) => (
 // feed gave it, else the page source's name, as plain text, opening the
 // page's own source. Captured means the page has a version; a page without
 // one is not captured, never "failed": it may not have been fetched yet, or
-// may be archived. News Radar adds the feed that found it
+// may be archived. News Radar adds the feed that found it. A live captured
+// page can be used in content (P8-03): that only opens the New package dialog
 export const ContentStudioDiscoveryRow: FC<{
   discovery: ContentStudioSourceDiscovery;
   provenance?: ReactNode;
@@ -42,7 +41,7 @@ export const ContentStudioDiscoveryRow: FC<{
         {discovery.entryTitle ?? discovery.source.name}
       </Link>
       <div className="text-[13px] text-textItemBlur truncate">
-        {hostOf(discovery.source.canonicalUrl)}
+        {contentStudioSourceHost(discovery.source.canonicalUrl)}
       </div>
       {provenance}
       <div className="text-[12px] text-textItemBlur flex flex-wrap items-center gap-x-[12px] gap-y-[2px]">
@@ -62,15 +61,14 @@ export const ContentStudioDiscoveryRow: FC<{
             {formatDate(discovery.lastSeenAt)}
           </span>
         )}
-        <Badge>
-          {discovery.source.latestVersionNumber >= 1
-            ? t('content_studio_discovery_captured', 'Captured')
-            : t('content_studio_discovery_not_captured', 'Not captured')}
-        </Badge>
+        <ContentStudioCaptureBadge
+          latestVersionNumber={discovery.source.latestVersionNumber}
+        />
         {discovery.source.archivedAt && (
           <Badge>{t('content_studio_archived', 'Archived')}</Badge>
         )}
       </div>
+      <ContentStudioUseInContent source={discovery.source} />
     </li>
   );
 };

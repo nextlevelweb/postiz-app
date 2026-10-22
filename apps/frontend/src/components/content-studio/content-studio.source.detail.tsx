@@ -10,6 +10,7 @@ import { ContentStudioPager } from '@gitroom/frontend/components/content-studio/
 import { formatDate } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
 import { ContentStudioDiscoveryRow } from '@gitroom/frontend/components/content-studio/content-studio.discovery.row';
 import { radarFeedPagePath } from '@gitroom/frontend/components/content-studio/content-studio.research.api';
+import { ContentStudioUseInContent } from '@gitroom/frontend/components/content-studio/content-studio.package.modal';
 import {
   ContentStudioSourceBlock,
   ContentStudioSourceDetail as SourceDetailData,
@@ -559,6 +560,7 @@ export const ContentStudioSourceDetail: FC<{ sourceId: string }> = ({
             </Button>
           ) : (
             <>
+              <ContentStudioUseInContent source={source} />
               <CaptureButton
                 source={source}
                 busy={busy}

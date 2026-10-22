@@ -1825,7 +1825,6 @@
   "content_studio_grounding_quote": "Quote (optional, exact words of this passage)",
   "content_studio_grounding_quote_invalid": "The quote must be exact words of the chosen passage.",
   "content_studio_grounding_add_evidence": "Add evidence",
-  "content_studio_grounding_choose_source": "Choose a source",
   "content_studio_grounding_no_sources": "Capture a source in the Source Library to use it as evidence.",
   "content_studio_grounding_add_claim": "Add claim",
   "content_studio_grounding_claim_post": "Post",
@@ -1984,5 +1983,14 @@
   "content_studio_radar_30d": "30 days",
   "content_studio_radar_nothing_24h": "Nothing found in the last 24 hours.",
   "content_studio_radar_nothing_7d": "Nothing found in the last 7 days.",
-  "content_studio_radar_nothing_30d": "Nothing found in the last 30 days."
+  "content_studio_radar_nothing_30d": "Nothing found in the last 30 days.",
+  "content_studio_source_picker_selected": "Selected",
+  "content_studio_source_picker_remove": "Remove",
+  "content_studio_research_unavailable": "A research source is no longer available.",
+  "content_studio_source_picker_search": "Name or address",
+  "content_studio_source_picker_no_match": "No sources match this search.",
+  "content_studio_research_ready": "Research ready for AI writing:",
+  "content_studio_research_clear": "Clear",
+  "content_studio_source_picker_error": "Sources could not be loaded.",
+  "content_studio_use_in_content": "Use in content"
 }

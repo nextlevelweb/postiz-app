@@ -3,6 +3,7 @@ import {
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { ContentStudioSourceVersionData } from '@gitroom/nestjs-libraries/content-studio/sources/source.version';
 
 const SOURCE_SUMMARY = {
@@ -42,6 +43,43 @@ const VERSION_DETAIL = {
   content: true,
 } as const;
 
+export interface ContentStudioSourceListFilter {
+  organizationId: string;
+  archived: boolean;
+  kind?: string;
+  search?: string;
+}
+
+// Prisma's contains hands its text to PostgreSQL's (I)LIKE as it is, where
+// % and _ are wildcards and \ escapes: escaped, a search is matched as the
+// plain text it is
+const likeLiteral = (text: string) => text.replace(/[\\%_]/g, '\\$&');
+
+// One where for a list page and its count. Without a kind or a search it is
+// exactly the P3 one
+const sourceListWhere = (
+  input: ContentStudioSourceListFilter
+): Prisma.ContentStudioSourceWhereInput => ({
+  organizationId: input.organizationId,
+  archivedAt: input.archived ? { not: null } : null,
+  ...(input.kind ? { kind: input.kind } : {}),
+  ...(input.search
+    ? {
+        OR: [
+          {
+            name: { contains: likeLiteral(input.search), mode: 'insensitive' },
+          },
+          {
+            canonicalUrl: {
+              contains: likeLiteral(input.search),
+              mode: 'insensitive',
+            },
+          },
+        ],
+      }
+    : {}),
+});
+
 // Every query filters on organizationId itself, so a source of another
 // organization reads exactly like a missing one (null or count 0). An archived
 // source is read-only until it is restored; its versions stay readable. The
@@ -57,20 +95,16 @@ export class ContentStudioSourceRepository {
     private _transaction: PrismaTransaction
   ) {}
 
-  // Every kind unless one is named (P8-02)
-  listSourcesForOrganization(input: {
-    organizationId: string;
-    archived: boolean;
-    kind?: string;
-    skip: number;
-    take: number;
-  }) {
+  // Every kind unless one is named (P8-02); with a search (P8-03) only the
+  // sources whose name or URL holds it, in any case
+  listSourcesForOrganization(
+    input: ContentStudioSourceListFilter & {
+      skip: number;
+      take: number;
+    }
+  ) {
     return this._source.model.contentStudioSource.findMany({
-      where: {
-        organizationId: input.organizationId,
-        archivedAt: input.archived ? { not: null } : null,
-        ...(input.kind ? { kind: input.kind } : {}),
-      },
+      where: sourceListWhere(input),
       // id breaks ties so pages never overlap
       orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
       select: SOURCE_SUMMARY,
@@ -79,17 +113,9 @@ export class ContentStudioSourceRepository {
     });
   }
 
-  countSourcesForOrganization(input: {
-    organizationId: string;
-    archived: boolean;
-    kind?: string;
-  }) {
+  countSourcesForOrganization(input: ContentStudioSourceListFilter) {
     return this._source.model.contentStudioSource.count({
-      where: {
-        organizationId: input.organizationId,
-        archivedAt: input.archived ? { not: null } : null,
-        ...(input.kind ? { kind: input.kind } : {}),
-      },
+      where: sourceListWhere(input),
     });
   }
 

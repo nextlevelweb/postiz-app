@@ -804,6 +804,7 @@ describe('ContentStudioSourceService source', () => {
       'listVersions',
       'renameSource',
       'restoreSource',
+      'search',
       'sourceName',
       'toPublicDiscovery',
     ]);

@@ -472,22 +472,23 @@ const sourceSummary = (
   createdAt: '2026-10-01T10:00:00.000Z',
   updatedAt: '2026-10-01T10:00:00.000Z',
 });
+let listed: ReturnType<typeof sourceSummary>[] = [];
 const sourceRoutes = (method: string, url: string): Reply | undefined => {
   const path = url.split('?')[0];
   if (method !== 'GET') {
     return undefined;
   }
+  // the Source picker's list (P8-03): searched by the server, 20 a page
   if (path === '/content-studio/sources') {
+    const query = new URLSearchParams(url.split('?')[1]);
+    const search = (query.get('search') || '').toLowerCase();
+    const page = Number(query.get('page') || 1);
+    const matching = listed.filter(
+      (source) => !search || source.name.toLowerCase().includes(search)
+    );
     return reply(200, {
-      pages: 1,
-      results: [
-        sourceSummary(SOURCE_ID, 'Weekly report', 2),
-        sourceSummary(
-          'f2111111-1111-4111-8111-111111111111',
-          'Never captured',
-          0
-        ),
-      ],
+      pages: Math.ceil(matching.length / 20),
+      results: matching.slice((page - 1) * 20, page * 20),
     });
   }
   if (path === `/content-studio/sources/${SOURCE_ID}`) {
@@ -517,6 +518,10 @@ const sourceRoutes = (method: string, url: string): Reply | undefined => {
   return undefined;
 };
 beforeEach(() => {
+  listed = [
+    sourceSummary(SOURCE_ID, 'Weekly report', 2),
+    sourceSummary('f2111111-1111-4111-8111-111111111111', 'Never captured', 0),
+  ];
   override = (method, url) => sourceRoutes(method, url);
 });
 
@@ -784,9 +789,7 @@ describe('grounding: claims written by hand (P3-11)', () => {
     blockId = 'b1',
     quote = ''
   ) => {
-    fireEvent.change(within(root).getByRole('combobox', { name: 'Source' }), {
-      target: { value: SOURCE_ID },
-    });
+    fireEvent.click(within(root).getByRole('radio', { name: 'Weekly report' }));
     await settle();
     fireEvent.click(
       root.querySelector(
@@ -808,16 +811,26 @@ describe('grounding: claims written by hand (P3-11)', () => {
     await renderWorkspace();
     await click('Add claim');
     const root = form('Add claim');
-    // only captured sources can be evidence
+    // only captured web pages can be evidence (P8-03: the others are shown,
+    // turned off); choosing a source adds no evidence by itself
     expect(
-      Array.from(
-        (
-          within(root).getByRole('combobox', {
-            name: 'Source',
-          }) as HTMLSelectElement
-        ).options
-      ).map((option) => option.textContent)
-    ).toEqual(['Choose a source', 'Weekly report']);
+      within(root)
+        .getAllByRole('radio')
+        .map((radio) => [
+          radio.closest('label')!.textContent,
+          (radio as HTMLInputElement).disabled,
+        ])
+    ).toEqual([
+      ['Weekly report', false],
+      ['Never captured', true],
+    ]);
+    expect(
+      sourceReads().filter((c) => c.url.startsWith('/content-studio/sources?'))
+    ).toHaveLength(1);
+    expect(
+      sourceReads().find((c) => c.url.startsWith('/content-studio/sources?'))!
+        .url
+    ).toBe('/content-studio/sources?page=1&archived=false&kind=url');
     fireEvent.change(within(root).getByRole('combobox', { name: 'Post' }), {
       target: { value: 'f1' },
     });
@@ -861,9 +874,7 @@ describe('grounding: claims written by hand (P3-11)', () => {
     fireEvent.change(within(root).getByRole('textbox', { name: 'Claim' }), {
       target: { value: 'Old figure.' },
     });
-    fireEvent.change(within(root).getByRole('combobox', { name: 'Source' }), {
-      target: { value: SOURCE_ID },
-    });
+    fireEvent.click(within(root).getByRole('radio', { name: 'Weekly report' }));
     await settle();
     fireEvent.change(within(root).getByRole('combobox', { name: 'Version' }), {
       target: { value: V1 },
@@ -877,6 +888,64 @@ describe('grounding: claims written by hand (P3-11)', () => {
     await advance(1500);
     expect(lastPut().grounding.claims[0].evidence).toEqual([
       evidenceOf(V1, 'b2'),
+    ]);
+  });
+
+  it('EP1-EP6/M5 finds a source beyond the first page through the server search; evidence is still the version, block and quote chosen', async () => {
+    // 30 newer pages ahead of it: not on the first page of the list
+    listed = [
+      ...Array.from({ length: 30 }, (_, i) =>
+        sourceSummary(
+          `e${String(i).padStart(7, '0')}-1111-4111-8111-111111111111`,
+          `Found page ${i + 1}`,
+          1
+        )
+      ),
+      ...listed,
+    ];
+    await renderWorkspace();
+    await click('Add claim');
+    const root = form('Add claim');
+    expect(within(root).queryByRole('radio', { name: 'Weekly report' })).toBe(
+      null
+    );
+    fireEvent.change(within(root).getByRole('textbox', { name: 'Claim' }), {
+      target: { value: 'Sales grew.' },
+    });
+    fireEvent.change(
+      within(root).getByRole('searchbox', { name: 'Name or address' }),
+      { target: { value: 'weekly' } }
+    );
+    // Enter searches here and never submits the claim
+    fireEvent.keyDown(
+      within(root).getByRole('searchbox', { name: 'Name or address' }),
+      { key: 'Enter' }
+    );
+    await settle();
+    expect(sourceReads().map((c) => c.url)).toContain(
+      '/content-studio/sources?page=1&archived=false&kind=url&search=weekly'
+    );
+    expect(screen.queryByRole('form', { name: 'Add claim' })).not.toBeNull();
+    fireEvent.click(within(root).getByRole('radio', { name: 'Weekly report' }));
+    await settle();
+    // the existing version and passage choice, newest version first
+    expect(
+      (
+        within(root).getByRole('combobox', {
+          name: 'Version',
+        }) as HTMLSelectElement
+      ).value
+    ).toBe(V2);
+    expect(button('Save claim', root)).toHaveProperty('disabled', true);
+    fireEvent.click(
+      root.querySelector('input[type="radio"][value="b1"]') as HTMLElement
+    );
+    await settle();
+    await click('Add evidence', root);
+    await click('Save claim', root);
+    await advance(1500);
+    expect(lastPut().grounding.claims[0].evidence).toEqual([
+      evidenceOf(V2, 'b1'),
     ]);
   });
 

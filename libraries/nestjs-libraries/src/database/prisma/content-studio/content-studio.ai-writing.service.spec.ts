@@ -314,6 +314,7 @@ const sourceRepository = () => {
         sourceId(n),
         {
           organizationId: ORG,
+          kind: 'url',
           name: `Source name ${n}`,
           latestVersionNumber: 3,
           archivedAt: null as Date | null,
@@ -333,6 +334,7 @@ const sourceRepository = () => {
   // one source of the other organization
   state.rows.set(sourceId(7), {
     organizationId: OTHER_ORG,
+    kind: 'url',
     name: 'Source name 7',
     latestVersionNumber: 1,
     archivedAt: null,
@@ -346,7 +348,7 @@ const sourceRepository = () => {
         return row && row.organizationId === organizationId
           ? {
               id,
-              kind: 'url',
+              kind: row.kind,
               name: row.name,
               canonicalUrl: `https://example.com/news/${id}`,
               latestVersionNumber: row.latestVersionNumber,
@@ -2491,6 +2493,129 @@ describe('ContentStudioAIWritingService: source grounding', () => {
     // the answer names the capture: its title and the source name, never its text
     expect(JSON.stringify(value)).not.toContain(SOURCE_CONTENT);
     expect(JSON.stringify(value)).toContain(SOURCE_TITLE);
+  });
+});
+
+// Research into content (P8-03): sources are still chosen by id only and
+// read at their current version when the request runs, never before
+describe('ContentStudioAIWritingService: research sources (P8-03)', () => {
+  it('AIW5/M7 a feed is no source material, whatever its version count says: refused before any version read', async () => {
+    const ctx = setup();
+    ctx.sources.state.rows.get(sourceId(2))!.kind = 'feed';
+    expect(
+      await refusal(ctx.service.proposeItem(itemInput({}, withSources(2))))
+    ).toEqual({
+      status: 400,
+      code: 'CS_AI_SOURCE_NOT_READY',
+      msg: 'A selected source has not been ingested yet.',
+    });
+    expect(
+      ctx.sources.repository.getVersionDetailByNumber
+    ).not.toHaveBeenCalled();
+    nothingRan(ctx);
+  });
+
+  it.each([
+    ['AIW3 a repeated id', [sourceId(1), sourceId(1)]],
+    ['AIW4 six ids', [1, 2, 3, 4, 5, 6].map(sourceId)],
+  ])('%s is refused, never cut or merged', async (_, sourceIds) => {
+    const ctx = setup();
+    expect(
+      (await refusal(ctx.service.proposeItem(itemInput({}, { sourceIds }))))
+        .status
+    ).toBe(400);
+    expect(sourceLookups(ctx)).toEqual([]);
+    nothingRan(ctx);
+  });
+
+  it('AIW6/AIW7 an archived source and one of another organization are refused as before', async () => {
+    const ctx = setup();
+    ctx.sources.state.rows.get(sourceId(1))!.archivedAt = new Date();
+    expect(
+      (await refusal(ctx.service.proposeItem(itemInput({}, withSources(1)))))
+        .code
+    ).toBe('CS_AI_SOURCE_ARCHIVED');
+    expect(
+      await refusal(ctx.service.proposeItem(itemInput({}, withSources(7))))
+    ).toEqual({
+      status: 400,
+      code: 'CS_AI_SOURCE_NOT_FOUND',
+      msg: 'A selected source is no longer available.',
+    });
+    nothingRan(ctx);
+  });
+
+  // a capture appends the next version, as the compare-and-swap does
+  const capture = (ctx: Context, n: number, version: number) => {
+    ctx.sources.state.versions
+      .get(sourceId(n))!
+      .set(version, storedVersion(n, version));
+    ctx.sources.state.rows.get(sourceId(n))!.latestVersionNumber = version;
+  };
+
+  it('V1 a version captured after the choice and before Generate is the one used, and said so', async () => {
+    const ctx = setup();
+    // chosen at version 3; a feed capture adds version 4 before Generate
+    capture(ctx, 2, 4);
+    const value = await ctx.service.proposeItem(itemInput({}, withSources(2)));
+    expect(created(ctx).context.sources).toEqual([sourceRef(2, 4)]);
+    expect(sentRequest(ctx).prompt).toContain(
+      `| ${SOURCE_CONTENT} source 2 v4`
+    );
+    expect(value.provenance.sources).toEqual([proposalSource(2, 4)]);
+  });
+
+  it('V2/M11 a version captured while the request runs, after the source was read, does not change the run', async () => {
+    const ctx = setup();
+    const read = ctx.sources.repository.getSourceForOrganization;
+    const real = read.getMockImplementation()!;
+    read.mockImplementationOnce(async (organizationId: string, id: string) => {
+      const row = await real(organizationId, id);
+      capture(ctx, 2, 4);
+      return row;
+    });
+    const value = await ctx.service.proposeItem(itemInput({}, withSources(2)));
+    expect(ctx.sources.repository.getVersionDetailByNumber.mock.calls).toEqual([
+      [ORG, sourceId(2), 3],
+    ]);
+    expect(created(ctx).context.sources).toEqual([sourceRef(2, 3)]);
+    expect(sentRequest(ctx).prompt).not.toContain('source 2 v4');
+    expect(value.provenance.sources).toEqual([proposalSource(2, 3)]);
+    // read once each: the current version is never looked up again
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('V3 a suggestion keeps the version it was written from when a newer one is captured', async () => {
+    const ctx = setup();
+    ctx.adapter.generateText.mockResolvedValueOnce(
+      providerResult(
+        JSON.stringify({
+          text: 'Spring sales are up.',
+          claims: [
+            {
+              text: 'Report two says so.',
+              evidence: [{ ref: 'S1-B1', quote: 'Report 2' }],
+            },
+          ],
+        })
+      )
+    );
+    const value = await ctx.service.proposeItem(itemInput({}, withSources(2)));
+    capture(ctx, 2, 4);
+    expect(value.provenance.sources).toEqual([proposalSource(2, 3)]);
+    expect(value.grounding.claims[0].evidence).toEqual([
+      { ...sourceRef(2, 3), blockId: 'b1', quote: 'Report 2' },
+    ]);
+  });
+
+  it('V4 a source archived after the choice is refused when Generate runs', async () => {
+    const ctx = setup();
+    ctx.sources.state.rows.get(sourceId(3))!.archivedAt = new Date();
+    expect(
+      (await refusal(ctx.service.proposeItem(itemInput({}, withSources(3)))))
+        .status
+    ).toBe(409);
+    nothingRan(ctx);
   });
 });
 

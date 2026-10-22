@@ -18,6 +18,7 @@ import {
   ContentStudioSourceKind,
   ContentStudioSourceSummary,
   SOURCE_NAME_MAX,
+  SOURCE_SEARCH_MAX,
   sourceErrorCode,
   sourceErrorMessage,
   useContentStudioSourceActions,
@@ -471,6 +472,21 @@ export const CaptureButton: FC<{
   );
 };
 
+// Captured: the page has a version. Never "failed" (P8-02: a page a feed
+// found; P8-03: a page in the Source picker)
+export const ContentStudioCaptureBadge: FC<{ latestVersionNumber: number }> = ({
+  latestVersionNumber,
+}) => {
+  const t = useT();
+  return (
+    <span className="px-[8px] rounded-full border border-newTableBorder text-[12px]">
+      {latestVersionNumber >= 1
+        ? t('content_studio_discovery_captured', 'Captured')
+        : t('content_studio_discovery_not_captured', 'Not captured')}
+    </span>
+  );
+};
+
 // Active, Archived, Not captured yet or Version N (a feed: when it was last
 // captured): nothing about whether the source is right
 export const SourceStatus: FC<{ source: ContentStudioSourceSummary }> = ({
@@ -589,14 +605,23 @@ const SourceRow: FC<{
 
 // The Source Library: the organization's sources, active or archived, one
 // summary page at a time, in the server's order. Nothing is captured unless
-// the user asks for it
+// the user asks for it. A search (P8-03) is the server's: part of a source's
+// name or URL, in any case, over every page
 export const ContentStudioSources: FC = () => {
   const t = useT();
   const modals = useModals();
   const [archived, setArchived] = useState(false);
   const [page, setPage] = useState(1);
-  const list = useContentStudioSources(archived, page);
+  const [query, setQuery] = useState('');
+  const [search, setSearch] = useState('');
+  const list = useContentStudioSources(archived, page, undefined, search);
   const commands = useSourceCommands();
+
+  const submitSearch = (event: FormEvent) => {
+    event.preventDefault();
+    setSearch(query.trim());
+    setPage(1);
+  };
 
   const pages = list.data?.pages;
   // a page that no longer exists (after archiving, say) moves to the last one
@@ -673,6 +698,26 @@ export const ContentStudioSources: FC = () => {
         ))}
       </div>
 
+      <form
+        role="search"
+        onSubmit={submitSearch}
+        className="flex gap-[8px] items-end min-w-0"
+      >
+        <label className="flex flex-col gap-[4px] text-[12px] min-w-0 flex-1">
+          {t('content_studio_source_picker_search', 'Name or address')}
+          <input
+            type="search"
+            className="bg-newBgColorInner h-[40px] px-[10px] border-newTableBorder border rounded-[8px] text-textColor text-[14px] w-full min-w-0"
+            value={query}
+            maxLength={SOURCE_SEARCH_MAX}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </label>
+        <Button type="submit" secondary>
+          {t('content_studio_library_search', 'Search')}
+        </Button>
+      </form>
+
       {list.error ? (
         <div className="flex flex-col items-center gap-[12px] py-[40px]">
           <div>
@@ -689,7 +734,14 @@ export const ContentStudioSources: FC = () => {
         <LoadingComponent />
       ) : !list.data.results.length ? (
         <div className="flex flex-col items-center gap-[12px] py-[40px] text-center">
-          {archived ? (
+          {search ? (
+            <div>
+              {t(
+                'content_studio_source_picker_no_match',
+                'No sources match this search.'
+              )}
+            </div>
+          ) : archived ? (
             <div>
               {t('content_studio_no_archived_sources', 'No archived sources.')}
             </div>

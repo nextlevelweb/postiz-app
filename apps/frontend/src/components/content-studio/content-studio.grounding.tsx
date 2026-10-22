@@ -20,10 +20,10 @@ import {
 } from '@gitroom/frontend/components/content-studio/content-studio.api';
 import {
   useContentStudioSource,
-  useContentStudioSources,
   useContentStudioSourceVersion,
   useContentStudioSourceVersions,
 } from '@gitroom/frontend/components/content-studio/content-studio.sources.api';
+import { ContentStudioSourcePicker } from '@gitroom/frontend/components/content-studio/content-studio.source.picker';
 
 // Grounding (P3-11): the claims a package makes, each for one post, with the
 // exact blocks of exact source versions that support it. A claim says what
@@ -316,48 +316,37 @@ const VersionBlockPicker: FC<{
   );
 };
 
-// Picks one block of one captured version of an active source of the
-// organization, from the Source Library's first page
+// Picks one block of one captured version of an active web page of the
+// organization, found through the Source picker (P8-03): searched by the
+// server and paged, so any page can be chosen. Choosing the page adds
+// nothing: evidence is the version, block and quote chosen after it
 const EvidencePicker: FC<{
   onAdd: (evidence: ContentStudioClaimEvidence) => void;
 }> = ({ onAdd }) => {
   const t = useT();
-  const sources = useContentStudioSources(false, 1);
   const [sourceId, setSourceId] = useState('');
-  const captured = (sources.data?.results || []).filter(
-    (source) => source.latestVersionNumber > 0
-  );
 
   return (
     <fieldset className="flex flex-col gap-[8px] border border-newTableBorder rounded-[8px] p-[12px]">
       <legend className="px-[4px] text-[13px] font-[600]">
         {t('content_studio_grounding_add_evidence', 'Add evidence')}
       </legend>
-      <label className="flex flex-col gap-[4px] text-[12px]">
+      <div className="flex flex-col gap-[4px] text-[12px]">
         {t('content_studio_grounding_source', 'Source')}
-        <select
-          className={fieldClass}
-          value={sourceId}
-          onChange={(e) => setSourceId(e.target.value)}
-        >
-          <option value="">
-            {t('content_studio_grounding_choose_source', 'Choose a source')}
-          </option>
-          {captured.map((source) => (
-            <option key={source.id} value={source.id}>
-              {source.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      {sources.data && !captured.length && (
-        <div className="text-[12px] text-textItemBlur">
-          {t(
+        <ContentStudioSourcePicker
+          mode="single"
+          value={sourceId ? [sourceId] : []}
+          onChange={(ids) => setSourceId(ids[0] ?? '')}
+          errorText={t(
+            'content_studio_source_picker_error',
+            'Sources could not be loaded.'
+          )}
+          emptyText={t(
             'content_studio_grounding_no_sources',
             'Capture a source in the Source Library to use it as evidence.'
           )}
-        </div>
-      )}
+        />
+      </div>
       {!!sourceId && (
         <VersionBlockPicker key={sourceId} sourceId={sourceId} onAdd={onAdd} />
       )}

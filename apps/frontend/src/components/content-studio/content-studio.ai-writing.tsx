@@ -31,7 +31,7 @@ import {
   FieldGroup,
   LongTextField,
 } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
-import { useContentStudioSources } from '@gitroom/frontend/components/content-studio/content-studio.sources.api';
+import { ContentStudioSourcePicker } from '@gitroom/frontend/components/content-studio/content-studio.source.picker';
 
 // AI writing in the package workspace: one dialog to choose what to ask, and
 // the request that asks it. The server builds the prompt from the saved
@@ -333,24 +333,17 @@ export const ProfileChoice: FC<{
   );
 };
 
-// The active sources that have a captured version, by name only, from the
-// first page of the list. Checked in the order clicked, which is the order
-// the server uses; at most five. A list that cannot be loaded leaves AI
-// writing usable without sources
+// The live web pages of the organization with a captured version, by name
+// only, found through the Source picker (P8-03): searched by the server and
+// paged, so a page beyond the first 20 can be chosen. Checked in the order
+// clicked, which is the order the server uses; at most five. A list that
+// cannot be loaded leaves AI writing usable without sources
 const SourceChoice: FC<{
   value: string[];
   onChange: (next: string[]) => void;
   disabled: boolean;
 }> = ({ value, onChange, disabled }) => {
   const t = useT();
-  const { data, error } = useContentStudioSources(false, 1);
-  const ingested = (data?.results || []).filter(
-    (source) => !source.archivedAt && source.latestVersionNumber >= 1
-  );
-  const full = value.length >= AI_WRITING_SOURCES_MAX;
-  const note = (text: string) => (
-    <div className="text-[12px] text-textItemBlur">{text}</div>
-  );
   return (
     <FieldGroup
       label={t('content_studio_ai_sources', 'Sources')}
@@ -359,60 +352,34 @@ const SourceChoice: FC<{
         'Use selected source material as reference context. Sources are not automatically fact-checked. Up to 5, used in the order you select them.'
       )}
     >
-      {error
-        ? note(
-            t(
-              'content_studio_ai_sources_error',
-              'Sources could not be loaded. You can still generate without them.'
-            )
-          )
-        : !data
-        ? null
-        : !ingested.length
-        ? note(t('content_studio_ai_no_sources', 'No ingested sources yet.'))
-        : ingested.map((source) => {
-            const position = value.indexOf(source.id);
-            return (
-              <div
-                key={source.id}
-                className="flex items-center gap-[8px] text-[14px] min-w-0"
-              >
-                <label className="flex items-center gap-[8px] min-w-0">
-                  <input
-                    type="checkbox"
-                    checked={position >= 0}
-                    disabled={disabled || (position < 0 && full)}
-                    onChange={(e) =>
-                      onChange(
-                        !e.target.checked
-                          ? value.filter((id) => id !== source.id)
-                          : position >= 0 || full
-                          ? value
-                          : [...value, source.id]
-                      )
-                    }
-                  />
-                  <span className="break-words min-w-0">{source.name}</span>
-                </label>
-                {position >= 0 && (
-                  <span className="text-[12px] text-textItemBlur">
-                    #{position + 1}
-                  </span>
-                )}
-              </div>
-            );
-          })}
+      <ContentStudioSourcePicker
+        mode="multiple"
+        max={AI_WRITING_SOURCES_MAX}
+        value={value}
+        onChange={onChange}
+        disabled={disabled}
+        errorText={t(
+          'content_studio_ai_sources_error',
+          'Sources could not be loaded. You can still generate without them.'
+        )}
+        emptyText={t(
+          'content_studio_ai_no_sources',
+          'No ingested sources yet.'
+        )}
+      />
     </FieldGroup>
   );
 };
 
 // What to ask the AI for one post or the whole thread. onGenerate saves the
-// draft first and resolves true once a suggestion is shown
+// draft first and resolves true once a suggestion is shown. Research sources
+// a link named (P8-03) start out chosen; they are ids only, like any choice
 export const ContentStudioAIWritingDialog: FC<{
   target: ContentStudioAIWritingTarget;
   onGenerate: (request: ContentStudioAIWritingRequest) => Promise<boolean>;
   close: () => void;
-}> = ({ target, onGenerate, close }) => {
+  initialSourceIds?: string[];
+}> = ({ target, onGenerate, close, initialSourceIds }) => {
   const t = useT();
   const connections = useContentStudioAIConnections();
   const providers = useContentStudioAIProviders();
@@ -464,7 +431,9 @@ export const ContentStudioAIWritingDialog: FC<{
   const [editorialPolicy, setEditorialPolicy] = useState(false);
   const [audienceProfileId, setAudienceProfileId] = useState('');
   const [expertiseProfileId, setExpertiseProfileId] = useState('');
-  const [sourceIds, setSourceIds] = useState<string[]>([]);
+  const [sourceIds, setSourceIds] = useState<string[]>(() =>
+    (initialSourceIds || []).slice(0, AI_WRITING_SOURCES_MAX)
+  );
   const [instruction, setInstruction] = useState('');
 
   if (connections.error || providers.error) {

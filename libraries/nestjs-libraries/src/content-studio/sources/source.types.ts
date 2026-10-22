@@ -50,6 +50,10 @@ export type ContentStudioDiscoveryCaptureState =
 // that is captured per version
 export const CONTENT_STUDIO_SOURCE_NAME_MAX = 200;
 
+// Source search (P8-03): words of a source's name or URL, plain text, never
+// a pattern. The same bound as the review queue's search
+export const CONTENT_STUDIO_SOURCE_SEARCH_MAX = 100;
+
 // Names the extraction and normalization code that produced a version's
 // title and blocks. It changes, deliberately, whenever that code can produce a
 // different block selection, order, text, type or level, or another title from

@@ -230,24 +230,35 @@ describe('P8-01 what does not change', () => {
         null,
       ]);
     }
-    // a feed has no version, and AI writing only grounds on a current version
+    // a feed has no version, and AI writing only grounds on a current
+    // version of a web page (the kind is checked explicitly since P8-03)
     expect(
       CODE.get(
         'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.ai-writing.service.ts'
       )
     ).toMatch(
-      /if \(row\.latestVersionNumber < 1\) \{\s*throw sourceNotReady\(\);/
+      /if \(row\.kind !== 'url' \|\| row\.latestVersionNumber < 1\) \{\s*throw sourceNotReady\(\);/
     );
+    // the pickers (P8-03) list web pages only and offer captured ones only
     expect(
       CODE.get(
-        'apps/frontend/src/components/content-studio/content-studio.ai-writing.tsx'
+        'apps/frontend/src/components/content-studio/content-studio.source.picker.tsx'
       )
     ).toMatch(/source\.latestVersionNumber >= 1/);
+    // the evidence picker chooses through the same picker (P8-03), and the
+    // picker knows nothing of feeds either: it lists web pages
     expect(
       CODE.get(
         'apps/frontend/src/components/content-studio/content-studio.grounding.tsx'
       )
-    ).toMatch(/source\.latestVersionNumber > 0/);
+    ).toMatch(/<ContentStudioSourcePicker\s+mode="single"/);
+    const picker = CODE.get(
+      'apps/frontend/src/components/content-studio/content-studio.source.picker.tsx'
+    )!;
+    expect(picker.match(/feed|discover/gi)).toBeNull();
+    expect(picker).toContain(
+      "useContentStudioSources(false, page, 'url', search)"
+    );
   });
 
   it('P801-5/P801-6/P801-7 feed ingestion has no AI, scoring, topics or competitors', () => {
@@ -414,10 +425,19 @@ describe('P8-02 News Radar', () => {
 
   it('P802-2/P802-3/P802-4 no AI, package creation, network or feed capture in the Radar', () => {
     const { method, repository, handler, frontend } = radarCode();
-    const own = frontend.replace(
-      "from '@gitroom/frontend/components/content-studio/content-studio.package.list'",
-      ''
-    );
+    // P8-03 (P803-9): the Radar may open the New package dialog through the
+    // shared Use in content button, and nothing else of packages: no
+    // createPackage, no /packages, no AI
+    const own = frontend
+      .replace(
+        "from '@gitroom/frontend/components/content-studio/content-studio.package.list'",
+        ''
+      )
+      .replace(
+        "import { ContentStudioUseInContent } from '@gitroom/frontend/components/content-studio/content-studio.package.modal';",
+        ''
+      );
+    expect(frontend.match(/content-studio\.package\.modal/g)).toHaveLength(1);
     for (const part of [method, repository, handler, own]) {
       expect(part).not.toMatch(
         /AIConnection|AIExecution|AIOperation|AIUsage|ai[-.]writing|ai\.execution|openai|anthropic|embedding|\bscore|relevance|sentiment|\btopic|cluster|competitor|summari[sz]/i
@@ -472,9 +492,11 @@ describe('P8-02 News Radar', () => {
     const sources = CODE.get(
       'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.repository.ts'
     )!;
+    // one where for the list and its count (P8-03)
     expect(
       sources.match(/\.\.\.\(input\.kind \? \{ kind: input\.kind \} : \{\}\),/g)
-    ).toHaveLength(2);
+    ).toHaveLength(1);
+    expect(sources.match(/where: sourceListWhere\(input\)/g)).toHaveLength(2);
   });
 
   it('P802-9 exactly 143 routes: one new read route, GET /discoveries', () => {
@@ -512,6 +534,248 @@ describe('P8-02 News Radar', () => {
     // no search, selection, bulk action, capture-all or tabs in the Radar
     expect(frontend).not.toMatch(
       /type="search"|search=|checkbox|bulk|captureAll|Capture all|role="tablist"/i
+    );
+  });
+});
+
+// Research into content (P8-03): server search of the Source list, one
+// Source picker for AI writing and evidence, and "Use in content" from News
+// Radar and a web page's own page into the New package dialog. Sources are
+// still chosen by id only and read at their current version when AI writing
+// runs; nothing new is stored
+const FRONTEND = 'apps/frontend/src/components/content-studio';
+const HANDOFF = {
+  repository:
+    'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.repository.ts',
+  service:
+    'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.service.ts',
+  aiWriting:
+    'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.ai-writing.service.ts',
+  aiWritingDto:
+    'libraries/nestjs-libraries/src/dtos/content-studio/content-studio.ai-writing.dto.ts',
+  packageDto:
+    'libraries/nestjs-libraries/src/dtos/content-studio/content-studio.package.dto.ts',
+  grounding:
+    'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.grounding.service.ts',
+  picker: `${FRONTEND}/content-studio.source.picker.tsx`,
+  modal: `${FRONTEND}/content-studio.package.modal.tsx`,
+  workspace: `${FRONTEND}/content-studio.workspace.tsx`,
+  api: `${FRONTEND}/content-studio.api.ts`,
+};
+const handoff = (key: keyof typeof HANDOFF) => CODE.get(HANDOFF[key])!;
+
+describe('P8-03 research into content', () => {
+  it('P803-1/P803-8/P803-12 no schema change: no origin, selection, collection or research model', () => {
+    // the P8-01 schema, byte for byte (P802-5 pins the same hash)
+    expect(createHash('sha256').update(schema).digest('hex')).toBe(
+      '1889855c5215d44c33e67f86ac01ccb9a90cbff40699a74bf7607d2f62ea8d6e'
+    );
+    expect(schema).not.toMatch(
+      /model \w*(Research|Selection|Basket|Collection|Radar)\w* \{/
+    );
+    expect(fields('ContentStudioSource').map((f) => f.split(' ')[0])).toEqual([
+      'id',
+      'organizationId',
+      'kind',
+      'name',
+      'canonicalUrl',
+      'latestVersionNumber',
+      'archivedAt',
+      'createdById',
+      'createdAt',
+      'updatedAt',
+      'lastCapturedAt',
+      'organization',
+      'createdBy',
+      'versions',
+      'feedDiscoveries',
+      'discoveredBy',
+    ]);
+    expect(fields('ContentPackage').join('\n')).not.toMatch(
+      /research|source|discover|feed/i
+    );
+    // no origin, manual or curated filter anywhere a list is built
+    for (const file of [
+      HANDOFF.repository,
+      HANDOFF.service,
+      RADAR_BACKEND.dto,
+      HANDOFF.picker,
+      `${FRONTEND}/content-studio.sources.tsx`,
+      `${FRONTEND}/content-studio.sources.api.ts`,
+    ]) {
+      expect([file, CODE.get(file)!.match(/origin|manual|curated/gi)]).toEqual([
+        file,
+        null,
+      ]);
+    }
+    expect(handoff('repository')).not.toMatch(/discoveredBy:/);
+  });
+
+  it('P803-2/P803-6 no new route: GET /sources takes a search, nothing resolves a selection', () => {
+    const controller = CODE.get(
+      'apps/backend/src/api/routes/content-studio.controller.ts'
+    )!;
+    expect(
+      controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
+    ).toHaveLength(143);
+    // the routes of sources: the P8-02 ones, nothing to resolve or keep a
+    // selection with
+    expect(
+      Array.from(
+        controller.matchAll(
+          /@(Get|Post|Put|Patch|Delete)\('(\/sources[^']*)'\)/g
+        )
+      ).map((m) => `${m[1].toUpperCase()} ${m[2]}`)
+    ).toEqual([
+      'GET /sources',
+      'POST /sources',
+      'GET /sources/:id',
+      'PATCH /sources/:id',
+      'GET /sources/:id/versions',
+      'GET /sources/:id/versions/:versionId',
+      'GET /sources/:id/discoveries',
+      'POST /sources/:id/archive',
+      'POST /sources/:id/restore',
+      'POST /sources/:id/refresh',
+    ]);
+    expect(controller).not.toMatch(
+      /@(Get|Post|Put|Patch|Delete)\('[^']*(resolve-selection|selection|research|basket|collection)/i
+    );
+    expect(between(controller, "@Get('/sources')", '\n  }\n')).toMatch(
+      /listSources\(\{\s*organizationId: org\.id,\s*archived: query\.archived,\s*kind: query\.kind,\s*search: query\.search,\s*page: query\.page,\s*\}\)/
+    );
+  });
+
+  it('P803-3 the search is in one where for the list and its count, with the organization', () => {
+    const repository = handoff('repository');
+    const where = between(repository, 'const sourceListWhere', '});\n');
+    expect(where).toMatch(/organizationId: input\.organizationId,/);
+    expect(where).toMatch(
+      /OR: \[\s*\{\s*name: \{ contains: likeLiteral\(input\.search\), mode: 'insensitive' \},\s*\},\s*\{\s*canonicalUrl: \{\s*contains: likeLiteral\(input\.search\),\s*mode: 'insensitive',\s*\},\s*\},\s*\]/
+    );
+    // % _ and \ of the search are escaped for ILIKE: plain text, never a
+    // pattern (measured on PostgreSQL in P803PG6)
+    expect(repository).toContain(
+      "const likeLiteral = (text: string) => text.replace(/[\\\\%_]/g, '\\\\$&');"
+    );
+    expect(repository.match(/where: sourceListWhere\(input\)/g)).toHaveLength(
+      2
+    );
+    // Prisma only: no raw query, no pattern built by hand
+    for (const file of [HANDOFF.repository, HANDOFF.service]) {
+      expect(CODE.get(file)).not.toMatch(
+        /\$queryRaw|\$executeRaw|Prisma\.sql|ILIKE|LIKE '|new RegExp\(.*search|to_tsvector|similarity\(/i
+      );
+    }
+    // trimmed; blank is none; control text refused
+    const service = between(handoff('service'), 'private search(', '\n  }\n');
+    expect(service).toMatch(/CONTENT_STUDIO_SOURCE_SEARCH_MAX/);
+    expect(service).toMatch(/includes\('\\u0000'\)/);
+    expect(service).toMatch(/value\.trim\(\) \|\| undefined/);
+  });
+
+  it('P803-4/P803-5/P803-13 the pickers list web pages through the server, offer captured ones only and capture nothing', () => {
+    const picker = handoff('picker');
+    expect(picker).toContain(
+      "useContentStudioSources(false, page, 'url', search)"
+    );
+    expect(picker).toMatch(/isContentStudioSourceUsable\(source\)/);
+    expect(picker).not.toMatch(
+      /refresh|capture\(|captureSource|useContentStudioSourceActions|method:|\/versions|safeFetch|setInterval|refreshInterval/
+    );
+    for (const file of [
+      `${FRONTEND}/content-studio.ai-writing.tsx`,
+      `${FRONTEND}/content-studio.grounding.tsx`,
+    ]) {
+      expect([file, /useContentStudioSources\(/.test(CODE.get(file)!)]).toEqual(
+        [file, false]
+      );
+      expect(CODE.get(file)).toMatch(/<ContentStudioSourcePicker/);
+    }
+    // the server refuses anything but a captured web page, explicitly
+    expect(handoff('aiWriting')).toMatch(
+      /if \(row\.kind !== 'url' \|\| row\.latestVersionNumber < 1\) \{\s*throw sourceNotReady\(\);\s*\}\s*const version =/
+    );
+  });
+
+  it('P803-7/P803-14 AI writing still takes source ids only and reads the current version when it runs', () => {
+    const dto = handoff('aiWritingDto');
+    expect(dto).not.toMatch(
+      /versionId|versionNumber|contentHash|sourceHash|sourceVersion|blocks|sourceContent/
+    );
+    expect(dto).toMatch(
+      /@ArrayMaxSize\(CONTENT_STUDIO_AI_MAX_SOURCES\)\s*@ArrayUnique\(\)\s*@IsUUID\(undefined, \{ each: true \}\)\s*sourceIds\?: string\[\] \| null;/
+    );
+    const sources = between(
+      handoff('aiWriting'),
+      'private async sources(',
+      'return sources;'
+    );
+    expect(sources).toMatch(
+      /getVersionDetailByNumber\(\s*organizationId,\s*row\.id,\s*row\.latestVersionNumber\s*\)/
+    );
+    expect(sources.match(/getSourceForOrganization\(/g)).toHaveLength(1);
+    expect(sources.match(/getVersionDetailByNumber\(/g)).toHaveLength(1);
+    // evidence is checked against the exact versions it names
+    expect(handoff('grounding')).toMatch(
+      /getVersionsByIdsForOrganization\(\s*organizationId,\s*ids\s*\)/
+    );
+    expect(handoff('grounding')).not.toMatch(/latestVersionNumber/);
+  });
+
+  it('P803-9/P803-10 Use in content opens the New package dialog; the package is created as before', () => {
+    const modal = handoff('modal');
+    const action = modal.slice(
+      modal.indexOf('export const ContentStudioUseInContent')
+    );
+    expect(action).toMatch(/modals\.openModal\(/);
+    expect(action).not.toMatch(
+      /createPackage|\/packages|propose|\/ai\b|fetch|router\./
+    );
+    expect(action).toMatch(/isContentStudioSourceUsable\(source\)/);
+    // only the dialog's Create writes, with the body it always had
+    expect(modal.match(/createPackage\(/g)).toHaveLength(1);
+    const body = between(modal, 'createPackage({', '});');
+    expect(body).not.toMatch(/source|version|hash/i);
+    const create = between(handoff('api'), 'createPackage: async', 'return');
+    expect(create).not.toMatch(/source/i);
+    expect(
+      between(
+        handoff('packageDto'),
+        'export class CreateContentPackageDto',
+        '\n}\n'
+      ).match(/^\s+(\w+)\?:/gm)
+    ).toEqual(['  name?:', '  projectId?:']);
+    // the Radar opens the dialog through the shared action only
+    const { frontend } = radarCode();
+    expect(frontend).not.toMatch(/createPackage|\/packages|propose|AIWriting/);
+  });
+
+  it('P803-11 a link with sources opens no AI dialog and asks nothing of the AI', () => {
+    const workspace = handoff('workspace');
+    expect(workspace).toMatch(
+      /parseContentStudioResearchSourceIds\(researchSources\)/
+    );
+    // the ids reach the dialog only when the user opens one
+    expect(workspace).toMatch(
+      /initialSourceIds=\{researchSourceIds\}\s*\/>\s*\),\s*\}\);\s*\},\s*\[modals, generate, t, researchSourceIds\]/
+    );
+    const effects = workspace
+      .split('useEffect(')
+      .slice(1)
+      .map((part) => part.slice(0, part.indexOf('}, [')));
+    for (const effect of effects) {
+      expect(effect).not.toMatch(/researchSourceIds|openAIWriting|propose/);
+    }
+    // the parser: ids only, each once, at most five
+    expect(
+      between(
+        handoff('api'),
+        'export const parseContentStudioResearchSourceIds',
+        'return ids;'
+      )
+    ).toMatch(
+      /UUID\.test\(id\) && !ids\.includes\(id\)[\s\S]*RESEARCH_SOURCES_MAX/
     );
   });
 });

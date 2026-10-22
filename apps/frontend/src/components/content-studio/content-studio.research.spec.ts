@@ -548,11 +548,19 @@ describe('News Radar: surface', () => {
       '/content-studio/discoveries',
       '/content-studio/research',
     ]);
-    // the pager is the one shared from the package list
-    const own = radar.replace(
-      "from '@gitroom/frontend/components/content-studio/content-studio.package.list'",
-      ''
-    );
+    // the pager is the one shared from the package list; the one way into
+    // content (P8-03) is the shared Use in content button, which opens the
+    // New package dialog and creates nothing itself
+    const own = radar
+      .replace(
+        "from '@gitroom/frontend/components/content-studio/content-studio.package.list'",
+        ''
+      )
+      .replace(
+        "import { ContentStudioUseInContent } from '@gitroom/frontend/components/content-studio/content-studio.package.modal';",
+        ''
+      );
+    expect(radar.match(/content-studio\.package\.modal/g)).toHaveLength(1);
     expect(own).not.toMatch(
       /method:|refresh|capture\(|\/packages|package|\/ai\b|ai\.?connection|openai|anthropic|summar|dangerouslySetInnerHTML|innerHTML|window\.open|new Image|favicon|og:image|XMLHttpRequest|axios/i
     );

@@ -990,9 +990,10 @@ describe('Content Studio: routes and navigation', () => {
     const home = readFileSync(join(app, 'page.tsx'), 'utf8');
     const workspace = readFileSync(join(app, '[id]/page.tsx'), 'utf8');
     expect(home).toContain('return <ContentStudioHome />;');
-    // P5-06: with the exact version a review links to
-    expect(workspace).toContain(
-      '<ContentStudioWorkspace key={id} packageId={id} linkedRevisionId={linked} />'
+    // P5-06: with the exact version a review links to; P8-03: and the
+    // research sources a research link names
+    expect(workspace).toMatch(
+      /<ContentStudioWorkspace\s+key=\{id\}\s+packageId=\{id\}\s+linkedRevisionId=\{linked\}\s+researchSources=\{research\}\s+\/>/
     );
     expect(workspace).not.toMatch(/fetch|useSWR|Placeholder/);
     expect(

@@ -1,8 +1,8 @@
 'use client';
 
-import { FC, useCallback, useEffect, useRef, useState } from 'react';
+import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@gitroom/react/form/button';
 import { useToaster } from '@gitroom/react/toaster/toaster';
 import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
@@ -15,6 +15,8 @@ import {
   ContentStudioMediaPreview,
   ContentStudioPackageDetail,
   ContentStudioRequestError,
+  parseContentStudioResearchSourceIds,
+  RESEARCH_SOURCES_PARAM,
   useContentStudioPackage,
   useContentStudioWorkspaceApi,
 } from '@gitroom/frontend/components/content-studio/content-studio.api';
@@ -38,6 +40,7 @@ import {
   isContentStudioAIProposalCurrent,
 } from '@gitroom/frontend/components/content-studio/content-studio.ai-proposal';
 import { ContentStudioGroundingPanel } from '@gitroom/frontend/components/content-studio/content-studio.grounding';
+import { ContentStudioResearchNotice } from '@gitroom/frontend/components/content-studio/content-studio.source.picker';
 import { upgradeContentPackageDraftToV2 } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 import {
   contentStudioLinkedRevisionId,
@@ -146,13 +149,31 @@ interface PackageMeta {
 // server decides for exactly the revision handed off, and the editor never
 // reads the policy: a refusal names that revision so its review can be
 // opened, and a saved version the server says is approved can be used in a
-// post from the history
+// post from the history. Research sources a link names (P8-03, from News
+// Radar or a source) are shown and start out chosen in every AI writing
+// dialog opened here; nothing is opened or asked of the AI by the link itself
 export const ContentStudioWorkspace: FC<{
   packageId: string;
   linkedRevisionId?: string;
-}> = ({ packageId, linkedRevisionId }) => {
+  researchSources?: string;
+}> = ({ packageId, linkedRevisionId, researchSources }) => {
   const t = useT();
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const researchSourceIds = useMemo(
+    () => parseContentStudioResearchSourceIds(researchSources),
+    [researchSources]
+  );
+  // forgets the research sources, keeping the rest of the link
+  const clearResearch = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete(RESEARCH_SOURCES_PARAM);
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, {
+      scroll: false,
+    });
+  }, [router, pathname, searchParams]);
   const toaster = useToaster();
   const modals = useModals();
   const api = useContentStudioWorkspaceApi();
@@ -565,11 +586,12 @@ export const ContentStudioWorkspace: FC<{
             target={target}
             onGenerate={generate}
             close={close}
+            initialSourceIds={researchSourceIds}
           />
         ),
       });
     },
-    [modals, generate, t]
+    [modals, generate, t, researchSourceIds]
   );
 
   // Puts the suggested texts into the draft and saves it the usual way, in
@@ -729,6 +751,14 @@ export const ContentStudioWorkspace: FC<{
           </Button>
         </div>
       </div>
+
+      {!!researchSourceIds.length && (
+        <ContentStudioResearchNotice
+          key={researchSourceIds.join(',')}
+          sourceIds={researchSourceIds}
+          onClear={clearResearch}
+        />
+      )}
 
       {!!approvalNeeded && (
         <div

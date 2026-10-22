@@ -652,6 +652,7 @@ export class ContentStudioController {
       organizationId: org.id,
       archived: query.archived,
       kind: query.kind,
+      search: query.search,
       page: query.page,
     });
   }

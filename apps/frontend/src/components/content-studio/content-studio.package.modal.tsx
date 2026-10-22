@@ -7,20 +7,26 @@ import { Input } from '@gitroom/react/form/input';
 import { Select } from '@gitroom/react/form/select';
 import { useToaster } from '@gitroom/react/toaster/toaster';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
+import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import {
   contentStudioErrorMessage,
   PACKAGE_NAME_MAX,
   packagePath,
+  packageResearchPath,
   useContentStudioActions,
   useContentStudioProjects,
 } from '@gitroom/frontend/components/content-studio/content-studio.api';
+import { isContentStudioSourceUsable } from '@gitroom/frontend/components/content-studio/content-studio.sources.api';
 
 // A new package, optionally in an active project. A blank name is left to the
-// server ("Untitled package"). On success the package opens
+// server ("Untitled package"). On success the package opens; with research
+// sources (P8-03) it opens with them ready for AI writing, named in its URL
+// only: the package itself is created exactly as without them
 export const CreateContentStudioPackageModal: FC<{
   close: () => void;
   projectId?: string;
-}> = ({ close, projectId }) => {
+  sourceIds?: string[];
+}> = ({ close, projectId, sourceIds }) => {
   const t = useT();
   const router = useRouter();
   const toaster = useToaster();
@@ -53,14 +59,26 @@ export const CreateContentStudioPackageModal: FC<{
             : undefined,
         });
         close();
-        router.push(packagePath(created.id));
+        router.push(
+          sourceIds?.length
+            ? packageResearchPath(created.id, sourceIds)
+            : packagePath(created.id)
+        );
       } catch (err) {
         submitting.current = false;
         setSaving(false);
         toaster.show(contentStudioErrorMessage(t, err), 'warning');
       }
     },
-    [name, selectedProject, activeProjects, createPackage, close, router]
+    [
+      name,
+      selectedProject,
+      activeProjects,
+      createPackage,
+      close,
+      router,
+      sourceIds,
+    ]
   );
 
   return (
@@ -102,5 +120,44 @@ export const CreateContentStudioPackageModal: FC<{
         </Button>
       </div>
     </form>
+  );
+};
+
+// Research into content (P8-03), for a live web page with a captured version:
+// opens the New package dialog with the page ready for AI writing. Nothing is
+// created until the dialog's Create, and nothing is asked of the AI: the
+// version used is the one AI writing reads when Generate is clicked
+export const ContentStudioUseInContent: FC<{
+  source: {
+    id: string;
+    kind?: string;
+    latestVersionNumber: number;
+    archivedAt: string | null;
+  };
+}> = ({ source }) => {
+  const t = useT();
+  const modals = useModals();
+  const open = useCallback(
+    () =>
+      modals.openModal({
+        title: t('content_studio_new_package', 'New package'),
+        children: (close: () => void) => (
+          <CreateContentStudioPackageModal
+            close={close}
+            sourceIds={[source.id]}
+          />
+        ),
+      }),
+    [modals, source.id, t]
+  );
+  if (!isContentStudioSourceUsable(source)) {
+    return null;
+  }
+  return (
+    <div>
+      <Button secondary onClick={open}>
+        {t('content_studio_use_in_content', 'Use in content')}
+      </Button>
+    </div>
   );
 };

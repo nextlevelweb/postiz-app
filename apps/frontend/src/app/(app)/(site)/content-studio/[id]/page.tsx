@@ -18,14 +18,24 @@ export default async function Index(params: {
   }>;
   searchParams: Promise<{
     revision?: string | string[];
+    sources?: string | string[];
   }>;
 }) {
   const { id } = await params.params;
   // the exact revision a review links to (P5-06), checked by the workspace
   const { revision } = await params.searchParams;
   const linked = typeof revision === 'string' ? revision : undefined;
+  // the research sources a research link names (P8-03), as the link's text:
+  // the workspace keeps only ids and the server decides what each one is
+  const { sources } = await params.searchParams;
+  const research = typeof sources === 'string' ? sources : undefined;
   // a new package is a new editor, never the previous one's state
   return (
-    <ContentStudioWorkspace key={id} packageId={id} linkedRevisionId={linked} />
+    <ContentStudioWorkspace
+      key={id}
+      packageId={id}
+      linkedRevisionId={linked}
+      researchSources={research}
+    />
   );
 }

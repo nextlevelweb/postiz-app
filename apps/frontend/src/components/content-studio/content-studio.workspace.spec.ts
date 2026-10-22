@@ -1285,9 +1285,13 @@ describe('workspace: source surface', () => {
       join(__dirname, '../../app/(app)/(site)/content-studio/[id]/page.tsx'),
       'utf8'
     );
-    // P5-06: with the exact version a review links to
+    // P5-06: with the exact version a review links to; P8-03: and the
+    // research sources a research link names, as the link's text only
+    expect(page).toMatch(
+      /<ContentStudioWorkspace\s+key=\{id\}\s+packageId=\{id\}\s+linkedRevisionId=\{linked\}\s+researchSources=\{research\}\s+\/>/
+    );
     expect(page).toContain(
-      '<ContentStudioWorkspace key={id} packageId={id} linkedRevisionId={linked} />'
+      "const research = typeof sources === 'string' ? sources : undefined;"
     );
     expect(page).not.toMatch(/fetch|Placeholder/);
   });

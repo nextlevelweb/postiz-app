@@ -932,7 +932,9 @@ export class ContentStudioAIWritingService {
   // reads as missing), live and ingested, at its current version: the blocks
   // are used only once they prove to be exactly what was stored. Who created
   // the source does not matter. A source without its current version is a
-  // broken store, never "not ingested"
+  // broken store, never "not ingested". Only a web page has versions: a feed
+  // (P8-01) finds pages and is never source material itself, whatever its
+  // version count says (P8-03)
   private async sources(organizationId: string, sourceIds: string[]) {
     const sources: ResolvedSource[] = [];
     for (const sourceId of sourceIds) {
@@ -947,7 +949,7 @@ export class ContentStudioAIWritingService {
       if (row.archivedAt) {
         throw sourceArchived();
       }
-      if (row.latestVersionNumber < 1) {
+      if (row.kind !== 'url' || row.latestVersionNumber < 1) {
         throw sourceNotReady();
       }
       const version =

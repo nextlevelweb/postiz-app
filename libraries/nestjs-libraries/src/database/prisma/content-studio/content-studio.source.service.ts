@@ -6,6 +6,7 @@ import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-librarie
 import {
   CONTENT_STUDIO_DISCOVERY_DEFAULT_WINDOW,
   CONTENT_STUDIO_SOURCE_NAME_MAX,
+  CONTENT_STUDIO_SOURCE_SEARCH_MAX,
   ContentStudioDiscoveryCaptureState,
   ContentStudioDiscoveryWindow,
   isContentStudioSourceKind,
@@ -50,6 +51,11 @@ const integrityError = () =>
       code: 'CS_SOURCE_INTEGRITY_ERROR',
     },
     500
+  );
+const searchInvalid = () =>
+  new HttpException(
+    { msg: 'The search is invalid.', code: 'CS_SOURCE_SEARCH_INVALID' },
+    400
   );
 const kindUnsupported = () =>
   new HttpException(
@@ -163,12 +169,16 @@ export class ContentStudioSourceService {
     organizationId: string;
     archived: boolean;
     kind?: string;
+    search?: unknown;
     page: number;
   }) {
+    const search = this.search(input.search);
     const filter = {
       organizationId: input.organizationId,
       archived: input.archived,
       kind: input.kind,
+      // without a search, exactly the P8-02 filter
+      ...(search ? { search } : {}),
     };
     const [rows, count] = await Promise.all([
       this._contentStudioSourceRepository.listSourcesForOrganization({
@@ -446,6 +456,22 @@ export class ContentStudioSourceService {
   }
 
   // Trimmed, 1-200 characters, no NUL or unpaired surrogate
+  // Trimmed; blank is none. Plain text matched as it is: never a pattern
+  private search(value: unknown) {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    if (
+      typeof value !== 'string' ||
+      value.length > CONTENT_STUDIO_SOURCE_SEARCH_MAX ||
+      value.includes('\u0000') ||
+      UNPAIRED_SURROGATE.test(value)
+    ) {
+      throw searchInvalid();
+    }
+    return value.trim() || undefined;
+  }
+
   private sourceName(name: unknown) {
     const trimmed = typeof name === 'string' ? name.trim() : '';
     if (

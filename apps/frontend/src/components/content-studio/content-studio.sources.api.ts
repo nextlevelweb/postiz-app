@@ -134,19 +134,41 @@ export interface ContentStudioSourceDiscoveryList {
   results: ContentStudioSourceDiscovery[];
 }
 
-// The limit the API enforces
+// The limits the API enforces
 export const SOURCE_NAME_MAX = 200;
+export const SOURCE_SEARCH_MAX = 100;
+
+// A source that can be source material for AI writing (P8-03): a live web
+// page with a captured version. The server checks it again when it is used
+export const isContentStudioSourceUsable = (source: {
+  kind?: string;
+  latestVersionNumber: number;
+  archivedAt: string | null;
+}) =>
+  (source.kind === undefined || source.kind === 'url') &&
+  !source.archivedAt &&
+  source.latestVersionNumber >= 1;
+
+// The host of a stored page URL, read here: nothing is stored or fetched
+export const contentStudioSourceHost = (url: string) => {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+};
 
 export const SOURCES_PATH = '/content-studio/sources';
 
 export const sourcesListPath = (
   archived: boolean,
   page: number,
-  kind?: ContentStudioSourceKind
+  kind?: ContentStudioSourceKind,
+  search?: string
 ) =>
   `${SOURCES_PATH}?page=${page}&archived=${archived}${
     kind ? `&kind=${kind}` : ''
-  }`;
+  }${search?.trim() ? `&search=${encodeURIComponent(search.trim())}` : ''}`;
 export const sourcePath = (id: string) =>
   `${SOURCES_PATH}/${encodeURIComponent(id)}`;
 export const sourceVersionsPath = (id: string, page: number) =>
@@ -156,18 +178,25 @@ export const sourceDiscoveriesPath = (id: string, page: number) =>
 const sourceVersionPath = (id: string, versionId: string) =>
   `${sourcePath(id)}/versions/${encodeURIComponent(versionId)}`;
 
-// One summary page; of one kind when named
+// One summary page; of one kind when named, and only the sources whose name
+// or URL holds the search when there is one (P8-03): searched by the server,
+// a page at a time
 export const useContentStudioSources = (
   archived: boolean,
   page: number,
-  kind?: ContentStudioSourceKind
+  kind?: ContentStudioSourceKind,
+  search?: string
 ) => {
   const fetch = useFetch();
   const load = useCallback(
     (path: string) => request<ContentStudioSourceList>(fetch, path),
     [fetch]
   );
-  return useSWR(sourcesListPath(archived, page, kind), load, swrOptions);
+  return useSWR(
+    sourcesListPath(archived, page, kind, search),
+    load,
+    swrOptions
+  );
 };
 
 export const useContentStudioSource = (id: string) => {

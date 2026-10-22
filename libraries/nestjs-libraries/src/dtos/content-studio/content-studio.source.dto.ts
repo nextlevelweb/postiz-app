@@ -15,6 +15,7 @@ import {
   CONTENT_STUDIO_DISCOVERY_WINDOWS,
   CONTENT_STUDIO_SOURCE_KINDS,
   CONTENT_STUDIO_SOURCE_NAME_MAX,
+  CONTENT_STUDIO_SOURCE_SEARCH_MAX,
   ContentStudioDiscoveryCaptureState,
   ContentStudioDiscoveryWindow,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
@@ -44,6 +45,13 @@ export class ListContentStudioSourcesDto {
   @IsOptional()
   @IsIn(CONTENT_STUDIO_SOURCE_KINDS)
   kind?: string;
+
+  // Part of the name or the URL (P8-03), any case; blank is none. The
+  // service trims it and refuses control text
+  @IsOptional()
+  @IsString()
+  @MaxLength(CONTENT_STUDIO_SOURCE_SEARCH_MAX)
+  search?: string;
 }
 
 // The kind and the URL are checked and canonicalized by the service, not here.

@@ -245,6 +245,27 @@ describe('ContentStudioController source routes', () => {
     });
   });
 
+  it('S9/P803 passes the search as sent, still for the request organization; the service trims it', async () => {
+    const { sources, controller } = setup();
+    await controller.listSources(
+      ORG,
+      Object.assign(new ListContentStudioSourcesDto(), {
+        page: 3,
+        archived: false,
+        kind: 'url',
+        search: '  Weekly ',
+        organizationId: 'org-b',
+      })
+    );
+    expect(sources.listSources.mock.calls[0][0]).toStrictEqual({
+      organizationId: 'org-a',
+      archived: false,
+      kind: 'url',
+      search: '  Weekly ',
+      page: 3,
+    });
+  });
+
   it('SRC2 creates for the request organization and user with kind, name and url only', async () => {
     const { sources, controller } = setup();
     const body = withExtras(new CreateContentStudioSourceDto());
@@ -509,6 +530,40 @@ describe('Source DTO validation', () => {
       expect({
         ...(await run(ListContentStudioSourcesDto, { kind }, 'query')),
       }).toEqual({ page: 1, archived: false, kind });
+    }
+    // P8-03: plain text of at most 100 characters; the service trims it and
+    // refuses control text
+    expect({
+      ...(await run(
+        ListContentStudioSourcesDto,
+        { search: 'x'.repeat(100), kind: 'url', page: '2' },
+        'query'
+      )),
+    }).toEqual({
+      page: 2,
+      archived: false,
+      kind: 'url',
+      search: 'x'.repeat(100),
+    });
+    expect({
+      ...(await run(ListContentStudioSourcesDto, { search: '%_\\' }, 'query')),
+    }).toEqual({ page: 1, archived: false, search: '%_\\' });
+    for (const query of [
+      // S8: too long
+      { search: 'x'.repeat(101) },
+      // S9: not one string
+      { search: ['a', 'b'] },
+      { search: { contains: 'a' } },
+      // S11: no other field
+      { q: 'a' },
+      { name: 'a' },
+      { orderBy: 'name' },
+      { mode: 'insensitive' },
+      { origin: 'manual' },
+      { discovered: 'true' },
+      { captured: 'true' },
+    ]) {
+      await rejected(ListContentStudioSourcesDto, query, 'query');
     }
     expect({
       ...(await run(

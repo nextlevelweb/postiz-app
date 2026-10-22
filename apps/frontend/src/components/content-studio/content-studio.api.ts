@@ -93,6 +93,42 @@ export const packagesPath = (filters: ContentStudioFilters) => {
 export const packagePath = (id: string) =>
   `/content-studio/${encodeURIComponent(id)}`;
 
+// Research into content (P8-03): the sources a package link names for AI
+// writing, as `sources=id1,id2` in the order given. As many as one AI writing
+// request can use (CONTENT_STUDIO_AI_MAX_SOURCES)
+export const RESEARCH_SOURCES_PARAM = 'sources';
+export const RESEARCH_SOURCES_MAX = 5;
+
+// The source ids of the link, in its order: only ids (anything else is
+// dropped), each once, at most five. They are names to look up, nothing more:
+// the server decides what each one is
+export const parseContentStudioResearchSourceIds = (value: unknown) => {
+  if (typeof value !== 'string') {
+    return [];
+  }
+  const ids: string[] = [];
+  for (const part of value.split(',')) {
+    const id = part.trim().toLowerCase();
+    if (UUID.test(id) && !ids.includes(id)) {
+      ids.push(id);
+    }
+    if (ids.length === RESEARCH_SOURCES_MAX) {
+      break;
+    }
+  }
+  return ids;
+};
+
+// A package with research sources ready for AI writing
+export const packageResearchPath = (packageId: string, sourceIds: string[]) => {
+  const ids = parseContentStudioResearchSourceIds(sourceIds.join(','));
+  return ids.length
+    ? `${packagePath(packageId)}?${new URLSearchParams({
+        [RESEARCH_SOURCES_PARAM]: ids.join(','),
+      }).toString()}`
+    : packagePath(packageId);
+};
+
 export const swrOptions = {
   revalidateOnFocus: false,
   revalidateOnReconnect: false,
