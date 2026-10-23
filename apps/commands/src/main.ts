@@ -11,6 +11,9 @@ async function bootstrap() {
   try {
     await app.select(CommandModule).get(CommandService).exec();
     await app.close();
+    // the Redis client and the Temporal worker connection outlive close(),
+    // so leave once the command is done, with the exit code it set
+    process.exit();
   } catch (error) {
     console.error(error);
     await app.close();
