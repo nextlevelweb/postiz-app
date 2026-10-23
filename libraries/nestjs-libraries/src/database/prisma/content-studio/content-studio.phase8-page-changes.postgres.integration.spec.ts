@@ -665,10 +665,11 @@ describe('Organization Changes on PostgreSQL', () => {
   const changed = async (
     organizationId: string,
     ago: number,
-    over: Partial<Prisma.ContentStudioSourceUncheckedCreateInput> = {}
+    over: Partial<Prisma.ContentStudioSourceUncheckedCreateInput> = {},
+    now = Date.now()
   ) => {
     const id = await createSource(organizationId, page(randomUUID()), over);
-    const at = new Date(Date.now() - ago);
+    const at = new Date(now - ago);
     await insertVersions(
       id,
       [
@@ -712,7 +713,11 @@ describe('Organization Changes on PostgreSQL', () => {
     }
     // two at the same time: by id
     const tieAt = 30 * 60_000 + 30_000;
-    const ties = [await changed(ORG_A, tieAt), await changed(ORG_A, tieAt)];
+    const tieNow = Date.now();
+    const ties = [
+      await changed(ORG_A, tieAt, {}, tieNow),
+      await changed(ORG_A, tieAt, {}, tieNow),
+    ];
     const old = await changed(ORG_A, 10 * DAY, {
       archivedAt: new Date(),
     });
