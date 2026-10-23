@@ -5,22 +5,86 @@ permissions:
   contents: read
   packages: write
 
+# Images are published only for NLW tags. An exact image tag never moves
+# :latest unless it is a stable nlw-vX.Y.Z release; pre-release and snapshot
+# tags (nlw-v1.1.0-rc.1, nlw-pre-...) publish their exact tag only. Upstream
+# tags (v2.25.0) never build here
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing nlw-* git tag to build and publish (no "/")'
+        required: true
+        type: string
+      latest:
+        description: 'Also move :latest (stable nlw-vX.Y.Z tags only)'
+        required: false
+        type: boolean
+        default: false
   push:
     tags:
-      - '*'
+      - 'nlw-*'
 
 jobs:
   build-containers-common:
     runs-on: ubuntu-latest
     outputs:
       containerver: ${{ steps.getcontainerver.outputs.containerver }}
+      latest: ${{ steps.getcontainerver.outputs.latest }}
+      sha: ${{ steps.getsha.outputs.sha }}
     steps:
       - name: Get Container Version
         id: getcontainerver
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_LATEST: ${{ inputs.latest }}
+        shell: bash
         run: |
-          echo "containerver=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            containerver="$INPUT_TAG"
+          else
+            containerver="$REF_NAME"
+          fi
+
+          # an nlw-* name that is also a valid Docker tag, so never a branch
+          if ! [[ "$containerver" =~ ^nlw-[A-Za-z0-9_.-]{1,124}$ ]]; then
+            echo "::error::Image tag '$containerver' must start with nlw- and be a valid Docker tag"
+            exit 1
+          fi
+
+          stable=false
+          if [[ "$containerver" =~ ^nlw-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            stable=true
+          fi
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            latest="$INPUT_LATEST"
+            if [ "$latest" = "true" ] && [ "$stable" != "true" ]; then
+              echo "::error::Only a stable nlw-vX.Y.Z tag can move :latest"
+              exit 1
+            fi
+          else
+            latest="$stable"
+          fi
+          if [ "$latest" != "true" ]; then
+            latest=false
+          fi
+
+          echo "containerver=$containerver" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+
+      # the image is always built from the git tag it is named after
+      - name: Checkout Tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.getcontainerver.outputs.containerver }}
+
+      - name: Get Tag Commit
+        id: getsha
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   build-containers:
     needs: build-containers-common
@@ -36,6 +100,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.build-containers-common.outputs.sha }}
           fetch-depth: 0
 
       - name: Set up Docker Buildx
@@ -51,12 +116,12 @@ jobs:
       - name: Build and Push Image
         env:
           CONTAINERVER: ${{ needs.build-containers-common.outputs.containerver }}
-          NEXT_PUBLIC_VERSION: ${{ github.ref_name }}
+          NEXT_PUBLIC_VERSION: ${{ needs.build-containers-common.outputs.containerver }}
         run: |
           docker buildx build --platform linux/${{ matrix.arch }} \
             -f Dockerfile.dev \
-            -t ghcr.io/nextlevelweb/postiz-app:${{ env.CONTAINERVER }}-${{ matrix.arch }} \
-            --build-arg NEXT_PUBLIC_VERSION=${{ env.NEXT_PUBLIC_VERSION }} \
+            -t "ghcr.io/nextlevelweb/postiz-app:$CONTAINERVER-${{ matrix.arch }}" \
+            --build-arg NEXT_PUBLIC_VERSION="$NEXT_PUBLIC_VERSION" \
             --build-arg NEXT_PUBLIC_BRAND_NAME="${{ vars.NEXT_PUBLIC_BRAND_NAME }}" \
             --build-arg NEXT_PUBLIC_BRAND_SHORT_NAME="${{ vars.NEXT_PUBLIC_BRAND_SHORT_NAME }}" \
             --build-arg NEXT_PUBLIC_BRAND_LOGO_URL="${{ vars.NEXT_PUBLIC_BRAND_LOGO_URL }}" \
@@ -79,7 +144,7 @@ jobs:
             --pull \
             --no-cache \
             --provenance=false --sbom=false \
-            --output "type=registry,name=ghcr.io/nextlevelweb/postiz-app:${{ env.CONTAINERVER }}-${{ matrix.arch }}" .
+            --output "type=registry,name=ghcr.io/nextlevelweb/postiz-app:$CONTAINERVER-${{ matrix.arch }}" .
 
   build-container-manifest:
     needs: [build-containers, build-containers-common]
@@ -98,29 +163,39 @@ jobs:
         run: |
           # Verify the architecture images
           echo "Verifying AMD64 image:"
-          docker buildx imagetools inspect ghcr.io/nextlevelweb/postiz-app:${{ env.CONTAINERVER }}-amd64
-          
+          docker buildx imagetools inspect "ghcr.io/nextlevelweb/postiz-app:$CONTAINERVER-amd64"
+
           echo "Verifying ARM64 image:"
-          docker buildx imagetools inspect ghcr.io/nextlevelweb/postiz-app:${{ env.CONTAINERVER }}-arm64
-          
-          # Try to remove any existing manifests first
-          docker manifest rm ghcr.io/nextlevelweb/postiz-app:${{ env.CONTAINERVER }} || true
-          docker manifest rm ghcr.io/nextlevelweb/postiz-app:latest || true
-          
+          docker buildx imagetools inspect "ghcr.io/nextlevelweb/postiz-app:$CONTAINERVER-arm64"
+
+          # Try to remove any existing manifest first
+          docker manifest rm "ghcr.io/nextlevelweb/postiz-app:$CONTAINERVER" || true
+
           # Create and push the version-specific manifest
-          docker manifest create ghcr.io/nextlevelweb/postiz-app:${{ env.CONTAINERVER }} \
-            --amend ghcr.io/nextlevelweb/postiz-app:${{ env.CONTAINERVER }}-amd64 \
-            --amend ghcr.io/nextlevelweb/postiz-app:${{ env.CONTAINERVER }}-arm64
+          docker manifest create "ghcr.io/nextlevelweb/postiz-app:$CONTAINERVER" \
+            --amend "ghcr.io/nextlevelweb/postiz-app:$CONTAINERVER-amd64" \
+            --amend "ghcr.io/nextlevelweb/postiz-app:$CONTAINERVER-arm64"
 
-          docker manifest push ghcr.io/nextlevelweb/postiz-app:${{ env.CONTAINERVER }}
+          docker manifest push "ghcr.io/nextlevelweb/postiz-app:$CONTAINERVER"
 
-          # Create and push the latest manifest
+      - name: Verify Manifest
+        env:
+          CONTAINERVER: ${{ needs.build-containers-common.outputs.containerver }}
+        run: |
+          docker manifest inspect "ghcr.io/nextlevelweb/postiz-app:$CONTAINERVER"
+
+      # only a stable nlw-vX.Y.Z release moves :latest, after its own manifest
+      - name: Create Latest Manifest
+        if: needs.build-containers-common.outputs.latest == 'true'
+        env:
+          CONTAINERVER: ${{ needs.build-containers-common.outputs.containerver }}
+        run: |
+          docker manifest rm ghcr.io/nextlevelweb/postiz-app:latest || true
+
           docker manifest create ghcr.io/nextlevelweb/postiz-app:latest \
-            --amend ghcr.io/nextlevelweb/postiz-app:${{ env.CONTAINERVER }}-amd64 \
-            --amend ghcr.io/nextlevelweb/postiz-app:${{ env.CONTAINERVER }}-arm64
+            --amend "ghcr.io/nextlevelweb/postiz-app:$CONTAINERVER-amd64" \
+            --amend "ghcr.io/nextlevelweb/postiz-app:$CONTAINERVER-arm64"
 
           docker manifest push ghcr.io/nextlevelweb/postiz-app:latest
 
-      - name: Verify Manifest
-        run: |
           docker manifest inspect ghcr.io/nextlevelweb/postiz-app:latest

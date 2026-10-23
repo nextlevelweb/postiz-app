@@ -472,7 +472,7 @@ export const AgencyComponent = () => {
   }
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col px-[4px] sm:px-0">
       <div
         className="rounded-[10px] p-[20px] mb-[20px] text-white relative overflow-hidden"
         style={{

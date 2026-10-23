@@ -1444,6 +1444,7 @@ describe('P8-04B1-R1 the command runtime', () => {
       'pm2',
       'pm2-run',
       'prisma-db-push',
+      'prisma-db-push-on-start',
       'start:prod:backend',
       'start:prod:orchestrator',
       'start:prod:frontend',

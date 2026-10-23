@@ -21,3 +21,11 @@ dist
 .git
 .github
 reports
+
+# Local env files hold secrets: never in the build context, so never in an
+# image layer, at the root or in an app. The tracked example stays available
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
