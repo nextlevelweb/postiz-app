@@ -180,6 +180,7 @@ beforeEach(() => {
       publishedAt: T1,
       firstSeenAt: T2,
       lastSeenAt: T2,
+      changedSinceFound: false,
       feed: { id: FEED_A, name: 'Daily News' },
       source: {
         id: PAGE_1,
@@ -187,6 +188,7 @@ beforeEach(() => {
         canonicalUrl: 'https://www.daily.test/2026/launch',
         latestVersionNumber: 3,
         archivedAt: null,
+        lastPageChangeAt: null,
       },
     },
     {
@@ -195,6 +197,7 @@ beforeEach(() => {
       publishedAt: null,
       firstSeenAt: T1,
       lastSeenAt: T2,
+      changedSinceFound: false,
       feed: { id: FEED_B, name: 'Tech Wire' },
       source: {
         id: PAGE_2,
@@ -202,6 +205,7 @@ beforeEach(() => {
         canonicalUrl: 'https://wire.test/story',
         latestVersionNumber: 0,
         archivedAt: null,
+        lastPageChangeAt: null,
       },
     },
     {
@@ -210,6 +214,7 @@ beforeEach(() => {
       publishedAt: T1,
       firstSeenAt: T1,
       lastSeenAt: T1,
+      changedSinceFound: false,
       feed: { id: FEED_A, name: 'Daily News' },
       source: {
         id: PAGE_3,
@@ -217,6 +222,7 @@ beforeEach(() => {
         canonicalUrl: 'https://daily.test/old',
         latestVersionNumber: 0,
         archivedAt: T2,
+        lastPageChangeAt: null,
       },
     },
   ];
@@ -427,6 +433,91 @@ describe('News Radar: rows', () => {
             .textContent
       )
     ).toEqual(['Daily News', 'Tech Wire']);
+  });
+});
+
+// P8-04B2: Changed is the server's answer for the row, shown as it is
+describe('News Radar: Changed', () => {
+  const T3 = '2026-10-22T07:15:00.000Z';
+  const changedRow = (
+    row: Record<string, unknown>,
+    over: Record<string, unknown>
+  ) => ({
+    ...row,
+    ...over,
+    source: {
+      ...(row.source as Record<string, unknown>),
+      lastPageChangeAt: T3,
+    },
+  });
+
+  it('FEB2-1 a row the server calls changed says Changed, with when; one it does not says neither', async () => {
+    rows = [
+      changedRow(rows[0], { changedSinceFound: true }),
+      // the page changed, but not since this feed found it
+      changedRow(rows[1], { changedSinceFound: false }),
+    ];
+    await renderRadar();
+    const changed = rowOf(HTML_TITLE);
+    expect(within(changed).getByText('Changed')).toBeTruthy();
+    expect(within(changed).getByText(`Changed ${date(T3)}`)).toBeTruthy();
+    expect(within(changed).getByText('Captured')).toBeTruthy();
+    const unchanged = rowOf('wire.test');
+    expect(within(unchanged).queryByText(/Changed/)).toBeNull();
+    expect(
+      within(unchanged).queryByText(date(T3), { exact: false })
+    ).toBeNull();
+    expect(within(unchanged).getByText('Not captured')).toBeTruthy();
+    // a fact, in one word: never new, updated or important
+    expect(document.body.textContent).not.toMatch(
+      /\bNew\b|Updated|Important|Significant/
+    );
+  });
+
+  it('FEB2-2 an archived page that changed is Archived and Changed, beside its capture state', async () => {
+    rows = [changedRow(rows[2], { changedSinceFound: true })];
+    await renderRadar();
+    const item = rowOf('Old story');
+    expect(
+      Array.from(item.querySelectorAll('span.rounded-full')).map(
+        (badge) => badge.textContent
+      )
+    ).toEqual(['Not captured', 'Archived', 'Changed']);
+    expect(within(item).getByText(`Changed ${date(T3)}`)).toBeTruthy();
+  });
+
+  it('FEB2-3 a changed row still opens its page source, not a change', async () => {
+    rows = [changedRow(rows[0], { changedSinceFound: true })];
+    await renderRadar();
+    const hrefs = within(rowOf(HTML_TITLE))
+      .getAllByRole('link')
+      .map((link) => link.getAttribute('href'));
+    expect(hrefs).toEqual([
+      `/content-studio/sources/${PAGE_1}`,
+      `/content-studio/sources/${FEED_A}`,
+    ]);
+    expect(hrefs.join(' ')).not.toMatch(/change=|source-changes/);
+  });
+
+  it('FEB2-4 the same page found by two feeds can be Changed for one and not the other', async () => {
+    rows = [
+      changedRow(rows[0], { id: 'a', changedSinceFound: true }),
+      changedRow(rows[0], {
+        id: 'b',
+        changedSinceFound: false,
+        feed: { id: FEED_B, name: 'Tech Wire' },
+      }),
+    ];
+    await renderRadar();
+    expect(
+      screen
+        .getAllByRole('link', { name: HTML_TITLE })
+        .map(
+          (link) =>
+            within(link.closest('li') as HTMLElement).queryAllByText('Changed')
+              .length
+        )
+    ).toEqual([1, 0]);
   });
 });
 

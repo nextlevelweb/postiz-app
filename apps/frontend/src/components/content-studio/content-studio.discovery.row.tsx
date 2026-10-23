@@ -25,7 +25,9 @@ const Badge: FC<{ children: ReactNode }> = ({ children }) => (
 // page's own source. Captured means the page has a version; a page without
 // one is not captured, never "failed": it may not have been fetched yet, or
 // may be archived. News Radar adds the feed that found it. A live captured
-// page can be used in content (P8-03): that only opens the New package dialog
+// page can be used in content (P8-03): that only opens the New package dialog.
+// Changed (P8-04B2), with when, only when the server says the page changed
+// after this feed found it: the browser compares no dates
 export const ContentStudioDiscoveryRow: FC<{
   discovery: ContentStudioSourceDiscovery;
   provenance?: ReactNode;
@@ -61,11 +63,20 @@ export const ContentStudioDiscoveryRow: FC<{
             {formatDate(discovery.lastSeenAt)}
           </span>
         )}
+        {discovery.changedSinceFound && discovery.source.lastPageChangeAt && (
+          <span>
+            {t('content_studio_changes_changed', 'Changed')}{' '}
+            {formatDate(discovery.source.lastPageChangeAt)}
+          </span>
+        )}
         <ContentStudioCaptureBadge
           latestVersionNumber={discovery.source.latestVersionNumber}
         />
         {discovery.source.archivedAt && (
           <Badge>{t('content_studio_archived', 'Archived')}</Badge>
+        )}
+        {discovery.changedSinceFound && (
+          <Badge>{t('content_studio_discovery_changed', 'Changed')}</Badge>
         )}
       </div>
       <ContentStudioUseInContent source={discovery.source} />

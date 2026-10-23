@@ -6,7 +6,9 @@ import { ContentStudioDiscoveryCaptureState } from '@gitroom/nestjs-libraries/co
 const isUniqueConstraintError = (err: unknown) =>
   err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
 
-// What a feed listing shows of a page: its source summary, never its text
+// What a feed listing shows of a page: its source summary, never its text.
+// With the two times of the page's last change (P8-04B2) that say whether
+// it changed since this feed found it, read with the page in the same query
 const DISCOVERY_SUMMARY = {
   id: true,
   organizationId: true,
@@ -24,6 +26,8 @@ const DISCOVERY_SUMMARY = {
       canonicalUrl: true,
       latestVersionNumber: true,
       archivedAt: true,
+      lastPageChangeAt: true,
+      lastPageChangePreviousCaptureAt: true,
     },
   },
 } as const;

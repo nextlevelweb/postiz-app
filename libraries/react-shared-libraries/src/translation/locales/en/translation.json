@@ -1976,6 +1976,7 @@
   "content_studio_radar_all": "All time",
   "content_studio_discovery_captured": "Captured",
   "content_studio_discovery_not_captured": "Not captured",
+  "content_studio_discovery_changed": "Changed",
   "content_studio_radar_capture_all": "All",
   "content_studio_radar_found_by": "Found by",
   "content_studio_radar_only_feed": "Only this feed",

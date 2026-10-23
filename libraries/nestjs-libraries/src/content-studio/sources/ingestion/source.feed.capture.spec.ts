@@ -1460,6 +1460,7 @@ describe('feed discoveries: the read', () => {
       page(1),
     ]);
     expect(Object.keys(result.results[0]).sort()).toEqual([
+      'changedSinceFound',
       'entryTitle',
       'firstSeenAt',
       'id',
@@ -1471,6 +1472,7 @@ describe('feed discoveries: the read', () => {
       'archivedAt',
       'canonicalUrl',
       'id',
+      'lastPageChangeAt',
       'latestVersionNumber',
       'name',
     ]);

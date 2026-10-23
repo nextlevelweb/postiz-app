@@ -7,7 +7,10 @@ import {
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
-import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
+import {
+  ContentStudioSourceService,
+  isContentStudioDiscoveryChangedSinceFound,
+} from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 
 // News Radar (P8-02) with the real service and repositories over an
 // in-memory Prisma. The fake joins a discovery to its feed and page by id
@@ -225,6 +228,7 @@ const setup = () => {
     });
   return {
     state,
+    service,
     source,
     discovery,
     version,
@@ -564,6 +568,7 @@ describe('News Radar: rows', () => {
     const row = result.results[0];
     expect(Object.keys(result).sort()).toEqual(['pages', 'results', 'total']);
     expect(Object.keys(row).sort()).toEqual([
+      'changedSinceFound',
       'entryTitle',
       'feed',
       'firstSeenAt',
@@ -577,6 +582,7 @@ describe('News Radar: rows', () => {
       'archivedAt',
       'canonicalUrl',
       'id',
+      'lastPageChangeAt',
       'latestVersionNumber',
       'name',
     ]);
@@ -653,8 +659,295 @@ describe('News Radar: integrity', () => {
       (t: ReturnType<typeof setup>) =>
         (t.state.discoveries[0].firstSeenAt = '2026-10-22'),
     ],
+    [
+      'P8-04B2 a page change without the capture before it',
+      (t: ReturnType<typeof setup>) =>
+        Object.assign(t.state.sources.find((s) => s.id === 'page-x')!, {
+          lastPageChangeAt: ago(10 * 60_000),
+          lastPageChangePreviousCaptureAt: null,
+        }),
+    ],
+    [
+      'P8-04B2 a capture before a page change without the change',
+      (t: ReturnType<typeof setup>) =>
+        Object.assign(t.state.sources.find((s) => s.id === 'page-x')!, {
+          lastPageChangeAt: null,
+          lastPageChangePreviousCaptureAt: ago(10 * 60_000),
+        }),
+    ],
+    [
+      'P8-04B2 a page change time that is no date',
+      (t: ReturnType<typeof setup>) =>
+        Object.assign(t.state.sources.find((s) => s.id === 'page-x')!, {
+          lastPageChangeAt: '2026-10-22',
+          lastPageChangePreviousCaptureAt: ago(10 * 60_000),
+        }),
+    ],
   ])('%s fails the whole request closed', async (_name, tamper) => {
     expect(await refusal(planted(tamper))).toEqual(INTEGRITY);
+  });
+});
+
+// P8-04B2: whether a page changed after the feed found it, from the page's
+// last page change (P8-04B1) and this discovery's first sighting. The capture
+// a change was found against must be at or after the first sighting; the
+// change time alone proves nothing
+describe('News Radar: changed since found (P8-04B2)', () => {
+  const T = ago(5 * DAY);
+  const MINUTE = 60_000;
+  const rule = (
+    firstSeenAt: Date,
+    lastPageChangeAt: Date | null,
+    lastPageChangePreviousCaptureAt: Date | null
+  ) =>
+    isContentStudioDiscoveryChangedSinceFound({
+      firstSeenAt,
+      lastPageChangeAt,
+      lastPageChangePreviousCaptureAt,
+    });
+  // the source's stored last page change, as P8-04B1 keeps it
+  const changed = (
+    at: Date,
+    previousCaptureAt: Date,
+    kind = 'content_changed'
+  ) => ({
+    latestVersionNumber: 2,
+    lastPageChangeAt: at,
+    lastPageChangeVersionNumber: 2,
+    lastPageChangeKind: kind,
+    lastPageChangePreviousCaptureAt: previousCaptureAt,
+  });
+  const signal = (result: {
+    results: Array<{
+      id: string;
+      changedSinceFound: boolean;
+      source: { lastPageChangeAt: Date | null };
+    }>;
+  }) =>
+    result.results.map((d) => [
+      d.id,
+      d.changedSinceFound,
+      d.source.lastPageChangeAt,
+    ]);
+
+  it('R1-R7 the rule: both times set and the previous capture at or after the first sighting', () => {
+    // R1 no page change
+    expect(rule(T, null, null)).toBe(false);
+    // R2/R3 half a page change is none (the read refuses it, see integrity)
+    expect(rule(T, null, new Date(T.getTime() + MINUTE))).toBe(false);
+    expect(rule(T, new Date(T.getTime() + 2 * MINUTE), null)).toBe(false);
+    // R4 the capture before the change is older than the first sighting
+    expect(
+      rule(T, new Date(T.getTime() + MINUTE), new Date(T.getTime() - 1))
+    ).toBe(false);
+    // R5 at the very time of the first sighting
+    expect(rule(T, new Date(T.getTime() + MINUTE), new Date(T.getTime()))).toBe(
+      true
+    );
+    // R6 after it
+    expect(
+      rule(T, new Date(T.getTime() + 2 * MINUTE), new Date(T.getTime() + 1))
+    ).toBe(true);
+    // R7 a change after the first sighting, found against a capture before
+    // it: not proven to be after it
+    expect(
+      rule(T, new Date(T.getTime() + DAY), new Date(T.getTime() - DAY))
+    ).toBe(false);
+  });
+
+  it('R1/R2 a change after the first sighting shows, one before it does not, and no change is no signal', async () => {
+    const t = setup();
+    t.addFeed(FEED_A);
+    const after = t.found(FEED_A, T, {}, changed(ago(DAY), ago(2 * DAY)));
+    const before = t.found(
+      FEED_A,
+      ago(4 * DAY),
+      {},
+      changed(ago(6 * DAY), ago(7 * DAY))
+    );
+    const none = t.found(FEED_A, ago(3 * DAY));
+    expect(signal(await t.radar())).toEqual([
+      [none.id, false, null],
+      [before.id, false, ago(6 * DAY)],
+      [after.id, true, ago(DAY)],
+    ]);
+  });
+
+  it('R3 an extraction-only capture after the first sighting is no page change, so no signal', async () => {
+    // P8-04B1 keeps the last page change across another extraction version:
+    // a page changed before the first sighting, then extracted again after it
+    const t = setup();
+    t.addFeed(FEED_A);
+    const d = t.found(FEED_A, T, {}, changed(ago(6 * DAY), ago(7 * DAY)));
+    t.state.sources.find(
+      (s) => s.id === d.discoveredSourceId
+    )!.latestVersionNumber = 3;
+    expect(signal(await t.radar())).toEqual([[d.id, false, ago(6 * DAY)]]);
+  });
+
+  it('R4 a title-only change after the first sighting shows', async () => {
+    const t = setup();
+    t.addFeed(FEED_A);
+    const d = t.found(
+      FEED_A,
+      T,
+      {},
+      changed(ago(DAY), ago(2 * DAY), 'title_changed')
+    );
+    expect(signal(await t.radar())).toEqual([[d.id, true, ago(DAY)]]);
+  });
+
+  it('R5 the same page found by two feeds at different times: changed for one, not for the other', async () => {
+    const t = setup();
+    t.addFeed(FEED_A);
+    t.addFeed(FEED_B);
+    const page = {
+      id: 'shared-page',
+      ...changed(ago(2 * DAY), ago(3 * DAY)),
+    };
+    const a = t.found(FEED_A, ago(4 * DAY), {}, page);
+    const b = t.found(FEED_B, ago(2 * DAY + HOUR), {}, page);
+    expect(signal(await t.radar())).toEqual([
+      [b.id, false, ago(2 * DAY)],
+      [a.id, true, ago(2 * DAY)],
+    ]);
+    // a later change (EX5) is after both first sightings
+    Object.assign(
+      t.state.sources.find((s) => s.id === 'shared-page')!,
+      changed(ago(HOUR), ago(DAY))
+    );
+    expect(signal(await t.radar())).toEqual([
+      [b.id, true, ago(HOUR)],
+      [a.id, true, ago(HOUR)],
+    ]);
+  });
+
+  it('R6 an archived page that changed is both archived and changed', async () => {
+    const t = setup();
+    t.addFeed(FEED_A);
+    const d = t.found(
+      FEED_A,
+      T,
+      {},
+      { archivedAt: ago(HOUR), ...changed(ago(DAY), ago(2 * DAY)) }
+    );
+    const [row] = (await t.radar()).results;
+    expect([row.id, row.source.archivedAt, row.changedSinceFound]).toEqual([
+      d.id,
+      ago(HOUR),
+      true,
+    ]);
+  });
+
+  it('R7 the signal adds no query: one list and one count, and no page or version lookup', async () => {
+    const t = setup();
+    t.addFeed(FEED_A);
+    for (let i = 0; i < 50; i++) {
+      t.found(FEED_A, ago(HOUR + i), {}, changed(ago(i), ago(HOUR)));
+    }
+    const result = await t.radar();
+    expect(result.results.every((d) => d.changedSinceFound)).toBe(true);
+    expect(t.discovery.findMany).toHaveBeenCalledTimes(1);
+    expect(t.discovery.count).toHaveBeenCalledTimes(1);
+    expect(t.source.findFirst).not.toHaveBeenCalled();
+    expect(t.source.findMany).not.toHaveBeenCalled();
+    expect(t.version.findFirst).not.toHaveBeenCalled();
+    expect(t.version.findMany).not.toHaveBeenCalled();
+    // the two times are read with the page, in the one listing
+    expect(
+      t.discovery.findMany.mock.calls[0][0].select.discoveredSource.select
+    ).toEqual({
+      id: true,
+      organizationId: true,
+      kind: true,
+      name: true,
+      canonicalUrl: true,
+      latestVersionNumber: true,
+      archivedAt: true,
+      lastPageChangeAt: true,
+      lastPageChangePreviousCaptureAt: true,
+    });
+  });
+
+  it('R8 a change found by the capture of the run that first listed a known page is no signal', async () => {
+    // the feed lists the page at T; the same run captures it at T + 1 minute
+    // and finds a change against its capture of 10 days ago
+    const t = setup();
+    t.addFeed(FEED_A);
+    const d = t.found(
+      FEED_A,
+      T,
+      {},
+      changed(new Date(T.getTime() + MINUTE), ago(15 * DAY))
+    );
+    expect(signal(await t.radar())).toEqual([
+      [d.id, false, new Date(T.getTime() + MINUTE)],
+    ]);
+  });
+
+  it('R9 a change against a capture at the very time of the first sighting shows', async () => {
+    const t = setup();
+    t.addFeed(FEED_A);
+    const d = t.found(
+      FEED_A,
+      T,
+      {},
+      changed(new Date(T.getTime() + HOUR), new Date(T.getTime()))
+    );
+    expect(signal(await t.radar())).toEqual([
+      [d.id, true, new Date(T.getTime() + HOUR)],
+    ]);
+  });
+
+  it('R10 a feed page answers with the same rule, per row', async () => {
+    const t = setup();
+    t.addFeed(FEED_A);
+    const after = t.found(FEED_A, T, {}, changed(ago(DAY), ago(2 * DAY)));
+    const sameRun = t.found(
+      FEED_A,
+      ago(4 * DAY),
+      {},
+      changed(new Date(ago(4 * DAY).getTime() + MINUTE), ago(9 * DAY))
+    );
+    const equal = t.found(
+      FEED_A,
+      ago(3 * DAY),
+      {},
+      changed(ago(2 * DAY), ago(3 * DAY))
+    );
+    const feed = await t.service.listDiscoveries({
+      organizationId: ORG,
+      sourceId: FEED_A,
+      page: 1,
+    });
+    const radar = await t.radar();
+    expect(signal(feed)).toEqual(signal(radar));
+    expect(signal(feed)).toEqual([
+      [equal.id, true, ago(2 * DAY)],
+      [sameRun.id, false, new Date(ago(4 * DAY).getTime() + MINUTE)],
+      [after.id, true, ago(DAY)],
+    ]);
+  });
+
+  it('never shows another organization’s page change', async () => {
+    const t = setup();
+    t.addFeed(FEED_A);
+    t.addFeed(OTHER_FEED, { organizationId: OTHER_ORG });
+    const marker = new Date('2001-02-03T04:05:06.000Z');
+    t.found(
+      OTHER_FEED,
+      ago(HOUR),
+      { organizationId: OTHER_ORG },
+      {
+        id: 'other-page',
+        organizationId: OTHER_ORG,
+        ...changed(marker, marker),
+      }
+    );
+    const mine = t.found(FEED_A, ago(2 * HOUR));
+    const result = await t.radar({ since: 'all' });
+    expect(signal(result)).toEqual([[mine.id, false, null]]);
+    expect(JSON.stringify(result)).not.toContain(marker.toISOString());
   });
 });
 

@@ -1251,10 +1251,8 @@ describe('P8-04B1 organization page changes', () => {
     expect(controller).not.toMatch(/backfill/i);
   });
 
-  it('P804B1-14 News Radar does not use the page change yet (P8-04B2)', () => {
+  it('P804B1-14 News Radar uses the page change only for its Changed signal (P8-04B2)', () => {
     for (const file of [
-      ...RADAR_FRONTEND,
-      RADAR_BACKEND.repository,
       `${FRONTEND}/content-studio.source.picker.tsx`,
       `${FRONTEND}/content-studio.package.modal.tsx`,
     ]) {
@@ -1265,11 +1263,18 @@ describe('P8-04B1 organization page changes', () => {
         ),
       ]).toEqual([file, null]);
     }
+    // the Radar reads two of the four fields (pinned by P804B2-3) and never
+    // the Changes list
+    for (const file of [...RADAR_FRONTEND, RADAR_BACKEND.repository]) {
+      expect([
+        file,
+        CODE.get(file)!.match(
+          /lastPageChange(VersionNumber|Kind)|page-changes|source-changes|Changed since/gi
+        ),
+      ]).toEqual([file, null]);
+    }
     const { method } = radarCode();
     expect(method).not.toMatch(/lastPageChange|pageChange/);
-    expect(
-      between(pageChange('service'), 'private toPublicDiscovery(', '\n  }\n')
-    ).not.toMatch(/lastPageChange|pageChange/);
     // the Research page shows the Radar as it was, beside Changes
     expect(pageChange('tabs')).toMatch(
       /tab === 'changes' \? \(?\s*<ContentStudioPageChanges \/>\s*\)? : \(?\s*<ContentStudioResearch \/>\s*\)?/
@@ -1469,14 +1474,184 @@ describe('P8-04B1-R1 the command runtime', () => {
     );
   });
 
-  it('R1-6 still no News Radar change signal (P8-04B2)', () => {
+  it('R1-6 the News Radar change signal is the P8-04B2 one: decided on the read, not in the Radar query', () => {
     const radar = radarCode();
-    for (const [part, text] of Object.entries(radar)) {
-      expect([part, text.match(/lastPageChange|changedSinceFound/g)]).toEqual([
+    for (const part of ['method', 'repository', 'handler'] as const) {
+      expect([
         part,
-        null,
-      ]);
+        radar[part].match(/lastPageChange|changedSinceFound/g),
+      ]).toEqual([part, null]);
     }
-    expect(users(/changedSinceFound/)).toEqual([]);
+    expect(users(/changedSinceFound/)).toEqual(B2_CHANGED_USERS);
+  });
+});
+
+// News Radar change signals (P8-04B2): whether a found page changed after
+// the feed found it, decided by the server on the read, from two of the
+// source's P8-04B1 fields, for each discovery. No schema, route, filter, event
+// or AI. The behavior is covered by content-studio.news-radar.spec.ts, the
+// frontend specs and the PostgreSQL suite; these keep the decisions from
+// drifting
+const B2 = {
+  service: RADAR_BACKEND.service,
+  repository: RADAR_BACKEND.repository,
+  dto: RADAR_BACKEND.dto,
+  row: `${FRONTEND}/content-studio.discovery.row.tsx`,
+  api: `${FRONTEND}/content-studio.sources.api.ts`,
+  research: `${FRONTEND}/content-studio.research.tsx`,
+  researchApi: `${FRONTEND}/content-studio.research.api.ts`,
+  detail: `${FRONTEND}/content-studio.source.detail.tsx`,
+};
+const B2_CHANGED_USERS = [B2.row, B2.api, B2.service].sort();
+const b2 = (key: keyof typeof B2) => CODE.get(B2[key])!;
+const b2Rule = () =>
+  between(
+    b2('service'),
+    'export const isContentStudioDiscoveryChangedSinceFound = (',
+    '\n\n'
+  );
+const b2Mapper = () =>
+  between(b2('service'), 'private toPublicDiscovery(', '\n  }\n');
+
+describe('P8-04B2 News Radar change signals', () => {
+  it('P804B2-1 no schema change: no discovery change field, table or enum', () => {
+    expect(createHash('sha256').update(schema).digest('hex')).toBe(
+      '0c0638c523fe2e1439b81130c7e05f9eacdc12465ffac41f5be04b9d377af6e5'
+    );
+    expect(model('ContentStudioSourceDiscovery')).not.toMatch(/change/i);
+    expect(schema).not.toMatch(/changedSinceFound/);
+  });
+
+  it('P804B2-2 no new route: 145 in all', () => {
+    const controller = CODE.get(
+      'apps/backend/src/api/routes/content-studio.controller.ts'
+    )!;
+    expect(
+      controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
+    ).toHaveLength(145);
+    expect(controller).not.toMatch(/changedSinceFound|radar-changes|\/changed/);
+  });
+
+  it('P804B2-3 a discovery reads exactly two of the page-change fields, with its page, in the one listing select', () => {
+    const summary = between(
+      b2('repository'),
+      'const DISCOVERY_SUMMARY = {',
+      '} as const;'
+    );
+    expect(summary).toMatch(
+      /discoveredSource: \{\s*select: \{\s*id: true,\s*organizationId: true,\s*kind: true,\s*name: true,\s*canonicalUrl: true,\s*latestVersionNumber: true,\s*archivedAt: true,\s*lastPageChangeAt: true,\s*lastPageChangePreviousCaptureAt: true,\s*\},\s*\},\s*\}?$/
+    );
+    expect(b2('repository').match(/lastPageChange\w*/g)).toEqual([
+      'lastPageChangeAt',
+      'lastPageChangePreviousCaptureAt',
+    ]);
+    expect(b2('repository')).not.toMatch(
+      /lastPageChangeVersionNumber|lastPageChangeKind|content:|Hash|blocks/
+    );
+    // the Radar select is the listing select with the feed
+    expect(b2('repository')).toMatch(
+      /const RADAR_DISCOVERY_SUMMARY = \{\s*\.\.\.DISCOVERY_SUMMARY,\s*feedSource:/
+    );
+  });
+
+  it('P804B2-4/P804B2-12 changedSinceFound is decided by the server in the one discovery mapper both lists use', () => {
+    expect(users(/changedSinceFound/)).toEqual(B2_CHANGED_USERS);
+    expect(users(/isContentStudioDiscoveryChangedSinceFound/)).toEqual([
+      B2.service,
+    ]);
+    expect(
+      b2('service').match(/isContentStudioDiscoveryChangedSinceFound\(/g)
+    ).toHaveLength(1);
+    expect(b2Mapper()).toMatch(
+      /changedSinceFound: isContentStudioDiscoveryChangedSinceFound\(\{\s*firstSeenAt: row\.firstSeenAt,\s*lastPageChangeAt: page\.lastPageChangeAt,\s*lastPageChangePreviousCaptureAt: page\.lastPageChangePreviousCaptureAt,\s*\}\),/
+    );
+    // the feed page and News Radar map their rows with it, and show them with
+    // the one row
+    expect(b2('service').match(/this\.toPublicDiscovery\(/g)).toHaveLength(2);
+    expect(users(/<ContentStudioDiscoveryRow\b/)).toEqual(
+      [B2.research, B2.detail].sort()
+    );
+    expect(users(/content_studio_discovery_changed/)).toEqual([B2.row]);
+  });
+
+  it('P804B2-5 the rule is the previous capture at or after the first sighting, never the change time', () => {
+    expect(b2Rule()).toMatch(
+      /=>\s*input\.lastPageChangeAt !== null &&\s*input\.lastPageChangePreviousCaptureAt !== null &&\s*input\.lastPageChangePreviousCaptureAt\.getTime\(\) >=\s*input\.firstSeenAt\.getTime\(\);$/
+    );
+    expect(b2Rule()).not.toMatch(
+      /lastPageChangeAt\.getTime|lastPageChangeAt\s*[<>]/
+    );
+    expect(b2Rule().match(/>=|<=|>(?!=)|<(?!=)/g)).toEqual(['>', '>=']);
+  });
+
+  it('P804B2-6 the browser compares no dates: it shows the server answer', () => {
+    expect(
+      users(/lastPageChangePreviousCaptureAt/).filter((file) =>
+        file.startsWith('apps/frontend/')
+      )
+    ).toEqual([]);
+    const row = b2('row');
+    expect(row).not.toMatch(
+      /new Date|getTime|Date\.parse|Date\.now|>=|<=|firstSeenAt\s*[<>]|dayjs\(|isAfter|isBefore/
+    );
+    // the date is shown only with the answer
+    expect(row).toMatch(
+      /\{discovery\.changedSinceFound && discovery\.source\.lastPageChangeAt && \(/
+    );
+    expect(row).toMatch(
+      /\{discovery\.changedSinceFound && \(\s*<Badge>\{t\('content_studio_discovery_changed', 'Changed'\)\}<\/Badge>/
+    );
+    expect(row).not.toMatch(/'New'|_new'|Updated|Important|Significant/);
+  });
+
+  it('P804B2-7 no changed-only filter in the Radar, its query or its address', () => {
+    const { repository, handler, frontend } = radarCode();
+    const dto = between(
+      b2('dto'),
+      'export class ListContentStudioDiscoveriesDto',
+      'export class ListContentStudioSourceChangesDto'
+    );
+    for (const part of [repository, handler, dto, b2('researchApi')]) {
+      expect(part).not.toMatch(/changed|onlyChanged|lastPageChange/i);
+    }
+    expect(frontend).not.toMatch(/onlyChanged|changed=|change=changed/);
+  });
+
+  it('P804B2-8 no change event model', () => {
+    expect(schema).not.toMatch(/model \w*(Change|Discovery)\w*Event\w* \{/);
+    expect(users(/contentStudioSourceChangeEvent|SourceChangeEvent/)).toEqual(
+      []
+    );
+  });
+
+  it('P804B2-9 no AI, ranking or importance in the signal', () => {
+    for (const part of [b2Rule(), b2Mapper(), b2('row')]) {
+      expect(part).not.toMatch(
+        /AIConnection|AIOperation|AIUsage|ai-writing|openai|anthropic|embedding|\bscore|relevan|importan|severity|ranking|summar|topic|trend/i
+      );
+    }
+  });
+
+  it('P804B2-10/P804B2-11 the signal adds no query: no source or version lookup on the read', () => {
+    const mapper = b2Mapper();
+    expect(mapper).not.toMatch(
+      /this\._|await|async|getVersion|contentStudioSourceVersion|versions/
+    );
+    const { method } = radarCode();
+    const feed = between(
+      b2('service'),
+      'async listDiscoveries(',
+      'async listOrganizationDiscoveries('
+    );
+    for (const part of [method, feed]) {
+      expect(part).not.toMatch(
+        /getVersions|VersionsByNumbers|getVersion\(|contentStudioSourceVersion|lastPageChange/
+      );
+      // the list, its count, and the one feed lookup of before
+      expect(
+        part.match(/this\._contentStudioSource\w*Repository\.\w+\(/g)
+      ).toHaveLength(2);
+      expect(part.match(/this\.getRow\(/g)).toHaveLength(1);
+    }
   });
 });

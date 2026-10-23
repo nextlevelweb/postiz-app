@@ -251,12 +251,14 @@ beforeEach(() => {
       publishedAt: T1,
       firstSeenAt: T1,
       lastSeenAt: T2,
+      changedSinceFound: false,
       source: {
         id: PAGE_ID,
         name: 'Launch post',
         canonicalUrl: 'https://news.test/launch',
         latestVersionNumber: 2,
         archivedAt: null,
+        lastPageChangeAt: null,
       },
     },
     {
@@ -265,12 +267,14 @@ beforeEach(() => {
       publishedAt: null,
       firstSeenAt: T0,
       lastSeenAt: T2,
+      changedSinceFound: false,
       source: {
         id: PAGE_2_ID,
         name: 'news.test',
         canonicalUrl: 'https://news.test/older',
         latestVersionNumber: 0,
         archivedAt: null,
+        lastPageChangeAt: null,
       },
     },
   ];
@@ -469,6 +473,25 @@ describe('Source Library: a feed', () => {
     expect(within(secondItem).queryByText(/failed/i)).toBeNull();
     // pages of pages
     expect(screen.getByRole('button', { name: /next/i })).toBeTruthy();
+  });
+
+  it('FEB2-5 the pages of a feed say Changed, with when, exactly as the server answers each row (P8-04B2)', async () => {
+    const T3 = '2026-10-21T11:45:00.000Z';
+    discoveries = discoveries.map((d, i) => ({
+      ...d,
+      changedSinceFound: i === 0,
+      source: {
+        ...(d.source as Record<string, unknown>),
+        lastPageChangeAt: T3,
+      },
+    }));
+    await renderFeed();
+    const changed = row('<img src=x onerror=alert(1)><b>Bold</b> launch');
+    expect(within(changed).getByText('Changed')).toBeTruthy();
+    expect(within(changed).getByText(`Changed ${date(T3)}`)).toBeTruthy();
+    expect(within(changed).getByText(`Last seen ${date(T2)}`)).toBeTruthy();
+    const unchanged = row('news.test');
+    expect(within(unchanged).queryByText(/Changed/)).toBeNull();
   });
 
   it('UI8 an entry title with markup is plain text: no element is made from it', async () => {

@@ -176,6 +176,22 @@ const samePageChange = (
       a.kind === b.kind &&
       a.previousCaptureAt.getTime() === b.previousCaptureAt.getTime();
 
+// Whether a page changed after a feed first listed it (P8-04B2), from the
+// source's last page change: only when the capture that change was found
+// against was made at or after the first sighting. The change time alone
+// proves nothing: a feed's first sighting comes before the capture of the
+// same run, and that capture may find a change against an older one. So the
+// same page can have changed since one feed found it and not since another
+export const isContentStudioDiscoveryChangedSinceFound = (input: {
+  firstSeenAt: Date;
+  lastPageChangeAt: Date | null;
+  lastPageChangePreviousCaptureAt: Date | null;
+}) =>
+  input.lastPageChangeAt !== null &&
+  input.lastPageChangePreviousCaptureAt !== null &&
+  input.lastPageChangePreviousCaptureAt.getTime() >=
+    input.firstSeenAt.getTime();
+
 interface VersionRow {
   id: string;
   versionNumber: number;
@@ -827,8 +843,10 @@ export class ContentStudioSourceService {
 
   // A discovery as a capture writes it, or an integrity error: of the
   // organization, a url page (archived or not) with its URL, last seen at or
-  // after first seen. Built field by field: no organization, feed id, entry
-  // id or page text
+  // after first seen, and the two times of its last page change both set or
+  // both none. Built field by field: no organization, feed id, entry id or
+  // page text. changedSinceFound (P8-04B2) is decided here, for this feed's
+  // first sighting, from the stored times alone: no other read
   private toPublicDiscovery(
     organizationId: string,
     row: {
@@ -846,6 +864,8 @@ export class ContentStudioSourceService {
         canonicalUrl: string | null;
         latestVersionNumber: number;
         archivedAt: Date | null;
+        lastPageChangeAt: Date | null;
+        lastPageChangePreviousCaptureAt: Date | null;
       } | null;
     }
   ) {
@@ -858,7 +878,13 @@ export class ContentStudioSourceService {
       !page.canonicalUrl ||
       !(row.firstSeenAt instanceof Date) ||
       !(row.lastSeenAt instanceof Date) ||
-      row.lastSeenAt < row.firstSeenAt
+      row.lastSeenAt < row.firstSeenAt ||
+      !(
+        (page.lastPageChangeAt === null &&
+          page.lastPageChangePreviousCaptureAt === null) ||
+        (page.lastPageChangeAt instanceof Date &&
+          page.lastPageChangePreviousCaptureAt instanceof Date)
+      )
     ) {
       throw integrityError();
     }
@@ -868,12 +894,18 @@ export class ContentStudioSourceService {
       publishedAt: row.publishedAt,
       firstSeenAt: row.firstSeenAt,
       lastSeenAt: row.lastSeenAt,
+      changedSinceFound: isContentStudioDiscoveryChangedSinceFound({
+        firstSeenAt: row.firstSeenAt,
+        lastPageChangeAt: page.lastPageChangeAt,
+        lastPageChangePreviousCaptureAt: page.lastPageChangePreviousCaptureAt,
+      }),
       source: {
         id: page.id,
         name: page.name,
         canonicalUrl: page.canonicalUrl,
         latestVersionNumber: page.latestVersionNumber,
         archivedAt: page.archivedAt,
+        lastPageChangeAt: page.lastPageChangeAt,
       },
     };
   }

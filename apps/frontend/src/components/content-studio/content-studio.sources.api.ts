@@ -155,19 +155,22 @@ export interface ContentStudioFeedCaptureResult {
 
 // A page a feed found, with when this feed listed it. The entry's title and
 // date are what the feed said, as plain text; the page's own text is in its
-// own source
+// own source. changedSinceFound is the server's answer (P8-04B2): the page
+// changed after this feed first listed it, last at source.lastPageChangeAt
 export interface ContentStudioSourceDiscovery {
   id: string;
   entryTitle: string | null;
   publishedAt: string | null;
   firstSeenAt: string;
   lastSeenAt: string;
+  changedSinceFound: boolean;
   source: {
     id: string;
     name: string;
     canonicalUrl: string;
     latestVersionNumber: number;
     archivedAt: string | null;
+    lastPageChangeAt: string | null;
   };
 }
 

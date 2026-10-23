@@ -438,8 +438,10 @@ describe('Changes code', () => {
     expect(code('content-studio.research.tsx')).not.toMatch(
       /page-changes|PageChange|tab/
     );
+    // a Radar row shows the server's Changed answer (P8-04B2) and no more: no
+    // link to a change, no kind or version, no date of its own to compare
     expect(code('content-studio.discovery.row.tsx')).not.toMatch(
-      /lastPageChange|Changed/
+      /page-changes|source-changes|change=|lastPageChange(Kind|VersionNumber|PreviousCaptureAt)|new Date|getTime|Date\.parse/
     );
   });
 
