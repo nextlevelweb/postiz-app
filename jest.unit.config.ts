@@ -54,6 +54,7 @@ const config: Config = {
         '<rootDir>/libraries',
         '<rootDir>/apps/backend',
         '<rootDir>/apps/orchestrator',
+        '<rootDir>/apps/commands',
       ],
       testMatch: ['**/*.spec.ts'],
     },

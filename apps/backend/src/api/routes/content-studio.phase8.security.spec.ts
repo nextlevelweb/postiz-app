@@ -1341,7 +1341,7 @@ describe('P8-04B1 organization page changes', () => {
       ]).toEqual([key, null]);
     }
     expect(pageChange('commandModule')).toMatch(
-      /providers: \[\s*RefreshTokens,\s*ConfigurationTask,\s*AgentRun,\s*ContentStudioPageChangesBackfill,\s*\]/
+      /providers: \[\s*RefreshTokens,\s*ConfigurationTask,\s*ContentStudioPageChangesBackfill,\s*\]/
     );
     const packageJson = raw('package.json');
     expect(packageJson).not.toMatch(/backfill/i);
@@ -1353,5 +1353,130 @@ describe('P8-04B1 organization page changes', () => {
         false,
       ]);
     }
+  });
+});
+
+// The operator command runtime (P8-04B1-R1): apps/commands builds with the
+// image, starts with Temporal provided the way the backend provides it, and
+// offers the backfill to an operator only. Its start is covered by
+// apps/commands/src/command.module.spec.ts and the PostgreSQL command suite
+const COMMANDS = {
+  module: 'apps/commands/src/command.module.ts',
+  main: 'apps/commands/src/main.ts',
+  packageJson: 'apps/commands/package.json',
+};
+
+describe('P8-04B1-R1 the command runtime', () => {
+  it('R1-1 the commands package starts the file nest build emits, under apps/commands', () => {
+    const scripts = JSON.parse(raw(COMMANDS.packageJson)).scripts;
+    expect(scripts).toEqual({
+      dev: 'dotenv -e ../../.env -- nest start --watch --entryFile=./apps/commands/src/main',
+      build: 'cross-env NODE_ENV=production nest build',
+      start: 'node ./dist/apps/commands/src/main.js',
+    });
+    expect(raw(COMMANDS.packageJson)).not.toMatch(/apps\/command\//);
+    // nest build writes the app under dist/ by its path from the repository
+    expect(
+      JSON.parse(raw('apps/commands/tsconfig.build.json')).compilerOptions
+        .outDir
+    ).toBe('./dist');
+  });
+
+  it('R1-2 CommandModule takes Temporal from the shared module, as the backend does: no workers, no stand-in', () => {
+    const commandModule = code(COMMANDS.module);
+    expect(commandModule).toMatch(
+      /import \{ getTemporalModule \} from '@gitroom\/nestjs-libraries\/temporal\/temporal\.module';/
+    );
+    expect(commandModule).toMatch(
+      /imports: \[ExternalCommandModule, DatabaseModule, getTemporalModule\(false\)\]/
+    );
+    expect(commandModule.match(/getTemporalModule\(/g)).toHaveLength(1);
+    expect(commandModule).not.toMatch(
+      /TemporalService|TemporalModule\.|provide:|useValue|useFactory|InfiniteWorkflowRegister|TemporalRegisterMissingSearchAttributes/
+    );
+    expect(code('apps/backend/src/app.module.ts')).toMatch(
+      /getTemporalModule\(false\)/
+    );
+  });
+
+  it('R1-3 the run:agent command is gone, and with it the call to a method that never existed', () => {
+    expect(
+      fs.existsSync(
+        path.join(REPO_ROOT, 'apps/commands/src/tasks/agent.run.ts')
+      )
+    ).toBe(false);
+    const commands = walk(path.join(REPO_ROOT, 'apps/commands/src')).map(
+      (file) => code(path.relative(REPO_ROOT, file))
+    );
+    expect(commands.length).toBeGreaterThan(0);
+    for (const source of commands) {
+      expect(source).not.toMatch(/AgentRun|run:agent|createGraph|AgentModule/);
+    }
+    expect(users(/createGraph\(/)).toEqual([]);
+  });
+
+  it('R1-4 the image builds the commands app from source with the other apps', () => {
+    const scripts = JSON.parse(raw('package.json')).scripts;
+    expect(scripts.build).toBe(
+      'pnpm -r --workspace-concurrency=1 --filter ./apps/frontend --filter ./apps/backend --filter ./apps/orchestrator --filter ./apps/commands run build'
+    );
+    const dockerfile = raw('Dockerfile.dev');
+    expect(dockerfile).toMatch(/\nCOPY \. \/app\n/);
+    expect(dockerfile).toMatch(
+      /\nRUN NODE_OPTIONS="--max-old-space-size=4096" pnpm run build\n/
+    );
+    expect(dockerfile.indexOf('COPY . /app')).toBeLessThan(
+      dockerfile.indexOf('pnpm run build')
+    );
+    // never the host's build output
+    expect(dockerfile).not.toMatch(/commands\/dist/);
+    expect(raw('.dockerignore').split('\n')).toContain('/apps/commands/dist');
+  });
+
+  it('R1-5 nothing starts a command: not the image, pm2, the schema push or the orchestrator', () => {
+    const scripts = JSON.parse(raw('package.json')).scripts;
+    for (const name of [
+      'pm2',
+      'pm2-run',
+      'prisma-db-push',
+      'start:prod:backend',
+      'start:prod:orchestrator',
+      'start:prod:frontend',
+    ]) {
+      expect([name, /commands|backfill/.test(scripts[name])]).toEqual([
+        name,
+        false,
+      ]);
+    }
+    expect(JSON.parse(raw(COMMANDS.packageJson)).scripts.pm2).toBeUndefined();
+    expect(raw('Dockerfile.dev')).toMatch(
+      /\nCMD \["sh", "-c", "nginx && pnpm run pm2"\]\n?$/
+    );
+    expect(raw('Dockerfile.dev')).not.toMatch(/backfill|apps\/commands/);
+    for (const file of PRODUCTION.filter((file) =>
+      file.startsWith('apps/orchestrator/')
+    )) {
+      expect([
+        file,
+        /apps\/commands|command\.module|backfill-page-changes/.test(
+          CODE.get(file)!
+        ),
+      ]).toEqual([file, false]);
+    }
+    // main runs what the operator typed, then closes
+    expect(code(COMMANDS.main)).toMatch(
+      /await app\.select\(CommandModule\)\.get\(CommandService\)\.exec\(\);\s*await app\.close\(\);/
+    );
+  });
+
+  it('R1-6 still no News Radar change signal (P8-04B2)', () => {
+    const radar = radarCode();
+    for (const [part, text] of Object.entries(radar)) {
+      expect([part, text.match(/lastPageChange|changedSinceFound/g)]).toEqual([
+        part,
+        null,
+      ]);
+    }
+    expect(users(/changedSinceFound/)).toEqual([]);
   });
 });
