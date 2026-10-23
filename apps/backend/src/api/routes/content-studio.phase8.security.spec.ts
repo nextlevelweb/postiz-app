@@ -347,7 +347,8 @@ describe('P8-01 routes', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-02: one more, News Radar across feeds
       // P8-04A: one more, what changed in a source version
-    ).toHaveLength(144);
+      // P8-04B1: one more, the organization's page changes
+    ).toHaveLength(145);
     const handler = controller.slice(
       controller.indexOf("@Get('/sources/:id/discoveries')"),
       controller.indexOf("@Post('/sources/:id/archive')")
@@ -456,10 +457,12 @@ describe('P8-02 News Radar', () => {
     expect(own).not.toMatch(/dangerouslySetInnerHTML|innerHTML/);
   });
 
-  it('P802-5 schema.prisma is byte-identical to its P8-01 version', () => {
-    // P8-02 changes no schema; a later phase that does updates this pin
+  it('P802-5 schema.prisma is byte-identical to its P8-01 version, but for the P8-04B1 page-change fields', () => {
+    // P8-02 changes no schema; a later phase that does updates this pin.
+    // P8-04B1 adds the four derived page-change fields and one index (pinned
+    // by P804B1-1/P804B1-2)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '1889855c5215d44c33e67f86ac01ccb9a90cbff40699a74bf7607d2f62ea8d6e'
+      '0c0638c523fe2e1439b81130c7e05f9eacdc12465ffac41f5be04b9d377af6e5'
     );
     // the Radar reads the P8-01 indexes
     expect(model('ContentStudioSourceDiscovery')).toMatch(
@@ -500,13 +503,13 @@ describe('P8-02 News Radar', () => {
     expect(sources.match(/where: sourceListWhere\(input\)/g)).toHaveLength(2);
   });
 
-  it('P802-9 one new read route, GET /discoveries (143; 144 with P8-04A)', () => {
+  it('P802-9 one new read route, GET /discoveries (143; 144 with P8-04A, 145 with P8-04B1)', () => {
     const controller = CODE.get(
       'apps/backend/src/api/routes/content-studio.controller.ts'
     )!;
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(144);
+    ).toHaveLength(145);
     expect(controller.match(/@Get\('\/discoveries'\)/g)).toHaveLength(1);
     expect(controller).not.toMatch(
       /@(Post|Put|Patch|Delete)\('\/discoveries|\/research|\/radar/
@@ -567,9 +570,10 @@ const handoff = (key: keyof typeof HANDOFF) => CODE.get(HANDOFF[key])!;
 
 describe('P8-03 research into content', () => {
   it('P803-1/P803-8/P803-12 no schema change: no origin, selection, collection or research model', () => {
-    // the P8-01 schema, byte for byte (P802-5 pins the same hash)
+    // the P8-01 schema, byte for byte, but for the P8-04B1 page-change
+    // fields (P802-5 pins the same hash)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '1889855c5215d44c33e67f86ac01ccb9a90cbff40699a74bf7607d2f62ea8d6e'
+      '0c0638c523fe2e1439b81130c7e05f9eacdc12465ffac41f5be04b9d377af6e5'
     );
     expect(schema).not.toMatch(
       /model \w*(Research|Selection|Basket|Collection|Radar)\w* \{/
@@ -586,6 +590,11 @@ describe('P8-03 research into content', () => {
       'createdAt',
       'updatedAt',
       'lastCapturedAt',
+      // P8-04B1: derived from the versions, not research
+      'lastPageChangeAt',
+      'lastPageChangeVersionNumber',
+      'lastPageChangeKind',
+      'lastPageChangePreviousCaptureAt',
       'organization',
       'createdBy',
       'versions',
@@ -619,7 +628,8 @@ describe('P8-03 research into content', () => {
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-04A: one more, what changed in a source version
-    ).toHaveLength(144);
+      // P8-04B1: one more, the organization's page changes
+    ).toHaveLength(145);
     // the routes of sources: the P8-02 ones, nothing to resolve or keep a
     // selection with
     expect(
@@ -800,8 +810,10 @@ const change = (key: keyof typeof CHANGE) => CODE.get(CHANGE[key])!;
 
 describe('P8-04A source change detection', () => {
   it('P804A-1/P804A-7 no schema change: no change model, table or field', () => {
+    // P8-04A stored nothing; P8-04B1 adds the derived page-change fields
+    // (P804B1-1) and nothing this forbids
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '1889855c5215d44c33e67f86ac01ccb9a90cbff40699a74bf7607d2f62ea8d6e'
+      '0c0638c523fe2e1439b81130c7e05f9eacdc12465ffac41f5be04b9d377af6e5'
     );
     expect(schema).not.toMatch(/model \w*(Change|Diff|Comparison)\w* \{/);
     expect(schema).not.toMatch(
@@ -809,11 +821,11 @@ describe('P8-04A source change detection', () => {
     );
   });
 
-  it('P804A-2/P804A-3 one new read route, 144 in all; it reads only', () => {
+  it('P804A-2/P804A-3 one new read route, 144 in all (145 with P8-04B1); it reads only', () => {
     const controller = change('controller');
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(144);
+    ).toHaveLength(145);
     expect(controller.match(/\/changes'/g)).toEqual(["/changes'"]);
     const handler = between(
       controller,
@@ -885,8 +897,10 @@ describe('P8-04A source change detection', () => {
       /export const isSameContentStudioSourceCapture = \(\s*a: ContentStudioSourceCaptureIdentity,\s*b: ContentStudioSourceCaptureIdentity\s*\) =>\s*a\.contentHash === b\.contentHash &&\s*a\.title === b\.title &&\s*a\.extractionVersion === b\.extractionVersion;/
     );
     const ingestion = change('ingestion');
+    // P8-04B1: through the one transition classifier, whose repeat is
+    // exactly this rule
     expect(ingestion).toMatch(
-      /if \(isSameContentStudioSourceCapture\(current, version\)\) \{\s*return \{ status: 'unchanged' as const \};/
+      /if \(mode === 'if-changed' && transition === 'repeat'\) \{\s*return \{ status: 'unchanged' as const \};/
     );
     // no second copy of the rule in the Source layer
     const backend = PRODUCTION.filter(
@@ -915,8 +929,10 @@ describe('P8-04A source change detection', () => {
     ).toMatch(
       /this\.captureUrl\(\s*input\.organizationId,\s*source,\s*input\.userId,\s*'always'\s*\)/
     );
+    // P8-04B1: both modes read the version a capture follows; only a feed
+    // capture skips a repeat
     expect(ingestion).toMatch(
-      /if \(mode === 'if-changed' && expectedLatestVersionNumber > 0\) \{/
+      /if \(mode === 'if-changed' && transition === 'repeat'\) \{/
     );
     // the one caller with if-changed is a feed's page
     expect(
@@ -970,6 +986,372 @@ describe('P8-04A source change detection', () => {
         key,
         change(key).match(/\$queryRaw|\$executeRaw|Prisma\.sql/g),
       ]).toEqual([key, null]);
+    }
+  });
+});
+
+// Organization page changes (P8-04B1): four fields on the source, derived
+// from its versions by the one transition classifier, kept in the version
+// append and rebuilt by an operator command; one read route and a Changes
+// tab. Versions stay the record; News Radar does not use the fields yet
+const PAGE_CHANGE = {
+  ...CHANGE,
+  dto: RADAR_BACKEND.dto,
+  command: 'apps/commands/src/tasks/content.studio.page.changes.ts',
+  commandModule: 'apps/commands/src/command.module.ts',
+  changes: `${FRONTEND}/content-studio.page-changes.tsx`,
+  changesApi: `${FRONTEND}/content-studio.page-changes.api.ts`,
+  tabs: `${FRONTEND}/content-studio.research.tabs.tsx`,
+};
+const pageChange = (key: keyof typeof PAGE_CHANGE) =>
+  CODE.get(PAGE_CHANGE[key]) ?? code(PAGE_CHANGE[key]);
+const PAGE_CHANGE_FIELDS = [
+  'lastPageChangeAt DateTime?',
+  'lastPageChangeVersionNumber Int?',
+  'lastPageChangeKind String?',
+  'lastPageChangePreviousCaptureAt DateTime?',
+];
+
+describe('P8-04B1 organization page changes', () => {
+  it('P804B1-1 exactly four new source fields, nullable, without a default', () => {
+    const source = fields('ContentStudioSource');
+    expect(source.filter((f) => /lastPageChange/.test(f))).toEqual(
+      PAGE_CHANGE_FIELDS
+    );
+    // right after the P8-01 field, nothing else new
+    expect(source.slice(10, 15)).toEqual([
+      'lastCapturedAt DateTime?',
+      ...PAGE_CHANGE_FIELDS,
+    ]);
+    expect(model('ContentStudioSource')).not.toMatch(
+      /lastPageChange\w*\s+\w+\??\s+@/
+    );
+  });
+
+  it('P804B1-2 exactly one new index: organization and last page change', () => {
+    expect(
+      model('ContentStudioSource')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith('@@'))
+    ).toEqual([
+      '@@unique([id, organizationId])',
+      '@@unique([organizationId, canonicalUrl])',
+      '@@index([organizationId, archivedAt])',
+      '@@index([organizationId, kind])',
+      '@@index([createdById])',
+      '@@index([kind, archivedAt, id])',
+      '@@index([organizationId, lastPageChangeAt])',
+    ]);
+  });
+
+  it('P804B1-3/P804B1-16 no foreign key to a version and no change or event model', () => {
+    const source = model('ContentStudioSource');
+    expect(source.match(/@relation\(/g)).toHaveLength(4);
+    expect(source).not.toMatch(/lastPageChange\w*\s+ContentStudio/);
+    expect(model('ContentStudioSourceVersion')).not.toMatch(/lastPageChange/);
+    expect(schema).not.toMatch(
+      /model ContentStudio\w*(Change|Diff|Comparison)\w* \{|model ContentStudioSource\w*Event\w* \{/
+    );
+    expect(schema).not.toMatch(/enum ContentStudioSource/);
+  });
+
+  it('P804B1-4 one transition classifier: the order of the changes is decided once', () => {
+    const module = pageChange('module');
+    expect(module).toMatch(
+      /return previous\.extractionVersion !== next\.extractionVersion\s*\? 'extraction_changed'\s*: previous\.contentHash !== next\.contentHash\s*\? 'content_changed'\s*: 'title_changed';/
+    );
+    expect(users(/classifyContentStudioSourceCaptureTransition\(/)).toEqual(
+      [PAGE_CHANGE.module, PAGE_CHANGE.ingestion, PAGE_CHANGE.service].sort()
+    );
+    const backend = PRODUCTION.filter(
+      (file) =>
+        file.startsWith(`${SOURCES}/`) ||
+        /content-studio\.source[\w.-]*\.ts$/.test(file)
+    );
+    for (const pattern of [
+      /\.extractionVersion !== \w+\.extractionVersion/,
+      /\.contentHash !== \w+\.contentHash/,
+      /'title_changed'\s*;/,
+    ]) {
+      expect(backend.filter((file) => pattern.test(CODE.get(file)!))).toEqual([
+        PAGE_CHANGE.module,
+      ]);
+    }
+    expect(module.match(/\.extractionVersion !== /g)).toHaveLength(1);
+  });
+
+  it('P804B1-5 the P8-04A comparison takes its class from the classifier', () => {
+    const compare = between(
+      pageChange('module'),
+      'export function compareContentStudioSourceVersions(',
+      '\n}\n'
+    );
+    expect(compare).toMatch(
+      /const transition = classifyContentStudioSourceCaptureTransition\(\s*before,\s*after\s*\);/
+    );
+    expect(compare).toMatch(
+      /if \(!before \|\| transition === 'initial' \|\| transition === 'repeat'\) \{\s*return \{\s*change: 'no_earlier_change',/
+    );
+    expect(compare).toMatch(/change: transition,/);
+    expect(compare).not.toMatch(/extractionVersion !==|contentHash !==/);
+  });
+
+  it('P804B1-6 a feed capture skips exactly a repeat, by the classifier', () => {
+    const ingestion = pageChange('ingestion');
+    expect(ingestion.match(/transition === 'repeat'/g)).toHaveLength(1);
+    expect(ingestion).not.toMatch(/isSameContentStudioSourceCapture/);
+    // both modes read the version the capture follows; a missing one fails
+    expect(ingestion).toMatch(
+      /const previous =\s*expectedLatestVersionNumber > 0\s*\? await this\._contentStudioSourceRepository\.getVersionByNumber\(\s*organizationId,\s*source\.id,\s*expectedLatestVersionNumber\s*\)\s*: null;\s*if \(expectedLatestVersionNumber > 0 && !previous\) \{\s*throw integrityError\(\);/
+    );
+  });
+
+  it('P804B1-7 only a content or title change is a page change', async () => {
+    const {
+      CONTENT_STUDIO_SOURCE_PAGE_CHANGES,
+      isContentStudioSourcePageChange,
+    } = await import(
+      '@gitroom/nestjs-libraries/content-studio/sources/source.change'
+    );
+    expect([...CONTENT_STUDIO_SOURCE_PAGE_CHANGES]).toEqual([
+      'content_changed',
+      'title_changed',
+    ]);
+    for (const value of [
+      'initial',
+      'repeat',
+      'extraction_changed',
+      'no_earlier_change',
+      'Content_changed',
+      '',
+      null,
+      undefined,
+      1,
+      '__proto__',
+    ]) {
+      expect([value, isContentStudioSourcePageChange(value)]).toEqual([
+        value,
+        false,
+      ]);
+    }
+    const ingestion = pageChange('ingestion');
+    expect(ingestion).toMatch(
+      /const pageChange =\s*previous && isContentStudioSourcePageChange\(transition\)\s*\? \{\s*at: version\.fetchedAt,\s*versionNumber: expectedLatestVersionNumber \+ 1,\s*kind: transition,\s*previousCaptureAt: previous\.fetchedAt,\s*\}\s*: null;/
+    );
+    const backfill = between(
+      pageChange('service'),
+      'private async lastPageChange(',
+      'private async getRow('
+    );
+    expect(backfill).toMatch(
+      /if \(previous && isContentStudioSourcePageChange\(transition\)\) \{\s*pageChange = \{\s*at: version\.fetchedAt,\s*versionNumber: version\.versionNumber,\s*kind: transition,\s*previousCaptureAt: previous\.fetchedAt,\s*\};/
+    );
+  });
+
+  it('P804B1-8 the append writes the page change in the one source update, with the version number', () => {
+    const append = between(
+      pageChange('repository'),
+      'appendVersionWithCompareAndSwap(input: {',
+      '\n  }\n'
+    );
+    expect(append.match(/contentStudioSource\.updateMany\(/g)).toHaveLength(1);
+    expect(append).not.toMatch(
+      /contentStudioSource\.update\(|\$transaction[\s\S]*\$transaction/
+    );
+    expect(append).toMatch(
+      /data: \{\s*latestVersionNumber: \{\s*increment: 1,\s*\},\s*\.\.\.\(input\.pageChange \? pageChangeData\(input\.pageChange\) : \{\}\),\s*\},\s*\}\);\s*if \(count !== 1\) \{\s*return \{ status: 'changed' as const \};\s*\}\s*const version = await tx\.contentStudioSourceVersion\.create\(/
+    );
+    // pageChange reaches the append from the ingestion only
+    expect(pageChange('ingestion').match(/pageChange,\n/g) ?? []).toHaveLength(
+      1
+    );
+  });
+
+  it('P804B1-9 no block diff or content check while capturing', () => {
+    expect(pageChange('ingestion')).not.toMatch(
+      /diffContentStudioSourceBlocks|compareContentStudioSourceVersions|Uint16Array|parseVerifiedContentStudioSourceVersion|getVersionForSource|getVersionDetailByNumber/
+    );
+  });
+
+  it('P804B1-10 the backfill reads no content, no fetched-bytes hash and no blocks', () => {
+    const repository = pageChange('repository');
+    const versions = between(
+      repository,
+      'listVersionCapturesForBackfill(input: {',
+      '\n  }\n'
+    );
+    const select = between(versions, 'select: {', '}');
+    expect(
+      select
+        .replace('select: {', '')
+        .split(',')
+        .map((part) => part.trim())
+        .filter(Boolean)
+    ).toEqual([
+      'versionNumber: true',
+      'contentHash: true',
+      'title: true',
+      'extractionVersion: true',
+      'fetchedAt: true',
+    ]);
+    expect(versions).toMatch(/orderBy: \{\s*versionNumber: 'asc',\s*\}/);
+    const service = between(
+      pageChange('service'),
+      'async backfillPageChanges(',
+      'async getVersionChanges('
+    );
+    expect(service).not.toMatch(
+      /content:|\.content\b|sourceHash|intactContent|parseVerified|VERSION_DETAIL|getVersionForSource/
+    );
+  });
+
+  it('P804B1-11/P804B1-12 the backfill keeps updatedAt and writes only a source exactly as it was read', () => {
+    const write = between(
+      pageChange('repository'),
+      'setPageChangeWithCompareAndSwap(input: {',
+      '\n  }\n'
+    );
+    expect(write).toMatch(
+      /where: \{\s*id: input\.sourceId,\s*organizationId: input\.organizationId,\s*kind: 'url',\s*latestVersionNumber: input\.expectedLatestVersionNumber,\s*updatedAt: input\.expectedUpdatedAt,\s*\},\s*data: \{\s*\.\.\.pageChangeData\(input\.pageChange\),\s*updatedAt: input\.expectedUpdatedAt,\s*\},/
+    );
+    expect(users(/setPageChangeWithCompareAndSwap\(/)).toEqual([
+      PAGE_CHANGE.repository,
+      PAGE_CHANGE.service,
+    ]);
+    const service = pageChange('service');
+    expect(service).toMatch(/const BACKFILL_ATTEMPTS = 3;/);
+    expect(service).toMatch(/const BACKFILL_PAGE_SIZE = 100;/);
+    expect(service).toMatch(/const BACKFILL_VERSIONS_PAGE_SIZE = 1000;/);
+  });
+
+  it('P804B1-13 the Changes route only reads', () => {
+    const controller = pageChange('controller');
+    const handler = between(controller, "@Get('/source-changes')", '\n  }\n');
+    expect(handler).toMatch(
+      /listPageChanges\(\{\s*organizationId: org\.id,\s*page: query\.page,\s*since: query\.since,\s*\}\)/
+    );
+    const method = between(
+      pageChange('service'),
+      'async listPageChanges(',
+      'async backfillPageChanges('
+    );
+    const repository = pageChange('repository');
+    for (const part of [
+      handler,
+      method,
+      between(repository, 'listPageChangesForOrganization(', '\n  }\n'),
+      between(repository, 'countPageChangesForOrganization(', '\n  }\n'),
+      between(repository, 'getVersionsByNumbersForOrganization(', '\n  }\n'),
+    ]) {
+      expect(part).not.toMatch(
+        /\.(create|createMany|update|updateMany|upsert|delete|deleteMany)\(|\$transaction|appendVersion|setPageChange|backfill|refresh|capture\(|safeFetch|fetch\(/i
+      );
+    }
+    expect(controller).not.toMatch(/backfill/i);
+  });
+
+  it('P804B1-14 News Radar does not use the page change yet (P8-04B2)', () => {
+    for (const file of [
+      ...RADAR_FRONTEND,
+      RADAR_BACKEND.repository,
+      `${FRONTEND}/content-studio.source.picker.tsx`,
+      `${FRONTEND}/content-studio.package.modal.tsx`,
+    ]) {
+      expect([
+        file,
+        CODE.get(file)!.match(
+          /lastPageChange|pageChange|page-changes|source-changes|changedSinceFound|Changed since/gi
+        ),
+      ]).toEqual([file, null]);
+    }
+    const { method } = radarCode();
+    expect(method).not.toMatch(/lastPageChange|pageChange/);
+    expect(
+      between(pageChange('service'), 'private toPublicDiscovery(', '\n  }\n')
+    ).not.toMatch(/lastPageChange|pageChange/);
+    // the Research page shows the Radar as it was, beside Changes
+    expect(pageChange('tabs')).toMatch(
+      /tab === 'changes' \? \(?\s*<ContentStudioPageChanges \/>\s*\)? : \(?\s*<ContentStudioResearch \/>\s*\)?/
+    );
+  });
+
+  it('P804B1-15 no AI, ranking or importance', () => {
+    for (const key of [
+      'module',
+      'changes',
+      'changesApi',
+      'tabs',
+      'command',
+    ] as const) {
+      expect([
+        key,
+        pageChange(key).match(
+          /ai-connection|ai-operation|ai-writing|AIConnection|AIOperation|AIUsage|openai|anthropic|embedding|vector|\bscore|relevan|importan|severity|ranking|summar/gi
+        ),
+      ]).toEqual([key, null]);
+    }
+    const methods = [
+      between(
+        pageChange('service'),
+        'async listPageChanges(',
+        'async getVersionChanges('
+      ),
+      between(
+        pageChange('service'),
+        'private async backfillPageChange(',
+        'private async getRow('
+      ),
+    ];
+    for (const part of methods) {
+      expect(part).not.toMatch(/AI|openai|anthropic|score|relevan|importan/);
+    }
+  });
+
+  it('P804B1-17 one new read route, 145 in all', () => {
+    const controller = pageChange('controller');
+    expect(
+      controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
+    ).toHaveLength(145);
+    expect(controller.match(/'\/source-changes'/g)).toEqual([
+      "'/source-changes'",
+    ]);
+    expect(controller).not.toMatch(
+      /@(Post|Put|Patch|Delete)\('\/source-changes|\/backfill|\/page-changes/
+    );
+  });
+
+  it('P804B1-18 the backfill runs from its operator command only: never on start, deploy, schedule or request', () => {
+    expect(users(/backfillPageChanges\(/)).toEqual([PAGE_CHANGE.service]);
+    expect(users(/backfill-page-changes/)).toEqual([]);
+    const command = pageChange('command');
+    expect(command).toMatch(/command: 'content-studio:backfill-page-changes',/);
+    expect(command.match(/backfillPageChanges\(/g)).toHaveLength(1);
+    expect(command).toMatch(/process\.exitCode = 1;/);
+    expect(command).not.toMatch(
+      /process\.exit\(|onModuleInit|OnApplicationBootstrap|setInterval|cron/i
+    );
+    // nor does the service start it: no lifecycle hook
+    for (const key of ['service', 'repository', 'ingestion'] as const) {
+      expect([
+        key,
+        pageChange(key).match(
+          /onModuleInit|onApplicationBootstrap|OnModuleInit|OnApplicationBootstrap/g
+        ),
+      ]).toEqual([key, null]);
+    }
+    expect(pageChange('commandModule')).toMatch(
+      /providers: \[\s*RefreshTokens,\s*ConfigurationTask,\s*AgentRun,\s*ContentStudioPageChangesBackfill,\s*\]/
+    );
+    const packageJson = raw('package.json');
+    expect(packageJson).not.toMatch(/backfill/i);
+    for (const file of PRODUCTION.filter((file) =>
+      file.startsWith('apps/orchestrator/')
+    )) {
+      expect([file, /backfill|PageChange/.test(CODE.get(file)!)]).toEqual([
+        file,
+        false,
+      ]);
     }
   });
 });

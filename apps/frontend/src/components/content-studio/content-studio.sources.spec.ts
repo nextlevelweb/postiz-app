@@ -22,6 +22,12 @@ import dayjs from 'dayjs';
 // components are required, not imported, so the spec type check doesn't
 // follow them; they are type checked with the frontend tsconfig
 
+// a source page reads ?change= (P8-04B1); none here
+jest.mock('next/navigation', () => ({
+  useRouter: () => ({ push: jest.fn(), replace: jest.fn() }),
+  usePathname: () => '/content-studio/sources/x',
+  useSearchParams: () => new URLSearchParams(),
+}));
 jest.mock('next/link', () => {
   const { createElement } = require('react');
   return {

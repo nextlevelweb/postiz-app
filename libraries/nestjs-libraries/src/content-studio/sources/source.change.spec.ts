@@ -1,10 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 import {
+  classifyContentStudioSourceCaptureTransition,
   compareContentStudioSourceVersions,
   ContentStudioComparedSourceVersion,
   CONTENT_STUDIO_SOURCE_CHANGES,
+  CONTENT_STUDIO_SOURCE_PAGE_CHANGES,
   diffContentStudioSourceBlocks,
+  isContentStudioSourcePageChange,
   isSameContentStudioSourceCapture,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.change';
 import {
@@ -113,6 +116,132 @@ describe('the same-capture rule', () => {
         } as never
       )
     ).toBe(true);
+  });
+});
+
+// What a capture is to the capture just before it (P8-04B1): the one rule a
+// version append and the page-change backfill follow
+describe('the capture transition', () => {
+  const classify = classifyContentStudioSourceCaptureTransition;
+
+  it('T1 no capture before it is the first', () => {
+    expect(classify(null, identity())).toBe('initial');
+  });
+
+  it('T2 the same blocks hash, title and extraction are a repeat', () => {
+    expect(classify(identity(), identity())).toBe('repeat');
+    expect(classify(identity({ title: null }), identity({ title: null }))).toBe(
+      'repeat'
+    );
+  });
+
+  it('T3 another extraction version wins over any other difference', () => {
+    expect(classify(identity({ extractionVersion: V1 }), identity())).toBe(
+      'extraction_changed'
+    );
+    expect(
+      classify(
+        identity({ extractionVersion: V1 }),
+        identity({ contentHash: 'b'.repeat(64), title: 'Other' })
+      )
+    ).toBe('extraction_changed');
+  });
+
+  it('T4/T5 another blocks hash with the same extraction is a content change, with or without another title', () => {
+    expect(
+      classify(identity(), identity({ contentHash: 'b'.repeat(64) }))
+    ).toBe('content_changed');
+    expect(
+      classify(
+        identity(),
+        identity({ contentHash: 'b'.repeat(64), title: 'Other' })
+      )
+    ).toBe('content_changed');
+  });
+
+  it('T6 only another title is a title change', () => {
+    expect(classify(identity(), identity({ title: 'Other' }))).toBe(
+      'title_changed'
+    );
+  });
+
+  it('T7 a missing title is a value: compared with a title it is a title change, both ways', () => {
+    expect(classify(identity({ title: null }), identity())).toBe(
+      'title_changed'
+    );
+    expect(classify(identity(), identity({ title: null }))).toBe(
+      'title_changed'
+    );
+    expect(classify(identity({ title: '' }), identity({ title: null }))).toBe(
+      'title_changed'
+    );
+    expect(
+      classify(
+        identity({ title: null }),
+        identity({ title: null, contentHash: 'b'.repeat(64) })
+      )
+    ).toBe('content_changed');
+  });
+
+  it('T8 only a content or a title change is a page change', () => {
+    expect([...CONTENT_STUDIO_SOURCE_PAGE_CHANGES]).toEqual([
+      'content_changed',
+      'title_changed',
+    ]);
+    const results = [
+      classify(null, identity()),
+      classify(identity(), identity()),
+      classify(identity({ extractionVersion: V1 }), identity()),
+      classify(identity(), identity({ contentHash: 'b'.repeat(64) })),
+      classify(identity(), identity({ title: 'Other' })),
+    ];
+    expect(results.map(isContentStudioSourcePageChange)).toEqual([
+      false,
+      false,
+      false,
+      true,
+      true,
+    ]);
+    // the check of a stored kind: exactly those two strings
+    for (const value of [
+      'no_earlier_change',
+      'CONTENT_CHANGED',
+      'content_changed ',
+      'constructor',
+      {},
+      [],
+      null,
+    ]) {
+      expect(isContentStudioSourcePageChange(value)).toBe(false);
+    }
+  });
+
+  it('agrees with the comparison on every class: a first capture and a repeat are no earlier change', () => {
+    const before = version(texts('One'));
+    const cases: Array<
+      [
+        ContentStudioComparedSourceVersion | null,
+        ContentStudioComparedSourceVersion
+      ]
+    > = [
+      [null, before],
+      [before, version(texts('One'))],
+      [before, version(texts('One'), { extractionVersion: V1 })],
+      [before, version(texts('Two'))],
+      [before, version(texts('One'), { title: 'Other' })],
+    ];
+    expect(
+      cases.map(([a, b]) => [
+        classify(a, b),
+        compareContentStudioSourceVersions(a, b).change,
+      ])
+    ).toEqual([
+      ['initial', 'no_earlier_change'],
+      ['repeat', 'no_earlier_change'],
+      ['extraction_changed', 'extraction_changed'],
+      ['content_changed', 'content_changed'],
+      ['title_changed', 'title_changed'],
+    ]);
   });
 });
 

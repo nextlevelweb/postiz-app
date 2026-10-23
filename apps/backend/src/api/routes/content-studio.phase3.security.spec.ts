@@ -280,7 +280,9 @@ describe('Phase 3 immutable versions', () => {
     expect(
       names.filter((n) => /delete|remove|upsert|replace/i.test(n))
     ).toEqual([]);
-    expect(names.filter((n) => /update|set/i.test(n))).toEqual([
+    expect(names.filter((n) => /update|set/i.test(n)).sort()).toEqual([
+      // P8-04B1: the backfill writes the derived last page change only
+      'setPageChangeWithCompareAndSwap',
       'updateSourceName',
     ]);
     const versionCalls = new Set(
@@ -306,7 +308,12 @@ describe('Phase 3 immutable versions', () => {
   });
 
   it('P3IMM1 no source update can touch the URL, the kind or the organization', () => {
-    for (const name of ['updateSourceName', 'archiveSource', 'restoreSource']) {
+    for (const name of [
+      'updateSourceName',
+      'archiveSource',
+      'restoreSource',
+      'setPageChangeWithCompareAndSwap',
+    ]) {
       const data = method(SOURCE.sourceRepository, name).split('data:')[1];
       expect(data).not.toMatch(
         /canonicalUrl|kind|organizationId|createdById|latestVersionNumber/

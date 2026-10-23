@@ -123,3 +123,18 @@ export class ListContentStudioDiscoveriesDto {
   @IsIn(CONTENT_STUDIO_DISCOVERY_CAPTURE_STATES)
   captureState?: ContentStudioDiscoveryCaptureState;
 }
+
+// Organization Changes (P8-04B1): a page and how far back the last page
+// change may be (the News Radar windows; 7 days when not given). Nothing else
+export class ListContentStudioSourceChangesDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(PAGE_MAX)
+  @Transform(toQueryInteger)
+  page: number = 1;
+
+  @IsOptional()
+  @IsIn(CONTENT_STUDIO_DISCOVERY_WINDOWS)
+  since?: ContentStudioDiscoveryWindow;
+}

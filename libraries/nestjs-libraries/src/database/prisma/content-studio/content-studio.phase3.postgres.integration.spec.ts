@@ -2126,12 +2126,13 @@ describe('H. What PostgreSQL does not enforce: the application does', () => {
       canonicalUrl: 'https://example.com/elsewhere',
       kind: 'rss',
     });
-    // the repository has no write for either
+    // the repository has no write for either (P8-04B1: the backfill writes
+    // the derived last page change only, never a version, URL or kind)
     const methods = Object.getOwnPropertyNames(
       ContentStudioSourceRepository.prototype
     );
     expect(
-      methods.filter((name) => /update|delete|set|upsert/i.test(name))
-    ).toEqual(['updateSourceName']);
+      methods.filter((name) => /update|delete|set|upsert/i.test(name)).sort()
+    ).toEqual(['setPageChangeWithCompareAndSwap', 'updateSourceName']);
   });
 });

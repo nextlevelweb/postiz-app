@@ -1,8 +1,9 @@
 'use client';
 
-import { FC, ReactNode, useState } from 'react';
+import { FC, ReactNode, useEffect, useState } from 'react';
 import clsx from 'clsx';
 import Link from 'next/link';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@gitroom/react/form/button';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
@@ -31,6 +32,10 @@ import {
   useSourceCommands,
   useSourceKindLabel,
 } from '@gitroom/frontend/components/content-studio/content-studio.sources';
+
+// Version ids are Prisma uuid() values; a link naming anything else opens
+// the history
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const HEADING_SIZE: Record<number, string> = {
   1: 'text-[20px]',
@@ -269,10 +274,11 @@ const SourceVersionView: FC<{
 
 // What changed in one version, exactly as the server compared it, with the
 // earlier capture the server chose. Nothing is worked out here; kept blocks
-// are a count only
+// are a count only. A version opened from a link (P8-04B1) has its number
+// once the server answers
 const SourceChangeView: FC<{
   sourceId: string;
-  version: { id: string; versionNumber: number };
+  version: { id: string; versionNumber: number | null };
   onBack: () => void;
 }> = ({ sourceId, version, onBack }) => {
   const t = useT();
@@ -294,9 +300,11 @@ const SourceChangeView: FC<{
               )} ${t('content_studio_revision', 'Version')} ${
                 data.before.versionNumber
               }`
-            : `${t('content_studio_revision', 'Version')} ${
-                version.versionNumber
-              }`}
+            : data || version.versionNumber !== null
+            ? `${t('content_studio_revision', 'Version')} ${
+                data ? data.after.versionNumber : version.versionNumber
+              }`
+            : t('content_studio_source_what_changed', 'What changed')}
         </h2>
         <Button secondary onClick={onBack}>
           {t('content_studio_back_to_history', 'Back to history')}
@@ -668,6 +676,13 @@ export const ContentStudioSourceDetail: FC<{ sourceId: string }> = ({
 }) => {
   const t = useT();
   const kindLabel = useSourceKindLabel();
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  // a link to one change (P8-04B1, from Changes): ?change=<version id>. The
+  // server decides whether it is a version of this source
+  const change = searchParams.get('change');
+  const linked = change && UUID.test(change) ? change : null;
   const [page, setPage] = useState(1);
   const [viewing, setViewing] = useState<{
     id: string;
@@ -676,13 +691,34 @@ export const ContentStudioSourceDetail: FC<{ sourceId: string }> = ({
   // the version whose changes are open, instead of the history
   const [comparing, setComparing] = useState<{
     id: string;
-    versionNumber: number;
-  } | null>(null);
+    versionNumber: number | null;
+  } | null>(linked ? { id: linked, versionNumber: null } : null);
+  useEffect(() => {
+    if (linked) {
+      setViewing(null);
+      setComparing((open) =>
+        open?.id === linked ? open : { id: linked, versionNumber: null }
+      );
+    }
+  }, [linked]);
+  // leaving a linked change drops it from the address, and nothing else
+  const unlink = () => {
+    if (searchParams.has('change')) {
+      const params = new URLSearchParams(searchParams.toString());
+      params.delete('change');
+      const query = params.toString();
+      router.replace(query ? `${pathname}?${query}` : pathname, {
+        scroll: false,
+      });
+    }
+  };
   const view = (version: { id: string; versionNumber: number } | null) => {
+    unlink();
     setComparing(null);
     setViewing(version);
   };
   const compare = (version: { id: string; versionNumber: number }) => {
+    unlink();
     setViewing(null);
     setComparing(version);
   };
@@ -857,7 +893,10 @@ export const ContentStudioSourceDetail: FC<{ sourceId: string }> = ({
               key={comparing.id}
               sourceId={source.id}
               version={comparing}
-              onBack={() => setComparing(null)}
+              onBack={() => {
+                unlink();
+                setComparing(null);
+              }}
             />
           ) : viewing ? (
             <SourceVersionView

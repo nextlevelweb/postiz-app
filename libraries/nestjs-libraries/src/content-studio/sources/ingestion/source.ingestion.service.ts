@@ -22,7 +22,10 @@ import {
   parseContentStudioSourceVersionInput,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.version';
 import { ContentStudioSourceUrlError } from '@gitroom/nestjs-libraries/content-studio/sources/source.url';
-import { isSameContentStudioSourceCapture } from '@gitroom/nestjs-libraries/content-studio/sources/source.change';
+import {
+  classifyContentStudioSourceCaptureTransition,
+  isContentStudioSourcePageChange,
+} from '@gitroom/nestjs-libraries/content-studio/sources/source.change';
 import {
   CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION,
   CONTENT_STUDIO_SOURCE_NAME_MAX,
@@ -365,7 +368,10 @@ export class ContentStudioSourceIngestionService {
   // One capture of a page source. `always` appends every capture, as a
   // refresh does; `if-changed` (feed captures) adds no version when the page
   // gives exactly what its current version holds, and treats a version that
-  // another capture appended meanwhile as that capture
+  // another capture appended meanwhile as that capture. Both compare the
+  // capture with the current version by blocks hash, title and extraction
+  // only (never the blocks themselves), and a change of the page is kept on
+  // the source in the same append (P8-04B1)
   private async captureUrl(
     organizationId: string,
     source: SourceRow,
@@ -477,21 +483,39 @@ export class ContentStudioSourceIngestionService {
       throw err;
     }
 
-    if (mode === 'if-changed' && expectedLatestVersionNumber > 0) {
-      const current =
-        await this._contentStudioSourceRepository.getVersionByNumber(
-          organizationId,
-          source.id,
-          expectedLatestVersionNumber
-        );
-      if (!current) {
-        throw integrityError();
-      }
-      // the one rule of a repeated capture, the one change detection uses
-      if (isSameContentStudioSourceCapture(current, version)) {
-        return { status: 'unchanged' as const };
-      }
+    // the version this capture follows: the one it is a repeat or a change
+    // of (P8-04B1), none for a first capture
+    const previous =
+      expectedLatestVersionNumber > 0
+        ? await this._contentStudioSourceRepository.getVersionByNumber(
+            organizationId,
+            source.id,
+            expectedLatestVersionNumber
+          )
+        : null;
+    if (expectedLatestVersionNumber > 0 && !previous) {
+      throw integrityError();
     }
+    // the one rule of captures, the one change detection uses
+    const transition = classifyContentStudioSourceCaptureTransition(
+      previous,
+      version
+    );
+    if (mode === 'if-changed' && transition === 'repeat') {
+      return { status: 'unchanged' as const };
+    }
+    // a change of the page itself becomes the source's last page change,
+    // with the version; a first capture, a repeat or another extraction
+    // version leaves the last one as it is
+    const pageChange =
+      previous && isContentStudioSourcePageChange(transition)
+        ? {
+            at: version.fetchedAt,
+            versionNumber: expectedLatestVersionNumber + 1,
+            kind: transition,
+            previousCaptureAt: previous.fetchedAt,
+          }
+        : null;
 
     let result;
     try {
@@ -504,6 +528,7 @@ export class ContentStudioSourceIngestionService {
             versionId: randomUUID(),
             version,
             createdById: userId,
+            pageChange,
           }
         );
     } catch (err) {

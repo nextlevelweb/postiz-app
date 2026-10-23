@@ -5,11 +5,17 @@ import { RefreshTokens } from './tasks/refresh.tokens';
 import { ConfigurationTask } from './tasks/configuration';
 import { AgentRun } from './tasks/agent.run';
 import { AgentModule } from '@gitroom/nestjs-libraries/agent/agent.module';
+import { ContentStudioPageChangesBackfill } from './tasks/content.studio.page.changes';
 
 @Module({
   imports: [ExternalCommandModule, DatabaseModule, AgentModule],
   controllers: [],
-  providers: [RefreshTokens, ConfigurationTask, AgentRun],
+  providers: [
+    RefreshTokens,
+    ConfigurationTask,
+    AgentRun,
+    ContentStudioPageChangesBackfill,
+  ],
   get exports() {
     return [...this.imports, ...this.providers];
   },

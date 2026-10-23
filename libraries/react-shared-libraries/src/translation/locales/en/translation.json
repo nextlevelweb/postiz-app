@@ -2009,5 +2009,20 @@
   "content_studio_research_ready": "Research ready for AI writing:",
   "content_studio_research_clear": "Clear",
   "content_studio_source_picker_error": "Sources could not be loaded.",
-  "content_studio_use_in_content": "Use in content"
+  "content_studio_use_in_content": "Use in content",
+  "content_studio_research": "Research",
+  "content_studio_changes": "Changes",
+  "content_studio_changes_subtitle": "Pages whose content or title changed between two captures.",
+  "content_studio_changes_note": "A change is found when a page is captured again: by its feed or by Refresh.",
+  "content_studio_changes_window": "Changed in",
+  "content_studio_changes_load_error": "Changes could not be loaded.",
+  "content_studio_changes_nothing_24h": "No page changes in the last 24 hours.",
+  "content_studio_changes_nothing_7d": "No page changes in the last 7 days.",
+  "content_studio_changes_nothing_30d": "No page changes in the last 30 days.",
+  "content_studio_changes_nothing_yet": "No page changes captured yet.",
+  "content_studio_changes_total": "Pages changed",
+  "content_studio_changes_content_changed": "Content changed",
+  "content_studio_changes_title_changed": "Title changed",
+  "content_studio_changes_changed": "Changed",
+  "content_studio_changes_previously_captured": "Previously captured"
 }

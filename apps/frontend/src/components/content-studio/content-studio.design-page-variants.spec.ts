@@ -724,7 +724,8 @@ describe('Size variant boundaries', () => {
       // feed source found
       // P8-02: one more, News Radar across feeds
       // P8-04A: one more, what changed in a source version
-    ).toHaveLength(144);
+      // P8-04B1: one more, the organization's page changes
+    ).toHaveLength(145);
     expect(controller).not.toMatch(/variant|campaign|resize|responsive/i);
   });
 

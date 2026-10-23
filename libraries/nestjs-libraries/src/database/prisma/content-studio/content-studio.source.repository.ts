@@ -5,6 +5,7 @@ import {
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { ContentStudioSourceVersionData } from '@gitroom/nestjs-libraries/content-studio/sources/source.version';
+import { ContentStudioSourcePageChange } from '@gitroom/nestjs-libraries/content-studio/sources/source.change';
 
 const SOURCE_SUMMARY = {
   id: true,
@@ -42,6 +43,54 @@ const VERSION_DETAIL = {
   ...VERSION_SUMMARY,
   content: true,
 } as const;
+
+// A source's last page change (P8-04B1), derived from its versions: all four
+// fields, or none
+export interface ContentStudioSourcePageChangeData {
+  at: Date;
+  versionNumber: number;
+  kind: ContentStudioSourcePageChange;
+  previousCaptureAt: Date;
+}
+
+const pageChangeData = (
+  pageChange: ContentStudioSourcePageChangeData | null
+) => ({
+  lastPageChangeAt: pageChange ? pageChange.at : null,
+  lastPageChangeVersionNumber: pageChange ? pageChange.versionNumber : null,
+  lastPageChangeKind: pageChange ? pageChange.kind : null,
+  lastPageChangePreviousCaptureAt: pageChange
+    ? pageChange.previousCaptureAt
+    : null,
+});
+
+// The fields a page-change read and the backfill check, never the summary of
+// the Source list: that keeps its P8-03 shape
+const PAGE_CHANGE_STATE = {
+  latestVersionNumber: true,
+  lastPageChangeAt: true,
+  lastPageChangeVersionNumber: true,
+  lastPageChangeKind: true,
+  lastPageChangePreviousCaptureAt: true,
+} as const;
+
+// Organization Changes (P8-04B1): the organization's page sources with a
+// last page change, at or after `changedSince` (any time when null). A feed
+// never has one; it is left out by its kind as well
+export interface ContentStudioPageChangeFilter {
+  organizationId: string;
+  changedSince: Date | null;
+}
+
+const pageChangeWhere = (
+  input: ContentStudioPageChangeFilter
+): Prisma.ContentStudioSourceWhereInput => ({
+  organizationId: input.organizationId,
+  kind: 'url',
+  lastPageChangeAt: input.changedSince
+    ? { gte: input.changedSince }
+    : { not: null },
+});
 
 export interface ContentStudioSourceListFilter {
   organizationId: string;
@@ -286,6 +335,9 @@ export class ContentStudioSourceRepository {
     versionId: string;
     version: ContentStudioSourceVersionData;
     createdById: string;
+    // the source's new last page change (P8-04B1), when this version is one:
+    // written with the version number, so it stands or falls with the version
+    pageChange?: ContentStudioSourcePageChangeData | null;
   }) {
     return this._transaction.model.$transaction(async (tx) => {
       const source = await tx.contentStudioSource.findFirst({
@@ -322,6 +374,8 @@ export class ContentStudioSourceRepository {
           latestVersionNumber: {
             increment: 1,
           },
+          // anything else leaves the last page change as it is
+          ...(input.pageChange ? pageChangeData(input.pageChange) : {}),
         },
       });
       if (count !== 1) {
@@ -482,6 +536,157 @@ export class ContentStudioSourceRepository {
         id: true,
         versionNumber: true,
         fetchedAt: true,
+      },
+    });
+  }
+
+  // Organization Changes (P8-04B1): one page of the organization's page
+  // sources by their last page change, newest first. The list and its count
+  // share one filter; id breaks ties so pages never overlap
+  listPageChangesForOrganization(
+    input: ContentStudioPageChangeFilter & {
+      skip: number;
+      take: number;
+    }
+  ) {
+    return this._source.model.contentStudioSource.findMany({
+      where: pageChangeWhere(input),
+      orderBy: [{ lastPageChangeAt: 'desc' }, { id: 'asc' }],
+      select: {
+        id: true,
+        organizationId: true,
+        kind: true,
+        name: true,
+        canonicalUrl: true,
+        archivedAt: true,
+        ...PAGE_CHANGE_STATE,
+      },
+      skip: input.skip,
+      take: input.take,
+    });
+  }
+
+  countPageChangesForOrganization(input: ContentStudioPageChangeFilter) {
+    return this._source.model.contentStudioSource.count({
+      where: pageChangeWhere(input),
+    });
+  }
+
+  // The versions a page of changes names, by source and number, in one
+  // query of this organization only. Metadata only
+  getVersionsByNumbersForOrganization(
+    organizationId: string,
+    versions: { sourceId: string; versionNumber: number }[]
+  ) {
+    return this._version.model.contentStudioSourceVersion.findMany({
+      where: {
+        organizationId,
+        OR: versions.map((version) => ({
+          sourceId: version.sourceId,
+          versionNumber: version.versionNumber,
+        })),
+      },
+      select: {
+        id: true,
+        sourceId: true,
+        versionNumber: true,
+        fetchedAt: true,
+      },
+    });
+  }
+
+  // For the page-change backfill only (an operator command; no route reaches
+  // it): page sources of every organization, archived or not, one page after
+  // `afterId` in id order, with what the backfill checks and writes against
+  listPageSourcesForBackfill(input: { afterId: string | null; take: number }) {
+    return this._source.model.contentStudioSource.findMany({
+      where: {
+        kind: 'url',
+        ...(input.afterId ? { id: { gt: input.afterId } } : {}),
+      },
+      orderBy: {
+        id: 'asc',
+      },
+      select: {
+        id: true,
+        organizationId: true,
+        updatedAt: true,
+        ...PAGE_CHANGE_STATE,
+      },
+      take: input.take,
+    });
+  }
+
+  // For the page-change backfill only: one page source again, as the list
+  // reads it
+  getPageSourceForBackfill(organizationId: string, id: string) {
+    return this._source.model.contentStudioSource.findFirst({
+      where: {
+        id,
+        organizationId,
+        kind: 'url',
+      },
+      select: {
+        id: true,
+        organizationId: true,
+        updatedAt: true,
+        ...PAGE_CHANGE_STATE,
+      },
+    });
+  }
+
+  // For the page-change backfill only: what decides a capture's transition,
+  // one page of a source's versions after `afterVersionNumber`, oldest first.
+  // Never the blocks or the fetched bytes' hash
+  listVersionCapturesForBackfill(input: {
+    organizationId: string;
+    sourceId: string;
+    afterVersionNumber: number;
+    take: number;
+  }) {
+    return this._version.model.contentStudioSourceVersion.findMany({
+      where: {
+        organizationId: input.organizationId,
+        sourceId: input.sourceId,
+        versionNumber: { gt: input.afterVersionNumber },
+      },
+      orderBy: {
+        versionNumber: 'asc',
+      },
+      select: {
+        versionNumber: true,
+        contentHash: true,
+        title: true,
+        extractionVersion: true,
+        fetchedAt: true,
+      },
+      take: input.take,
+    });
+  }
+
+  // For the page-change backfill only: a source's last page change, rebuilt
+  // from its versions, written only while the source is exactly as it was
+  // read (no capture, rename or archive meanwhile: count 0 then). updatedAt
+  // is kept as it was, as a derived field is no change of the source: the
+  // Source list stays in its order
+  setPageChangeWithCompareAndSwap(input: {
+    organizationId: string;
+    sourceId: string;
+    expectedLatestVersionNumber: number;
+    expectedUpdatedAt: Date;
+    pageChange: ContentStudioSourcePageChangeData | null;
+  }) {
+    return this._source.model.contentStudioSource.updateMany({
+      where: {
+        id: input.sourceId,
+        organizationId: input.organizationId,
+        kind: 'url',
+        latestVersionNumber: input.expectedLatestVersionNumber,
+        updatedAt: input.expectedUpdatedAt,
+      },
+      data: {
+        ...pageChangeData(input.pageChange),
+        updatedAt: input.expectedUpdatedAt,
       },
     });
   }

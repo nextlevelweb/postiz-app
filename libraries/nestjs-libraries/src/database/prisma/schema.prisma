@@ -2289,24 +2289,36 @@ model ContentStudioExpertiseProfileRevision {
 // or Atom feed: it never has a version, its captures record the pages it
 // lists as discoveries of ordinary `url` sources, and lastCapturedAt is when
 // it was last read successfully (null for a `url` source and before the
-// first feed capture)
+// first feed capture). The lastPageChange* fields (P8-04B1) are derived from
+// a `url` source's versions, which stay the record: the last version whose
+// blocks or title differ from the version just before it, with the same
+// extraction (when it was fetched, its number, content_changed or
+// title_changed), and when that version before it was fetched. All four are
+// null together: before such a version, and always for a feed. A first
+// capture, a repeat or another extraction version never sets them. Ingestion
+// keeps them in the version append; the content-studio:backfill-page-changes
+// command rebuilds them from the versions
 model ContentStudioSource {
-  id                  String                         @id @default(uuid())
-  organizationId      String
-  kind                String
-  name                String
-  canonicalUrl        String?
-  latestVersionNumber Int                            @default(0)
-  archivedAt          DateTime?
-  createdById         String
-  createdAt           DateTime                       @default(now())
-  updatedAt           DateTime                       @updatedAt
-  lastCapturedAt      DateTime?
-  organization        Organization                   @relation(fields: [organizationId], references: [id])
-  createdBy           User                           @relation("ContentStudioSourceCreatedBy", fields: [createdById], references: [id])
-  versions            ContentStudioSourceVersion[]
-  feedDiscoveries     ContentStudioSourceDiscovery[] @relation("ContentStudioSourceDiscoveryFeed")
-  discoveredBy        ContentStudioSourceDiscovery[] @relation("ContentStudioSourceDiscoveryDiscovered")
+  id                              String                         @id @default(uuid())
+  organizationId                  String
+  kind                            String
+  name                            String
+  canonicalUrl                    String?
+  latestVersionNumber             Int                            @default(0)
+  archivedAt                      DateTime?
+  createdById                     String
+  createdAt                       DateTime                       @default(now())
+  updatedAt                       DateTime                       @updatedAt
+  lastCapturedAt                  DateTime?
+  lastPageChangeAt                DateTime?
+  lastPageChangeVersionNumber     Int?
+  lastPageChangeKind              String?
+  lastPageChangePreviousCaptureAt DateTime?
+  organization                    Organization                   @relation(fields: [organizationId], references: [id])
+  createdBy                       User                           @relation("ContentStudioSourceCreatedBy", fields: [createdById], references: [id])
+  versions                        ContentStudioSourceVersion[]
+  feedDiscoveries                 ContentStudioSourceDiscovery[] @relation("ContentStudioSourceDiscoveryFeed")
+  discoveredBy                    ContentStudioSourceDiscovery[] @relation("ContentStudioSourceDiscoveryDiscovered")
 
   @@unique([id, organizationId])
   @@unique([organizationId, canonicalUrl])
@@ -2314,6 +2326,7 @@ model ContentStudioSource {
   @@index([organizationId, kind])
   @@index([createdById])
   @@index([kind, archivedAt, id])
+  @@index([organizationId, lastPageChangeAt])
 }
 
 // That a feed source listed a page (P8-01): which feed, which `url` source of

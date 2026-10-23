@@ -475,11 +475,14 @@ describe('ContentStudioSourceRepository: sources', () => {
       'appendVersionWithCompareAndSwap',
       'archiveSource',
       'constructor',
+      // reads (P8-04B1)
+      'countPageChangesForOrganization',
       'countSourcesForOrganization',
       'countVersionsForSource',
       'createSource',
       // reads (P8-04A)
       'getFirstRepeatOfVersion',
+      'getPageSourceForBackfill',
       'getPreviousDifferentVersion',
       'getSourceByCanonicalUrlForOrganization',
       'getSourceForCapture',
@@ -488,11 +491,17 @@ describe('ContentStudioSourceRepository: sources', () => {
       'getVersionDetailByNumber',
       'getVersionForSource',
       'getVersionsByIdsForOrganization',
+      'getVersionsByNumbersForOrganization',
       'listFeedsDueForCapture',
+      'listPageChangesForOrganization',
+      'listPageSourcesForBackfill',
       'listSourcesForOrganization',
+      'listVersionCapturesForBackfill',
       'listVersionsForSource',
       'markFeedCaptured',
       'restoreSource',
+      // the page-change backfill (P8-04B1): the derived fields only
+      'setPageChangeWithCompareAndSwap',
       'updateSourceName',
     ]);
   });
@@ -845,6 +854,11 @@ describe('ContentStudioSource schema', () => {
       updatedAt: 'DateTime',
       // a feed's last successful capture (P8-01)
       lastCapturedAt: 'DateTime?',
+      // a page's last page change, derived from its versions (P8-04B1)
+      lastPageChangeAt: 'DateTime?',
+      lastPageChangeVersionNumber: 'Int?',
+      lastPageChangeKind: 'String?',
+      lastPageChangePreviousCaptureAt: 'DateTime?',
       organization: 'Organization',
       createdBy: 'User',
       versions: 'ContentStudioSourceVersion[]',

@@ -1111,3 +1111,191 @@ describe('ContentStudioSourceIngestionService: SSRF boundary with the real SafeF
     expect(state.versions).toEqual([]);
   });
 });
+
+// The last page change (P8-04B1): what a refresh is to the version it
+// follows, by the one classifier, written with the version number in the one
+// source update of the append. A first capture, a repeat and another
+// extraction version leave it as it is. A failed version create rolls it
+// back with the number; that needs a real transaction (the PostgreSQL suite)
+describe('ContentStudioSourceIngestionService: last page change', () => {
+  const article = (main: string, title = 'News A') =>
+    `<html><head><title>${title}</title></head><body><main>${main}</main></body></html>`;
+  const pageChange = (row: Row) => [
+    row.lastPageChangeAt ?? null,
+    row.lastPageChangeVersionNumber ?? null,
+    row.lastPageChangeKind ?? null,
+    row.lastPageChangePreviousCaptureAt ?? null,
+  ];
+  const NONE = [null, null, null, null];
+  const refreshWith = async (
+    ingestion: ContentStudioSourceIngestionService,
+    main: string,
+    title?: string
+  ) => {
+    fetchMock.mockResolvedValueOnce(fetched({ page: article(main, title) }));
+    return refresh(ingestion);
+  };
+
+  it('W1 a first capture leaves all four fields empty', async () => {
+    const { ingestion, addSource, state, version } = setup();
+    await addSource();
+    await refreshWith(ingestion, '<p>A</p>');
+    expect(pageChange(state.sources[0])).toEqual(NONE);
+    // a first capture reads no earlier version
+    expect(version.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('W2/W3 a repeat and another extraction version leave them empty', async () => {
+    const { ingestion, addSource, state } = setup();
+    await addSource();
+    await refreshWith(ingestion, '<p>A</p>');
+    await refreshWith(ingestion, '<p>A</p>');
+    expect(state.versions).toHaveLength(2);
+    expect(pageChange(state.sources[0])).toEqual(NONE);
+    // the stored capture was made by an earlier extractor; other blocks too
+    state.versions[1].extractionVersion = 'content-studio-source-v1';
+    await refreshWith(ingestion, '<p>B</p>', 'Another title');
+    expect(state.versions).toHaveLength(3);
+    expect(pageChange(state.sources[0])).toEqual(NONE);
+  });
+
+  it('W4/W13 a title change is a page change, after the version just before it', async () => {
+    const { ingestion, addSource, state } = setup();
+    await addSource();
+    await refreshWith(ingestion, '<p>A</p>', 'One');
+    await refreshWith(ingestion, '<p>A</p>', 'One');
+    await refreshWith(ingestion, '<p>A</p>', 'Two');
+    const [, v2, v3] = state.versions;
+    expect(pageChange(state.sources[0])).toEqual([
+      v3.fetchedAt,
+      3,
+      'title_changed',
+      // the capture before it, a repeat: not the first of its run
+      v2.fetchedAt,
+    ]);
+  });
+
+  it('W5/W6 a blocks change is a content change, also with another title', async () => {
+    const { ingestion, addSource, state } = setup();
+    await addSource();
+    await refreshWith(ingestion, '<p>A</p>', 'One');
+    await refreshWith(ingestion, '<p>B</p>', 'One');
+    expect(pageChange(state.sources[0])).toEqual([
+      state.versions[1].fetchedAt,
+      2,
+      'content_changed',
+      state.versions[0].fetchedAt,
+    ]);
+    await refreshWith(ingestion, '<p>C</p>', 'Two');
+    expect(pageChange(state.sources[0])).toEqual([
+      state.versions[2].fetchedAt,
+      3,
+      'content_changed',
+      state.versions[1].fetchedAt,
+    ]);
+  });
+
+  it('W7/W8 a later repeat or extraction version keeps the last page change', async () => {
+    const { ingestion, addSource, state } = setup();
+    await addSource();
+    await refreshWith(ingestion, '<p>A</p>');
+    await refreshWith(ingestion, '<p>B</p>');
+    const kept = pageChange(state.sources[0]);
+    expect(kept).toEqual([
+      state.versions[1].fetchedAt,
+      2,
+      'content_changed',
+      state.versions[0].fetchedAt,
+    ]);
+    await refreshWith(ingestion, '<p>B</p>');
+    expect(pageChange(state.sources[0])).toEqual(kept);
+    state.versions[2].extractionVersion = 'content-studio-source-v1';
+    await refreshWith(ingestion, '<p>B</p>');
+    expect(state.versions).toHaveLength(4);
+    expect(pageChange(state.sources[0])).toEqual(kept);
+  });
+
+  it('W9 a capture that loses the compare-and-swap writes nothing, before or in the update', async () => {
+    const { ingestion, addSource, state, source } = setup();
+    await addSource();
+    await refreshWith(ingestion, '<p>A</p>');
+    // the slow refresh read version 1 before its fetch
+    let release: (result: SafeFetchResult) => void = () => undefined;
+    fetchMock.mockImplementationOnce(
+      () => new Promise((resolve) => (release = resolve))
+    );
+    const slow = refresh(ingestion);
+    await new Promise((resolve) => setImmediate(resolve));
+    await refreshWith(ingestion, '<p>A</p>');
+    release(fetched({ page: article('<p>B</p>') }));
+    expect(await httpError(slow)).toEqual({ status: 409, body: CONFLICT });
+    expect(state.versions).toHaveLength(2);
+    expect(pageChange(state.sources[0])).toEqual(NONE);
+    // the source is archived between the read and the update: count 0
+    const updateMany = source.updateMany.getMockImplementation()!;
+    source.updateMany.mockImplementationOnce(async (args) => {
+      state.sources[0].archivedAt = new Date();
+      return updateMany(args);
+    });
+    fetchMock.mockResolvedValueOnce(fetched({ page: article('<p>C</p>') }));
+    expect(await httpError(refresh(ingestion))).toEqual({
+      status: 409,
+      body: CONFLICT,
+    });
+    expect(state.versions).toHaveLength(2);
+    expect(pageChange(state.sources[0])).toEqual(NONE);
+  });
+
+  it('W14 the page change rides the one source update of the append; the earlier version is read once, by number', async () => {
+    const { ingestion, addSource, state, source, version } = setup();
+    await addSource();
+    await refreshWith(ingestion, '<p>A</p>');
+    source.updateMany.mockClear();
+    version.findFirst.mockClear();
+    await refreshWith(ingestion, '<p>B</p>');
+    expect(source.updateMany).toHaveBeenCalledTimes(1);
+    expect(source.updateMany.mock.calls[0][0]).toEqual({
+      where: {
+        id: SOURCE,
+        organizationId: ORG,
+        archivedAt: null,
+        latestVersionNumber: 1,
+      },
+      data: {
+        latestVersionNumber: { increment: 1 },
+        lastPageChangeAt: state.versions[1].fetchedAt,
+        lastPageChangeVersionNumber: 2,
+        lastPageChangeKind: 'content_changed',
+        lastPageChangePreviousCaptureAt: state.versions[0].fetchedAt,
+      },
+    });
+    expect(version.findFirst).toHaveBeenCalledTimes(1);
+    expect(version.findFirst.mock.calls[0][0]).toEqual({
+      where: { organizationId: ORG, sourceId: SOURCE, versionNumber: 1 },
+      select: expect.not.objectContaining({ content: true }),
+    });
+    // a repeat: the number only
+    source.updateMany.mockClear();
+    await refreshWith(ingestion, '<p>B</p>');
+    expect(source.updateMany.mock.calls[0][0].data).toEqual({
+      latestVersionNumber: { increment: 1 },
+    });
+  });
+
+  it('a refresh after a missing earlier version fails closed: never a first capture', async () => {
+    const { ingestion, addSource, state } = setup();
+    await addSource();
+    await refreshWith(ingestion, '<p>A</p>');
+    state.versions.length = 0;
+    fetchMock.mockResolvedValueOnce(fetched({ page: article('<p>B</p>') }));
+    expect(await httpError(refresh(ingestion))).toEqual({
+      status: 500,
+      body: {
+        msg: 'Stored source data could not be verified.',
+        code: 'CS_SOURCE_INTEGRITY_ERROR',
+      },
+    });
+    expect(state.versions).toEqual([]);
+    expect(pageChange(state.sources[0])).toEqual(NONE);
+  });
+});

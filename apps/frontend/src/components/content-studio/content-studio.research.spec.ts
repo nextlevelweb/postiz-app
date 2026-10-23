@@ -532,7 +532,8 @@ describe('News Radar: surface', () => {
     );
     const top = readFileSync(join(dir, '../layout/top.menu.tsx'), 'utf8');
     expect(top).not.toMatch(/research|radar/i);
-    expect(page).toContain('return <ContentStudioResearch />;');
+    // P8-04B1: the page is News Radar and Changes; no tab is News Radar
+    expect(page).toContain('return <ContentStudioResearchTabs />;');
     expect(page).not.toMatch(/fetch|useSWR|refresh/);
   });
 

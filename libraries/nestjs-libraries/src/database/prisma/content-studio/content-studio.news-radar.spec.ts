@@ -731,11 +731,15 @@ describe('News Radar: read only, bounded, organization scoped', () => {
         .readFileSync(path.join(__dirname, file), 'utf8')
         .replace(/^\s*\/\/.*$/gm, '');
     const service = read('content-studio.source.service.ts');
+    // up to the next method of its own: the comment that once ended it is
+    // stripped above, so it would have run to the end of the file
     const method = service.slice(
       service.indexOf('async listOrganizationDiscoveries('),
-      service.indexOf('// A discovery as a capture writes it')
+      service.indexOf('private toPublicDiscovery(')
     );
     expect(method.length).toBeGreaterThan(500);
+    expect(method).toContain('listDiscoveriesForOrganization(');
+    expect(method).not.toContain('private toPublicDiscovery(');
     expect(method).not.toMatch(
       /recordDiscovery|markFeedCaptured|appendVersion|refresh|capture\(|safeFetch|fetch\(|AIConnection|AIExecution|AIUsage|AIOperation|Package|create|update|delete|upsert/i
     );

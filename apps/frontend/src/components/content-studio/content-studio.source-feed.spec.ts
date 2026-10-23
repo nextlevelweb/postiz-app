@@ -19,6 +19,12 @@ import dayjs from 'dayjs';
 // pages a feed found. A .spec.ts without JSX like the other Content Studio
 // frontend specs; the server is an in-memory fake of the source routes
 
+// a source page reads ?change= (P8-04B1); none here
+jest.mock('next/navigation', () => ({
+  useRouter: () => ({ push: jest.fn(), replace: jest.fn() }),
+  usePathname: () => '/content-studio/sources/x',
+  useSearchParams: () => new URLSearchParams(),
+}));
 jest.mock('next/link', () => {
   const { createElement } = require('react');
   return {

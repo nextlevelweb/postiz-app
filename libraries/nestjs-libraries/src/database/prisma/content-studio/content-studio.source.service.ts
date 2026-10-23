@@ -20,9 +20,12 @@ import {
   parseVerifiedContentStudioSourceVersion,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.version';
 import {
+  classifyContentStudioSourceCaptureTransition,
   compareContentStudioSourceVersions,
   ContentStudioComparedSourceVersion,
+  isContentStudioSourcePageChange,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.change';
+import { ContentStudioSourcePageChangeData } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
 
 // Fixed messages only: never a URL, source text, id, zod or Prisma error. A
 // source of another organization is a plain 404
@@ -94,6 +97,11 @@ const DISCOVERY_WINDOW_MS: Record<ContentStudioDiscoveryWindow, number | null> =
     '30d': 30 * 24 * HOUR,
     all: null,
   };
+// The page-change backfill (P8-04B1): sources per page, versions per read,
+// and how often one source is read again after a capture or rename raced it
+const BACKFILL_PAGE_SIZE = 100;
+const BACKFILL_VERSIONS_PAGE_SIZE = 1000;
+const BACKFILL_ATTEMPTS = 3;
 const UNPAIRED_SURROGATE =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
@@ -114,6 +122,59 @@ interface SourceRow {
   // feeds only (P8-01)
   lastCapturedAt?: Date | null;
 }
+
+// A source's stored last page change (P8-04B1)
+interface PageChangeRow {
+  latestVersionNumber: number;
+  lastPageChangeAt: Date | null;
+  lastPageChangeVersionNumber: number | null;
+  lastPageChangeKind: string | null;
+  lastPageChangePreviousCaptureAt: Date | null;
+}
+
+// The stored fields as one value: null when all four are null, the change
+// when all four are set and make sense (a page change, a later version than
+// the first, at most the current one), undefined for anything else
+const storedPageChange = (
+  row: PageChangeRow
+): ContentStudioSourcePageChangeData | null | undefined => {
+  const fields = [
+    row.lastPageChangeAt,
+    row.lastPageChangeVersionNumber,
+    row.lastPageChangeKind,
+    row.lastPageChangePreviousCaptureAt,
+  ];
+  if (fields.every((field) => field === null)) {
+    return null;
+  }
+  if (
+    !(row.lastPageChangeAt instanceof Date) ||
+    !(row.lastPageChangePreviousCaptureAt instanceof Date) ||
+    !isContentStudioSourcePageChange(row.lastPageChangeKind) ||
+    !Number.isInteger(row.lastPageChangeVersionNumber) ||
+    row.lastPageChangeVersionNumber! < 2 ||
+    row.lastPageChangeVersionNumber! > row.latestVersionNumber
+  ) {
+    return undefined;
+  }
+  return {
+    at: row.lastPageChangeAt,
+    versionNumber: row.lastPageChangeVersionNumber!,
+    kind: row.lastPageChangeKind,
+    previousCaptureAt: row.lastPageChangePreviousCaptureAt,
+  };
+};
+
+const samePageChange = (
+  a: ContentStudioSourcePageChangeData | null,
+  b: ContentStudioSourcePageChangeData | null
+) =>
+  a === null || b === null
+    ? a === b
+    : a.at.getTime() === b.at.getTime() &&
+      a.versionNumber === b.versionNumber &&
+      a.kind === b.kind &&
+      a.previousCaptureAt.getTime() === b.previousCaptureAt.getTime();
 
 interface VersionRow {
   id: string;
@@ -352,6 +413,136 @@ export class ContentStudioSourceService {
     return {
       ...toPublicContentStudioSourceVersion(row),
       content: this.intactContent(row),
+    };
+  }
+
+  // Organization Changes (P8-04B1): one page of the organization's page
+  // sources by their last page change, newest first, one row per source
+  // (archived ones too: their change stays true). The fields are derived
+  // from the versions; each row is checked as it is read, and its version is
+  // found by number in one query and must be the very capture the source
+  // names, or the request fails. Read only, nothing of the content
+  async listPageChanges(input: {
+    organizationId: string;
+    page: number;
+    since?: ContentStudioDiscoveryWindow;
+  }) {
+    const window =
+      DISCOVERY_WINDOW_MS[
+        input.since ?? CONTENT_STUDIO_DISCOVERY_DEFAULT_WINDOW
+      ];
+    const filter = {
+      organizationId: input.organizationId,
+      changedSince: window === null ? null : new Date(Date.now() - window),
+    };
+    const [rows, count] = await Promise.all([
+      this._contentStudioSourceRepository.listPageChangesForOrganization({
+        ...filter,
+        skip: (input.page - 1) * DISCOVERY_PAGE_SIZE,
+        take: DISCOVERY_PAGE_SIZE,
+      }),
+      this._contentStudioSourceRepository.countPageChangesForOrganization(
+        filter
+      ),
+    ]);
+    const changes = rows.map((row) => {
+      const change = storedPageChange(row);
+      if (
+        row.organizationId !== input.organizationId ||
+        row.kind !== 'url' ||
+        !change
+      ) {
+        throw integrityError();
+      }
+      return { row, change };
+    });
+    const versions = changes.length
+      ? await this._contentStudioSourceRepository.getVersionsByNumbersForOrganization(
+          input.organizationId,
+          changes.map(({ row, change }) => ({
+            sourceId: row.id,
+            versionNumber: change.versionNumber,
+          }))
+        )
+      : [];
+    if (versions.length !== changes.length) {
+      throw integrityError();
+    }
+    return {
+      pages: Math.ceil(count / DISCOVERY_PAGE_SIZE),
+      total: count,
+      results: changes.map(({ row, change }) => {
+        const found = versions.filter(
+          (version) =>
+            version.sourceId === row.id &&
+            version.versionNumber === change.versionNumber
+        );
+        if (
+          found.length !== 1 ||
+          found[0].fetchedAt.getTime() !== change.at.getTime()
+        ) {
+          throw integrityError();
+        }
+        return {
+          source: {
+            id: row.id,
+            name: row.name,
+            canonicalUrl: row.canonicalUrl,
+            archivedAt: row.archivedAt,
+          },
+          change: change.kind,
+          changedAt: change.at,
+          previousCaptureAt: change.previousCaptureAt,
+          version: {
+            id: found[0].id,
+            versionNumber: found[0].versionNumber,
+          },
+        };
+      }),
+    };
+  }
+
+  // For the page-change backfill command only (no route reaches it): one
+  // page of page sources of every organization, archived or not, after
+  // `afterId`, each given the last page change its versions show, by the
+  // rule captures follow. Only the stored blocks hash, title, extraction and
+  // fetch time of the versions are read, in order, each compared with the
+  // version before it that exists. A source already right is not written; a
+  // wrong one is repaired, to none when it has no page change. Written only
+  // while the source is as it was read, keeping its updatedAt; a source a
+  // capture or rename raced is read again, and one whose versions do not end
+  // at its current version is reported, never written. `next` is where the
+  // following page starts, null after the last one
+  async backfillPageChanges(input: { afterId: string | null }) {
+    const sources =
+      await this._contentStudioSourceRepository.listPageSourcesForBackfill({
+        afterId:
+          typeof input.afterId === 'string' && UUID.test(input.afterId)
+            ? input.afterId
+            : null,
+        take: BACKFILL_PAGE_SIZE,
+      });
+    let updated = 0;
+    let unchanged = 0;
+    const failed: string[] = [];
+    for (const source of sources) {
+      const outcome = await this.backfillPageChange(source);
+      if (outcome === 'updated') {
+        updated += 1;
+      } else if (outcome === 'unchanged') {
+        unchanged += 1;
+      } else {
+        failed.push(source.id);
+      }
+    }
+    return {
+      next:
+        sources.length === BACKFILL_PAGE_SIZE
+          ? sources[sources.length - 1].id
+          : null,
+      updated,
+      unchanged,
+      failed,
     };
   }
 
@@ -701,6 +892,100 @@ export class ContentStudioSourceService {
         throw integrityError();
       }
       throw err;
+    }
+  }
+
+  // One source of the backfill, read again when a write finds it changed
+  private async backfillPageChange(
+    source: PageChangeRow & {
+      id: string;
+      organizationId: string;
+      updatedAt: Date;
+    }
+  ): Promise<'updated' | 'unchanged' | 'failed'> {
+    let row = source;
+    for (let attempt = 0; attempt < BACKFILL_ATTEMPTS; attempt++) {
+      const { pageChange, lastVersionNumber } = await this.lastPageChange(
+        row.organizationId,
+        row.id
+      );
+      if (lastVersionNumber === row.latestVersionNumber) {
+        const stored = storedPageChange(row);
+        if (stored !== undefined && samePageChange(stored, pageChange)) {
+          return 'unchanged';
+        }
+        const { count } =
+          await this._contentStudioSourceRepository.setPageChangeWithCompareAndSwap(
+            {
+              organizationId: row.organizationId,
+              sourceId: row.id,
+              expectedLatestVersionNumber: row.latestVersionNumber,
+              expectedUpdatedAt: row.updatedAt,
+              pageChange,
+            }
+          );
+        if (count === 1) {
+          return 'updated';
+        }
+      }
+      // a capture, rename or archive went first, or the versions read do
+      // not end at the source's current version
+      const fresh =
+        await this._contentStudioSourceRepository.getPageSourceForBackfill(
+          row.organizationId,
+          row.id
+        );
+      if (!fresh) {
+        return 'failed';
+      }
+      row = fresh;
+    }
+    return 'failed';
+  }
+
+  // The last page change a source's versions show, and the number of the
+  // last version read: every version from the first, each compared with the
+  // one before it that exists (a gap in the numbers changes nothing)
+  private async lastPageChange(organizationId: string, sourceId: string) {
+    let previous: {
+      versionNumber: number;
+      contentHash: string;
+      title: string | null;
+      extractionVersion: string;
+      fetchedAt: Date;
+    } | null = null;
+    let pageChange: ContentStudioSourcePageChangeData | null = null;
+    for (;;) {
+      const versions =
+        await this._contentStudioSourceRepository.listVersionCapturesForBackfill(
+          {
+            organizationId,
+            sourceId,
+            afterVersionNumber: previous ? previous.versionNumber : 0,
+            take: BACKFILL_VERSIONS_PAGE_SIZE,
+          }
+        );
+      for (const version of versions) {
+        const transition = classifyContentStudioSourceCaptureTransition(
+          previous,
+          version
+        );
+        if (previous && isContentStudioSourcePageChange(transition)) {
+          pageChange = {
+            at: version.fetchedAt,
+            versionNumber: version.versionNumber,
+            kind: transition,
+            previousCaptureAt: previous.fetchedAt,
+          };
+        }
+        previous = version;
+      }
+      if (versions.length < BACKFILL_VERSIONS_PAGE_SIZE) {
+        return {
+          pageChange,
+          lastVersionNumber: previous ? previous.versionNumber : 0,
+        };
+      }
     }
   }
 

@@ -1,4 +1,4 @@
-import { ContentStudioResearch } from '@gitroom/frontend/components/content-studio/content-studio.research';
+import { ContentStudioResearchTabs } from '@gitroom/frontend/components/content-studio/content-studio.research.tabs';
 export const dynamic = 'force-dynamic';
 import { Metadata } from 'next';
 import { isGeneralServerSide } from '@gitroom/helpers/utils/is.general.server.side';
@@ -13,5 +13,5 @@ export const metadata: Metadata = {
   description: '',
 };
 export default async function Index() {
-  return <ContentStudioResearch />;
+  return <ContentStudioResearchTabs />;
 }

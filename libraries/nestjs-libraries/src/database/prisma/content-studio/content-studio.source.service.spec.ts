@@ -793,6 +793,10 @@ describe('ContentStudioSourceService source', () => {
     ).toEqual([
       'archiveSource',
       'assertId',
+      // the page-change backfill (P8-04B1): derived fields only, never a
+      // version
+      'backfillPageChange',
+      'backfillPageChanges',
       'canonicalUrl',
       'createSource',
       'getRow',
@@ -801,8 +805,11 @@ describe('ContentStudioSourceService source', () => {
       // read only (P8-04A)
       'getVersionChanges',
       'intactContent',
+      'lastPageChange',
       'listDiscoveries',
       'listOrganizationDiscoveries',
+      // read only (P8-04B1)
+      'listPageChanges',
       'listSources',
       'listVersions',
       'renameSource',

@@ -20,6 +20,10 @@ import {
 //   when the blocks differ: the extractor may have made the difference
 // - redirects, status, type, size, fetch time and the fetched bytes' hash are
 //   provenance, never a change
+// - what a capture is to the capture just before it (P8-04B1) is decided by
+//   the same rules: a version append and the page-change backfill keep the
+//   source's last page change with it, and a repeat or another extraction
+//   version is never one
 // - blocks are matched by type, level and text, in order. Block ids are
 //   positions (b1, b2, ...) and say nothing across versions, so a block that
 //   was edited is one removed and one added block; there is no "modified"
@@ -52,6 +56,49 @@ export const CONTENT_STUDIO_SOURCE_CHANGES = [
 
 export type ContentStudioSourceChange =
   (typeof CONTENT_STUDIO_SOURCE_CHANGES)[number];
+
+// What a capture is to the capture just before it (P8-04B1): the first one,
+// a repeat of it, or one of the changes. The one place the order of the
+// changes is decided: another extraction version first, then the blocks,
+// then the title
+export type ContentStudioSourceCaptureTransition =
+  | 'initial'
+  | 'repeat'
+  | Exclude<ContentStudioSourceChange, 'no_earlier_change'>;
+
+export function classifyContentStudioSourceCaptureTransition(
+  previous: ContentStudioSourceCaptureIdentity | null,
+  next: ContentStudioSourceCaptureIdentity
+): ContentStudioSourceCaptureTransition {
+  if (!previous) {
+    return 'initial';
+  }
+  if (isSameContentStudioSourceCapture(previous, next)) {
+    return 'repeat';
+  }
+  return previous.extractionVersion !== next.extractionVersion
+    ? 'extraction_changed'
+    : previous.contentHash !== next.contentHash
+    ? 'content_changed'
+    : 'title_changed';
+}
+
+// A change of the page itself: its blocks or its title, with the same
+// extraction. Another extraction version is never one. Also the check of a
+// stored lastPageChangeKind
+export const CONTENT_STUDIO_SOURCE_PAGE_CHANGES = [
+  'content_changed',
+  'title_changed',
+] as const;
+
+export type ContentStudioSourcePageChange =
+  (typeof CONTENT_STUDIO_SOURCE_PAGE_CHANGES)[number];
+
+export const isContentStudioSourcePageChange = (
+  value: unknown
+): value is ContentStudioSourcePageChange =>
+  typeof value === 'string' &&
+  (CONTENT_STUDIO_SOURCE_PAGE_CHANGES as readonly string[]).includes(value);
 
 export type ContentStudioSourceBlockChange =
   | {
@@ -201,7 +248,12 @@ export function compareContentStudioSourceVersions(
   titleChanged: boolean;
   sameFetchedBytes: boolean;
 } {
-  if (!before || isSameContentStudioSourceCapture(before, after)) {
+  const transition = classifyContentStudioSourceCaptureTransition(
+    before,
+    after
+  );
+  // the first capture or a repeat (`before` as well, for the type)
+  if (!before || transition === 'initial' || transition === 'repeat') {
     return {
       change: 'no_earlier_change',
       titleChanged: false,
@@ -217,12 +269,7 @@ export function compareContentStudioSourceVersions(
     };
   }
   return {
-    change:
-      before.extractionVersion !== after.extractionVersion
-        ? 'extraction_changed'
-        : before.contentHash !== after.contentHash
-        ? 'content_changed'
-        : 'title_changed',
+    change: transition,
     titleChanged: before.title !== after.title,
     // proven by the hashes of both fetched bodies, never assumed
     sameFetchedBytes:

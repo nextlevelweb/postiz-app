@@ -98,6 +98,7 @@ import {
   ListContentStudioSourceVersionsDto,
   ListContentStudioSourceDiscoveriesDto,
   ListContentStudioDiscoveriesDto,
+  ListContentStudioSourceChangesDto,
   UpdateContentStudioSourceDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.source.dto';
 import {
@@ -790,6 +791,20 @@ export class ContentStudioController {
       since: query.since,
       feedSourceId: query.feedSourceId,
       captureState: query.captureState,
+    });
+  }
+
+  // Organization Changes (P8-04B1): the organization's page sources by their
+  // last page change, newest first. Read only: nothing is fetched or captured
+  @Get('/source-changes')
+  listSourceChanges(
+    @GetOrgFromRequest() org: Organization,
+    @Query() query: ListContentStudioSourceChangesDto
+  ) {
+    return this._contentStudioSourceService.listPageChanges({
+      organizationId: org.id,
+      page: query.page,
+      since: query.since,
     });
   }
 

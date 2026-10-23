@@ -799,6 +799,49 @@ describe('feed capture: dedup and repeated captures', () => {
     expect((await capture(t)).capture.versionsCreated).toBe(0);
   });
 
+  it("P804B1 W11/W12 a feed capture keeps a page's last page change, skips a repeat without one, and never gives the feed one", async () => {
+    const t = setup();
+    t.addFeed();
+    const w = web();
+    w.feeds.set(FEED_URL, rss([page(1)]));
+    w.pages.set(page(1), html('One'));
+    await capture(t);
+    const id = sourceByUrl(t, page(1)).id;
+    const state = () => {
+      const row = t.state.sources.find((s) => s.id === id)!;
+      return [
+        row.lastPageChangeAt ?? null,
+        row.lastPageChangeVersionNumber ?? null,
+        row.lastPageChangeKind ?? null,
+        row.lastPageChangePreviousCaptureAt ?? null,
+      ];
+    };
+    // a first capture is no change
+    expect(state()).toEqual([null, null, null, null]);
+    // W12 the same capture: no version, nothing written
+    expect((await capture(t)).capture.unchanged).toBe(1);
+    expect(state()).toEqual([null, null, null, null]);
+    // a title change is a page change
+    w.pages.set(page(1), html('One', 'Retitled'));
+    await capture(t);
+    const [v1, v2] = versionsOf(t, id);
+    expect(state()).toEqual([v2.fetchedAt, 2, 'title_changed', v1.fetchedAt]);
+    // another extraction version: a version, never a page change
+    versionsOf(t, id)[1].extractionVersion = 'content-studio-source-v1';
+    expect((await capture(t)).capture.versionsCreated).toBe(1);
+    expect(state()).toEqual([v2.fetchedAt, 2, 'title_changed', v1.fetchedAt]);
+    // the blocks change: the page change moves on
+    w.pages.set(page(1), html('Two', 'Retitled'));
+    await capture(t);
+    const [, , v3, v4] = versionsOf(t, id);
+    expect(state()).toEqual([v4.fetchedAt, 4, 'content_changed', v3.fetchedAt]);
+    // W11 the feed itself never has one
+    const feed = t.state.sources.find((s) => s.id === FEED)!;
+    expect(
+      Object.keys(feed).filter((key) => /lastPageChange/.test(key))
+    ).toEqual([]);
+  });
+
   it('DS8 the same page in two feeds is one source with one discovery per feed', async () => {
     const t = setup();
     t.addFeed();

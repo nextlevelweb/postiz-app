@@ -171,7 +171,7 @@ const TRANSITIONS = [
 // request organization and user only, the strict DTOs. The service has its
 // own spec
 describe('ContentStudioController review routes', () => {
-  it('RE8/P501-13/C16/P502-6/API10/P504-4/P504-5 declares exactly these seventeen routes (122 -> 128 -> 133 -> 135 -> 139 -> 140 with P6-01, 141 with P6-02, 142 with P8-01, 143 with P8-02, 144 with P8-04A): no delete, event, edit of a decision or reopen route', () => {
+  it('RE8/P501-13/C16/P502-6/API10/P504-4/P504-5 declares exactly these seventeen routes (122 -> 128 -> 133 -> 135 -> 139 -> 140 with P6-01, 141 with P6-02, 142 with P8-01, 143 with P8-02, 144 with P8-04A, 145 with P8-04B1): no delete, event, edit of a decision or reopen route', () => {
     const names = Object.getOwnPropertyNames(
       ContentStudioController.prototype
     ).filter((name) => /Review(?!sion)/.test(name));
@@ -215,7 +215,8 @@ describe('ContentStudioController review routes', () => {
     // P8-01: one more, the pages a feed source found
     // P8-02: one more, News Radar across feeds
     // P8-04A: one more, what changed in a source version
-    expect(all).toHaveLength(144);
+    // P8-04B1: one more, the organization's page changes
+    expect(all).toHaveLength(145);
     expect(
       all.filter(
         (r) =>

@@ -44,6 +44,7 @@ import {
   ListContentStudioSourceVersionsDto,
   ListContentStudioSourceDiscoveriesDto,
   ListContentStudioDiscoveriesDto,
+  ListContentStudioSourceChangesDto,
   UpdateContentStudioSourceDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.source.dto';
 import { ContentStudioDesignAIService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-ai.service';
@@ -84,6 +85,7 @@ const setup = () => {
     restoreSource: jest.fn().mockResolvedValue(result),
     listDiscoveries: jest.fn().mockResolvedValue(result),
     listOrganizationDiscoveries: jest.fn().mockResolvedValue(result),
+    listPageChanges: jest.fn().mockResolvedValue(result),
   };
   const ingestion = {
     refreshSource: jest.fn().mockResolvedValue(result),
@@ -362,6 +364,9 @@ describe('ContentStudioController source routes', () => {
       ListContentStudioSourceDiscoveriesDto
     );
     expect(types('listDiscoveries')[1]).toBe(ListContentStudioDiscoveriesDto);
+    expect(types('listSourceChanges')[1]).toBe(
+      ListContentStudioSourceChangesDto
+    );
     const text = fs
       .readFileSync(
         path.join(__dirname, 'content-studio.controller.ts'),
@@ -373,8 +378,8 @@ describe('ContentStudioController source routes', () => {
       text.indexOf("@Get('/sources')"),
       text.indexOf("@Get('/writing-profiles')")
     );
-    // the eleven source routes and News Radar (P8-02)
-    expect(block.match(/@(Get|Post|Patch|Put|Delete)\(/g)).toHaveLength(12);
+    // the eleven source routes, News Radar (P8-02) and Changes (P8-04B1)
+    expect(block.match(/@(Get|Post|Patch|Put|Delete)\(/g)).toHaveLength(13);
     expect(block).not.toMatch(
       /AIConnection|AIExecution|Role\.|assertManager|actor|users|appendVersion|safeFetch|fetch\(/
     );
@@ -642,6 +647,7 @@ describe('Source trusted-provenance boundary', () => {
       'export class ListContentStudioSourceVersionsDto',
       'export class ListContentStudioSourceDiscoveriesDto',
       'export class ListContentStudioDiscoveriesDto',
+      'export class ListContentStudioSourceChangesDto',
     ]);
     const body = await rejected(CreateContentStudioSourceDto, {
       ...CREATE,
@@ -798,8 +804,101 @@ describe('ContentStudioController source version changes', () => {
     );
   });
 
-  it('R5 is the 144th route', () => {
-    expect(allRoutes()).toHaveLength(144);
+  it('R5 is the 144th route (145 with P8-04B1)', () => {
+    expect(allRoutes()).toHaveLength(145);
+  });
+});
+
+// Organization Changes (P8-04B1): the request organization, a page and a
+// window only. Nothing is fetched or captured
+describe('ContentStudioController organization page changes', () => {
+  it('OC1 is GET /source-changes, the 145th route, with the default 200', () => {
+    expect(route('listSourceChanges')).toBe('GET /source-changes');
+    expect(
+      allRoutes()
+        // a review's request-changes is no source route
+        .filter((r) => /source/.test(r) && /changes/.test(r))
+        .sort()
+    ).toEqual([
+      'GET /source-changes',
+      'GET /sources/:id/versions/:versionId/changes',
+    ]);
+    expect(
+      Reflect.getMetadata(HTTP_CODE_METADATA, handler('listSourceChanges'))
+    ).toBeUndefined();
+    expect(allRoutes()).toHaveLength(145);
+  });
+
+  it('OC2 reads for the request organization with the page and window only', async () => {
+    const { sources, ingestion, controller, result } = setup();
+    const query = Object.assign(new ListContentStudioSourceChangesDto(), {
+      page: 2,
+      since: '30d',
+      organizationId: 'org-b',
+      kind: 'feed',
+      orderBy: 'updatedAt',
+    });
+    await expect(controller.listSourceChanges(ORG, query)).resolves.toBe(
+      result
+    );
+    expect(sources.listPageChanges).toHaveBeenCalledTimes(1);
+    expect(sources.listPageChanges).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      page: 2,
+      since: '30d',
+    });
+    expect(ingestion.refreshSource).not.toHaveBeenCalled();
+    const text = fs
+      .readFileSync(
+        path.join(__dirname, 'content-studio.controller.ts'),
+        'utf8'
+      )
+      .replace(/^\s*\/\/.*$/gm, '');
+    const start = text.indexOf("@Get('/source-changes')");
+    const block = text.slice(start, text.indexOf('\n  }\n', start));
+    expect(block).toContain('_contentStudioSourceService.listPageChanges');
+    expect(block).not.toMatch(
+      /@Body|@Param|@Headers|@Req|Ingestion|refresh|capture|fetch|backfill|AIConnection|AIExecution|Role\.|users/i
+    );
+  });
+
+  it('OC3 parses a page and a named window exactly, and nothing else', async () => {
+    expect({
+      ...(await run(ListContentStudioSourceChangesDto, {}, 'query')),
+    }).toEqual({ page: 1 });
+    expect({
+      ...(await run(
+        ListContentStudioSourceChangesDto,
+        { page: '3', since: 'all' },
+        'query'
+      )),
+    }).toEqual({ page: 3, since: 'all' });
+    for (const since of ['24h', '7d', '30d', 'all']) {
+      expect(
+        (await run(ListContentStudioSourceChangesDto, { since }, 'query')).since
+      ).toBe(since);
+    }
+    for (const query of [
+      { page: '0' },
+      { page: '100001' },
+      { page: '1.5' },
+      { page: 'abc' },
+      { since: '1h' },
+      { since: '7D' },
+      { since: '' },
+      { since: '2026-10-01T00:00:00.000Z' },
+      // P8-04B1 has no other filter
+      { search: 'x' },
+      { feedSourceId: ID },
+      { kind: 'url' },
+      { change: 'title_changed' },
+      { archived: 'true' },
+      { origin: 'feed' },
+      { organizationId: 'org-b' },
+      { orderBy: 'updatedAt' },
+    ]) {
+      await rejected(ListContentStudioSourceChangesDto, query, 'query');
+    }
   });
 });
 
