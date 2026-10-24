@@ -77,7 +77,10 @@ describe('contentStudioFeedCaptureWorkflowV1', () => {
     });
   });
 
-  it('TM6/TM7 a capture is tried at most three times, a list at most three times, each within a deadline', () => {
+  // P8-C2: the capture runs on its own queue, the list stays on `main`; the
+  // same deadlines and attempts, and no deadline to start (a capture waits
+  // in its queue for a free slot)
+  it('TM6/TM7/WR1-WR4 a capture is tried at most three times, a list at most three times, each within a deadline', () => {
     expect(mockProxyOptions).toEqual([
       {
         startToCloseTimeout: '2 minute',
@@ -90,7 +93,7 @@ describe('contentStudioFeedCaptureWorkflowV1', () => {
       },
       {
         startToCloseTimeout: '10 minute',
-        taskQueue: 'main',
+        taskQueue: 'content-studio-capture',
         retry: {
           maximumAttempts: 3,
           backoffCoefficient: 1,
@@ -192,7 +195,11 @@ describe('TM1 registration', () => {
     expect(module).toMatch(
       /import \{ ContentStudioSourceActivity \} from '@gitroom\/orchestrator\/activities\/content-studio\.source\.activity';/
     );
-    expect(module.match(/ContentStudioSourceActivity/g)).toHaveLength(2);
+    // in the activities, and the only class of the capture Worker (P8-C2)
+    expect(module.match(/ContentStudioSourceActivity/g)).toHaveLength(3);
+    expect(module).toMatch(
+      /getTemporalModule\(true, require\.resolve\('\.\/workflows'\), activities, \[\s*ContentStudioSourceActivity,\s*\]\)/
+    );
   });
 
   it('the backend starts exactly one scan, under RUN_CRON, with a fixed id', () => {
@@ -215,6 +222,19 @@ describe('TM1 registration', () => {
     );
     expect(workflow).not.toMatch(
       /@nestjs|@prisma|safeFetch|\bfetch\(|rss-parser|fast-xml-parser|process\.env|Date\.now|Math\.random/
+    );
+    // P8-C2: the queue name comes from its one module, never a literal
+    expect(workflow).toContain(
+      "import { CONTENT_STUDIO_CAPTURE_TASK_QUEUE } from '@gitroom/nestjs-libraries/temporal/content.studio.capture.queue';"
+    );
+    expect(workflow).not.toContain("'content-studio-capture'");
+    expect(workflow.match(/taskQueue: /g)).toHaveLength(3);
+    expect(workflow).toMatch(
+      /const \{ captureContentStudioFeed \} =\s*proxyActivities<ContentStudioSourceActivity>\(\{\s*startToCloseTimeout: '10 minute',\s*taskQueue: CONTENT_STUDIO_CAPTURE_TASK_QUEUE,/
+    );
+    // no deadline to wait in the queue, and none on the capture workflow
+    expect(workflow).not.toMatch(
+      /scheduleToStartTimeout|scheduleToCloseTimeout|workflowExecutionTimeout|workflowRunTimeout/
     );
     expect(
       Array.from(workflow.matchAll(/export async function (\w+)/g), (m) => m[1])

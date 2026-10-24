@@ -6,6 +6,7 @@ import {
 } from '@temporalio/workflow';
 import { WorkflowExecutionAlreadyStartedError } from '@temporalio/common';
 import type { ContentStudioSourceActivity } from '@gitroom/orchestrator/activities/content-studio.source.activity';
+import { CONTENT_STUDIO_CAPTURE_TASK_QUEUE } from '@gitroom/nestjs-libraries/temporal/content.studio.capture.queue';
 
 // Scheduled capture of Content Studio feed sources (P8-01).
 //
@@ -32,11 +33,13 @@ const { listContentStudioFeedsForCapture } =
   });
 
 // a capture reads one feed and at most 25 pages, 5 at a time, each within
-// its own fetch deadline
+// its own fetch deadline. It runs on the capture queue (P8-C2), whose Worker
+// runs a bounded number at once: the others wait there, with no deadline to
+// start and no attempt used, and the workflows themselves stay on `main`
 const { captureContentStudioFeed } =
   proxyActivities<ContentStudioSourceActivity>({
     startToCloseTimeout: '10 minute',
-    taskQueue: 'main',
+    taskQueue: CONTENT_STUDIO_CAPTURE_TASK_QUEUE,
     retry: {
       maximumAttempts: 3,
       backoffCoefficient: 1,

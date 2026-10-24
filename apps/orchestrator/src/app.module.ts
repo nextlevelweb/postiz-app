@@ -26,7 +26,9 @@ const activities = [
   imports: [
     DatabaseModule,
     VideoModule,
-    getTemporalModule(true, require.resolve('./workflows'), activities),
+    getTemporalModule(true, require.resolve('./workflows'), activities, [
+      ContentStudioSourceActivity,
+    ]),
   ],
   controllers: [HealthController],
   providers: [...activities],

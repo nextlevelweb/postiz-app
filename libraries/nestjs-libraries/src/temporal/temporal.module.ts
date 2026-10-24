@@ -1,10 +1,46 @@
 import { TemporalModule } from 'nestjs-temporal-core';
 import { socialIntegrationList } from '@gitroom/nestjs-libraries/integrations/integration.manager';
+import {
+  CONTENT_STUDIO_CAPTURE_TASK_QUEUE,
+  contentStudioCaptureConcurrency,
+} from '@gitroom/nestjs-libraries/temporal/content.studio.capture.queue';
+
+// Content Studio feed captures (P8-C2) get their own activity-only Worker,
+// with the capture activities only and a bounded number of slots, split
+// across the servers like a provider queue. Read on the worker servers only:
+// a wrong CONTENT_STUDIO_CAPTURE_CONCURRENCY stops the orchestrator
+const contentStudioCaptureWorkers = (
+  activityClasses: any[],
+  excludeQueues: string[],
+  divider: number
+) => {
+  const concurrency = contentStudioCaptureConcurrency(
+    process.env.CONTENT_STUDIO_CAPTURE_CONCURRENCY
+  );
+  if (excludeQueues.includes(CONTENT_STUDIO_CAPTURE_TASK_QUEUE)) {
+    return [];
+  }
+  return [
+    {
+      taskQueue: CONTENT_STUDIO_CAPTURE_TASK_QUEUE,
+      activityClasses,
+      autoStart: true,
+      workerOptions: {
+        maxConcurrentActivityTaskExecutions: Math.max(
+          1,
+          Math.floor(concurrency / divider)
+        ),
+        maxHeartbeatThrottleInterval: '15s',
+      },
+    },
+  ];
+};
 
 export const getTemporalModule = (
   isWorkers: boolean,
   path?: string,
-  activityClasses?: any[]
+  activityClasses?: any[],
+  contentStudioCaptureActivityClasses?: any[]
 ) => {
   // Queues this worker server should NOT run, comma-separated
   // (e.g. EXCLUDE_QUEUE="reddit,x,twitch"). Use it to pin a queue to a single
@@ -77,7 +113,14 @@ export const getTemporalModule = (
                   maxHeartbeatThrottleInterval: '15s',
                 },
               };
-            }),
+            })
+            .concat(
+              contentStudioCaptureWorkers(
+                contentStudioCaptureActivityClasses!,
+                excludeQueues,
+                divider
+              )
+            ),
         }
       : {}),
   });

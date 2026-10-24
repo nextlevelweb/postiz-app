@@ -499,6 +499,46 @@ describe('Phase 8 on PostgreSQL: repeated captures and the schedule', () => {
     expect((await versionsOf(s.id))[0].createdById).toBe(USER_A2);
   });
 
+  it('P8C2PG1 a feed whose organization is deleted after the scan listed it is skipped when its capture starts (P8-C2: captures wait in a queue)', async () => {
+    const feed = await createFeed(ORG_B, 'https://p8.example/feed-del.xml');
+    web.feeds.set('https://p8.example/feed-del.xml', rss([page('del')]));
+    web.pages.set(page('del'), html('Deleted'));
+    const listed = (
+      await ingestion.listFeedsDueForCapture({ afterId: null })
+    ).feeds.filter((f) => f.sourceId === feed);
+    expect(listed).toEqual([{ organizationId: ORG_B, sourceId: feed }]);
+    await client.organization.update({
+      where: { id: ORG_B },
+      data: { deletedAt: new Date() },
+    });
+    try {
+      expect(
+        await ingestion.captureScheduledFeed({
+          organizationId: ORG_B,
+          sourceId: feed,
+        })
+      ).toEqual({ status: 'skipped' });
+      expect(mockSafeFetch).not.toHaveBeenCalled();
+      expect(await pageSources(ORG_B)).toEqual([]);
+      const row = await client.contentStudioSource.findUniqueOrThrow({
+        where: { id: feed },
+      });
+      expect(row.lastCapturedAt).toBeNull();
+    } finally {
+      await client.organization.update({
+        where: { id: ORG_B },
+        data: { deletedAt: null },
+      });
+    }
+    // live again, the same feed is captured
+    expect(
+      await ingestion.captureScheduledFeed({
+        organizationId: ORG_B,
+        sourceId: feed,
+      })
+    ).toMatchObject({ status: 'captured' });
+  });
+
   it('a page source archived meanwhile is recorded and not captured', async () => {
     const feed = await createFeed(ORG_A, 'https://p8.example/feed-ar.xml');
     web.feeds.set('https://p8.example/feed-ar.xml', rss([page('ar')]));

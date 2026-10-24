@@ -199,12 +199,17 @@ export class ContentStudioSourceRepository {
   }
 
   // What a capture needs, with who created the source: a scheduled feed
-  // capture (P8-01) records its captures in the feed creator's name
+  // capture (P8-01) records its captures in the feed creator's name. Of a
+  // live organization only, like the scan: a capture waits in its queue
+  // (P8-C2), and the organization may be deleted meanwhile
   getSourceForCapture(organizationId: string, id: string) {
     return this._source.model.contentStudioSource.findFirst({
       where: {
         id,
         organizationId,
+        organization: {
+          deletedAt: null,
+        },
       },
       select: {
         ...SOURCE_SUMMARY,

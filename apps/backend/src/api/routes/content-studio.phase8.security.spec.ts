@@ -1852,6 +1852,8 @@ describe('P8-C1 organization safety caps', () => {
     ).toEqual([CAPS.repository]);
   });
 
+  // P8-C2 changed the workflow and the worker on purpose (the capture queue,
+  // pinned below); the activity and the feed capture itself are untouched
   it('P8C1-13 no Temporal change: the feed workflow, its activity and the worker are as they were', () => {
     const hash = (file: string) =>
       createHash('sha256').update(raw(file)).digest('hex');
@@ -1867,11 +1869,11 @@ describe('P8-C1 organization safety caps', () => {
       ),
     }).toEqual({
       workflow:
-        '67962393430dc765ee4e5da47074dd85f9f8114e3da1876d37ee0bf19ae2163b',
+        '29ae0f07fc27026212832ed1047ecc61369de467014e820f2f8f2340dbe58912',
       activity:
         '1806d5912e2ab2dacfbeddd83773be96c9cb8b24932a173d409d964f9f6afc3b',
       worker:
-        '9f71b835542268f7bbb38595203b119ddea2f1fda4aa6e8de1d0fa6909ff4327',
+        '412efbac60853923ad81f0e2c2191fd8f5fa72bef6d4f7fb2812bede9b35a305',
     });
     expect(caps('ingestion')).toContain(
       'export const FEED_CAPTURE_CONCURRENCY = 5;'
@@ -1993,5 +1995,184 @@ describe('P8-C1 organization safety caps', () => {
           )
       )
     ).toEqual([]);
+  });
+});
+
+describe('P8-C2 global feed-capture concurrency', () => {
+  const C2 = {
+    queue:
+      'libraries/nestjs-libraries/src/temporal/content.studio.capture.queue.ts',
+    module: 'libraries/nestjs-libraries/src/temporal/temporal.module.ts',
+    workflow:
+      'apps/orchestrator/src/workflows/content.studio.feed.capture.workflow.ts',
+    activity:
+      'apps/orchestrator/src/activities/content-studio.source.activity.ts',
+    app: 'apps/orchestrator/src/app.module.ts',
+    main: 'apps/orchestrator/src/main.ts',
+    ingestion: `${SOURCES}/ingestion/source.ingestion.service.ts`,
+    repository:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.repository.ts',
+    types: `${SOURCES}/source.types.ts`,
+    controller: 'apps/backend/src/api/routes/content-studio.controller.ts',
+  };
+  const c2 = (key: keyof typeof C2) => CODE.get(C2[key])!;
+
+  it('P8C2-1/NG1/NG4/NG5 no schema change: no pause, interval or queue field', () => {
+    expect(createHash('sha256').update(schema).digest('hex')).toBe(
+      '0c0638c523fe2e1439b81130c7e05f9eacdc12465ffac41f5be04b9d377af6e5'
+    );
+    expect(model('ContentStudioSource')).not.toMatch(
+      /paused|interval|nextCapture|queue|priority/i
+    );
+  });
+
+  it('P8C2-2/NG2 no route: 145 in all, none about capture capacity', () => {
+    const controller = c2('controller');
+    expect(
+      controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
+    ).toHaveLength(145);
+    expect(controller).not.toMatch(
+      /CAPTURE_CONCURRENCY|capture-queue|TaskQueue/
+    );
+  });
+
+  it('P8C2-3/NG3 the P8-C1 limits and the capture itself are unchanged', () => {
+    const types = c2('types');
+    expect(types).toContain(
+      'export const CONTENT_STUDIO_ACTIVE_FEEDS_MAX = 100;'
+    );
+    expect(types).toContain(
+      'export const CONTENT_STUDIO_URL_SOURCES_MAX = 100_000;'
+    );
+    expect(types).toContain(
+      'export const CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;'
+    );
+    const ingestion = c2('ingestion');
+    for (const line of [
+      'export const SOURCE_FETCH_MAX_BYTES = 2_097_152;',
+      'export const SOURCE_FETCH_TIMEOUT_MS = 15_000;',
+      'export const FEED_FETCH_MAX_BYTES = 5_242_880;',
+      'export const FEED_FETCH_TIMEOUT_MS = 15_000;',
+      'export const FEED_CAPTURE_CONCURRENCY = 5;',
+      'export const FEED_CAPTURE_INTERVAL_MS = 50 * 60 * 1000;',
+      'export const FEED_SCAN_PAGE_SIZE = 200;',
+    ]) {
+      expect(ingestion).toContain(line);
+    }
+    expect(CODE.get(`${SOURCES}/source.feed.ts`)).toContain(
+      'export const SOURCE_FEED_MAX_ENTRIES = 25;'
+    );
+  });
+
+  it('P8C2-4/M18 one queue name, defined once, read by the workflow, the worker and the start line only', () => {
+    expect(c2('queue')).toContain(
+      "export const CONTENT_STUDIO_CAPTURE_TASK_QUEUE = 'content-studio-capture';"
+    );
+    expect(users(/content-studio-capture/)).toEqual([C2.queue]);
+    expect(users(/\bCONTENT_STUDIO_CAPTURE_TASK_QUEUE\b/)).toEqual(
+      [C2.main, C2.workflow, C2.queue, C2.module].sort()
+    );
+  });
+
+  it('P8C2-5 the queue module is safe in the workflow bundle: no import, no environment', () => {
+    expect(c2('queue')).not.toMatch(/\bimport\b|\brequire\(|process\./);
+    expect(c2('workflow')).not.toMatch(/process\.env/);
+  });
+
+  it('P8C2-6 the capacity is read once, on the worker servers, and validated before any Worker exists', () => {
+    expect(users(/process\.env\.CONTENT_STUDIO_CAPTURE_CONCURRENCY/)).toEqual([
+      C2.module,
+    ]);
+    const module = c2('module');
+    // inside the worker branch only: the backend and the commands skip it
+    expect(module.indexOf('contentStudioCaptureWorkers(\n')).toBeGreaterThan(
+      module.indexOf('...(isWorkers')
+    );
+    expect(c2('queue')).toContain(
+      'export const CONTENT_STUDIO_CAPTURE_CONCURRENCY_DEFAULT = 8;'
+    );
+    expect(c2('queue')).toContain(
+      'export const CONTENT_STUDIO_CAPTURE_CONCURRENCY_MAX = 32;'
+    );
+    // the main Worker keeps its capacity
+    expect(module).toContain(
+      'maxConcurrentActivityTaskExecutions: concurrency || 1000000,'
+    );
+  });
+
+  it('P8C2-7 only the capture activity moves: the list and the workflows stay on main, with their deadlines and attempts', () => {
+    const workflow = c2('workflow');
+    expect(
+      workflow.match(/taskQueue: CONTENT_STUDIO_CAPTURE_TASK_QUEUE/g)
+    ).toHaveLength(1);
+    expect(workflow.match(/taskQueue: 'main'/g)).toHaveLength(2);
+    expect(workflow).toMatch(
+      /startChild\(contentStudioFeedCaptureWorkflowV1, \{\s*workflowId: `content-studio-feed-capture-\$\{feed\.sourceId\}`,\s*taskQueue: 'main',\s*parentClosePolicy: 'ABANDON',/
+    );
+    expect(workflow).not.toMatch(/executeChild|Promise\.all|scheduleToStart/);
+    // the activity is as it was
+    expect(createHash('sha256').update(raw(C2.activity)).digest('hex')).toBe(
+      '1806d5912e2ab2dacfbeddd83773be96c9cb8b24932a173d409d964f9f6afc3b'
+    );
+  });
+
+  it('P8C2-8 the orchestrator runs the capture Worker with the capture activities only, and says so once', () => {
+    expect(c2('app')).toMatch(
+      /getTemporalModule\(true, require\.resolve\('\.\/workflows'\), activities, \[\s*ContentStudioSourceActivity,\s*\]\)/
+    );
+    const main = c2('main');
+    expect(main.match(/console\.(log|error)\(/g)).toHaveLength(4);
+    expect(main).toContain('Content Studio capture worker started (queue');
+    expect(main).toContain('Content Studio capture worker did not start');
+  });
+
+  it('P8C2-9 Temporal is the only limiter: no semaphore, lock or timer of its own', () => {
+    for (const key of ['queue', 'module', 'workflow', 'main'] as const) {
+      expect([
+        key,
+        c2(key).match(
+          /p-limit|pLimit|Semaphore|Mutex|ioredis|redis|pg_advisory|setInterval|setTimeout/gi
+        ),
+      ]).toEqual([key, null]);
+    }
+  });
+
+  it('P8C2-10 a scheduled capture re-reads its feed of a live organization, in the one query it had', () => {
+    const repository = c2('repository');
+    const method = between(repository, '\n  getSourceForCapture(', '\n  }\n');
+    expect(method.match(/this\._source\.model\.\w+\.\w+\(/g)).toEqual([
+      'this._source.model.contentStudioSource.findFirst(',
+    ]);
+    expect(method).toMatch(/organization: \{\s*deletedAt: null,\s*\}/);
+    const scheduled = between(
+      c2('ingestion'),
+      'async captureScheduledFeed(',
+      'private async captureUrl('
+    );
+    expect(scheduled).toMatch(
+      /if \(!source \|\| source\.archivedAt \|\| source\.kind !== 'feed'\) \{\s*return \{ status: 'skipped' as const \};/
+    );
+  });
+
+  it('P8C2-11/NG8 the member refresh and the browser are untouched by the queue', () => {
+    expect(
+      users(
+        /CONTENT_STUDIO_CAPTURE|captureConcurrency|content\.studio\.capture\.queue/
+      ).filter(
+        (file) =>
+          file.startsWith('apps/frontend/') || file.startsWith('apps/backend/')
+      )
+    ).toEqual([]);
+    // the refresh route still captures in the request, never through Temporal
+    expect(c2('ingestion')).not.toMatch(
+      /@temporalio|TemporalService|taskQueue/
+    );
+  });
+
+  it('P8C2-12 .env.example documents the optional setting, commented out, with its range', () => {
+    const example = raw('.env.example');
+    expect(example).toContain('#CONTENT_STUDIO_CAPTURE_CONCURRENCY="8"');
+    expect(example).toMatch(/\(default 8,\s*\n# 1 to 32\)/);
+    expect(example).not.toMatch(/^CONTENT_STUDIO_CAPTURE_CONCURRENCY=/m);
   });
 });
