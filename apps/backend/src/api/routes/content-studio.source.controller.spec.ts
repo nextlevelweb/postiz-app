@@ -83,6 +83,8 @@ const setup = () => {
     getVersionChanges: jest.fn().mockResolvedValue(result),
     archiveSource: jest.fn().mockResolvedValue(result),
     restoreSource: jest.fn().mockResolvedValue(result),
+    pauseFeed: jest.fn().mockResolvedValue(result),
+    resumeFeed: jest.fn().mockResolvedValue(result),
     listDiscoveries: jest.fn().mockResolvedValue(result),
     listOrganizationDiscoveries: jest.fn().mockResolvedValue(result),
     listPageChanges: jest.fn().mockResolvedValue(result),
@@ -156,7 +158,7 @@ const allRoutes = () =>
     .map(route);
 
 describe('ContentStudioController source routes', () => {
-  it('SRC1-SRC8/CR1 declares exactly these eleven routes, with 200 for archive, restore and refresh', () => {
+  it('SRC1-SRC8/CR1 declares exactly these thirteen routes, with 200 for archive, restore, pause, resume and refresh', () => {
     expect(
       allRoutes()
         .filter((r) => / \/sources/.test(r))
@@ -173,10 +175,19 @@ describe('ContentStudioController source routes', () => {
       'PATCH /sources/:id',
       'POST /sources',
       'POST /sources/:id/archive',
+      // a feed's scheduled captures (P8-C3)
+      'POST /sources/:id/pause',
       'POST /sources/:id/refresh',
       'POST /sources/:id/restore',
+      'POST /sources/:id/resume',
     ]);
-    for (const name of ['archiveSource', 'restoreSource', 'refreshSource']) {
+    for (const name of [
+      'archiveSource',
+      'restoreSource',
+      'pauseSource',
+      'resumeSource',
+      'refreshSource',
+    ]) {
       expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler(name))).toBe(200);
     }
     expect(
@@ -378,8 +389,8 @@ describe('ContentStudioController source routes', () => {
       text.indexOf("@Get('/sources')"),
       text.indexOf("@Get('/writing-profiles')")
     );
-    // the eleven source routes, News Radar (P8-02) and Changes (P8-04B1)
-    expect(block.match(/@(Get|Post|Patch|Put|Delete)\(/g)).toHaveLength(13);
+    // the thirteen source routes, News Radar (P8-02) and Changes (P8-04B1)
+    expect(block.match(/@(Get|Post|Patch|Put|Delete)\(/g)).toHaveLength(15);
     expect(block).not.toMatch(
       /AIConnection|AIExecution|Role\.|assertManager|actor|users|appendVersion|safeFetch|fetch\(/
     );
@@ -619,8 +630,11 @@ describe('Source trusted-provenance boundary', () => {
       'PATCH /sources/:id',
       'POST /sources',
       'POST /sources/:id/archive',
+      // a feed's schedule only (P8-C3)
+      'POST /sources/:id/pause',
       'POST /sources/:id/refresh',
       'POST /sources/:id/restore',
+      'POST /sources/:id/resume',
     ]);
     // no handler that reaches the append
     const controller = fs
@@ -804,15 +818,15 @@ describe('ContentStudioController source version changes', () => {
     );
   });
 
-  it('R5 is the 144th route (145 with P8-04B1)', () => {
-    expect(allRoutes()).toHaveLength(145);
+  it('R5 is the 144th route (145 with P8-04B1, 147 with P8-C3)', () => {
+    expect(allRoutes()).toHaveLength(147);
   });
 });
 
 // Organization Changes (P8-04B1): the request organization, a page and a
 // window only. Nothing is fetched or captured
 describe('ContentStudioController organization page changes', () => {
-  it('OC1 is GET /source-changes, the 145th route, with the default 200', () => {
+  it('OC1 is GET /source-changes, the 145th route (147 with P8-C3), with the default 200', () => {
     expect(route('listSourceChanges')).toBe('GET /source-changes');
     expect(
       allRoutes()
@@ -826,7 +840,7 @@ describe('ContentStudioController organization page changes', () => {
     expect(
       Reflect.getMetadata(HTTP_CODE_METADATA, handler('listSourceChanges'))
     ).toBeUndefined();
-    expect(allRoutes()).toHaveLength(145);
+    expect(allRoutes()).toHaveLength(147);
   });
 
   it('OC2 reads for the request organization with the page and window only', async () => {
@@ -993,5 +1007,76 @@ describe('ContentStudioController News Radar', () => {
     ]) {
       await rejected(ListContentStudioDiscoveriesDto, query, 'query');
     }
+  });
+});
+
+// A feed's scheduled captures (P8-C3): the request organization and the path
+// id only. Nothing is fetched or captured
+describe('ContentStudioController feed pause', () => {
+  const ARGS = (name: string) =>
+    Reflect.getMetadata(ROUTE_ARGS_METADATA, ContentStudioController, name) as
+      | Record<string, { index: number; data?: string }>
+      | undefined;
+
+  it('P8C3-11 is POST /sources/:id/pause and /resume, 200, the 146th and 147th routes', () => {
+    expect(route('pauseSource')).toBe('POST /sources/:id/pause');
+    expect(route('resumeSource')).toBe('POST /sources/:id/resume');
+    for (const name of ['pauseSource', 'resumeSource']) {
+      expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler(name))).toBe(200);
+    }
+    expect(allRoutes()).toHaveLength(147);
+    expect(
+      allRoutes().filter((r) => /pause|resume|schedul|interval/i.test(r))
+    ).toEqual(['POST /sources/:id/pause', 'POST /sources/:id/resume']);
+  });
+
+  it('P8C3-11 pauses and resumes for the request organization with the path id only', async () => {
+    const { sources, ingestion, controller, result } = setup();
+    await expect(controller.pauseSource(ORG, ID)).resolves.toBe(result);
+    expect(sources.pauseFeed).toHaveBeenCalledWith('org-a', ID);
+    await expect(controller.resumeSource(ORG, ID)).resolves.toBe(result);
+    expect(sources.resumeFeed).toHaveBeenCalledWith('org-a', ID);
+    // M14 neither captures
+    expect(ingestion.refreshSource).not.toHaveBeenCalled();
+    expect(sources.archiveSource).not.toHaveBeenCalled();
+    expect(sources.restoreSource).not.toHaveBeenCalled();
+  });
+
+  it('P8C3-11 takes no body, query, header, request or user: no organization or time can be sent', () => {
+    for (const name of ['pauseSource', 'resumeSource']) {
+      const args = ARGS(name)!;
+      const keys = Object.keys(args);
+      expect(keys).toHaveLength(2);
+      expect(
+        keys.filter((key) => key.startsWith(`${RouteParamtypes.PARAM}:`))
+      ).toHaveLength(1);
+      expect(
+        keys.filter(
+          (key) =>
+            key.startsWith(`${RouteParamtypes.BODY}:`) ||
+            key.startsWith(`${RouteParamtypes.QUERY}:`) ||
+            key.startsWith(`${RouteParamtypes.HEADERS}:`) ||
+            key.startsWith(`${RouteParamtypes.REQUEST}:`)
+        )
+      ).toEqual([]);
+      expect(
+        keys
+          .filter((key) => key.startsWith(`${RouteParamtypes.PARAM}:`))
+          .map((key) => args[key].data)
+      ).toEqual(['id']);
+    }
+    const text = fs.readFileSync(
+      path.join(__dirname, 'content-studio.controller.ts'),
+      'utf8'
+    );
+    const block = text.slice(
+      text.indexOf("@Post('/sources/:id/pause')"),
+      text.indexOf("@Post('/sources/:id/refresh')")
+    );
+    expect(block).toContain('pauseFeed(org.id, id)');
+    expect(block).toContain('resumeFeed(org.id, id)');
+    expect(block).not.toMatch(
+      /@Body|@Query|@Headers|@Req|Dto|refresh|ingest|capture\(|organizationId/
+    );
   });
 });

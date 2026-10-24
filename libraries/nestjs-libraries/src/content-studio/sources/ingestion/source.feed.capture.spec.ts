@@ -283,7 +283,12 @@ const setup = () => {
           : {}),
         ...(table !== 'discoveries' ? { createdAt: at } : {}),
         ...(table === 'sources'
-          ? { updatedAt: at, archivedAt: null, lastCapturedAt: null }
+          ? {
+              updatedAt: at,
+              archivedAt: null,
+              lastCapturedAt: null,
+              scanPausedAt: null,
+            }
           : {}),
         ...args.data,
       };
@@ -355,6 +360,7 @@ const setup = () => {
       createdAt: at,
       updatedAt: at,
       lastCapturedAt: null,
+      scanPausedAt: null,
       ...row,
     };
     state.sources.push(full);
@@ -1780,6 +1786,228 @@ describe('feed capture: the schedule', () => {
       afterId: first.next,
     });
     expect(second).toEqual({ feeds: [expect.any(Object)], next: null });
+  });
+});
+
+describe('feed capture: a paused feed (P8-C3)', () => {
+  const PAUSED_AT = new Date('2026-10-20T08:00:00.000Z');
+  const OLD = () => new Date(Date.now() - FEED_CAPTURE_INTERVAL_MS - 60_000);
+  const due = async (t: Setup) =>
+    (await t.ingestion.listFeedsDueForCapture({ afterId: null })).feeds.map(
+      (feed) => feed.sourceId
+    );
+  const feedRow = (t: Setup) => t.state.sources.find((s) => s.id === FEED)!;
+
+  it('P8C3PG8/M9 the scan never lists a paused feed; P8C3PG9 resumed, it is due by its last capture again', async () => {
+    const t = setup();
+    t.addFeed({ lastCapturedAt: OLD(), scanPausedAt: PAUSED_AT });
+    t.addFeed({
+      id: FEED_B,
+      canonicalUrl: FEED_B_URL,
+      lastCapturedAt: OLD(),
+    });
+    expect(await due(t)).toEqual([FEED_B]);
+    await t.service.resumeFeed(ORG, FEED);
+    expect(await due(t)).toEqual([FEED, FEED_B]);
+    // captured a moment before the pause: not due until the interval passed
+    await t.service.pauseFeed(ORG, FEED);
+    feedRow(t).lastCapturedAt = new Date(Date.now() - 60_000);
+    await t.service.resumeFeed(ORG, FEED);
+    expect(await due(t)).toEqual([FEED_B]);
+  });
+
+  it('MR5/M10-M13 a scheduled capture of a feed paused while it waited is skipped: nothing fetched, written or marked', async () => {
+    const t = setup();
+    const last = OLD();
+    t.addFeed({ lastCapturedAt: last });
+    const w = web();
+    w.feeds.set(FEED_URL, rss([page(1)]));
+    w.pages.set(page(1), html('One'));
+    // listed while it ran, paused before its capture started
+    expect(await due(t)).toEqual([FEED]);
+    await t.service.pauseFeed(ORG, FEED);
+    const before = JSON.stringify(t.state);
+    t.source.updateMany.mockClear();
+    expect(
+      await t.ingestion.captureScheduledFeed({
+        organizationId: ORG,
+        sourceId: FEED,
+      })
+    ).toEqual({ status: 'skipped' });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(t.source.updateMany).not.toHaveBeenCalled();
+    expect(JSON.stringify(t.state)).toBe(before);
+    expect(feedRow(t).lastCapturedAt).toBe(last);
+    // the same read as before: one query for the feed
+    expect(t.source.findFirst).toHaveBeenLastCalledWith({
+      where: {
+        id: FEED,
+        organizationId: ORG,
+        organization: { deletedAt: null },
+      },
+      select: expect.objectContaining({ scanPausedAt: true, archivedAt: true }),
+    });
+  });
+
+  it('MR1/MR3/M16/M17 a member may refresh a paused feed: it is captured and marked, and stays paused', async () => {
+    const t = setup();
+    t.addFeed({ scanPausedAt: PAUSED_AT });
+    const w = web();
+    w.feeds.set(FEED_URL, rss([page(1)]));
+    w.pages.set(page(1), html('One'));
+    const result = await capture(t);
+    expect(result.capture.sourcesCreated).toBe(1);
+    expect(result.source.scanPausedAt).toEqual(PAUSED_AT);
+    expect(result.source.lastCapturedAt).toEqual(expect.any(Date));
+    expect(feedRow(t).scanPausedAt).toEqual(PAUSED_AT);
+    expect(feedRow(t).lastCapturedAt).toEqual(expect.any(Date));
+    expect(t.state.discoveries).toHaveLength(1);
+    expect(versionsOf(t, pagesOf(t)[0].id)).toHaveLength(1);
+    // and the schedule still leaves it out
+    feedRow(t).lastCapturedAt = OLD();
+    expect(await due(t)).toEqual([]);
+  });
+
+  it('MR2/M18 a paused feed keeps the refresh cooldown', async () => {
+    mockLimits.manualRefreshCooldownMs =
+      CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS;
+    const t = setup();
+    t.addFeed({
+      scanPausedAt: PAUSED_AT,
+      lastCapturedAt: new Date(Date.now() - 60_000),
+    });
+    expect(await refusal(capture(t))).toEqual({
+      status: 429,
+      body: {
+        msg: 'This source was captured a moment ago. Try again in a few minutes.',
+        code: 'CS_SOURCE_REFRESH_TOO_SOON',
+      },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('MR4/M19 an archived feed, paused or not, still cannot be refreshed', async () => {
+    const t = setup();
+    t.addFeed({ archivedAt: new Date(), scanPausedAt: PAUSED_AT });
+    expect(await refusal(capture(t))).toEqual({
+      status: 409,
+      body: { msg: 'This source is archived.', code: 'CS_SOURCE_ARCHIVED' },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('P8C3PG1-PG4 pause sets the time once and resume clears it; nothing else of the feed, its pages or history changes', async () => {
+    const t = setup();
+    t.addFeed({ lastCapturedAt: OLD() });
+    const w = web();
+    w.feeds.set(FEED_URL, rss([page(1)]));
+    w.pages.set(page(1), html('One'));
+    await t.ingestion.captureScheduledFeed({
+      organizationId: ORG,
+      sourceId: FEED,
+    });
+    fetchMock.mockClear();
+    t.source.updateMany.mockClear();
+    const others = () =>
+      JSON.stringify({
+        pages: pagesOf(t),
+        versions: t.state.versions,
+        discoveries: t.state.discoveries,
+      });
+    const { scanPausedAt: _paused, updatedAt: _u, ...feed } = feedRow(t);
+    const history = others();
+    const paused = await t.service.pauseFeed(ORG, FEED);
+    const pausedAt = feedRow(t).scanPausedAt;
+    expect(pausedAt).toEqual(expect.any(Date));
+    expect(paused.scanPausedAt).toEqual(pausedAt);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    // again: the first pause time stays
+    await t.service.pauseFeed(ORG, FEED);
+    expect(feedRow(t).scanPausedAt).toBe(pausedAt);
+    // the first pause only
+    expect(t.source.updateMany).toHaveBeenCalledTimes(1);
+    const resumed = await t.service.resumeFeed(ORG, FEED);
+    expect(resumed.scanPausedAt).toBeNull();
+    await t.service.resumeFeed(ORG, FEED);
+    expect(feedRow(t).scanPausedAt).toBeNull();
+    expect(t.source.updateMany).toHaveBeenCalledTimes(2);
+    const { scanPausedAt: _after, updatedAt: _u2, ...feedAfter } = feedRow(t);
+    expect(feedAfter).toEqual(feed);
+    expect(others()).toBe(history);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('M6/M8 archiving a paused feed keeps its pause; restoring it brings it back paused, never scheduled', async () => {
+    const t = setup();
+    t.addFeed({ lastCapturedAt: OLD(), scanPausedAt: PAUSED_AT });
+    await t.service.archiveSource(ORG, FEED);
+    expect(feedRow(t).archivedAt).toEqual(expect.any(Date));
+    expect(feedRow(t).scanPausedAt).toBe(PAUSED_AT);
+    const restored = await t.service.restoreSource(ORG, FEED);
+    expect(restored.archivedAt).toBeNull();
+    expect(restored.scanPausedAt).toEqual(PAUSED_AT);
+    expect(await due(t)).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('AC1/AC2/M7 a paused feed counts against the live feed limit; archiving it frees its place', async () => {
+    mockLimits.activeFeedsMax = 1;
+    const t = setup();
+    t.addFeed({ scanPausedAt: PAUSED_AT });
+    const create = () =>
+      t.service.createSource({
+        organizationId: ORG,
+        userId: USER,
+        kind: 'feed',
+        name: 'Second',
+        url: FEED_B_URL,
+      });
+    expect((await refusal(create())).body).toEqual({
+      msg: 'The organization has too many active feeds.',
+      code: 'CS_SOURCE_FEED_LIMIT',
+    });
+    await t.service.archiveSource(ORG, FEED);
+    await expect(create()).resolves.toMatchObject({ kind: 'feed' });
+    // AC4 the paused archived feed cannot come back at the limit, and stays
+    // archived and paused
+    expect((await refusal(t.service.restoreSource(ORG, FEED))).status).toBe(
+      409
+    );
+    expect(feedRow(t).archivedAt).toEqual(expect.any(Date));
+    expect(feedRow(t).scanPausedAt).toBe(PAUSED_AT);
+  });
+
+  it('a capture already running when its feed is paused may finish once; the feed stays paused and is not listed again', async () => {
+    const t = setup();
+    t.addFeed({ lastCapturedAt: OLD() });
+    const w = web();
+    w.feeds.set(FEED_URL, rss([page(1)]));
+    w.pages.set(page(1), html('One'));
+    let pauseDone: Promise<unknown> = Promise.resolve();
+    const fetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url, options) => {
+      if (url === FEED_URL) {
+        // the feed was read before the pause; its pages come after it
+        pauseDone = t.service.pauseFeed(ORG, FEED);
+        await pauseDone;
+      }
+      return fetch(url, options);
+    });
+    const result = await t.ingestion.captureScheduledFeed({
+      organizationId: ORG,
+      sourceId: FEED,
+    });
+    await pauseDone;
+    expect(result).toEqual({
+      status: 'captured',
+      capture: expect.objectContaining({ sourcesCreated: 1 }),
+    });
+    expect(feedRow(t).scanPausedAt).toEqual(expect.any(Date));
+    expect(feedRow(t).lastCapturedAt.getTime()).toBeGreaterThan(
+      Date.now() - 60_000
+    );
+    feedRow(t).lastCapturedAt = OLD();
+    expect(await due(t)).toEqual([]);
   });
 });
 

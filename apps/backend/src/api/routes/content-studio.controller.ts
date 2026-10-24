@@ -761,6 +761,23 @@ export class ContentStudioController {
     return this._contentStudioSourceService.restoreSource(org.id, id);
   }
 
+  // A feed's scheduled captures (P8-C3): paused or resumed, nothing else. No
+  // body; neither captures anything, and a paused feed can still be refreshed
+  @Post('/sources/:id/pause')
+  @HttpCode(200)
+  pauseSource(@GetOrgFromRequest() org: Organization, @Param('id') id: string) {
+    return this._contentStudioSourceService.pauseFeed(org.id, id);
+  }
+
+  @Post('/sources/:id/resume')
+  @HttpCode(200)
+  resumeSource(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioSourceService.resumeFeed(org.id, id);
+  }
+
   // Fetches the source's own stored URL: a page's capture becomes its next
   // version, a feed's capture records and captures the pages it lists. No
   // body: nothing about the fetch comes from the request

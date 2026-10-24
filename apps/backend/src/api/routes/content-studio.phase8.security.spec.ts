@@ -351,7 +351,8 @@ describe('P8-01 routes', () => {
       // P8-02: one more, News Radar across feeds
       // P8-04A: one more, what changed in a source version
       // P8-04B1: one more, the organization's page changes
-    ).toHaveLength(145);
+      // P8-C3: two more, pause and resume a feed
+    ).toHaveLength(147);
     const handler = controller.slice(
       controller.indexOf("@Get('/sources/:id/discoveries')"),
       controller.indexOf("@Post('/sources/:id/archive')")
@@ -464,8 +465,9 @@ describe('P8-02 News Radar', () => {
     // P8-02 changes no schema; a later phase that does updates this pin.
     // P8-04B1 adds the four derived page-change fields and one index (pinned
     // by P804B1-1/P804B1-2)
+    // P8-C3 adds the feed pause time, nothing this forbids (P8C3-1)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '0c0638c523fe2e1439b81130c7e05f9eacdc12465ffac41f5be04b9d377af6e5'
+      '0f550301672eb8251a8bbb3c65ea0fb64ed0de64959bc5fc90c6cdecb6f7033a'
     );
     // the Radar reads the P8-01 indexes
     expect(model('ContentStudioSourceDiscovery')).toMatch(
@@ -512,7 +514,8 @@ describe('P8-02 News Radar', () => {
     )!;
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(145);
+      // P8-C3: two more, pause and resume a feed
+    ).toHaveLength(147);
     expect(controller.match(/@Get\('\/discoveries'\)/g)).toHaveLength(1);
     expect(controller).not.toMatch(
       /@(Post|Put|Patch|Delete)\('\/discoveries|\/research|\/radar/
@@ -575,8 +578,9 @@ describe('P8-03 research into content', () => {
   it('P803-1/P803-8/P803-12 no schema change: no origin, selection, collection or research model', () => {
     // the P8-01 schema, byte for byte, but for the P8-04B1 page-change
     // fields (P802-5 pins the same hash)
+    // P8-C3 adds the feed pause time, nothing this forbids (P8C3-1)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '0c0638c523fe2e1439b81130c7e05f9eacdc12465ffac41f5be04b9d377af6e5'
+      '0f550301672eb8251a8bbb3c65ea0fb64ed0de64959bc5fc90c6cdecb6f7033a'
     );
     expect(schema).not.toMatch(
       /model \w*(Research|Selection|Basket|Collection|Radar)\w* \{/
@@ -598,6 +602,8 @@ describe('P8-03 research into content', () => {
       'lastPageChangeVersionNumber',
       'lastPageChangeKind',
       'lastPageChangePreviousCaptureAt',
+      // P8-C3: a feed's schedule, not research
+      'scanPausedAt',
       'organization',
       'createdBy',
       'versions',
@@ -632,7 +638,8 @@ describe('P8-03 research into content', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-04A: one more, what changed in a source version
       // P8-04B1: one more, the organization's page changes
-    ).toHaveLength(145);
+      // P8-C3: two more, pause and resume a feed
+    ).toHaveLength(147);
     // the routes of sources: the P8-02 ones, nothing to resolve or keep a
     // selection with
     expect(
@@ -653,6 +660,9 @@ describe('P8-03 research into content', () => {
       'GET /sources/:id/discoveries',
       'POST /sources/:id/archive',
       'POST /sources/:id/restore',
+      // P8-C3, a feed's schedule
+      'POST /sources/:id/pause',
+      'POST /sources/:id/resume',
       'POST /sources/:id/refresh',
     ]);
     expect(controller).not.toMatch(
@@ -815,8 +825,9 @@ describe('P8-04A source change detection', () => {
   it('P804A-1/P804A-7 no schema change: no change model, table or field', () => {
     // P8-04A stored nothing; P8-04B1 adds the derived page-change fields
     // (P804B1-1) and nothing this forbids
+    // P8-C3 adds the feed pause time, nothing this forbids (P8C3-1)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '0c0638c523fe2e1439b81130c7e05f9eacdc12465ffac41f5be04b9d377af6e5'
+      '0f550301672eb8251a8bbb3c65ea0fb64ed0de64959bc5fc90c6cdecb6f7033a'
     );
     expect(schema).not.toMatch(/model \w*(Change|Diff|Comparison)\w* \{/);
     expect(schema).not.toMatch(
@@ -828,7 +839,8 @@ describe('P8-04A source change detection', () => {
     const controller = change('controller');
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(145);
+      // P8-C3: two more, pause and resume a feed
+    ).toHaveLength(147);
     expect(controller.match(/\/changes'/g)).toEqual(["/changes'"]);
     const handler = between(
       controller,
@@ -1321,7 +1333,8 @@ describe('P8-04B1 organization page changes', () => {
     const controller = pageChange('controller');
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(145);
+      // P8-C3: two more, pause and resume a feed
+    ).toHaveLength(147);
     expect(controller.match(/'\/source-changes'/g)).toEqual([
       "'/source-changes'",
     ]);
@@ -1520,8 +1533,9 @@ const b2Mapper = () =>
 
 describe('P8-04B2 News Radar change signals', () => {
   it('P804B2-1 no schema change: no discovery change field, table or enum', () => {
+    // P8-C3 adds the feed pause time, nothing this forbids (P8C3-1)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '0c0638c523fe2e1439b81130c7e05f9eacdc12465ffac41f5be04b9d377af6e5'
+      '0f550301672eb8251a8bbb3c65ea0fb64ed0de64959bc5fc90c6cdecb6f7033a'
     );
     expect(model('ContentStudioSourceDiscovery')).not.toMatch(/change/i);
     expect(schema).not.toMatch(/changedSinceFound/);
@@ -1533,7 +1547,8 @@ describe('P8-04B2 News Radar change signals', () => {
     )!;
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(145);
+      // P8-C3: two more, pause and resume a feed
+    ).toHaveLength(147);
     expect(controller).not.toMatch(/changedSinceFound|radar-changes|\/changed/);
   });
 
@@ -1684,12 +1699,14 @@ describe('P8-C1 organization safety caps', () => {
   ] as const;
 
   it('P8C1-1 no schema change: no limit, counter, pause or interval field or model', () => {
+    // P8-C3 adds the feed pause time, nothing this forbids (P8C3-1)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '0c0638c523fe2e1439b81130c7e05f9eacdc12465ffac41f5be04b9d377af6e5'
+      '0f550301672eb8251a8bbb3c65ea0fb64ed0de64959bc5fc90c6cdecb6f7033a'
     );
-    expect(model('ContentStudioSource')).not.toMatch(
-      /limit|quota|usage|paused|interval|nextCapture/i
-    );
+    // the feed pause came with P8-C3 (P8C3-1); nothing else here
+    expect(
+      model('ContentStudioSource').replace(/\n\s*scanPausedAt\s+DateTime\?/, '')
+    ).not.toMatch(/limit|quota|usage|paused|interval|nextCapture/i);
     expect(schema).not.toMatch(
       /model ContentStudio\w*(Limit|Quota|Counter|Slot|Cap)\w* \{/
     );
@@ -1699,7 +1716,8 @@ describe('P8-C1 organization safety caps', () => {
     const controller = caps('controller');
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(145);
+      // P8-C3: two more, pause and resume a feed
+    ).toHaveLength(147);
     expect(controller).not.toMatch(
       /\/limits|\/usage|\/quota|activeFeedsMax|urlSourcesMax|manualRefreshCooldownMs|contentStudioSourceLimits/
     );
@@ -2018,19 +2036,22 @@ describe('P8-C2 global feed-capture concurrency', () => {
   const c2 = (key: keyof typeof C2) => CODE.get(C2[key])!;
 
   it('P8C2-1/NG1/NG4/NG5 no schema change: no pause, interval or queue field', () => {
+    // P8-C3 adds the feed pause time, nothing this forbids (P8C3-1)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '0c0638c523fe2e1439b81130c7e05f9eacdc12465ffac41f5be04b9d377af6e5'
+      '0f550301672eb8251a8bbb3c65ea0fb64ed0de64959bc5fc90c6cdecb6f7033a'
     );
-    expect(model('ContentStudioSource')).not.toMatch(
-      /paused|interval|nextCapture|queue|priority/i
-    );
+    // the feed pause came with P8-C3 (P8C3-1); nothing else here
+    expect(
+      model('ContentStudioSource').replace(/\n\s*scanPausedAt\s+DateTime\?/, '')
+    ).not.toMatch(/paused|interval|nextCapture|queue|priority/i);
   });
 
   it('P8C2-2/NG2 no route: 145 in all, none about capture capacity', () => {
     const controller = c2('controller');
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(145);
+      // P8-C3: two more, pause and resume a feed
+    ).toHaveLength(147);
     expect(controller).not.toMatch(
       /CAPTURE_CONCURRENCY|capture-queue|TaskQueue/
     );
@@ -2149,8 +2170,9 @@ describe('P8-C2 global feed-capture concurrency', () => {
       'async captureScheduledFeed(',
       'private async captureUrl('
     );
+    // P8-C3: a paused feed is skipped with it, from the same read (P8C3-9)
     expect(scheduled).toMatch(
-      /if \(!source \|\| source\.archivedAt \|\| source\.kind !== 'feed'\) \{\s*return \{ status: 'skipped' as const \};/
+      /if \(\s*!source \|\|\s*source\.archivedAt \|\|\s*source\.scanPausedAt \|\|\s*source\.kind !== 'feed'\s*\) \{\s*return \{ status: 'skipped' as const \};/
     );
   });
 
@@ -2174,5 +2196,348 @@ describe('P8-C2 global feed-capture concurrency', () => {
     expect(example).toContain('#CONTENT_STUDIO_CAPTURE_CONCURRENCY="8"');
     expect(example).toMatch(/\(default 8,\s*\n# 1 to 32\)/);
     expect(example).not.toMatch(/^CONTENT_STUDIO_CAPTURE_CONCURRENCY=/m);
+  });
+});
+
+// Feed pause (P8-C3): one nullable time on the source, two routes, the scan
+// and the scheduled capture leave a paused feed out, and nothing else
+// changes: a paused feed is live, listed, in News Radar, counted against the
+// live feed limit and can be refreshed. The behavior is covered by the
+// service, repository, controller, feed capture and frontend specs, the
+// PostgreSQL suite and the real Temporal suite; these keep it from drifting
+describe('P8-C3 feed pause', () => {
+  const C3 = {
+    repository:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.repository.ts',
+    service:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.service.ts',
+    discoveries:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-discovery.repository.ts',
+    ingestion: `${SOURCES}/ingestion/source.ingestion.service.ts`,
+    types: `${SOURCES}/source.types.ts`,
+    controller: 'apps/backend/src/api/routes/content-studio.controller.ts',
+    queue:
+      'libraries/nestjs-libraries/src/temporal/content.studio.capture.queue.ts',
+    api: 'apps/frontend/src/components/content-studio/content-studio.sources.api.ts',
+    ui: 'apps/frontend/src/components/content-studio/content-studio.sources.tsx',
+    detail:
+      'apps/frontend/src/components/content-studio/content-studio.source.detail.tsx',
+  };
+  const c3 = (key: keyof typeof C3) => CODE.get(C3[key])!;
+  const repositoryMethod = (name: string) =>
+    between(c3('repository'), `\n  ${name}(`, '\n  }\n');
+
+  it('P8C3-1/M27/M28 one nullable pause time on the source, no default, no index, feed-neutral', () => {
+    expect(createHash('sha256').update(schema).digest('hex')).toBe(
+      '0f550301672eb8251a8bbb3c65ea0fb64ed0de64959bc5fc90c6cdecb6f7033a'
+    );
+    const source = fields('ContentStudioSource');
+    expect(source.filter((f) => /paus/i.test(f))).toEqual([
+      'scanPausedAt DateTime?',
+    ]);
+    // after the P8-04B1 fields, before the relations: nothing else new
+    expect(source.slice(15, 17)).toEqual([
+      'scanPausedAt DateTime?',
+      'organization Organization',
+    ]);
+    expect(source).toHaveLength(21);
+    expect(model('ContentStudioSource')).toMatch(
+      /\n\s*scanPausedAt\s+DateTime\?\n/
+    );
+    // the indexes P8-04B1 left: the scan reads kind, archivedAt and id
+    expect(
+      model('ContentStudioSource')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith('@@'))
+    ).toEqual([
+      '@@unique([id, organizationId])',
+      '@@unique([organizationId, canonicalUrl])',
+      '@@index([organizationId, archivedAt])',
+      '@@index([organizationId, kind])',
+      '@@index([createdById])',
+      '@@index([kind, archivedAt, id])',
+      '@@index([organizationId, lastPageChangeAt])',
+    ]);
+    expect(schema.match(/scanPausedAt/g)).toHaveLength(2);
+    expect(schema).not.toMatch(/model \w*(Pause|Schedule|Interval)\w* \{/);
+  });
+
+  it('P8C3-2/P8C3-3/M27/M28/M32 no next capture, interval, backoff, capture history or schedule of its own', () => {
+    expect(schema).not.toMatch(
+      /nextCaptureAt|captureInterval|intervalMinutes|lastCaptureError|failureDelay|backoff|etag|lastModified/i
+    );
+    expect(
+      users(
+        /nextCaptureAt|captureIntervalMinutes|captureInterval\b|lastCaptureError|failureDelay|ScheduleClient|scheduleHandle|\.schedule\.create/
+      )
+    ).toEqual([]);
+    // the scan keeps its hour and its interval
+    expect(c3('ingestion')).toContain(
+      'export const FEED_CAPTURE_INTERVAL_MS = 50 * 60 * 1000;'
+    );
+    expect(c3('ingestion')).toContain(
+      'export const FEED_SCAN_PAGE_SIZE = 200;'
+    );
+    // and Temporal knows nothing of the pause: the database is the truth
+    expect(
+      users(/scanPausedAt/).filter((file) =>
+        file.startsWith('apps/orchestrator/')
+      )
+    ).toEqual([]);
+  });
+
+  it('P8C3-4/M29 nothing deletes or prunes: no retention', () => {
+    expect(
+      users(/contentStudioSource(Version|Discovery)?\.(delete|deleteMany)\(/)
+    ).toEqual([]);
+    for (const key of ['repository', 'service', 'ingestion'] as const) {
+      expect([
+        key,
+        c3(key).match(/retention|purge|prune|cleanup|keepLast/gi),
+      ]).toEqual([key, null]);
+    }
+  });
+
+  it('P8C3-5/M30 the P8-C1 limits are unchanged, and a paused feed still counts as live', () => {
+    const types = c3('types');
+    expect(types).toContain(
+      'export const CONTENT_STUDIO_ACTIVE_FEEDS_MAX = 100;'
+    );
+    expect(types).toContain(
+      'export const CONTENT_STUDIO_URL_SOURCES_MAX = 100_000;'
+    );
+    expect(types).toContain(
+      'export const CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;'
+    );
+    // the live feeds the limit counts: archivedAt only, never the pause
+    expect(
+      between(c3('repository'), 'const limitedSourcesWhere', ';\n')
+    ).toMatch(
+      /kind === 'feed'\s*\?\s*\{ organizationId, kind, archivedAt: null \}\s*:\s*\{ organizationId, kind \}/
+    );
+    expect(
+      between(c3('repository'), 'const limitedSourcesWhere', ';\n')
+    ).not.toMatch(/scanPausedAt/);
+  });
+
+  it('P8C3-6/M31 the P8-C2 queue and its capacity are unchanged', () => {
+    const queue = c3('queue');
+    expect(queue).toContain(
+      "export const CONTENT_STUDIO_CAPTURE_TASK_QUEUE = 'content-studio-capture';"
+    );
+    expect(queue).toContain(
+      'export const CONTENT_STUDIO_CAPTURE_CONCURRENCY_DEFAULT = 8;'
+    );
+    expect(queue).toContain(
+      'export const CONTENT_STUDIO_CAPTURE_CONCURRENCY_MAX = 32;'
+    );
+    const hash = (file: string) =>
+      createHash('sha256').update(raw(file)).digest('hex');
+    expect({
+      queue: hash(C3.queue),
+      workflow: hash(
+        'apps/orchestrator/src/workflows/content.studio.feed.capture.workflow.ts'
+      ),
+      activity: hash(
+        'apps/orchestrator/src/activities/content-studio.source.activity.ts'
+      ),
+      worker: hash(
+        'libraries/nestjs-libraries/src/temporal/temporal.module.ts'
+      ),
+    }).toEqual({
+      queue: '0013e83698f582fd597a5a7a7f70f4248cae5a3e5491e087a1d7f217e3061c13',
+      workflow:
+        '29ae0f07fc27026212832ed1047ecc61369de467014e820f2f8f2340dbe58912',
+      activity:
+        '1806d5912e2ab2dacfbeddd83773be96c9cb8b24932a173d409d964f9f6afc3b',
+      worker:
+        '412efbac60853923ad81f0e2c2191fd8f5fa72bef6d4f7fb2812bede9b35a305',
+    });
+  });
+
+  it('P8C3-7/M20 News Radar never filters on the pause: a paused feed and its pages stay visible', () => {
+    const radar = between(c3('discoveries'), 'const radarWhere', '});\n');
+    expect(radar).toContain('feedSource: { archivedAt: null },');
+    expect(c3('discoveries')).not.toMatch(/scanPausedAt|paused/i);
+    expect(
+      between(
+        c3('service'),
+        'async listOrganizationDiscoveries(',
+        'private toPublicDiscovery('
+      )
+    ).not.toMatch(/scanPausedAt|paused/i);
+    expect(
+      between(
+        c3('service'),
+        'async listDiscoveries(',
+        'async listOrganizationDiscoveries('
+      )
+    ).not.toMatch(/scanPausedAt|paused/i);
+    // the Radar's feed choice is the active feeds list, paused ones included
+    expect(CODE.get(RADAR_FRONTEND[0])).toContain(
+      "useContentStudioSources(false, 1, 'feed')"
+    );
+    for (const file of RADAR_FRONTEND) {
+      expect([file, CODE.get(file)!.match(/scanPausedAt|paused/gi)]).toEqual([
+        file,
+        null,
+      ]);
+    }
+  });
+
+  it('P8C3-8/M9/M15 the scan lists only feeds that are not paused', () => {
+    const due = repositoryMethod('listFeedsDueForCapture');
+    expect(due).toMatch(
+      /where: \{\s*kind: 'feed',\s*archivedAt: null,\s*scanPausedAt: null,/
+    );
+    expect(due.match(/scanPausedAt/g)).toHaveLength(1);
+    // the Source list keeps paused feeds with the active ones (M21)
+    expect(
+      between(c3('repository'), 'const sourceListWhere', '});\n')
+    ).not.toMatch(/scanPausedAt/);
+  });
+
+  it('P8C3-9/M10 a scheduled capture skips a paused feed, from the one read it had', () => {
+    const method = repositoryMethod('getSourceForCapture');
+    expect(method.match(/this\._source\.model\.\w+\.\w+\(/g)).toEqual([
+      'this._source.model.contentStudioSource.findFirst(',
+    ]);
+    expect(method).toContain('...SOURCE_SUMMARY,');
+    expect(
+      between(c3('repository'), 'const SOURCE_SUMMARY', '} as const;')
+    ).toContain('scanPausedAt: true,');
+    const scheduled = between(
+      c3('ingestion'),
+      'async captureScheduledFeed(',
+      'private async captureUrl('
+    );
+    expect(scheduled).toMatch(/source\.scanPausedAt \|\|/);
+    // skipped as an expected state: never an error, a retry or a write
+    expect(
+      scheduled.match(/return \{ status: 'skipped' as const \};/g)
+    ).toHaveLength(2);
+    expect(scheduled).not.toMatch(/paused_|throw|markFeedCaptured/);
+  });
+
+  it('P8C3-10/M16/M17 a member refresh never refuses or clears a pause; the capture mark keeps it', () => {
+    const refresh = between(
+      c3('ingestion'),
+      'async refreshSource(',
+      'async listFeedsDueForCapture('
+    );
+    expect(refresh).not.toMatch(/scanPausedAt|paused/i);
+    expect(refresh).toContain(
+      'assertRefreshDue(source.lastCapturedAt, manualRefreshCooldownMs);'
+    );
+    const mark = repositoryMethod('markFeedCaptured');
+    expect(mark).toMatch(
+      /where: \{\s*id,\s*organizationId,\s*kind: 'feed',\s*archivedAt: null,\s*\},\s*data: \{\s*lastCapturedAt: capturedAt,\s*\}/
+    );
+    // only the two pause writes set the field
+    expect(c3('repository').match(/scanPausedAt: (pausedAt|null),/g)).toEqual([
+      'scanPausedAt: null,',
+      'scanPausedAt: pausedAt,',
+      'scanPausedAt: null,',
+      'scanPausedAt: null,',
+    ]);
+    // archive and restore keep it (M6/M8)
+    for (const name of ['archiveSource', 'restoreSourceWithinLimit']) {
+      expect([name, repositoryMethod(name).match(/scanPausedAt/g)]).toEqual([
+        name,
+        null,
+      ]);
+    }
+  });
+
+  it('P8C3-11 pause and resume take the request organization and the path id only, for any member', () => {
+    const controller = c3('controller');
+    const block = between(
+      controller,
+      "@Post('/sources/:id/pause')",
+      "@Post('/sources/:id/refresh')"
+    );
+    expect(block.match(/@Post\(/g)).toHaveLength(2);
+    expect(block).toContain("@Post('/sources/:id/resume')");
+    expect(
+      block.match(/@GetOrgFromRequest\(\) org: Organization/g)
+    ).toHaveLength(2);
+    expect(block).toContain(
+      'this._contentStudioSourceService.pauseFeed(org.id, id)'
+    );
+    expect(block).toContain(
+      'this._contentStudioSourceService.resumeFeed(org.id, id)'
+    );
+    expect(block).not.toMatch(
+      /@Body|@Query|@Req|GetUserFromRequest|Role|Polic|ingestion|refresh/
+    );
+    for (const name of ['pauseFeed', 'resumeFeed']) {
+      expect(c3('service')).toContain(
+        `async ${name}(organizationId: string, id: string) {`
+      );
+    }
+  });
+
+  it('P8C3-12/M4/M22 only a live feed has a pause: the repository, the service and the browser say so', () => {
+    for (const name of ['pauseFeed', 'resumeFeed']) {
+      expect(repositoryMethod(name)).toMatch(
+        /where: \{\s*id,\s*organizationId,\s*kind: 'feed',\s*archivedAt: null,\s*scanPausedAt:/
+      );
+    }
+    const live = between(c3('service'), 'private async liveFeed(', '\n  }\n');
+    expect(live).toMatch(
+      /if \(source\.kind !== 'feed'\) \{\s*throw kindNotScheduled\(\);\s*\}\s*if \(source\.archivedAt\) \{\s*throw sourceArchived\(\);/
+    );
+    // the source type error the other kinds get, with its own words
+    expect(c3('service')).toMatch(
+      /const kindNotScheduled = \(\) =>\s*new HttpException\(\s*\{\s*msg: 'This source type has no scheduled captures\.',\s*code: 'CS_SOURCE_KIND_UNSUPPORTED',\s*\},\s*400\s*\);/
+    );
+    const button = between(
+      c3('ui'),
+      'export const FeedScheduleButton',
+      '\n};\n'
+    );
+    expect(button).toContain(
+      "if (source.kind !== 'feed' || source.archivedAt) {"
+    );
+    // the browser sends nothing but the path
+    expect(c3('api')).toMatch(
+      /`\$\{sourcePath\(id\)\}\/pause`, \{ method: 'POST' \}/
+    );
+    expect(c3('api')).toMatch(
+      /`\$\{sourcePath\(id\)\}\/resume`, \{ method: 'POST' \}/
+    );
+  });
+
+  it('the copy says pause, never disable, archive or stop for good, and no limit place is freed by it', () => {
+    const copy = JSON.parse(
+      raw(
+        'libraries/react-shared-libraries/src/translation/locales/en/translation.json'
+      )
+    ) as Record<string, string>;
+    expect(copy.content_studio_feed_pause).toBe('Pause feed');
+    expect(copy.content_studio_feed_resume).toBe('Resume feed');
+    expect(copy.content_studio_feed_paused_status).toBe('Paused');
+    expect(copy.content_studio_feed_paused).toBe('Feed paused.');
+    expect(copy.content_studio_feed_resumed).toBe('Feed resumed.');
+    expect(copy.content_studio_feed_paused_note).toBe(
+      'Automatic scans are paused. You can still refresh this feed manually.'
+    );
+    for (const key of [
+      'content_studio_feed_pause',
+      'content_studio_feed_resume',
+      'content_studio_feed_paused_status',
+      'content_studio_feed_paused',
+      'content_studio_feed_resumed',
+      'content_studio_feed_paused_note',
+    ]) {
+      expect([key, copy[key]]).not.toEqual([
+        key,
+        expect.stringMatching(/disable|archive|permanent|forever|limit|slot/i),
+      ]);
+    }
+    expect(copy.content_studio_source_error_feed_limit).toBe(
+      'This organization has reached its limit of active feeds. Archive a feed to add or restore another.'
+    );
   });
 });

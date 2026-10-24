@@ -66,7 +66,18 @@ const inFlight = {
     timedOut: boolean;
   },
 };
+// fetches a test holds by URL (P8-C3): each tells it is in flight, then
+// waits for its release
+const fetchHolds = new Map<
+  string,
+  { reached: () => void; released: Promise<void> }
+>();
 const mockSafeFetch = jest.fn(async (url: string): Promise<SafeFetchResult> => {
+  const hold = fetchHolds.get(url);
+  if (hold) {
+    hold.reached();
+    await hold.released;
+  }
   const answer = (body: string, contentType: string): SafeFetchResult => {
     const bytes = new TextEncoder().encode(body);
     return {
@@ -450,6 +461,7 @@ beforeEach(async () => {
     manualRefreshCooldownMs: 5 * 60 * 1000,
   });
   listFeeds = async () => ({ feeds: [], next: null });
+  fetchHolds.clear();
   mockSafeFetch.mockClear();
 });
 
@@ -898,6 +910,171 @@ describe('P8-C2 on Temporal and PostgreSQL: the real capture behind the queue', 
         attempts: [1],
       });
     }
+  });
+});
+
+// Feed pause (P8-C3) behind the queue: the database is what decides, when a
+// capture starts. No signal, cancellation or workflow state of its own
+describe('P8-C3 on Temporal and PostgreSQL: a paused feed', () => {
+  // the real list of due feeds, of these organizations only
+  const realDueList = () => {
+    listFeeds = async (input) => {
+      const due = await ingestion.listFeedsDueForCapture(input);
+      return {
+        ...due,
+        feeds: due.feeds.filter((f) => ORGS.includes(f.organizationId)),
+      };
+    };
+  };
+  const scanOnce = async () => {
+    const scan = await temporal.workflow.start(
+      'contentStudioFeedScanWorkflowV1',
+      { taskQueue: 'main', workflowId: `p8c3-scan-${randomUUID()}`, args: [{}] }
+    );
+    handles.push(scan);
+    await until(
+      async () =>
+        (
+          await scan.fetchHistory()
+        ).events!.some((e) => e.timerStartedEventAttributes),
+      'the scan to sleep'
+    );
+    return scan;
+  };
+  // the capture workflows the scan started, by feed
+  const childrenOf = async (scan: WorkflowHandle) =>
+    (await scan.fetchHistory())
+      .events!.filter(
+        (e) => e.startChildWorkflowExecutionInitiatedEventAttributes
+      )
+      .map(
+        (e) =>
+          e.startChildWorkflowExecutionInitiatedEventAttributes!.workflowId!
+      );
+  const writes = async (feed: string) => ({
+    feed: await client.contentStudioSource.findUniqueOrThrow({
+      where: { id: feed },
+    }),
+    sources: await client.contentStudioSource.count({
+      where: { organizationId: { in: ORGS } },
+    }),
+    versions: await client.contentStudioSourceVersion.count({
+      where: { organizationId: { in: ORGS } },
+    }),
+    discoveries: await client.contentStudioSourceDiscovery.count({
+      where: { organizationId: { in: ORGS } },
+    }),
+  });
+
+  it('P8C3T1 a feed paused while its capture waits in the full queue is skipped when the capture starts: nothing fetched or written, lastCapturedAt kept, no retry', async () => {
+    for (let i = 0; i < LIMIT; i++) {
+      await startCapture(ORG_A, randomUUID());
+    }
+    await until(() => held.size === LIMIT, 'a full capture queue');
+    const feed = await realFeed(ORG_A, 'paused-queued', 3);
+    const last = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await client.contentStudioSource.update({
+      where: { id: feed },
+      data: { lastCapturedAt: last },
+    });
+    const handle = await startCapture(ORG_A, feed);
+    await until(
+      async () => (await pending(handle))[0]?.state === SCHEDULED,
+      'the capture to wait in the queue'
+    );
+    await sourceService.pauseFeed(ORG_A, feed);
+    const before = await writes(feed);
+    expect(before.feed.scanPausedAt).toBeInstanceOf(Date);
+    runningNow().forEach((id) => release(id));
+    expect(await handle.result()).toEqual({ status: 'skipped' });
+    expect(calls.get(feed)).toBe(1);
+    expect(mockSafeFetch).not.toHaveBeenCalled();
+    const after = await writes(feed);
+    expect(after).toEqual(before);
+    expect(after.feed.lastCapturedAt).toEqual(last);
+    // an expected state, not a failure: one attempt, on the capture queue
+    expect(await captureEvents(handle)).toEqual({
+      queues: [CONTENT_STUDIO_CAPTURE_TASK_QUEUE],
+      attempts: [1],
+    });
+    expect((await handle.describe()).status.name).toBe('COMPLETED');
+  });
+
+  it('P8C3T2 the scan never starts a paused feed; resumed, the next scan starts it and the capture runs', async () => {
+    realDueList();
+    const feed = await realFeed(ORG_B, 'paused-resumed', 2);
+    const running = await realFeed(ORG_C, 'running', 1);
+    await sourceService.pauseFeed(ORG_B, feed);
+    const first = await scanOnce();
+    expect(await childrenOf(first)).toEqual([workflowId(running)]);
+    await until(() => calls.get(running) === 1, 'the running feed captured');
+    expect(calls.get(feed)).toBeUndefined();
+    await expect(
+      temporal.workflow.getHandle(workflowId(feed)).describe()
+    ).rejects.toThrow();
+    expect(
+      (
+        await client.contentStudioSource.findUniqueOrThrow({
+          where: { id: feed },
+        })
+      ).lastCapturedAt
+    ).toBeNull();
+    await sourceService.resumeFeed(ORG_B, feed);
+    const second = await scanOnce();
+    // the running feed was captured a moment ago: not due again
+    expect(await childrenOf(second)).toEqual([workflowId(feed)]);
+    const result = (await temporal.workflow
+      .getHandle(workflowId(feed))
+      .result()) as { status: string; capture: Record<string, number> };
+    expect(result.status).toBe('captured');
+    expect(result.capture).toMatchObject({
+      sourcesCreated: 2,
+      versionsCreated: 2,
+    });
+    const row = await client.contentStudioSource.findUniqueOrThrow({
+      where: { id: feed },
+    });
+    expect(row.lastCapturedAt).toBeInstanceOf(Date);
+    expect(row.scanPausedAt).toBeNull();
+  });
+
+  it('P8C3T3 a capture already running when its feed is paused finishes once; the feed stays paused and the next scan leaves it out', async () => {
+    realDueList();
+    const feed = await realFeed(ORG_A, 'paused-running', 2);
+    let reached!: () => void;
+    const inFetch = new Promise<void>((resolve) => (reached = resolve));
+    let releaseFetch!: () => void;
+    fetchHolds.set(feedUrl('paused-running'), {
+      reached,
+      released: new Promise<void>((resolve) => (releaseFetch = resolve)),
+    });
+    const handle = await startCapture(ORG_A, feed);
+    // past the source check: the feed itself is being fetched
+    await inFetch;
+    await sourceService.pauseFeed(ORG_A, feed);
+    releaseFetch();
+    const result = (await handle.result()) as {
+      status: string;
+      capture: Record<string, number>;
+    };
+    expect(result.status).toBe('captured');
+    expect(result.capture).toMatchObject({ sourcesCreated: 2 });
+    expect(calls.get(feed)).toBe(1);
+    const row = await client.contentStudioSource.findUniqueOrThrow({
+      where: { id: feed },
+    });
+    expect(row.scanPausedAt).toBeInstanceOf(Date);
+    expect(row.lastCapturedAt).toBeInstanceOf(Date);
+    // due again by its time: still paused, so the scan leaves it out
+    await client.contentStudioSource.update({
+      where: { id: feed },
+      data: { lastCapturedAt: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+    });
+    const scan = await scanOnce();
+    expect(await childrenOf(scan)).toEqual([]);
+    await sleep(500);
+    expect(calls.get(feed)).toBe(1);
+    expect(mockSafeFetch).toHaveBeenCalledTimes(1 + 2);
   });
 });
 

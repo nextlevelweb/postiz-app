@@ -2297,7 +2297,10 @@ model ContentStudioExpertiseProfileRevision {
 // null together: before such a version, and always for a feed. A first
 // capture, a repeat or another extraction version never sets them. Ingestion
 // keeps them in the version append; the content-studio:backfill-page-changes
-// command rebuilds them from the versions
+// command rebuilds them from the versions. scanPausedAt (P8-C3) is when a
+// live feed's scheduled captures were paused, null while they run (and for
+// every source before P8-C3): a paused feed stays live, is listed, keeps what
+// it found and can be refreshed by a member. Archiving and restoring keep it
 model ContentStudioSource {
   id                              String                         @id @default(uuid())
   organizationId                  String
@@ -2314,6 +2317,7 @@ model ContentStudioSource {
   lastPageChangeVersionNumber     Int?
   lastPageChangeKind              String?
   lastPageChangePreviousCaptureAt DateTime?
+  scanPausedAt                    DateTime?
   organization                    Organization                   @relation(fields: [organizationId], references: [id])
   createdBy                       User                           @relation("ContentStudioSourceCreatedBy", fields: [createdById], references: [id])
   versions                        ContentStudioSourceVersion[]

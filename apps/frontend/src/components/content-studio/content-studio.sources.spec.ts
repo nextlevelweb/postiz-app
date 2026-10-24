@@ -560,8 +560,12 @@ describe('Source Library: list', () => {
       '/content-studio/sources?page=1&archived=true',
     ]);
     await click(button('Active'));
-    expect(gets('/content-studio/sources').slice(-1)[0].url).toBe(
-      '/content-studio/sources?page=1&archived=false'
+    // the first page is in the SWR cache: SWR asks for it again on the next
+    // animation frame, which a few timer ticks do not always reach
+    await waitFor(() =>
+      expect(gets('/content-studio/sources').slice(-1)[0].url).toBe(
+        '/content-studio/sources?page=1&archived=false'
+      )
     );
     expect(screen.getByText('1 / 2')).toBeTruthy();
   });
@@ -2078,7 +2082,8 @@ describe('Source Library: source surface', () => {
     expect(all).not.toMatch(/'DELETE'|"DELETE"|method: 'PUT'/);
     expect(
       Array.from(sources.api.matchAll(/method: '([A-Z]+)'/g)).map((m) => m[1])
-    ).toEqual(['POST', 'PATCH', 'POST', 'POST', 'POST']);
+      // create, rename, archive, restore, pause and resume (P8-C3), refresh
+    ).toEqual(['POST', 'PATCH', 'POST', 'POST', 'POST', 'POST', 'POST']);
     // the only body of a rename is its name
     expect(sources.api).toContain('body: JSON.stringify({ name })');
     // the kind the member chose: a page or (P8-01) a feed

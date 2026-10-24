@@ -105,7 +105,9 @@ const setup = () => {
       }
       const row = {
         createdAt: NOW,
-        ...(table === 'sources' ? { updatedAt: NOW, archivedAt: null } : {}),
+        ...(table === 'sources'
+          ? { updatedAt: NOW, archivedAt: null, scanPausedAt: null }
+          : {}),
         ...args.data,
       };
       state[table].push(row);
@@ -220,6 +222,7 @@ const SOURCE_FIELDS = {
   createdAt: true,
   updatedAt: true,
   lastCapturedAt: true,
+  scanPausedAt: true,
 };
 const VERSION_FIELDS = {
   id: true,
@@ -265,6 +268,8 @@ describe('ContentStudioSourceRepository: sources', () => {
       archivedAt: null,
       createdAt: NOW,
       updatedAt: NOW,
+      // a new feed's schedule runs (P8-C3)
+      scanPausedAt: null,
     });
     expect(state.versions).toEqual([]);
   });
@@ -494,6 +499,97 @@ describe('ContentStudioSourceRepository: sources', () => {
     expect(JSON.stringify(state.versions)).toBe(versions);
   });
 
+  it('P8-C3 pauses and resumes a live feed of the organization only, the pause time once, nothing else', async () => {
+    const { repository, source, state } = setup();
+    await create(repository, { kind: 'feed' });
+    await create(repository, { id: OTHER_SOURCE, url: `${URL_A}/page` });
+    const LATER = new Date('2026-10-15T11:00:00.000Z');
+    expect(await repository.pauseFeed(OTHER_ORG, SOURCE, NOW)).toEqual({
+      count: 0,
+    });
+    // a page has no schedule
+    expect(await repository.pauseFeed(ORG, OTHER_SOURCE, NOW)).toEqual({
+      count: 0,
+    });
+    expect(await repository.pauseFeed(ORG, SOURCE, NOW)).toEqual({
+      count: 1,
+    });
+    // paused already: the first time stays
+    expect(await repository.pauseFeed(ORG, SOURCE, LATER)).toEqual({
+      count: 0,
+    });
+    expect(state.sources[0].scanPausedAt).toBe(NOW);
+    expect(await repository.resumeFeed(OTHER_ORG, SOURCE)).toEqual({
+      count: 0,
+    });
+    expect(await repository.resumeFeed(ORG, SOURCE)).toEqual({ count: 1 });
+    expect(await repository.resumeFeed(ORG, SOURCE)).toEqual({ count: 0 });
+    expect(state.sources[0].scanPausedAt).toBeNull();
+    // an archived feed is read-only
+    await repository.pauseFeed(ORG, SOURCE, NOW);
+    await repository.archiveSource(ORG, SOURCE, NOW);
+    expect(await repository.resumeFeed(ORG, SOURCE)).toEqual({ count: 0 });
+    expect(state.sources[0]).toMatchObject({
+      archivedAt: NOW,
+      scanPausedAt: NOW,
+    });
+    // restoring keeps the pause
+    expect(
+      await repository.restoreSourceWithinLimit({
+        organizationId: ORG,
+        id: SOURCE,
+        activeFeedsMax: 100,
+      })
+    ).toEqual({ status: 'restored' });
+    expect(state.sources[0]).toMatchObject({
+      archivedAt: null,
+      scanPausedAt: NOW,
+    });
+    const feedWrite = (scanPausedAt: unknown) => ({
+      id: SOURCE,
+      organizationId: ORG,
+      kind: 'feed',
+      archivedAt: null,
+      scanPausedAt,
+    });
+    expect(source.updateMany.mock.calls.map(([args]) => args)).toEqual(
+      expect.arrayContaining([
+        { where: feedWrite(null), data: { scanPausedAt: NOW } },
+        { where: feedWrite({ not: null }), data: { scanPausedAt: null } },
+      ])
+    );
+    for (const [args] of source.updateMany.mock.calls) {
+      if ('scanPausedAt' in args.data) {
+        expect(Object.keys(args.data)).toEqual(['scanPausedAt']);
+      }
+    }
+  });
+
+  it('M9 the scan lists live feeds that are not paused; the capture reads the pause with the feed', async () => {
+    const { repository, source } = setup();
+    await repository.listFeedsDueForCapture({
+      capturedBefore: NOW,
+      afterId: null,
+      take: 200,
+    });
+    expect(source.findMany.mock.calls[0][0].where).toEqual({
+      kind: 'feed',
+      archivedAt: null,
+      scanPausedAt: null,
+      OR: [{ lastCapturedAt: null }, { lastCapturedAt: { lt: NOW } }],
+      organization: { deletedAt: null },
+    });
+    await repository.getSourceForCapture(ORG, SOURCE);
+    expect(source.findFirst.mock.calls[0][0]).toEqual({
+      where: {
+        id: SOURCE,
+        organizationId: ORG,
+        organization: { deletedAt: null },
+      },
+      select: { ...SOURCE_FIELDS, createdById: true },
+    });
+  });
+
   it('SR13-SR15 has no delete, URL change or version-changing method', () => {
     expect(
       Object.getOwnPropertyNames(ContentStudioSourceRepository.prototype).sort()
@@ -526,7 +622,10 @@ describe('ContentStudioSourceRepository: sources', () => {
       'listVersionCapturesForBackfill',
       'listVersionsForSource',
       'markFeedCaptured',
+      // a feed's scheduled captures (P8-C3): that field only
+      'pauseFeed',
       'restoreSourceWithinLimit',
+      'resumeFeed',
       // the page-change backfill (P8-04B1): the derived fields only
       'setPageChangeWithCompareAndSwap',
       'updateSourceName',
@@ -1117,6 +1216,8 @@ describe('ContentStudioSource schema', () => {
       updatedAt: 'DateTime',
       // a feed's last successful capture (P8-01)
       lastCapturedAt: 'DateTime?',
+      // when a feed's scheduled captures were paused (P8-C3)
+      scanPausedAt: 'DateTime?',
       // a page's last page change, derived from its versions (P8-04B1)
       lastPageChangeAt: 'DateTime?',
       lastPageChangeVersionNumber: 'Int?',

@@ -65,6 +65,7 @@ const sourceRow = (overrides: Record<string, unknown> = {}) => ({
   createdAt: T0,
   updatedAt: T0,
   lastCapturedAt: null as Date | null,
+  scanPausedAt: null as Date | null,
   ...overrides,
 });
 const versionSummaryRow = (overrides: Record<string, unknown> = {}) => {
@@ -128,6 +129,8 @@ const setup = () => {
     ),
     updateSourceName: jest.fn(async () => ({ count: 1 })),
     archiveSource: jest.fn(async () => ({ count: 1 })),
+    pauseFeed: jest.fn(async () => ({ count: 1 })),
+    resumeFeed: jest.fn(async () => ({ count: 1 })),
     restoreSourceWithinLimit: jest.fn(
       async (): Promise<Record<string, unknown>> => ({ status: 'restored' })
     ),
@@ -212,6 +215,7 @@ const SUMMARY_KEYS = [
   'lastCapturedAt',
   'latestVersionNumber',
   'name',
+  'scanPausedAt',
   'updatedAt',
 ];
 const VERSION_KEYS = [
@@ -273,6 +277,7 @@ describe('ContentStudioSourceService: create', () => {
       createdAt: T0,
       updatedAt: T0,
       lastCapturedAt: null,
+      scanPausedAt: null,
     });
     expect(repository.appendVersionWithCompareAndSwap).not.toHaveBeenCalled();
   });
@@ -831,8 +836,12 @@ describe('ContentStudioSourceService source', () => {
       'listPageChanges',
       'listSources',
       'listVersions',
+      // a feed's scheduled captures (P8-C3): no version, no capture
+      'liveFeed',
+      'pauseFeed',
       'renameSource',
       'restoreSource',
+      'resumeFeed',
       'search',
       'sourceName',
       'toPublicDiscovery',
@@ -942,5 +951,169 @@ describe('ContentStudioSourceService: organization limits (P8-C1)', () => {
       organizationId: ORG,
       limit: CONTENT_STUDIO_URL_SOURCES_MAX,
     });
+  });
+});
+
+describe('ContentStudioSourceService: feed pause (P8-C3)', () => {
+  const PAUSED_AT = new Date('2026-10-20T08:00:00.000Z');
+  const KIND = {
+    msg: 'This source type has no scheduled captures.',
+    code: 'CS_SOURCE_KIND_UNSUPPORTED',
+  };
+  // the feed as the repository reads it, one read after another
+  const feedReads = (repository: Repository, ...rows: unknown[]) => {
+    for (const row of rows) {
+      repository.getSourceForOrganization.mockResolvedValueOnce(row as never);
+    }
+  };
+  const feed = (overrides: Record<string, unknown> = {}) =>
+    sourceRow({ kind: 'feed', latestVersionNumber: 0, ...overrides });
+
+  it('pauses a running feed of the request organization, answering it paused', async () => {
+    const { repository, service } = setup();
+    feedReads(repository, feed(), feed({ scanPausedAt: PAUSED_AT }));
+    const before = Date.now();
+    await expect(service.pauseFeed(ORG, SOURCE)).resolves.toEqual(
+      feed({ scanPausedAt: PAUSED_AT })
+    );
+    expect(repository.getSourceForOrganization).toHaveBeenCalledWith(
+      ORG,
+      SOURCE
+    );
+    expect(repository.pauseFeed).toHaveBeenCalledTimes(1);
+    const [organizationId, id, pausedAt] = repository.pauseFeed.mock
+      .calls[0] as unknown as [string, string, Date];
+    expect([organizationId, id]).toEqual([ORG, SOURCE]);
+    expect(pausedAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(pausedAt.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(repository.resumeFeed).not.toHaveBeenCalled();
+    expect(writes(repository)).toEqual([]);
+  });
+
+  it('API1-API4 the answer carries scanPausedAt: null for a running feed and a page, the time for a paused feed', async () => {
+    const { repository, service } = setup();
+    feedReads(repository, feed(), feed());
+    // resuming a running feed: the feed as it is
+    const running = await service.resumeFeed(ORG, SOURCE);
+    expect(running.scanPausedAt).toBeNull();
+    expect(Object.keys(running).sort()).toEqual(SUMMARY_KEYS);
+    feedReads(repository, feed({ scanPausedAt: PAUSED_AT }));
+    feedReads(repository, feed({ scanPausedAt: PAUSED_AT }));
+    expect((await service.pauseFeed(ORG, SOURCE)).scanPausedAt).toEqual(
+      PAUSED_AT
+    );
+    // a page read without the field (as before P8-C3) answers null
+    const page = await service.getSource(ORG, SOURCE);
+    expect(page.scanPausedAt).toBeNull();
+    const { scanPausedAt: _omitted, ...withoutField } = sourceRow();
+    repository.listSourcesForOrganization.mockResolvedValueOnce([
+      { ...withoutField, organizationId: ORG, createdById: USER } as never,
+    ]);
+    const list = await service.listSources({
+      organizationId: ORG,
+      archived: false,
+      page: 1,
+    });
+    expect(list.results[0].scanPausedAt).toBeNull();
+  });
+
+  it('EP4/M2 pausing a paused feed changes nothing: its first pause time stays', async () => {
+    const { repository, service } = setup();
+    feedReads(
+      repository,
+      feed({ scanPausedAt: PAUSED_AT }),
+      feed({ scanPausedAt: PAUSED_AT })
+    );
+    await expect(service.pauseFeed(ORG, SOURCE)).resolves.toEqual(
+      feed({ scanPausedAt: PAUSED_AT })
+    );
+    expect(repository.pauseFeed).not.toHaveBeenCalled();
+  });
+
+  it('resumes a paused feed, and resuming a running one changes nothing', async () => {
+    const { repository, service } = setup();
+    feedReads(repository, feed({ scanPausedAt: PAUSED_AT }), feed());
+    await expect(service.resumeFeed(ORG, SOURCE)).resolves.toEqual(feed());
+    expect(repository.resumeFeed).toHaveBeenCalledWith(ORG, SOURCE);
+    repository.resumeFeed.mockClear();
+    feedReads(repository, feed(), feed());
+    await expect(service.resumeFeed(ORG, SOURCE)).resolves.toEqual(feed());
+    expect(repository.resumeFeed).not.toHaveBeenCalled();
+    expect(repository.pauseFeed).not.toHaveBeenCalled();
+  });
+
+  it('EP1 a source of another organization, or no source id, is a plain 404, with nothing written', async () => {
+    const { repository, service } = setup();
+    for (const action of ['pauseFeed', 'resumeFeed'] as const) {
+      expect(await httpError(service[action](OTHER_ORG, SOURCE))).toEqual({
+        status: 404,
+        body: NOT_FOUND,
+      });
+      expect(await httpError(service[action](ORG, 'x'))).toEqual({
+        status: 404,
+        body: NOT_FOUND,
+      });
+    }
+    expect(repository.pauseFeed).not.toHaveBeenCalled();
+    expect(repository.resumeFeed).not.toHaveBeenCalled();
+  });
+
+  it('EP3/M4 a page has no schedule: pause and resume are CS_SOURCE_KIND_UNSUPPORTED, archived or not', async () => {
+    const { repository, service } = setup();
+    for (const row of [sourceRow(), sourceRow({ archivedAt: T0 })]) {
+      for (const action of ['pauseFeed', 'resumeFeed'] as const) {
+        feedReads(repository, row);
+        expect(await httpError(service[action](ORG, SOURCE))).toEqual({
+          status: 400,
+          body: KIND,
+        });
+      }
+    }
+    expect(repository.pauseFeed).not.toHaveBeenCalled();
+    expect(repository.resumeFeed).not.toHaveBeenCalled();
+  });
+
+  it('EP2/M5 an archived feed is read-only: CS_SOURCE_ARCHIVED, paused or not, with nothing written', async () => {
+    const { repository, service } = setup();
+    for (const row of [
+      feed({ archivedAt: T0 }),
+      feed({ archivedAt: T0, scanPausedAt: PAUSED_AT }),
+    ]) {
+      for (const action of ['pauseFeed', 'resumeFeed'] as const) {
+        feedReads(repository, row);
+        expect(await httpError(service[action](ORG, SOURCE))).toEqual({
+          status: 409,
+          body: ARCHIVED,
+        });
+      }
+    }
+    expect(repository.pauseFeed).not.toHaveBeenCalled();
+    expect(repository.resumeFeed).not.toHaveBeenCalled();
+  });
+
+  it('a feed archived during the pause is answered CS_SOURCE_ARCHIVED: archive goes first', async () => {
+    const { repository, service } = setup();
+    repository.pauseFeed.mockResolvedValueOnce({ count: 0 });
+    feedReads(repository, feed(), feed({ archivedAt: T0 }));
+    expect(await httpError(service.pauseFeed(ORG, SOURCE))).toEqual({
+      status: 409,
+      body: ARCHIVED,
+    });
+  });
+
+  it('M14 neither captures, counts or changes anything else: no ingestion, limit or version', () => {
+    const text = fs.readFileSync(
+      path.join(__dirname, 'content-studio.source.service.ts'),
+      'utf8'
+    );
+    const block = text.slice(
+      text.indexOf('  async pauseFeed('),
+      text.indexOf('  // History stays readable when the source is archived')
+    );
+    expect(block).toContain('this._contentStudioSourceRepository.pauseFeed(');
+    expect(block).toContain('this._contentStudioSourceRepository.resumeFeed(');
+    expect(block).not.toMatch(
+      /refresh|capture\(|Ingestion|safeFetch|Limit|limits|Version|archiveSource|restore|temporal|workflow/i
+    );
   });
 });

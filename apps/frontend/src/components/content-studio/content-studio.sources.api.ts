@@ -33,6 +33,9 @@ export interface ContentStudioSourceSummary {
   updatedAt: string;
   // a feed's last successful capture; null for a page
   lastCapturedAt: string | null;
+  // when a feed's scheduled captures were paused (P8-C3); null while they
+  // run, and always for a page. A paused feed is still active
+  scanPausedAt: string | null;
 }
 
 export interface ContentStudioSourceList {
@@ -381,6 +384,15 @@ export const useContentStudioSourceActions = () => {
       },
       restoreSource: async (id: string) => {
         await request(fetch, `${sourcePath(id)}/restore`, { method: 'POST' });
+        await refresh(id);
+      },
+      // a feed's scheduled captures only (P8-C3): nothing is captured here
+      pauseFeed: async (id: string) => {
+        await request(fetch, `${sourcePath(id)}/pause`, { method: 'POST' });
+        await refresh(id);
+      },
+      resumeFeed: async (id: string) => {
+        await request(fetch, `${sourcePath(id)}/resume`, { method: 'POST' });
         await refresh(id);
       },
       // No body: the server fetches the source's own stored URL. A page

@@ -325,7 +325,7 @@ const RenameSourceForm: FC<{
   );
 };
 
-export type SourceTask = 'capture' | 'archive' | 'restore';
+export type SourceTask = 'capture' | 'archive' | 'restore' | 'pause' | 'resume';
 
 // The source actions of the library and of one source. One action at a time
 // per source, so a double click sends one request; other sources stay usable.
@@ -435,6 +435,39 @@ export const useSourceCommands = (onCaptured?: () => void) => {
     [run, actions, toaster, t]
   );
 
+  // a feed's scheduled captures (P8-C3); a refresh stays possible
+  const pause = useCallback(
+    (source: ContentStudioSourceSummary) =>
+      run(source.id, 'pause', async () => {
+        try {
+          await actions.pauseFeed(source.id);
+          toaster.show(
+            t('content_studio_feed_paused', 'Feed paused.'),
+            'success'
+          );
+        } catch (err) {
+          toaster.show(sourceErrorMessage(t, err), 'warning');
+        }
+      }),
+    [run, actions, toaster, t]
+  );
+
+  const resume = useCallback(
+    (source: ContentStudioSourceSummary) =>
+      run(source.id, 'resume', async () => {
+        try {
+          await actions.resumeFeed(source.id);
+          toaster.show(
+            t('content_studio_feed_resumed', 'Feed resumed.'),
+            'success'
+          );
+        } catch (err) {
+          toaster.show(sourceErrorMessage(t, err), 'warning');
+        }
+      }),
+    [run, actions, toaster, t]
+  );
+
   const rename = useCallback(
     (source: ContentStudioSourceSummary) =>
       modals.openModal({
@@ -446,7 +479,53 @@ export const useSourceCommands = (onCaptured?: () => void) => {
     [modals, t]
   );
 
-  return { busy, capture, archive, restore, rename };
+  return { busy, capture, archive, restore, pause, resume, rename };
+};
+
+// Pause feed while a live feed is captured on the schedule, Resume feed while
+// it is paused (P8-C3). Never for a page or an archived feed
+export const FeedScheduleButton: FC<{
+  source: ContentStudioSourceSummary;
+  busy?: SourceTask;
+  commands: ReturnType<typeof useSourceCommands>;
+}> = ({ source, busy, commands }) => {
+  const t = useT();
+  if (source.kind !== 'feed' || source.archivedAt) {
+    return null;
+  }
+  const paused = !!source.scanPausedAt;
+  const label = paused
+    ? t('content_studio_feed_resume', 'Resume feed')
+    : t('content_studio_feed_pause', 'Pause feed');
+  return (
+    <Button
+      secondary
+      loading={busy === (paused ? 'resume' : 'pause')}
+      disabled={!!busy}
+      aria-label={`${label} ${source.name}`}
+      onClick={() =>
+        paused ? commands.resume(source) : commands.pause(source)
+      }
+    >
+      {label}
+    </Button>
+  );
+};
+
+// A live feed whose scheduled captures are paused (P8-C3): a plain label,
+// like Active. Archived says more, so it is not shown then
+export const FeedPausedBadge: FC<{ source: ContentStudioSourceSummary }> = ({
+  source,
+}) => {
+  const t = useT();
+  if (source.kind !== 'feed' || source.archivedAt || !source.scanPausedAt) {
+    return null;
+  }
+  return (
+    <span className="px-[8px] rounded-full border border-newTableBorder">
+      {t('content_studio_feed_paused_status', 'Paused')}
+    </span>
+  );
 };
 
 // Capture now before the first capture, Refresh after it: both ask the server
@@ -547,6 +626,7 @@ const SourceRow: FC<{
         />
         <div className="flex flex-wrap gap-x-[16px] gap-y-[4px] text-[12px] text-textItemBlur">
           <span>{kindLabel(source.kind)}</span>
+          <FeedPausedBadge source={source} />
           <SourceStatus source={source} />
           <span>
             {t('content_studio_updated', 'Updated')}:{' '}

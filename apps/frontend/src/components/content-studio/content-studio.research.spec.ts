@@ -302,6 +302,35 @@ describe('News Radar: page and filters', () => {
     });
   });
 
+  it('UI10/UI11/M20 a paused feed (P8-C3) is a live feed: in the feed choice, and what it found is shown', async () => {
+    feeds = [
+      { ...feedSummary(FEED_A, 'Daily News'), scanPausedAt: T1 },
+      feedSummary(FEED_B, 'Tech Wire'),
+    ];
+    await renderRadar();
+    const select = screen.getByRole('combobox', {
+      name: 'Feed',
+    }) as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual([
+      'All feeds',
+      'Daily News',
+      'Tech Wire',
+    ]);
+    // its pages, as the server answers them: nothing is left out here
+    expect(rowOf(HTML_TITLE)).toBeTruthy();
+    expect(
+      within(rowOf(HTML_TITLE)).getByRole('link', { name: 'Daily News' })
+    ).toBeTruthy();
+    expect(radarQueries()).toEqual([{ page: '1', since: '7d' }]);
+    fireEvent.change(select, { target: { value: FEED_A } });
+    await flush();
+    expect(lastRadarQuery()).toEqual({
+      page: '1',
+      since: '7d',
+      feedSourceId: FEED_A,
+    });
+  });
+
   it('FE5/FE7 the feed choice lists the live feeds (kind=feed) and starts on page 1', async () => {
     // enough pages that the page in the URL is a real one
     pages = 5;

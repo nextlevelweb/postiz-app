@@ -17,6 +17,7 @@ const SOURCE_SUMMARY = {
   createdAt: true,
   updatedAt: true,
   lastCapturedAt: true,
+  scanPausedAt: true,
 } as const;
 
 // Version lists, the current version and the compare-and-swap never load the
@@ -201,7 +202,8 @@ export class ContentStudioSourceRepository {
   // What a capture needs, with who created the source: a scheduled feed
   // capture (P8-01) records its captures in the feed creator's name. Of a
   // live organization only, like the scan: a capture waits in its queue
-  // (P8-C2), and the organization may be deleted meanwhile
+  // (P8-C2), and the organization may be deleted, or the feed archived or
+  // paused (P8-C3), meanwhile
   getSourceForCapture(organizationId: string, id: string) {
     return this._source.model.contentStudioSource.findFirst({
       where: {
@@ -325,9 +327,45 @@ export class ContentStudioSourceRepository {
     });
   }
 
+  // A live feed's scheduled captures stop (P8-C3): only a feed that runs
+  // them, so pausing it again keeps when it was first paused. A capture
+  // already running is not stopped; nothing else of the feed changes
+  pauseFeed(organizationId: string, id: string, pausedAt: Date) {
+    return this._source.model.contentStudioSource.updateMany({
+      where: {
+        id,
+        organizationId,
+        kind: 'feed',
+        archivedAt: null,
+        scanPausedAt: null,
+      },
+      data: {
+        scanPausedAt: pausedAt,
+      },
+    });
+  }
+
+  // A paused live feed is scheduled again (P8-C3): its next capture is due
+  // by its last one, like any feed's. Nothing is captured here
+  resumeFeed(organizationId: string, id: string) {
+    return this._source.model.contentStudioSource.updateMany({
+      where: {
+        id,
+        organizationId,
+        kind: 'feed',
+        archivedAt: null,
+        scanPausedAt: { not: null },
+      },
+      data: {
+        scanPausedAt: null,
+      },
+    });
+  }
+
   // A restored feed is live again: only while the organization has fewer
   // than `activeFeedsMax` live feeds (P8-C1). A restored page adds no source,
-  // so nothing is counted for it
+  // so nothing is counted for it. A feed paused before it was archived comes
+  // back paused (P8-C3): restoring never schedules it
   restoreSourceWithinLimit(input: {
     organizationId: string;
     id: string;
@@ -393,7 +431,8 @@ export class ContentStudioSourceRepository {
   }
 
   // A feed that was just read (P8-01). Only a live feed: one archived during
-  // the capture keeps what it had
+  // the capture keeps what it had. A paused one too (P8-C3): a member's
+  // refresh, or a capture that was already running when it was paused
   markFeedCaptured(organizationId: string, id: string, capturedAt: Date) {
     return this._source.model.contentStudioSource.updateMany({
       where: {
@@ -410,7 +449,8 @@ export class ContentStudioSourceRepository {
 
   // For the feed capture schedule only (no route reaches it): live feeds of
   // every live organization not read since `capturedBefore`, one page after
-  // `afterId` in id order, so a scan walks every feed once. Ids only
+  // `afterId` in id order, so a scan walks every feed once. Never a paused
+  // feed (P8-C3). Ids only
   listFeedsDueForCapture(input: {
     capturedBefore: Date;
     afterId: string | null;
@@ -420,6 +460,7 @@ export class ContentStudioSourceRepository {
       where: {
         kind: 'feed',
         archivedAt: null,
+        scanPausedAt: null,
         ...(input.afterId ? { id: { gt: input.afterId } } : {}),
         OR: [
           { lastCapturedAt: null },

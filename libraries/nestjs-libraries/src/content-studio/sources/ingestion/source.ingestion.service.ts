@@ -323,7 +323,8 @@ export class ContentStudioSourceIngestionService {
       case 'url':
         break;
       case 'feed':
-        // its last read
+        // its last read. A paused feed too (P8-C3): pausing stops only the
+        // schedule, and the refresh leaves it paused
         assertRefreshDue(source.lastCapturedAt, manualRefreshCooldownMs);
         return this.captureFeed(input.organizationId, source, input.userId);
       default:
@@ -388,9 +389,10 @@ export class ContentStudioSourceIngestionService {
 
   // For the feed capture schedule only: one feed, read from the database
   // right before its capture, so only the stored URL of a live feed of that
-  // organization is ever fetched. Anything else (gone, archived, another
-  // kind) is skipped, never an error to retry. The captures are recorded in
-  // the name of the member who created the feed
+  // organization is ever fetched. Anything else (gone, archived, paused
+  // (P8-C3), another kind) is skipped, never an error to retry, and left as
+  // it is. The captures are recorded in the name of the member who created
+  // the feed
   async captureScheduledFeed(input: {
     organizationId: string;
     sourceId: string;
@@ -407,7 +409,12 @@ export class ContentStudioSourceIngestionService {
         input.organizationId,
         input.sourceId
       );
-    if (!source || source.archivedAt || source.kind !== 'feed') {
+    if (
+      !source ||
+      source.archivedAt ||
+      source.scanPausedAt ||
+      source.kind !== 'feed'
+    ) {
       return { status: 'skipped' as const };
     }
     const { capture } = await this.captureFeed(

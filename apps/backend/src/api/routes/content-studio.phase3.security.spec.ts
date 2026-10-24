@@ -146,7 +146,8 @@ const refusedFields = async (metatype: unknown, body: object) => {
   }
 };
 
-// ten since P8-01 added the discoveries of a feed (read only)
+// ten since P8-01 added the discoveries of a feed (read only), thirteen with
+// P8-04A and P8-C3
 const NINE_ROUTES = [
   'GET /sources',
   'GET /sources/:id',
@@ -158,12 +159,15 @@ const NINE_ROUTES = [
   'PATCH /sources/:id',
   'POST /sources',
   'POST /sources/:id/archive',
+  // a feed's scheduled captures (P8-C3), no capture
+  'POST /sources/:id/pause',
   'POST /sources/:id/refresh',
   'POST /sources/:id/restore',
+  'POST /sources/:id/resume',
 ];
 
 describe('Phase 3 source authorization', () => {
-  it('P3TRUST1 there are exactly the eleven source routes', () => {
+  it('P3TRUST1 there are exactly the thirteen source routes', () => {
     expect(sourceHandlers.map(routeOf).sort()).toEqual(NINE_ROUTES);
   });
 
@@ -487,7 +491,7 @@ describe('Phase 3 AI operations and source material', () => {
 describe('Phase 3 Source Library trust surface', () => {
   const api = SOURCE.frontendApi;
 
-  it('P3UI1 the browser calls only the eleven source routes', () => {
+  it('P3UI1 the browser calls only the thirteen source routes', () => {
     expect(
       Array.from(api.matchAll(/['`](\/content-studio[^'`]*)['`]/g)).map(
         (m) => m[1]
@@ -500,8 +504,11 @@ describe('Phase 3 Source Library trust surface', () => {
       '/archive',
       // a feed's pages (P8-01), read only
       '/discoveries',
+      // a feed's scheduled captures (P8-C3)
+      '/pause',
       '/refresh',
       '/restore',
+      '/resume',
       '/versions',
     ]);
     // what changed in a version (P8-04A), read only
@@ -512,7 +519,7 @@ describe('Phase 3 Source Library trust surface', () => {
     ).toEqual(['/changes']);
     expect(
       Array.from(api.matchAll(/method: '([A-Z]+)'/g)).map((m) => m[1])
-    ).toEqual(['POST', 'PATCH', 'POST', 'POST', 'POST']);
+    ).toEqual(['POST', 'PATCH', 'POST', 'POST', 'POST', 'POST', 'POST']);
     expect(api).not.toMatch(/'DELETE'|'PUT'|\/fetch|\/preview|\/ingest/);
   });
 

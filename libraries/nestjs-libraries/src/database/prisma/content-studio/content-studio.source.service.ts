@@ -109,6 +109,16 @@ const kindHasNoVersions = () =>
     400
   );
 
+// only a feed has scheduled captures to pause (P8-C3)
+const kindNotScheduled = () =>
+  new HttpException(
+    {
+      msg: 'This source type has no scheduled captures.',
+      code: 'CS_SOURCE_KIND_UNSUPPORTED',
+    },
+    400
+  );
+
 // Source and version ids are Prisma uuid() values; anything else cannot exist
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // the page size of every Content Studio list
@@ -148,6 +158,8 @@ interface SourceRow {
   updatedAt: Date;
   // feeds only (P8-01)
   lastCapturedAt?: Date | null;
+  // feeds only (P8-C3)
+  scanPausedAt?: Date | null;
 }
 
 // A source's stored last page change (P8-04B1)
@@ -250,6 +262,9 @@ export const toPublicContentStudioSource = (row: SourceRow) => ({
   updatedAt: row.updatedAt,
   // a feed's last successful capture; null for a page source
   lastCapturedAt: row.lastCapturedAt ?? null,
+  // when a feed's scheduled captures were paused (P8-C3); null while they
+  // run, and always for a page source
+  scanPausedAt: row.scanPausedAt ?? null,
 });
 
 export const toPublicContentStudioSourceVersion = (row: VersionRow) => ({
@@ -272,8 +287,8 @@ export const toPublicContentStudioSourceVersion = (row: VersionRow) => ({
 
 // Sources of an organization: pages it tracks, with their captured versions.
 // A source is provenance, never a statement that its text is true. Every
-// member may create, rename, archive and restore sources and read their
-// versions: no role, plan or billing check. Nothing here fetches anything;
+// member may create, rename, archive and restore sources, pause and resume
+// feeds, and read their versions: no role, plan or billing check. Nothing here fetches anything;
 // versions are appended by server-side ingestion only, never from a request
 @Injectable()
 export class ContentStudioSourceService {
@@ -440,6 +455,32 @@ export class ContentStudioSourceService {
       throw sourcesConflict();
     }
     return toPublicContentStudioSource(await this.getRow(organizationId, id));
+  }
+
+  // A paused feed (P8-C3) is not captured on the schedule: it stays live,
+  // listed and counted against the live feed limit, keeps what it found, and
+  // a member may still refresh it. Pausing a paused feed (or resuming a
+  // running one) changes nothing and returns it as it is. An archived feed
+  // is read-only, and a page has no schedule. Neither captures anything: a
+  // resumed feed is due by its last capture, at the next scan
+  async pauseFeed(organizationId: string, id: string) {
+    const feed = await this.liveFeed(organizationId, id);
+    if (!feed.scanPausedAt) {
+      await this._contentStudioSourceRepository.pauseFeed(
+        organizationId,
+        id,
+        new Date()
+      );
+    }
+    return toPublicContentStudioSource(await this.liveFeed(organizationId, id));
+  }
+
+  async resumeFeed(organizationId: string, id: string) {
+    const feed = await this.liveFeed(organizationId, id);
+    if (feed.scanPausedAt) {
+      await this._contentStudioSourceRepository.resumeFeed(organizationId, id);
+    }
+    return toPublicContentStudioSource(await this.liveFeed(organizationId, id));
   }
 
   // History stays readable when the source is archived. Metadata only
@@ -1077,6 +1118,19 @@ export class ContentStudioSourceService {
         };
       }
     }
+  }
+
+  // A feed of the organization that is not archived: a feed archived
+  // meanwhile is CS_SOURCE_ARCHIVED, also after a pause or resume
+  private async liveFeed(organizationId: string, id: string) {
+    const source = await this.getRow(organizationId, id);
+    if (source.kind !== 'feed') {
+      throw kindNotScheduled();
+    }
+    if (source.archivedAt) {
+      throw sourceArchived();
+    }
+    return source;
   }
 
   private async getRow(organizationId: string, id: string) {

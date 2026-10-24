@@ -171,7 +171,8 @@ describe('ContentStudioController design layout pattern routes', () => {
     // P8-02: one more, News Radar across feeds
     // P8-04A: one more, what changed in a source version
     // P8-04B1: one more, the organization's page changes
-    expect(all).toHaveLength(145);
+    // P8-C3: two more, pause and resume a feed
+    expect(all).toHaveLength(147);
     expect(
       all.filter(
         (r) =>

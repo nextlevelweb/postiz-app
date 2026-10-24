@@ -485,7 +485,8 @@ describe('ContentStudioController render-all (P4-06)', () => {
           r
         )
       )
-    ).toEqual([]);
+      // P8-C3: a feed's scheduled captures resume, no render
+    ).toEqual(['POST /sources/:id/resume']);
   });
 });
 

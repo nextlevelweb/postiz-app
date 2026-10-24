@@ -25,6 +25,7 @@ import {
 } from '@gitroom/frontend/components/content-studio/content-studio.sources.api';
 import {
   CaptureButton,
+  FeedScheduleButton,
   formatSourceBytes,
   SOURCE_LIBRARY_PATH,
   SourceStatus,
@@ -624,7 +625,8 @@ const FeedDiscoveries: FC<{ feed: SourceDetailData }> = ({ feed }) => {
 };
 
 // A feed's own state: when it was last read, and that it is read again on a
-// schedule while it is active. It has no versions of its own
+// schedule while it is active and not paused (P8-C3). It has no versions of
+// its own
 const FeedCapture: FC<{ feed: SourceDetailData }> = ({ feed }) => {
   const t = useT();
   return (
@@ -646,9 +648,19 @@ const FeedCapture: FC<{ feed: SourceDetailData }> = ({ feed }) => {
         >
           {feed.archivedAt
             ? t('content_studio_feed_automatic_paused', 'Paused while archived')
+            : feed.scanPausedAt
+            ? t('content_studio_feed_paused_status', 'Paused')
             : t('content_studio_feed_automatic_hourly', 'About every hour')}
         </Fact>
       </dl>
+      {!feed.archivedAt && feed.scanPausedAt && (
+        <div className="text-[13px] text-textItemBlur">
+          {t(
+            'content_studio_feed_paused_note',
+            'Automatic scans are paused. You can still refresh this feed manually.'
+          )}
+        </div>
+      )}
       <div className="text-[13px] text-textItemBlur">
         {t(
           'content_studio_feed_note',
@@ -774,6 +786,8 @@ export const ContentStudioSourceDetail: FC<{ sourceId: string }> = ({
             <span className="px-[8px] rounded-full border border-newTableBorder">
               {archived
                 ? t('content_studio_archived', 'Archived')
+                : source.kind === 'feed' && source.scanPausedAt
+                ? t('content_studio_feed_paused_status', 'Paused')
                 : t('content_studio_active', 'Active')}
             </span>
             <span>{kindLabel(source.kind)}</span>
@@ -808,6 +822,11 @@ export const ContentStudioSourceDetail: FC<{ sourceId: string }> = ({
                 source={source}
                 busy={busy}
                 onClick={() => commands.capture(source)}
+              />
+              <FeedScheduleButton
+                source={source}
+                busy={busy}
+                commands={commands}
               />
               <Button
                 secondary
