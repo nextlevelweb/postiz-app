@@ -8,7 +8,11 @@ import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/databas
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { parseContentStudioSourceVersionInput } from '@gitroom/nestjs-libraries/content-studio/sources/source.version';
-import { CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
+import {
+  CONTENT_STUDIO_ACTIVE_FEEDS_MAX,
+  CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION,
+  CONTENT_STUDIO_URL_SOURCES_MAX,
+} from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
 
 // No database: the repository is mocked; the URL canonicalizer, the content
 // parser, canonical JSON and hashing run for real
@@ -103,24 +107,30 @@ const setup = () => {
     getSourceByCanonicalUrlForOrganization: jest.fn(
       async (_organizationId: string, _url: string): Promise<unknown> => null
     ),
-    createSource: jest.fn(
+    createSourcesWithinLimit: jest.fn(
       async (input: {
-        id: string;
         kind: string;
-        name: string;
-        canonicalUrl: string;
-      }) =>
-        sourceRow({
-          id: input.id,
-          kind: input.kind,
-          name: input.name,
-          canonicalUrl: input.canonicalUrl,
-          latestVersionNumber: 0,
-        })
+        limit: number;
+        sources: Array<{ id: string; name: string; canonicalUrl: string }>;
+      }): Promise<Record<string, unknown>> => ({
+        status: 'decided',
+        results: input.sources.map((one) => ({
+          status: 'created',
+          source: sourceRow({
+            id: one.id,
+            kind: input.kind,
+            name: one.name,
+            canonicalUrl: one.canonicalUrl,
+            latestVersionNumber: 0,
+          }),
+        })),
+      })
     ),
     updateSourceName: jest.fn(async () => ({ count: 1 })),
     archiveSource: jest.fn(async () => ({ count: 1 })),
-    restoreSource: jest.fn(async () => ({ count: 1 })),
+    restoreSourceWithinLimit: jest.fn(
+      async (): Promise<Record<string, unknown>> => ({ status: 'restored' })
+    ),
     listVersionsForSource: jest.fn(async () => [
       versionSummaryRow(),
       versionSummaryRow({ id: NEW_ID, versionNumber: 1 }),
@@ -147,10 +157,10 @@ type Repository = ReturnType<typeof setup>['repository'];
 
 const writes = (repository: Repository) =>
   [
-    repository.createSource,
+    repository.createSourcesWithinLimit,
     repository.updateSourceName,
     repository.archiveSource,
-    repository.restoreSource,
+    repository.restoreSourceWithinLimit,
     repository.appendVersionWithCompareAndSwap,
   ].flatMap((fn) => (fn as jest.Mock).mock.calls);
 
@@ -245,13 +255,13 @@ describe('ContentStudioSourceService: create', () => {
     expect(
       repository.getSourceByCanonicalUrlForOrganization
     ).toHaveBeenCalledWith(ORG, URL_A);
-    expect(repository.createSource).toHaveBeenCalledWith({
-      id: NEW_ID,
+    expect(repository.createSourcesWithinLimit).toHaveBeenCalledWith({
       organizationId: ORG,
       kind: 'url',
-      name: 'Example news',
-      canonicalUrl: URL_A,
       createdById: USER,
+      // a page counts against all the organization's pages (P8-C1)
+      limit: CONTENT_STUDIO_URL_SOURCES_MAX,
+      sources: [{ id: NEW_ID, name: 'Example news', canonicalUrl: URL_A }],
     });
     expect(result).toEqual({
       id: NEW_ID,
@@ -272,13 +282,13 @@ describe('ContentStudioSourceService: create', () => {
     await service.createSource(
       createInput({ kind: 'feed', url: 'HTTPS://Example.com:443/news/a#x' })
     );
-    expect(repository.createSource).toHaveBeenCalledWith({
-      id: NEW_ID,
+    expect(repository.createSourcesWithinLimit).toHaveBeenCalledWith({
       organizationId: ORG,
       kind: 'feed',
-      name: 'Example news',
-      canonicalUrl: URL_A,
       createdById: USER,
+      // a feed against its live feeds (P8-C1)
+      limit: CONTENT_STUDIO_ACTIVE_FEEDS_MAX,
+      sources: [{ id: NEW_ID, name: 'Example news', canonicalUrl: URL_A }],
     });
     expect(repository.appendVersionWithCompareAndSwap).not.toHaveBeenCalled();
     // a page at that address already exists: the feed is refused
@@ -327,7 +337,9 @@ describe('ContentStudioSourceService: create', () => {
   it('SS5-SS7 trims the name and needs 1-200 safe characters', async () => {
     const { repository, service } = setup();
     await service.createSource(createInput({ name: '  Example news \n' }));
-    expect(repository.createSource.mock.calls[0][0].name).toBe('Example news');
+    expect(
+      repository.createSourcesWithinLimit.mock.calls[0][0].sources[0].name
+    ).toBe('Example news');
     await service.createSource(createInput({ name: 'n'.repeat(200) }));
     for (const name of [
       '',
@@ -342,7 +354,7 @@ describe('ContentStudioSourceService: create', () => {
         await httpError(service.createSource(createInput({ name })))
       ).toEqual({ status: 400, body: INVALID });
     }
-    expect(repository.createSource).toHaveBeenCalledTimes(2);
+    expect(repository.createSourcesWithinLimit).toHaveBeenCalledTimes(2);
   });
 
   it('SS9 refuses an invalid URL with a fixed error that does not repeat it', async () => {
@@ -366,9 +378,10 @@ describe('ContentStudioSourceService: create', () => {
   it('accepts a private address: SafeFetch, not the canonicalizer, refuses it at ingestion', async () => {
     const { repository, service } = setup();
     await service.createSource(createInput({ url: 'http://127.0.0.1/admin' }));
-    expect(repository.createSource.mock.calls[0][0].canonicalUrl).toBe(
-      'http://127.0.0.1/admin'
-    );
+    expect(
+      repository.createSourcesWithinLimit.mock.calls[0][0].sources[0]
+        .canonicalUrl
+    ).toBe('http://127.0.0.1/admin');
   });
 
   it('SS13 refuses a URL the organization already tracks, archived or not, without its id', async () => {
@@ -381,12 +394,12 @@ describe('ContentStudioSourceService: create', () => {
     );
     expect(error).toEqual({ status: 409, body: EXISTS });
     expect(JSON.stringify(error)).not.toContain(SOURCE);
-    expect(repository.createSource).not.toHaveBeenCalled();
+    expect(repository.createSourcesWithinLimit).not.toHaveBeenCalled();
   });
 
   it('maps a unique-key race on create to the same conflict and lets other errors through', async () => {
     const { repository, service } = setup();
-    repository.createSource.mockRejectedValueOnce(
+    repository.createSourcesWithinLimit.mockRejectedValueOnce(
       new Prisma.PrismaClientKnownRequestError(`Unique ${MARKER}`, {
         code: 'P2002',
         clientVersion: 'test',
@@ -397,7 +410,7 @@ describe('ContentStudioSourceService: create', () => {
       body: EXISTS,
     });
     const other = new Error('database down');
-    repository.createSource.mockRejectedValueOnce(other);
+    repository.createSourcesWithinLimit.mockRejectedValueOnce(other);
     await expect(service.createSource(createInput())).rejects.toBe(other);
   });
 
@@ -601,11 +614,17 @@ describe('ContentStudioSourceService: detail and lifecycle', () => {
     await expect(service.restoreSource(ORG, SOURCE)).resolves.toEqual(
       sourceRow()
     );
-    repository.restoreSource.mockResolvedValueOnce({ count: 0 });
+    repository.restoreSourceWithinLimit.mockResolvedValueOnce({
+      status: 'unchanged',
+    });
     await expect(service.restoreSource(ORG, SOURCE)).resolves.toEqual(
       sourceRow()
     );
-    expect(repository.restoreSource).toHaveBeenCalledWith(ORG, SOURCE);
+    expect(repository.restoreSourceWithinLimit).toHaveBeenCalledWith({
+      organizationId: ORG,
+      id: SOURCE,
+      activeFeedsMax: CONTENT_STUDIO_ACTIVE_FEEDS_MAX,
+    });
     expect(repository.appendVersionWithCompareAndSwap).not.toHaveBeenCalled();
     expect(await httpError(service.archiveSource(OTHER_ORG, SOURCE))).toEqual({
       status: 404,
@@ -819,5 +838,109 @@ describe('ContentStudioSourceService source', () => {
       'toPublicDiscovery',
     ]);
     expect(text).not.toMatch(/appendVersionWithCompareAndSwap/);
+  });
+});
+
+describe('ContentStudioSourceService: organization limits (P8-C1)', () => {
+  const FEED_LIMIT = {
+    msg: 'The organization has too many active feeds.',
+    code: 'CS_SOURCE_FEED_LIMIT',
+  };
+  const SOURCE_LIMIT = {
+    msg: 'The organization has too many sources.',
+    code: 'CS_SOURCE_LIMIT',
+  };
+  const CONFLICT = {
+    msg: 'The sources changed meanwhile. Try again.',
+    code: 'CS_SOURCE_CONFLICT',
+  };
+
+  it('FC2/SC2 a create at the limit is refused for its kind, with nothing created', async () => {
+    const { repository, service } = setup();
+    repository.createSourcesWithinLimit.mockResolvedValueOnce({
+      status: 'decided',
+      results: [{ status: 'limit' }],
+    });
+    expect(
+      await httpError(service.createSource(createInput({ kind: 'feed' })))
+    ).toEqual({ status: 409, body: FEED_LIMIT });
+    repository.createSourcesWithinLimit.mockResolvedValueOnce({
+      status: 'decided',
+      results: [{ status: 'limit' }],
+    });
+    expect(await httpError(service.createSource(createInput()))).toEqual({
+      status: 409,
+      body: SOURCE_LIMIT,
+    });
+  });
+
+  it('FC7 a duplicate URL is CS_SOURCE_ALREADY_EXISTS before any limit, also when it appears inside the transaction', async () => {
+    const { repository, service } = setup();
+    repository.getSourceByCanonicalUrlForOrganization.mockResolvedValueOnce(
+      sourceRow({ kind: 'feed' })
+    );
+    expect(
+      await httpError(service.createSource(createInput({ kind: 'feed' })))
+    ).toEqual({ status: 409, body: EXISTS });
+    expect(repository.createSourcesWithinLimit).not.toHaveBeenCalled();
+    repository.createSourcesWithinLimit.mockResolvedValueOnce({
+      status: 'decided',
+      results: [{ status: 'exists', source: sourceRow({ kind: 'feed' }) }],
+    });
+    expect(
+      await httpError(service.createSource(createInput({ kind: 'feed' })))
+    ).toEqual({ status: 409, body: EXISTS });
+  });
+
+  it('FC10 a transaction that lost every attempt is a safe 409, never a Prisma error', async () => {
+    const { repository, service } = setup();
+    repository.createSourcesWithinLimit.mockResolvedValueOnce({
+      status: 'conflict',
+    });
+    expect(await httpError(service.createSource(createInput()))).toEqual({
+      status: 409,
+      body: CONFLICT,
+    });
+    repository.restoreSourceWithinLimit.mockResolvedValueOnce({
+      status: 'conflict',
+    });
+    expect(await httpError(service.restoreSource(ORG, SOURCE))).toEqual({
+      status: 409,
+      body: CONFLICT,
+    });
+  });
+
+  it('FC5 a restore at the feed limit is refused; the source stays as it is', async () => {
+    const { repository, service } = setup();
+    repository.restoreSourceWithinLimit.mockResolvedValueOnce({
+      status: 'limit',
+    });
+    expect(await httpError(service.restoreSource(ORG, SOURCE))).toEqual({
+      status: 409,
+      body: FEED_LIMIT,
+    });
+    expect(repository.getSourceForOrganization).not.toHaveBeenCalled();
+    // a source that is not there is a 404, as before
+    repository.restoreSourceWithinLimit.mockResolvedValueOnce({
+      status: 'not-found',
+    });
+    expect(await httpError(service.restoreSource(OTHER_ORG, SOURCE))).toEqual({
+      status: 404,
+      body: NOT_FOUND,
+    });
+  });
+
+  it('the limits come from the request organization, never from the request body', async () => {
+    const { repository, service } = setup();
+    await service.createSource({
+      ...createInput(),
+      limit: 1,
+      activeFeedsMax: 1,
+      urlSourcesMax: 1,
+    } as Parameters<typeof service.createSource>[0]);
+    expect(repository.createSourcesWithinLimit.mock.calls[0][0]).toMatchObject({
+      organizationId: ORG,
+      limit: CONTENT_STUDIO_URL_SOURCES_MAX,
+    });
   });
 });

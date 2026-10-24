@@ -200,6 +200,7 @@ const server = (method: string, url: string, body: any): Reply => {
         unchanged: 15,
         failed: 2,
         archived: 0,
+        entriesLimited: 0,
       },
     });
   }
@@ -348,6 +349,41 @@ describe('Source Library: add a feed', () => {
       },
     ]);
   });
+
+  it.each([
+    [
+      'FE1/M26 a feed',
+      'CS_SOURCE_FEED_LIMIT',
+      'This organization has reached its limit of active feeds. Archive a feed to add or restore another.',
+    ],
+    [
+      'FE2/M27 a page',
+      'CS_SOURCE_LIMIT',
+      'This organization has reached its limit of sources.',
+    ],
+  ])(
+    'P8-C1 %s past the organization limit is refused with fixed text and no number',
+    async (_name, code, text) => {
+      override = (method, url) =>
+        method === 'POST' && url === '/content-studio/sources'
+          ? reply(409, { msg: 'server text 100 of 100', code })
+          : undefined;
+      const root = await openAdd();
+      if (code === 'CS_SOURCE_FEED_LIMIT') {
+        await click(
+          within(root).getByRole('radio', { name: /Feed \(RSS or Atom\)/ })
+        );
+      }
+      fill(root, 'Newsroom', 'https://news.test/rss.xml');
+      await click(within(root).getByRole('button', { name: 'Add source' }));
+      expect(mockToast).toHaveBeenCalledWith(text, 'warning');
+      expect(mockToast.mock.calls.flat().join(' ')).not.toMatch(
+        /server text|\d+ of \d+|upgrade|plan|billing|subscription/i
+      );
+      // the dialog stays open with what was typed
+      expect(screen.getByRole('dialog', { name: 'Add source' })).toBeTruthy();
+    }
+  );
 
   it('UI2 a web page is created exactly as before', async () => {
     const root = await openAdd();
@@ -564,6 +600,61 @@ describe('Source Library: a feed', () => {
     expect(
       screen.getByRole('heading', { name: 'Version history' })
     ).toBeTruthy();
+  });
+
+  it('FE4/FE6 a capture without limited pages reads exactly as before', async () => {
+    await renderFeed();
+    await click(
+      screen.getByRole('button', { name: 'Capture feed Company newsroom' })
+    );
+    expect(mockToast.mock.calls[0][0]).not.toContain('Pages not added');
+  });
+
+  it('FE5/M30 new pages past the source limit are counted in the capture, apart from failures', async () => {
+    override = (method, url) =>
+      method === 'POST' && url.endsWith('/refresh')
+        ? reply(200, {
+            source: feed,
+            capture: {
+              entriesSeen: 5,
+              entriesIgnored: 0,
+              entriesSkipped: 0,
+              entriesAccepted: 2,
+              sourcesCreated: 0,
+              versionsCreated: 1,
+              unchanged: 1,
+              failed: 0,
+              archived: 0,
+              entriesLimited: 3,
+            },
+          })
+        : undefined;
+    await renderFeed();
+    await click(
+      screen.getByRole('button', { name: 'Capture feed Company newsroom' })
+    );
+    expect(mockToast).toHaveBeenCalledWith(
+      'Feed captured. Pages found: 2. New sources: 0. New versions: 1. Pages not added because the organization reached its source limit: 3.',
+      'success'
+    );
+  });
+
+  it('FE3 a feed captured a moment ago says so', async () => {
+    override = (method, url) =>
+      method === 'POST' && url.endsWith('/refresh')
+        ? reply(429, {
+            msg: 'server text',
+            code: 'CS_SOURCE_REFRESH_TOO_SOON',
+          })
+        : undefined;
+    await renderFeed();
+    await click(
+      screen.getByRole('button', { name: 'Capture feed Company newsroom' })
+    );
+    expect(mockToast).toHaveBeenCalledWith(
+      'This source was captured a moment ago. Try again in a few minutes.',
+      'warning'
+    );
   });
 
   it('a feed that cannot be read has its own fixed message', async () => {

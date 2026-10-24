@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { Prisma } from '@prisma/client';
 import {
   PrismaRepository,
   PrismaTransaction,
@@ -134,21 +135,24 @@ const setup = () => {
     contentStudioSourceVersion: version,
   };
   const transaction = {
-    $transaction: jest.fn(async (fn: (client: typeof tx) => unknown) => {
-      const snapshot = JSON.parse(JSON.stringify(state), (key, value) =>
-        ['createdAt', 'updatedAt', 'archivedAt', 'fetchedAt'].includes(key) &&
-        value
-          ? new Date(value)
-          : value
-      );
-      try {
-        return await fn(tx);
-      } catch (err) {
-        state.sources = snapshot.sources;
-        state.versions = snapshot.versions;
-        throw err;
+    // the options (P8-C1: serializable) are only recorded here
+    $transaction: jest.fn(
+      async (fn: (client: typeof tx) => unknown, options?: unknown) => {
+        const snapshot = JSON.parse(JSON.stringify(state), (key, value) =>
+          ['createdAt', 'updatedAt', 'archivedAt', 'fetchedAt'].includes(key) &&
+          value
+            ? new Date(value)
+            : value
+        );
+        try {
+          return await fn(tx);
+        } catch (err) {
+          state.sources = snapshot.sources;
+          state.versions = snapshot.versions;
+          throw err;
+        }
       }
-    }),
+    ),
   };
   const repository = new ContentStudioSourceRepository(
     {
@@ -162,18 +166,34 @@ const setup = () => {
   return { repository, source, version, transaction, state };
 };
 
-const create = (
+// far below any limit: the limits have their own tests
+const create = async (
   repository: ContentStudioSourceRepository,
-  overrides: Partial<{ id: string; organizationId: string; url: string }> = {}
-) =>
-  repository.createSource({
-    id: overrides.id ?? SOURCE,
+  overrides: Partial<{
+    id: string;
+    organizationId: string;
+    url: string;
+    kind: string;
+  }> = {}
+) => {
+  const result = await repository.createSourcesWithinLimit({
     organizationId: overrides.organizationId ?? ORG,
-    kind: 'url',
-    name: 'Example news',
-    canonicalUrl: overrides.url ?? URL_A,
+    kind: overrides.kind ?? 'url',
     createdById: USER,
+    limit: 100,
+    sources: [
+      {
+        id: overrides.id ?? SOURCE,
+        name: 'Example news',
+        canonicalUrl: overrides.url ?? URL_A,
+      },
+    ],
   });
+  if (result.status !== 'decided' || result.results[0].status !== 'created') {
+    throw new Error('not created');
+  }
+  return result.results[0].source;
+};
 
 const append = (
   repository: ContentStudioSourceRepository,
@@ -323,16 +343,17 @@ describe('ContentStudioSourceRepository: sources', () => {
     const { repository, source } = setup();
     await create(repository);
     const feed = (id: string, organizationId: string) =>
-      repository.createSource({
+      create(repository, {
         id,
         organizationId,
         kind: 'feed',
-        name: 'Example feed',
-        canonicalUrl: 'https://example.com/feed.xml',
-        createdById: USER,
+        url: 'https://example.com/feed.xml',
       });
     await feed(OTHER_SOURCE, ORG);
     await feed('66666666-6666-4666-8666-666666666666', OTHER_ORG);
+    // the creates read and counted within their limit
+    source.count.mockClear();
+    source.findMany.mockClear();
     const ids = async (kind?: string) =>
       (
         await repository.listSourcesForOrganization({
@@ -380,6 +401,7 @@ describe('ContentStudioSourceRepository: sources', () => {
   it('SR6/SR7 reads a source of the organization only', async () => {
     const { repository, source } = setup();
     await create(repository);
+    source.findFirst.mockClear();
     expect(
       await repository.getSourceForOrganization(ORG, SOURCE)
     ).toMatchObject({ id: SOURCE, canonicalUrl: URL_A });
@@ -433,11 +455,15 @@ describe('ContentStudioSourceRepository: sources', () => {
     expect(await repository.archiveSource(ORG, SOURCE, NOW)).toEqual({
       count: 0,
     });
-    expect(await repository.restoreSource(OTHER_ORG, SOURCE)).toEqual({
-      count: 0,
-    });
-    expect(await repository.restoreSource(ORG, SOURCE)).toEqual({ count: 1 });
-    expect(await repository.restoreSource(ORG, SOURCE)).toEqual({ count: 0 });
+    const restore = (organizationId: string) =>
+      repository.restoreSourceWithinLimit({
+        organizationId,
+        id: SOURCE,
+        activeFeedsMax: 100,
+      });
+    expect(await restore(OTHER_ORG)).toEqual({ status: 'not-found' });
+    expect(await restore(ORG)).toEqual({ status: 'restored' });
+    expect(await restore(ORG)).toEqual({ status: 'unchanged' });
 
     expect(source.updateMany.mock.calls.map(([args]) => args)).toEqual(
       expect.arrayContaining([
@@ -479,7 +505,8 @@ describe('ContentStudioSourceRepository: sources', () => {
       'countPageChangesForOrganization',
       'countSourcesForOrganization',
       'countVersionsForSource',
-      'createSource',
+      // the only create of sources, within the organization's limit (P8-C1)
+      'createSourcesWithinLimit',
       // reads (P8-04A)
       'getFirstRepeatOfVersion',
       'getPageSourceForBackfill',
@@ -499,11 +526,244 @@ describe('ContentStudioSourceRepository: sources', () => {
       'listVersionCapturesForBackfill',
       'listVersionsForSource',
       'markFeedCaptured',
-      'restoreSource',
+      'restoreSourceWithinLimit',
       // the page-change backfill (P8-04B1): the derived fields only
       'setPageChangeWithCompareAndSwap',
       'updateSourceName',
+      // one serializable transaction, retried (P8-C1)
+      'withinLimitTransaction',
     ]);
+  });
+});
+
+describe('ContentStudioSourceRepository: organization limits (P8-C1)', () => {
+  const P2034 = () =>
+    new Prisma.PrismaClientKnownRequestError('Transaction write conflict', {
+      code: 'P2034',
+      clientVersion: 'test',
+    });
+  const ids = (n: number) =>
+    `${'9'.repeat(8)}-0000-4000-8000-${String(n).padStart(12, '0')}`;
+  const sources = (...ns: number[]) =>
+    ns.map((n) => ({
+      id: ids(n),
+      name: `Source ${n}`,
+      canonicalUrl: `https://example.com/${n}`,
+    }));
+  const input = (
+    overrides: Partial<{
+      organizationId: string;
+      kind: string;
+      limit: number;
+      sources: Array<{ id: string; name: string; canonicalUrl: string }>;
+    }> = {}
+  ) => ({
+    organizationId: overrides.organizationId ?? ORG,
+    kind: overrides.kind ?? 'url',
+    createdById: USER,
+    limit: overrides.limit ?? 2,
+    sources: overrides.sources ?? sources(1),
+  });
+  const statuses = (result: {
+    status: string;
+    results?: { status: string }[];
+  }) =>
+    result.status === 'decided'
+      ? result.results!.map((item) => item.status)
+      : result.status;
+
+  it('P8C1-9/10 a feed limit counts the live feeds of the organization, a page limit all its pages', async () => {
+    const { repository, source } = setup();
+    await repository.createSourcesWithinLimit(input({ kind: 'feed' }));
+    await repository.createSourcesWithinLimit(input({ sources: sources(2) }));
+    expect(source.count.mock.calls.map(([args]) => args)).toEqual([
+      { where: { organizationId: ORG, kind: 'feed', archivedAt: null } },
+      { where: { organizationId: ORG, kind: 'url' } },
+    ]);
+  });
+
+  it('FC1/FC2/SC1/SC2 creates in their order below the limit and refuses the rest, creating nothing for them', async () => {
+    const { repository, state, source } = setup();
+    const result = await repository.createSourcesWithinLimit(
+      input({ sources: sources(1, 2, 3, 4) })
+    );
+    expect(statuses(result)).toEqual(['created', 'created', 'limit', 'limit']);
+    expect(state.sources.map((row) => row.id)).toEqual([ids(1), ids(2)]);
+    // one look at the URLs, one count, for all of them
+    expect(source.findMany).toHaveBeenCalledTimes(1);
+    expect(source.count).toHaveBeenCalledTimes(1);
+    expect(
+      statuses(
+        await repository.createSourcesWithinLimit(
+          input({ sources: sources(5) })
+        )
+      )
+    ).toEqual(['limit']);
+  });
+
+  it('FC3/SC3 archived feeds free their place; archived pages do not', async () => {
+    const { repository, state } = setup();
+    for (const kind of ['feed', 'url']) {
+      await repository.createSourcesWithinLimit(
+        input({ kind, sources: sources(1, 2) })
+      );
+      for (const row of state.sources) {
+        row.archivedAt = NOW;
+      }
+      const result = await repository.createSourcesWithinLimit(
+        input({ kind, sources: sources(3) })
+      );
+      expect([kind, statuses(result)]).toEqual([
+        kind,
+        [kind === 'feed' ? 'created' : 'limit'],
+      ]);
+      state.sources = [];
+    }
+  });
+
+  it('FC8/SC13 another organization at its limit changes nothing', async () => {
+    const { repository } = setup();
+    await repository.createSourcesWithinLimit(
+      input({ organizationId: OTHER_ORG, sources: sources(1, 2) })
+    );
+    expect(
+      statuses(
+        await repository.createSourcesWithinLimit(
+          input({ sources: sources(3) })
+        )
+      )
+    ).toEqual(['created']);
+  });
+
+  it('FC7/SC5 an existing canonical URL, archived included, is that source whatever the limit, and takes no place', async () => {
+    const { repository, source, state } = setup();
+    await create(repository, { id: ids(1), url: 'https://example.com/1' });
+    state.sources[0].archivedAt = NOW;
+    source.create.mockClear();
+    const result = await repository.createSourcesWithinLimit(
+      input({ limit: 1, sources: sources(1, 2) })
+    );
+    expect(result).toMatchObject({
+      status: 'decided',
+      results: [
+        { status: 'exists', source: { id: ids(1) } },
+        { status: 'limit' },
+      ],
+    });
+    expect(source.create).not.toHaveBeenCalled();
+    expect(source.findMany.mock.calls.at(-1)![0].where).toEqual({
+      organizationId: ORG,
+      canonicalUrl: {
+        in: ['https://example.com/1', 'https://example.com/2'],
+      },
+    });
+  });
+
+  it('FC9/P8C1-8 runs serializable and runs again from a fresh read after a serialization failure', async () => {
+    const { repository, transaction, source } = setup();
+    transaction.$transaction.mockRejectedValueOnce(P2034());
+    expect(
+      statuses(await repository.createSourcesWithinLimit(input()))
+    ).toEqual(['created']);
+    expect(transaction.$transaction).toHaveBeenCalledTimes(2);
+    for (const call of transaction.$transaction.mock.calls) {
+      expect(call[1]).toEqual({
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      });
+    }
+    // the second attempt read and counted again
+    expect(source.findMany).toHaveBeenCalledTimes(1);
+    expect(source.count).toHaveBeenCalledTimes(1);
+  });
+
+  it('a retry that finds the limit reached meanwhile is the limit, not a conflict', async () => {
+    const { repository, transaction, state } = setup();
+    await create(repository, { id: ids(1), url: 'https://example.com/1' });
+    transaction.$transaction.mockImplementationOnce(async () => {
+      // another writer takes the last place, and this attempt is aborted
+      state.sources.push({
+        ...state.sources[0],
+        id: ids(2),
+        canonicalUrl: 'https://example.com/2',
+      });
+      throw P2034();
+    });
+    expect(
+      statuses(
+        await repository.createSourcesWithinLimit(
+          input({ sources: sources(3) })
+        )
+      )
+    ).toEqual(['limit']);
+  });
+
+  it('FC10/M16 gives up after 3 attempts in all with a conflict; any other error is thrown at once', async () => {
+    const { repository, transaction, state } = setup();
+    transaction.$transaction.mockRejectedValue(P2034());
+    expect(await repository.createSourcesWithinLimit(input())).toEqual({
+      status: 'conflict',
+    });
+    expect(
+      await repository.restoreSourceWithinLimit({
+        organizationId: ORG,
+        id: SOURCE,
+        activeFeedsMax: 1,
+      })
+    ).toEqual({ status: 'conflict' });
+    expect(transaction.$transaction).toHaveBeenCalledTimes(6);
+    expect(state.sources).toEqual([]);
+    transaction.$transaction.mockReset();
+    const down = new Error('database down');
+    transaction.$transaction.mockRejectedValueOnce(down);
+    await expect(repository.createSourcesWithinLimit(input())).rejects.toBe(
+      down
+    );
+    const unique = new Prisma.PrismaClientKnownRequestError('Unique', {
+      code: 'P2002',
+      clientVersion: 'test',
+    });
+    transaction.$transaction.mockRejectedValueOnce(unique);
+    await expect(repository.createSourcesWithinLimit(input())).rejects.toBe(
+      unique
+    );
+    expect(transaction.$transaction).toHaveBeenCalledTimes(2);
+  });
+
+  it('FC4/FC5/FC6/SC4 a feed is restored below the live feed limit only; a page always; a live one is unchanged', async () => {
+    const { repository, state, source } = setup();
+    await create(repository, { id: ids(1), kind: 'feed', url: 'https://f/1' });
+    await create(repository, { id: ids(2), kind: 'feed', url: 'https://f/2' });
+    await create(repository, { id: ids(3), url: 'https://p/3' });
+    for (const row of state.sources) {
+      row.archivedAt = NOW;
+    }
+    const restore = (id: string) =>
+      repository.restoreSourceWithinLimit({
+        organizationId: ORG,
+        id,
+        activeFeedsMax: 1,
+      });
+    expect(await restore(ids(1))).toEqual({ status: 'restored' });
+    // a live feed is not restored again and takes no second place
+    expect(await restore(ids(1))).toEqual({ status: 'unchanged' });
+    source.count.mockClear();
+    expect(await restore(ids(2))).toEqual({ status: 'limit' });
+    expect(state.sources[1].archivedAt).toEqual(NOW);
+    expect(source.count.mock.calls[0][0]).toEqual({
+      where: { organizationId: ORG, kind: 'feed', archivedAt: null },
+    });
+    source.count.mockClear();
+    // a page is restored at any count
+    expect(await restore(ids(3))).toEqual({ status: 'restored' });
+    expect(source.count).not.toHaveBeenCalled();
+    // another organization's feed is not there
+    expect(
+      await repository.restoreSourceWithinLimit({
+        organizationId: OTHER_ORG,
+        id: ids(2),
+        activeFeedsMax: 10,
+      })
+    ).toEqual({ status: 'not-found' });
   });
 });
 
@@ -511,6 +771,7 @@ describe('ContentStudioSourceRepository: version append', () => {
   it('SR16-SR21 appends the first capture as version 1, with its provenance and both hashes', async () => {
     const { repository, transaction, version, state } = setup();
     await create(repository);
+    transaction.$transaction.mockClear();
     const data = capture('First capture.');
     const result = await repository.appendVersionWithCompareAndSwap({
       organizationId: ORG,
@@ -611,6 +872,7 @@ describe('ContentStudioSourceRepository: version append', () => {
   it('SR26-SR28 advances the number only for the organization, a live source and the expected number', async () => {
     const { repository, source } = setup();
     await create(repository);
+    source.findFirst.mockClear();
     await append(repository, 0, 'one');
     expect(source.findFirst.mock.calls[0][0]).toEqual({
       where: { id: SOURCE, organizationId: ORG },
@@ -798,8 +1060,9 @@ describe('ContentStudioSourceRepository source', () => {
     );
     expect(text).not.toMatch(/\.delete(Many)?\(|\.upsert\(|\.update\(/);
     expect(text.match(/contentStudioSourceVersion\.create\(/g)).toHaveLength(1);
-    // canonicalUrl is written by createSource only
-    expect(text.match(/canonicalUrl: input\.canonicalUrl/g)).toHaveLength(1);
+    // canonicalUrl is written by createSourcesWithinLimit only
+    expect(text.match(/canonicalUrl: source\.canonicalUrl/g)).toHaveLength(1);
+    expect(text.match(/canonicalUrl: input\.canonicalUrl/g)).toBeNull();
     expect(text.match(/data: \{\s*canonicalUrl/g)).toBeNull();
   });
 

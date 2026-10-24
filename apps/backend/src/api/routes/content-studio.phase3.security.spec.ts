@@ -311,7 +311,8 @@ describe('Phase 3 immutable versions', () => {
     for (const name of [
       'updateSourceName',
       'archiveSource',
-      'restoreSource',
+      // P8-C1: the one restore, within the live feed limit
+      'restoreSourceWithinLimit',
       'setPageChangeWithCompareAndSwap',
     ]) {
       const data = method(SOURCE.sourceRepository, name).split('data:')[1];

@@ -77,6 +77,14 @@ export const feedCaptureMessage = (
           )}: ${capture.failed}.`,
         ]
       : []),
+    ...(capture.entriesLimited
+      ? [
+          `${t(
+            'content_studio_feed_captured_limited',
+            'Pages not added because the organization reached its source limit'
+          )}: ${capture.entriesLimited}.`,
+        ]
+      : []),
   ].join(' ');
 
 // The stored URL, as a plain outgoing link: showing it fetches nothing

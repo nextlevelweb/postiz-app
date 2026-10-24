@@ -27,6 +27,7 @@ import {
   SOURCE_FETCH_TIMEOUT_MS,
 } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 import { SOURCE_FEED_MAX_ENTRIES } from '@gitroom/nestjs-libraries/content-studio/sources/source.feed';
+import { CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
 
 // Feed capture (P8-01) with no database and no network: the repositories are
 // the real ones over in-memory Prisma delegates that keep the unique keys of
@@ -38,6 +39,24 @@ jest.mock('@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch', () => ({
   safeFetch: jest.fn(),
 }));
 const fetchMock = jest.mocked(safeFetch);
+// The organization limits (P8-C1), set by each test: by default far from
+// every limit and with no refresh cooldown, so captures may follow each other
+// at once; the limit tests set them
+const NO_LIMITS = {
+  activeFeedsMax: 1000,
+  urlSourcesMax: 1000,
+  manualRefreshCooldownMs: 0,
+};
+const mockLimits = { ...NO_LIMITS };
+jest.mock(
+  '@gitroom/nestjs-libraries/content-studio/sources/source.types',
+  () => ({
+    ...jest.requireActual(
+      '@gitroom/nestjs-libraries/content-studio/sources/source.types'
+    ),
+    contentStudioSourceLimits: jest.fn(() => ({ ...mockLimits })),
+  })
+);
 const realSafeFetch = (
   jest.requireActual(SAFE_FETCH) as { safeFetch: typeof safeFetch }
 ).safeFetch;
@@ -301,6 +320,9 @@ const setup = () => {
     contentStudioSource: source,
     contentStudioSourceVersion: version,
   };
+  const transaction = jest.fn(
+    async (fn: (client: typeof tx) => unknown, options?: unknown) => fn(tx)
+  );
   const repository = new ContentStudioSourceRepository(
     {
       model: { contentStudioSource: source },
@@ -310,9 +332,7 @@ const setup = () => {
     } as unknown as PrismaRepository<'contentStudioSourceVersion'>,
     {
       model: {
-        $transaction: jest.fn(async (fn: (client: typeof tx) => unknown) =>
-          fn(tx)
-        ),
+        $transaction: transaction,
       },
     } as unknown as PrismaTransaction
   );
@@ -352,6 +372,7 @@ const setup = () => {
   return {
     state,
     hooks,
+    transaction,
     repository,
     discoveries,
     ingestion,
@@ -406,6 +427,7 @@ const sourceByUrl = (t: Setup, url: string, organizationId = ORG) =>
 
 beforeEach(() => {
   fetchMock.mockReset();
+  Object.assign(mockLimits, NO_LIMITS);
 });
 
 describe('feed capture: a manual capture', () => {
@@ -428,6 +450,7 @@ describe('feed capture: a manual capture', () => {
       unchanged: 0,
       failed: 0,
       archived: 0,
+      entriesLimited: 0,
     });
     // the feed: no version, its capture time recorded
     expect(versionsOf(t, FEED)).toEqual([]);
@@ -1203,6 +1226,337 @@ describe('feed capture: entries and partial failures', () => {
     });
     expect((await capture(t)).capture.versionsCreated).toBe(12);
     expect(peak).toBe(5);
+  });
+});
+
+describe('feed capture: organization limits (P8-C1)', () => {
+  afterEach(() => jest.restoreAllMocks());
+  const PAGE_ID = '77777777-7777-4777-8777-777777777777';
+  const OTHER_PAGE_ID = '88888888-8888-4888-8888-888888888888';
+  const fetchedUrls = () => fetchMock.mock.calls.map(([url]) => url);
+
+  it('SC5-SC11/M8-M13 at the page limit an existing page is recorded and captured; a new one is only counted, and the next entries go on', async () => {
+    const t = setup();
+    t.addFeed();
+    t.addSource({ id: PAGE_ID, organizationId: ORG, canonicalUrl: page(2) });
+    mockLimits.urlSourcesMax = 1;
+    const w = web();
+    // new, existing, new, the address of another feed
+    w.feeds.set(FEED_URL, rss([page(1), page(2), page(3), FEED_B_URL]));
+    t.addSource({
+      id: FEED_B,
+      organizationId: ORG,
+      kind: 'feed',
+      canonicalUrl: FEED_B_URL,
+    });
+    for (const n of [1, 2, 3]) {
+      w.pages.set(page(n), html(`Page ${n}`));
+    }
+    const result = await capture(t);
+    expect(result.capture).toEqual({
+      entriesSeen: 4,
+      entriesIgnored: 0,
+      // a feed address is no page, whatever the limits
+      entriesSkipped: 1,
+      entriesAccepted: 1,
+      sourcesCreated: 0,
+      versionsCreated: 1,
+      unchanged: 0,
+      // a limit is never a failure
+      failed: 0,
+      archived: 0,
+      entriesLimited: 2,
+    });
+    // no source and no discovery for the new pages, and no fetch of them
+    expect(pagesOf(t).map((s) => s.id)).toEqual([PAGE_ID]);
+    expect(t.state.discoveries.map((d) => d.discoveredSourceId)).toEqual([
+      PAGE_ID,
+    ]);
+    expect(fetchedUrls().sort()).toEqual([FEED_URL, page(2)].sort());
+    expect(versionsOf(t, PAGE_ID)).toHaveLength(1);
+    // the feed was captured: the limited pages are not retried at once
+    expect(
+      t.state.sources.find((s) => s.id === FEED)!.lastCapturedAt
+    ).toBeInstanceOf(Date);
+    expect(result.source.lastCapturedAt).toBeInstanceOf(Date);
+  });
+
+  it("a feed's new pages are created together, in one serializable transaction: the first ones in the feed take the room left", async () => {
+    const t = setup();
+    t.addFeed();
+    t.addSource({ id: PAGE_ID, organizationId: ORG, canonicalUrl: page(9) });
+    mockLimits.urlSourcesMax = 3;
+    const w = web();
+    w.feeds.set(FEED_URL, rss([page(1), page(9), page(2), page(3)]));
+    for (const n of [1, 2, 3, 9]) {
+      w.pages.set(page(n), html(`Page ${n}`));
+    }
+    const result = await capture(t);
+    expect(result.capture).toMatchObject({
+      sourcesCreated: 2,
+      entriesLimited: 1,
+    });
+    expect(
+      pagesOf(t)
+        .map((s) => s.canonicalUrl)
+        .sort()
+    ).toEqual([page(1), page(2), page(9)].sort());
+    const serializable = t.transaction.mock.calls.filter(([, options]) =>
+      Boolean(options)
+    );
+    expect(serializable).toHaveLength(1);
+    // again: page 3 is the only new one, still past the limit
+    t.transaction.mockClear();
+    expect((await capture(t)).capture.entriesLimited).toBe(1);
+    expect(
+      t.transaction.mock.calls.filter(([, options]) => Boolean(options))
+    ).toHaveLength(1);
+    // known pages only: no limited create at all
+    w.feeds.set(FEED_URL, rss([page(1), page(9), page(2)]));
+    t.transaction.mockClear();
+    expect((await capture(t)).capture.entriesLimited).toBe(0);
+    expect(
+      t.transaction.mock.calls.filter(([, options]) => Boolean(options))
+    ).toHaveLength(0);
+  });
+
+  it('SC12 a feed of new pages only, all past the limit, is still a capture', async () => {
+    const t = setup();
+    t.addFeed();
+    mockLimits.urlSourcesMax = 0;
+    const w = web();
+    w.feeds.set(FEED_URL, rss([page(1), page(2), page(3)]));
+    const result = await capture(t);
+    expect(result.capture).toMatchObject({
+      entriesAccepted: 0,
+      sourcesCreated: 0,
+      failed: 0,
+      entriesLimited: 3,
+    });
+    expect(pagesOf(t)).toEqual([]);
+    expect(t.state.discoveries).toEqual([]);
+    expect(fetchedUrls()).toEqual([FEED_URL]);
+    expect(
+      t.state.sources.find((s) => s.id === FEED)!.lastCapturedAt
+    ).toBeInstanceOf(Date);
+  });
+
+  it('SC6/SC13 the limit counts the pages of the feed organization only, archived ones included', async () => {
+    const t = setup();
+    t.addFeed();
+    t.addFeed({ id: FEED_B, organizationId: OTHER_ORG });
+    t.addSource({
+      id: PAGE_ID,
+      organizationId: ORG,
+      canonicalUrl: page('archived'),
+      archivedAt: new Date(),
+    });
+    mockLimits.urlSourcesMax = 1;
+    const w = web();
+    w.feeds.set(FEED_URL, rss([page(1)]));
+    w.pages.set(page(1), html('One'));
+    // the archived page takes the one place
+    expect((await capture(t)).capture.entriesLimited).toBe(1);
+    // another organization at none of its own creates the page
+    expect(
+      (await capture(t, { organizationId: OTHER_ORG, sourceId: FEED_B }))
+        .capture
+    ).toMatchObject({ entriesLimited: 0, sourcesCreated: 1 });
+    expect(pagesOf(t, OTHER_ORG).map((s) => s.canonicalUrl)).toEqual([page(1)]);
+  });
+
+  it('a page found inside the limited create, created meanwhile by another capture, is used at the limit: never limited', async () => {
+    const t = setup();
+    t.addFeed();
+    t.addSource({ id: PAGE_ID, organizationId: ORG, canonicalUrl: page(1) });
+    mockLimits.urlSourcesMax = 1;
+    // the lookup before the create missed it
+    jest
+      .spyOn(t.repository, 'getSourceByCanonicalUrlForOrganization')
+      .mockResolvedValueOnce(null);
+    const w = web();
+    w.feeds.set(FEED_URL, rss([page(1)]));
+    w.pages.set(page(1), html('One'));
+    expect((await capture(t)).capture).toMatchObject({
+      entriesAccepted: 1,
+      sourcesCreated: 0,
+      versionsCreated: 1,
+      entriesLimited: 0,
+    });
+    expect(t.state.discoveries[0].discoveredSourceId).toBe(PAGE_ID);
+  });
+
+  it('M17 a page whose create lost to another capture (unique key) is that capture, never limited', async () => {
+    const t = setup();
+    t.addFeed();
+    mockLimits.urlSourcesMax = 1;
+    const w = web();
+    w.feeds.set(FEED_URL, rss([page(1)]));
+    w.pages.set(page(1), html('One'));
+    t.hooks.sources = {
+      beforeCreate: (data) => {
+        if (data.canonicalUrl === page(1)) {
+          t.hooks.sources = {};
+          t.addSource({
+            id: OTHER_PAGE_ID,
+            organizationId: ORG,
+            canonicalUrl: page(1),
+          });
+        }
+      },
+    };
+    expect((await capture(t)).capture).toMatchObject({
+      entriesAccepted: 1,
+      entriesLimited: 0,
+      failed: 0,
+    });
+    expect(t.state.discoveries[0].discoveredSourceId).toBe(OTHER_PAGE_ID);
+  });
+
+  it('a page whose create lost every serializable attempt is a counted failure left for the next capture; the feed goes on', async () => {
+    const t = setup();
+    t.addFeed();
+    t.addSource({ id: PAGE_ID, organizationId: ORG, canonicalUrl: page(2) });
+    // every serializable transaction (a limited create) loses; the append
+    // of a version is no such transaction
+    const run = t.transaction.getMockImplementation()!;
+    t.transaction.mockImplementation(async (fn, options) => {
+      if (options) {
+        throw new Prisma.PrismaClientKnownRequestError('write conflict', {
+          code: 'P2034',
+          clientVersion: 'test',
+        });
+      }
+      return run(fn);
+    });
+    const w = web();
+    w.feeds.set(FEED_URL, rss([page(1), page(2)]));
+    w.pages.set(page(1), html('One'));
+    w.pages.set(page(2), html('Two'));
+    const result = await capture(t);
+    expect(result.capture).toMatchObject({
+      entriesAccepted: 2,
+      sourcesCreated: 0,
+      versionsCreated: 1,
+      failed: 1,
+      entriesLimited: 0,
+    });
+    // page 1 has no source, so nothing was recorded or fetched for it; page
+    // 2 was recorded and captured
+    expect(pagesOf(t).map((s) => s.id)).toEqual([PAGE_ID]);
+    expect(t.state.discoveries.map((d) => d.discoveredSourceId)).toEqual([
+      PAGE_ID,
+    ]);
+    expect(fetchedUrls()).not.toContain(page(1));
+    expect(
+      t.state.sources.find((s) => s.id === FEED)!.lastCapturedAt
+    ).toBeInstanceOf(Date);
+    const text = JSON.stringify(result);
+    expect(text).not.toMatch(/P2034|conflict|Prisma/);
+  });
+
+  describe('a manual feed capture after the last one (refresh cooldown)', () => {
+    const TOO_SOON = {
+      msg: 'This source was captured a moment ago. Try again in a few minutes.',
+      code: 'CS_SOURCE_REFRESH_TOO_SOON',
+    };
+    const captured = async () => {
+      const t = setup();
+      t.addFeed();
+      const w = web();
+      w.feeds.set(FEED_URL, rss([page(1)]));
+      w.pages.set(page(1), html('One'));
+      await capture(t);
+      mockLimits.manualRefreshCooldownMs =
+        CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS;
+      fetchMock.mockClear();
+      const last = (
+        t.state.sources.find((s) => s.id === FEED)!.lastCapturedAt as Date
+      ).getTime();
+      const at = (ms: number) => jest.spyOn(Date, 'now').mockReturnValue(ms);
+      return { t, w, last, at };
+    };
+
+    it('RC6 a feed never read is captured at once', async () => {
+      const t = setup();
+      t.addFeed();
+      mockLimits.manualRefreshCooldownMs =
+        CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS;
+      const w = web();
+      w.feeds.set(FEED_URL, rss([]));
+      await expect(capture(t)).resolves.toMatchObject({
+        capture: { entriesSeen: 0 },
+      });
+    });
+
+    it('RC8/RC9/M20 sooner than the cooldown after its last read is a 429 before the feed is fetched', async () => {
+      const { t, last, at } = await captured();
+      for (const elapsed of [
+        0,
+        CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS - 1,
+      ]) {
+        at(last + elapsed);
+        expect(await refusal(capture(t))).toEqual({
+          status: 429,
+          body: TOO_SOON,
+        });
+      }
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(
+        (
+          t.state.sources.find((s) => s.id === FEED)!.lastCapturedAt as Date
+        ).getTime()
+      ).toBe(last);
+    });
+
+    it('RC7 exactly the cooldown after its last read, or later, captures it', async () => {
+      const { t, last, at } = await captured();
+      at(last + CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS);
+      await expect(capture(t)).resolves.toMatchObject({
+        capture: { entriesSeen: 1 },
+      });
+      expect(fetchMock.mock.calls[0][0]).toBe(FEED_URL);
+    });
+
+    it('RC11 an archived feed is still CS_SOURCE_ARCHIVED within the cooldown', async () => {
+      const { t, last, at } = await captured();
+      at(last + 1);
+      t.state.sources.find((s) => s.id === FEED)!.archivedAt = new Date(last);
+      expect(await refusal(capture(t))).toMatchObject({
+        status: 409,
+        body: { code: 'CS_SOURCE_ARCHIVED' },
+      });
+    });
+
+    it('RC10/M24 the schedule never waits for it: a scheduled capture right after a manual one reads the feed and its pages', async () => {
+      const { t, w, last, at } = await captured();
+      at(last + 1);
+      w.pages.set(page(1), html('One, changed'));
+      await expect(
+        t.ingestion.captureScheduledFeed({
+          organizationId: ORG,
+          sourceId: FEED,
+        })
+      ).resolves.toMatchObject({
+        status: 'captured',
+        capture: { versionsCreated: 1 },
+      });
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+        FEED_URL,
+        page(1),
+      ]);
+      // and a feed capture of a page refreshed by hand a moment ago reads it
+      const pageId = sourceByUrl(t, page(1)).id as string;
+      w.pages.set(page(1), html('One, changed again'));
+      fetchMock.mockClear();
+      await expect(
+        t.ingestion.captureScheduledFeed({
+          organizationId: ORG,
+          sourceId: FEED,
+        })
+      ).resolves.toMatchObject({ capture: { versionsCreated: 1 } });
+      expect(versionsOf(t, pageId)).toHaveLength(3);
+    });
   });
 });
 

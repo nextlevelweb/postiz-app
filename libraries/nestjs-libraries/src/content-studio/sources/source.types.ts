@@ -66,3 +66,35 @@ export const CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION =
   'content-studio-source-v2';
 export const CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION_PATTERN =
   /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+// Technical safety limits of one organization (P8-C1): fixed, never
+// configuration, and not a plan. They stop runaway growth; nothing is hidden,
+// archived or deleted when a limit is reached, only what would grow past it
+// is refused:
+// - live feeds: each one is read about hourly, with up to 25 pages. An
+//   archived feed is not read, so archiving one frees its place
+// - page sources, archived ones included: an archived page keeps its
+//   versions and its URL, and sources are never deleted. The scale Source
+//   lists and search were measured at (P8-03)
+// - a refresh by a member: not sooner than this after the source's last
+//   capture (a page's current version, a feed's last read). Scheduled
+//   captures do not wait for it
+export const CONTENT_STUDIO_ACTIVE_FEEDS_MAX = 100;
+export const CONTENT_STUDIO_URL_SOURCES_MAX = 100_000;
+export const CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
+
+export interface ContentStudioSourceLimits {
+  activeFeedsMax: number;
+  urlSourcesMax: number;
+  manualRefreshCooldownMs: number;
+}
+
+// The limits of one organization: the fixed ones, for every organization.
+// The one place a later policy may lower them; never from a request
+export const contentStudioSourceLimits = (
+  organizationId: string
+): ContentStudioSourceLimits => ({
+  activeFeedsMax: CONTENT_STUDIO_ACTIVE_FEEDS_MAX,
+  urlSourcesMax: CONTENT_STUDIO_URL_SOURCES_MAX,
+  manualRefreshCooldownMs: CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS,
+});

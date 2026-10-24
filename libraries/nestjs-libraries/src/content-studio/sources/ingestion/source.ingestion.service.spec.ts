@@ -28,6 +28,10 @@ import { SOURCE_EXTRACT_MEDIA_TYPES } from '@gitroom/nestjs-libraries/content-st
 import { canonicalContentStudioSourceUrl } from '@gitroom/nestjs-libraries/content-studio/sources/source.url';
 import { parseVerifiedContentStudioSourceVersion } from '@gitroom/nestjs-libraries/content-studio/sources/source.version';
 import { sha256Hex } from '@gitroom/nestjs-libraries/content-studio/canonical.json';
+import {
+  CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS,
+  contentStudioSourceLimits,
+} from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
 
 // No database and no network: the repository is the real one over in-memory
 // Prisma delegates, and safeFetch is a mock. The SSRF tests at the end hand
@@ -38,6 +42,27 @@ jest.mock('@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch', () => ({
   safeFetch: jest.fn(),
 }));
 const fetchMock = jest.mocked(safeFetch);
+// The organization limits (P8-C1), set by each test: by default far from
+// every limit and with no refresh cooldown, so refreshes may follow each
+// other at once; the cooldown tests set it
+const NO_LIMITS = {
+  activeFeedsMax: 1000,
+  urlSourcesMax: 1000,
+  manualRefreshCooldownMs: 0,
+};
+const mockLimits = { ...NO_LIMITS };
+jest.mock(
+  '@gitroom/nestjs-libraries/content-studio/sources/source.types',
+  () => ({
+    ...jest.requireActual(
+      '@gitroom/nestjs-libraries/content-studio/sources/source.types'
+    ),
+    contentStudioSourceLimits: jest.fn(() => ({ ...mockLimits })),
+  })
+);
+beforeEach(() => {
+  Object.assign(mockLimits, NO_LIMITS);
+});
 const realSafeFetch = (
   jest.requireActual(SAFE_FETCH) as { safeFetch: typeof safeFetch }
 ).safeFetch;
@@ -182,13 +207,18 @@ const setup = () => {
   );
   const sources = new ContentStudioSourceService(repository, discoveries);
   const addSource = async (overrides: Row = {}) => {
-    await repository.createSource({
-      id: SOURCE,
+    await repository.createSourcesWithinLimit({
       organizationId: ORG,
       kind: 'url',
-      name: 'Example news',
-      canonicalUrl: canonicalContentStudioSourceUrl(URL_A),
       createdById: USER,
+      limit: 1000,
+      sources: [
+        {
+          id: SOURCE,
+          name: 'Example news',
+          canonicalUrl: canonicalContentStudioSourceUrl(URL_A),
+        },
+      ],
     });
     Object.assign(state.sources[0], overrides);
   };
@@ -294,6 +324,7 @@ describe('ContentStudioSourceIngestionService: preflight', () => {
   it('IG1/IG2/IG3 lets any member refresh a source of the request organization', async () => {
     const { ingestion, addSource, source } = setup();
     await addSource();
+    source.findFirst.mockClear();
     const result = await refresh(ingestion, { userId: OTHER_USER });
     expect(result.version.versionNumber).toBe(1);
     expect(source.findFirst.mock.calls[0][0]).toEqual({
@@ -1246,7 +1277,7 @@ describe('ContentStudioSourceIngestionService: last page change', () => {
     expect(pageChange(state.sources[0])).toEqual(NONE);
   });
 
-  it('W14 the page change rides the one source update of the append; the earlier version is read once, by number', async () => {
+  it('W14 the page change rides the one source update of the append; the earlier version is read by number, metadata only', async () => {
     const { ingestion, addSource, state, source, version } = setup();
     await addSource();
     await refreshWith(ingestion, '<p>A</p>');
@@ -1269,11 +1300,15 @@ describe('ContentStudioSourceIngestionService: last page change', () => {
         lastPageChangePreviousCaptureAt: state.versions[0].fetchedAt,
       },
     });
-    expect(version.findFirst).toHaveBeenCalledTimes(1);
-    expect(version.findFirst.mock.calls[0][0]).toEqual({
-      where: { organizationId: ORG, sourceId: SOURCE, versionNumber: 1 },
-      select: expect.not.objectContaining({ content: true }),
-    });
+    // a member's refresh reads it before the fetch, for its cooldown
+    // (P8-C1), and the capture after the fetch, as the version it follows
+    expect(version.findFirst).toHaveBeenCalledTimes(2);
+    for (const [args] of version.findFirst.mock.calls) {
+      expect(args).toEqual({
+        where: { organizationId: ORG, sourceId: SOURCE, versionNumber: 1 },
+        select: expect.not.objectContaining({ content: true }),
+      });
+    }
     // a repeat: the number only
     source.updateMany.mockClear();
     await refreshWith(ingestion, '<p>B</p>');
@@ -1282,11 +1317,12 @@ describe('ContentStudioSourceIngestionService: last page change', () => {
     });
   });
 
-  it('a refresh after a missing earlier version fails closed: never a first capture', async () => {
+  it('a refresh after a missing earlier version fails closed: never a first capture, nor a fetch', async () => {
     const { ingestion, addSource, state } = setup();
     await addSource();
     await refreshWith(ingestion, '<p>A</p>');
     state.versions.length = 0;
+    fetchMock.mockClear();
     fetchMock.mockResolvedValueOnce(fetched({ page: article('<p>B</p>') }));
     expect(await httpError(refresh(ingestion))).toEqual({
       status: 500,
@@ -1295,7 +1331,119 @@ describe('ContentStudioSourceIngestionService: last page change', () => {
         code: 'CS_SOURCE_INTEGRITY_ERROR',
       },
     });
+    // the current version is read for the cooldown, before any fetch
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(state.versions).toEqual([]);
     expect(pageChange(state.sources[0])).toEqual(NONE);
+  });
+});
+
+describe('ContentStudioSourceIngestionService: refresh cooldown (P8-C1)', () => {
+  const COOLDOWN = CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS;
+  const TOO_SOON = {
+    msg: 'This source was captured a moment ago. Try again in a few minutes.',
+    code: 'CS_SOURCE_REFRESH_TOO_SOON',
+  };
+  // a page with one version, fetched at `fetchedAt`
+  const captured = async () => {
+    const context = setup();
+    await context.addSource();
+    fetchMock.mockResolvedValueOnce(fetched());
+    await refresh(context.ingestion);
+    mockLimits.manualRefreshCooldownMs = COOLDOWN;
+    fetchMock.mockClear();
+    const fetchedAt = (context.state.versions[0].fetchedAt as Date).getTime();
+    const at = (ms: number) => jest.spyOn(Date, 'now').mockReturnValue(ms);
+    return { ...context, fetchedAt, at };
+  };
+
+  it('the production cooldown is 5 minutes, from the request organization', async () => {
+    expect(COOLDOWN).toBe(5 * 60 * 1000);
+    const { ingestion, fetchedAt, at } = await captured();
+    at(fetchedAt + 1000);
+    await httpError(refresh(ingestion));
+    expect(jest.mocked(contentStudioSourceLimits)).toHaveBeenLastCalledWith(
+      ORG
+    );
+  });
+
+  it('RC1 a page never captured is refreshed at once', async () => {
+    const { ingestion, addSource, state } = setup();
+    mockLimits.manualRefreshCooldownMs = COOLDOWN;
+    await addSource();
+    fetchMock.mockResolvedValueOnce(fetched());
+    await expect(refresh(ingestion)).resolves.toMatchObject({
+      version: { versionNumber: 1 },
+    });
+    expect(state.versions).toHaveLength(1);
+  });
+
+  it('RC4/RC5/M22 a refresh sooner than the cooldown after the current version is a 429 before any fetch, storing nothing', async () => {
+    const { ingestion, state, fetchedAt, at } = await captured();
+    for (const elapsed of [0, 1, COOLDOWN - 1]) {
+      at(fetchedAt + elapsed);
+      expect(await httpError(refresh(ingestion))).toEqual({
+        status: 429,
+        body: TOO_SOON,
+      });
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(state.versions).toHaveLength(1);
+    expect(state.sources[0].latestVersionNumber).toBe(1);
+  });
+
+  it('RC2/RC3/M21 exactly the cooldown, or more, is late enough', async () => {
+    const { ingestion, state, fetchedAt, at } = await captured();
+    at(fetchedAt + COOLDOWN);
+    fetchMock.mockResolvedValueOnce(fetched());
+    await expect(refresh(ingestion)).resolves.toMatchObject({
+      version: { versionNumber: 2 },
+    });
+    // the version just stored is the last capture now
+    const second = (state.versions[1].fetchedAt as Date).getTime();
+    at(second + COOLDOWN + 60 * 60 * 1000);
+    fetchMock.mockResolvedValueOnce(fetched());
+    await expect(refresh(ingestion)).resolves.toMatchObject({
+      version: { versionNumber: 3 },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('RC11/M25 an archived or missing source keeps its own answer, never the cooldown', async () => {
+    const { ingestion, state, fetchedAt, at } = await captured();
+    at(fetchedAt + 1);
+    state.sources[0].archivedAt = new Date(fetchedAt);
+    expect(await httpError(refresh(ingestion))).toEqual({
+      status: 409,
+      body: ARCHIVED,
+    });
+    expect(
+      await httpError(refresh(ingestion, { organizationId: OTHER_ORG }))
+    ).toEqual({ status: 404, body: NOT_FOUND });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('RC12 two due refreshes at once still store one capture: the compare-and-swap decides, as before', async () => {
+    const { ingestion, state, fetchedAt, at } = await captured();
+    at(fetchedAt + COOLDOWN);
+    fetchMock.mockResolvedValue(fetched());
+    const results = await Promise.allSettled([
+      refresh(ingestion),
+      refresh(ingestion),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual([
+      'fulfilled',
+      'rejected',
+    ]);
+    const rejected = results.find(
+      (r) => r.status === 'rejected'
+    ) as PromiseRejectedResult;
+    expect((rejected.reason as HttpException).getResponse()).toEqual(CONFLICT);
+    expect(state.versions).toHaveLength(2);
+    // and the one stored makes the next refresh too soon
+    expect(await httpError(refresh(ingestion))).toEqual({
+      status: 429,
+      body: TOO_SOON,
+    });
   });
 });

@@ -133,20 +133,35 @@ const capture = (
     ...overrides,
   });
 
+// far below the organization limits (P8-C1 has its own suite)
 const createSource = async (
   organizationId: string,
   overrides: { name?: string; canonicalUrl?: string; createdById?: string } = {}
-) =>
-  (
-    await sources.createSource({
-      id: randomUUID(),
-      organizationId,
-      kind: 'url',
-      name: overrides.name ?? `${NAME_MARKER} report`,
-      canonicalUrl: overrides.canonicalUrl ?? url(randomUUID()),
-      createdById: overrides.createdById ?? OWNER[organizationId],
-    })
-  ).id;
+) => {
+  const result = await sources.createSourcesWithinLimit({
+    organizationId,
+    kind: 'url',
+    createdById: overrides.createdById ?? OWNER[organizationId],
+    limit: 1000,
+    sources: [
+      {
+        id: randomUUID(),
+        name: overrides.name ?? `${NAME_MARKER} report`,
+        canonicalUrl: overrides.canonicalUrl ?? url(randomUUID()),
+      },
+    ],
+  });
+  if (result.status !== 'decided' || result.results[0].status !== 'created') {
+    throw new Error('source not created');
+  }
+  return result.results[0].source.id;
+};
+const restore = (organizationId: string, id: string) =>
+  sources.restoreSourceWithinLimit({
+    organizationId,
+    id,
+    activeFeedsMax: 1000,
+  });
 
 const append = (
   organizationId: string,
@@ -951,7 +966,7 @@ describe('B. Source repository: organization scope on PostgreSQL', () => {
       where: { id: sourceId },
       data: { archivedAt: T1 },
     });
-    expect(await sources.restoreSource(ORG_B, sourceId)).toEqual({ count: 0 });
+    expect(await restore(ORG_B, sourceId)).toEqual({ status: 'not-found' });
     await client.contentStudioSource.update({
       where: { id: sourceId },
       data: { archivedAt: null },
@@ -1239,7 +1254,7 @@ describe('D. Source lifecycle and races on PostgreSQL', () => {
     const { sourceId } = await capturedSource();
     await sources.archiveSource(ORG_A, sourceId, T2);
     expect(await append(ORG_A, sourceId, 1)).toEqual({ status: 'archived' });
-    expect(await sources.restoreSource(ORG_A, sourceId)).toEqual({ count: 1 });
+    expect(await restore(ORG_A, sourceId)).toEqual({ status: 'restored' });
     const restored = await sourceRow(sourceId);
     expect(restored).toMatchObject({
       archivedAt: null,
@@ -1254,7 +1269,7 @@ describe('D. Source lifecycle and races on PostgreSQL', () => {
     expect((await versionsOf(sourceId)).map((v) => v.versionNumber)).toEqual([
       1, 2,
     ]);
-    expect(await sources.restoreSource(ORG_A, sourceId)).toEqual({ count: 0 });
+    expect(await restore(ORG_A, sourceId)).toEqual({ status: 'unchanged' });
   });
 
   it('SLC3/56 rename changes the name only', async () => {

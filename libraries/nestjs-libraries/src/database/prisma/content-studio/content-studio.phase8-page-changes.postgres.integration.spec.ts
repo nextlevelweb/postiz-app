@@ -55,6 +55,23 @@ jest.mock('@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch', () => ({
   ...jest.requireActual('@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch'),
   safeFetch: (...args: unknown[]) => mockSafeFetch(...(args as [string])),
 }));
+// P8-C1: refreshes here follow each other at once; the member refresh
+// cooldown has its own suite (phase8-caps)
+jest.mock(
+  '@gitroom/nestjs-libraries/content-studio/sources/source.types',
+  () => {
+    const actual = jest.requireActual(
+      '@gitroom/nestjs-libraries/content-studio/sources/source.types'
+    );
+    return {
+      ...actual,
+      contentStudioSourceLimits: (organizationId: string) => ({
+        ...actual.contentStudioSourceLimits(organizationId),
+        manualRefreshCooldownMs: 0,
+      }),
+    };
+  }
+);
 
 // Separate from the earlier fixtures: their own organizations and users
 const ORG_A = '30841000-0000-4000-8000-00000000000a';

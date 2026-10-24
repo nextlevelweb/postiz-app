@@ -146,6 +146,8 @@ export interface ContentStudioFeedCaptureCounts {
   unchanged: number;
   failed: number;
   archived: number;
+  // new pages not added: the organization has its most sources (P8-C1)
+  entriesLimited: number;
 }
 
 export interface ContentStudioFeedCaptureResult {
@@ -472,6 +474,27 @@ export const sourceErrorMessage = (t: Translate, error: unknown) => {
       return t(
         'content_studio_source_error_archived',
         'This source is archived.'
+      );
+    // the organization's technical limits (P8-C1)
+    case 'CS_SOURCE_FEED_LIMIT':
+      return t(
+        'content_studio_source_error_feed_limit',
+        'This organization has reached its limit of active feeds. Archive a feed to add or restore another.'
+      );
+    case 'CS_SOURCE_LIMIT':
+      return t(
+        'content_studio_source_error_source_limit',
+        'This organization has reached its limit of sources.'
+      );
+    case 'CS_SOURCE_REFRESH_TOO_SOON':
+      return t(
+        'content_studio_source_error_refresh_too_soon',
+        'This source was captured a moment ago. Try again in a few minutes.'
+      );
+    case 'CS_SOURCE_CONFLICT':
+      return t(
+        'content_studio_source_error_sources_changed',
+        'Sources were changed at the same time. Try again.'
       );
     case 'CS_SOURCE_KIND_UNSUPPORTED':
       return t(

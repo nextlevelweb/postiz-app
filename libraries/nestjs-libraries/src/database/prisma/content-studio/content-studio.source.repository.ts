@@ -129,6 +129,26 @@ const sourceListWhere = (
     : {}),
 });
 
+// The sources an organization limit counts (P8-C1), for the kind it limits:
+// a feed while it is live (archiving one frees its place), a page always (an
+// archived page keeps its versions and its URL)
+const limitedSourcesWhere = (
+  organizationId: string,
+  kind: string
+): Prisma.ContentStudioSourceWhereInput =>
+  kind === 'feed'
+    ? { organizationId, kind, archivedAt: null }
+    : { organizationId, kind };
+
+// A count and the write it allows are one serializable transaction, so two
+// writers can never both take the last place: PostgreSQL aborts one of them
+// (P2034) and it runs again from the start, with a fresh count, this many
+// times in all
+const LIMIT_TRANSACTION_ATTEMPTS = 3;
+
+const isSerializationFailure = (err: unknown) =>
+  err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2034';
+
 // Every query filters on organizationId itself, so a source of another
 // organization reads exactly like a missing one (null or count 0). An archived
 // source is read-only until it is restored; its versions stay readable. The
@@ -208,26 +228,67 @@ export class ContentStudioSourceRepository {
     });
   }
 
-  // A new source has no version yet: ingestion appends the first one
-  createSource(input: {
-    id: string;
+  // The only way sources are created (P8-C1): one or more of a kind, with
+  // distinct canonical URLs, in one transaction. A new source has no version
+  // yet: ingestion appends the first one. A source with the URL (archived
+  // included) is returned as it is (exists), whatever the limit; the others
+  // are created in their order while the organization has fewer than `limit`
+  // sources of the kind (limitedSourcesWhere), and the rest are refused
+  // (limit). One answer per source, in their order; `conflict`: the
+  // transaction lost every attempt to concurrent ones, and nothing was created
+  createSourcesWithinLimit(input: {
     organizationId: string;
     kind: string;
-    name: string;
-    canonicalUrl: string;
     createdById: string;
+    limit: number;
+    sources: Array<{ id: string; name: string; canonicalUrl: string }>;
   }) {
-    return this._source.model.contentStudioSource.create({
-      data: {
-        id: input.id,
-        organizationId: input.organizationId,
-        kind: input.kind,
-        name: input.name,
-        canonicalUrl: input.canonicalUrl,
-        latestVersionNumber: 0,
-        createdById: input.createdById,
-      },
-      select: SOURCE_SUMMARY,
+    return this.withinLimitTransaction(async (tx) => {
+      const existing = await tx.contentStudioSource.findMany({
+        where: {
+          organizationId: input.organizationId,
+          canonicalUrl: {
+            in: input.sources.map((source) => source.canonicalUrl),
+          },
+        },
+        select: SOURCE_SUMMARY,
+      });
+      let room =
+        input.limit -
+        (await tx.contentStudioSource.count({
+          where: limitedSourcesWhere(input.organizationId, input.kind),
+        }));
+      const results = [];
+      for (const source of input.sources) {
+        const found = existing.find(
+          (row) => row.canonicalUrl === source.canonicalUrl
+        );
+        if (found) {
+          results.push({ status: 'exists' as const, source: found });
+          continue;
+        }
+        if (room <= 0) {
+          results.push({ status: 'limit' as const });
+          continue;
+        }
+        room -= 1;
+        results.push({
+          status: 'created' as const,
+          source: await tx.contentStudioSource.create({
+            data: {
+              id: source.id,
+              organizationId: input.organizationId,
+              kind: input.kind,
+              name: source.name,
+              canonicalUrl: source.canonicalUrl,
+              latestVersionNumber: 0,
+              createdById: input.createdById,
+            },
+            select: SOURCE_SUMMARY,
+          }),
+        });
+      }
+      return { status: 'decided' as const, results };
     });
   }
 
@@ -259,17 +320,71 @@ export class ContentStudioSourceRepository {
     });
   }
 
-  restoreSource(organizationId: string, id: string) {
-    return this._source.model.contentStudioSource.updateMany({
-      where: {
-        id,
-        organizationId,
-        archivedAt: { not: null },
-      },
-      data: {
-        archivedAt: null,
-      },
+  // A restored feed is live again: only while the organization has fewer
+  // than `activeFeedsMax` live feeds (P8-C1). A restored page adds no source,
+  // so nothing is counted for it
+  restoreSourceWithinLimit(input: {
+    organizationId: string;
+    id: string;
+    activeFeedsMax: number;
+  }) {
+    return this.withinLimitTransaction(async (tx) => {
+      const source = await tx.contentStudioSource.findFirst({
+        where: {
+          id: input.id,
+          organizationId: input.organizationId,
+        },
+        select: {
+          kind: true,
+          archivedAt: true,
+        },
+      });
+      if (!source) {
+        return { status: 'not-found' as const };
+      }
+      if (!source.archivedAt) {
+        return { status: 'unchanged' as const };
+      }
+      if (
+        source.kind === 'feed' &&
+        (await tx.contentStudioSource.count({
+          where: limitedSourcesWhere(input.organizationId, 'feed'),
+        })) >= input.activeFeedsMax
+      ) {
+        return { status: 'limit' as const };
+      }
+      await tx.contentStudioSource.updateMany({
+        where: {
+          id: input.id,
+          organizationId: input.organizationId,
+          archivedAt: { not: null },
+        },
+        data: {
+          archivedAt: null,
+        },
+      });
+      return { status: 'restored' as const };
     });
+  }
+
+  // One serializable transaction, run again while PostgreSQL aborts it for a
+  // concurrent one, at most LIMIT_TRANSACTION_ATTEMPTS times in all. Any other
+  // error is thrown as it is, at once
+  private async withinLimitTransaction<T>(
+    work: (tx: Prisma.TransactionClient) => Promise<T>
+  ): Promise<T | { status: 'conflict' }> {
+    for (let attempt = 1; attempt <= LIMIT_TRANSACTION_ATTEMPTS; attempt++) {
+      try {
+        return await this._transaction.model.$transaction(work, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        });
+      } catch (err) {
+        if (!isSerializationFailure(err)) {
+          throw err;
+        }
+      }
+    }
+    return { status: 'conflict' as const };
   }
 
   // A feed that was just read (P8-01). Only a live feed: one archived during

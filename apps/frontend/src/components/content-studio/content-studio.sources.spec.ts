@@ -1055,6 +1055,20 @@ describe('Source Library: archive and restore', () => {
     ]);
   });
 
+  it('P8-C1 a restore past the live feed limit says so and the source stays archived', async () => {
+    override = (m, url) =>
+      m === 'POST' && url.endsWith('/restore')
+        ? reply(409, { code: 'CS_SOURCE_FEED_LIMIT', msg: SECRET })
+        : undefined;
+    await renderList();
+    await click(button('Archived'));
+    await click(button('Restore Gamma'));
+    expect(toasts()).toEqual([
+      'This organization has reached its limit of active feeds. Archive a feed to add or restore another.',
+    ]);
+    expect(button('Restore Gamma')).toBeTruthy();
+  });
+
   it('AR10 an archived source keeps its page and history', async () => {
     await renderList();
     await click(button('Archived'));
@@ -1258,6 +1272,18 @@ describe('Source Library: capture errors', () => {
       'The source changed while it was being captured. Try again.',
     ],
     ['RE11', 'CS_SOURCE_ARCHIVED', 409, 'This source is archived.'],
+    [
+      'RE15/FE3/M28',
+      'CS_SOURCE_REFRESH_TOO_SOON',
+      429,
+      'This source was captured a moment ago. Try again in a few minutes.',
+    ],
+    [
+      'RE16',
+      'CS_SOURCE_CONFLICT',
+      409,
+      'Sources were changed at the same time. Try again.',
+    ],
     ['RE12', 'CS_NOT_FOUND', 404, 'Source not found.'],
     [
       'RE13',

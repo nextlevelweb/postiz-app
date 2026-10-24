@@ -264,16 +264,23 @@ const packageRevision = async (
 
 // A captured source version, appended through the real repository
 const sourceVersion = async (organizationId = ORG_A) => {
-  const sourceId = (
-    await sources.createSource({
-      id: randomUUID(),
-      organizationId,
-      kind: 'url',
-      name: 'P504 report',
-      canonicalUrl: `https://example.com/${randomUUID()}`,
-      createdById: OWNER[organizationId],
-    })
-  ).id;
+  const created = await sources.createSourcesWithinLimit({
+    organizationId,
+    kind: 'url',
+    createdById: OWNER[organizationId],
+    limit: 1000,
+    sources: [
+      {
+        id: randomUUID(),
+        name: 'P504 report',
+        canonicalUrl: `https://example.com/${randomUUID()}`,
+      },
+    ],
+  });
+  if (created.status !== 'decided' || created.results[0].status !== 'created') {
+    throw new Error('source not created');
+  }
+  const sourceId = created.results[0].source.id;
   const result = await sources.appendVersionWithCompareAndSwap({
     organizationId,
     sourceId,

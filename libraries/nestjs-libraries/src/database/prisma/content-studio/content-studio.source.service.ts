@@ -9,6 +9,7 @@ import {
   CONTENT_STUDIO_SOURCE_SEARCH_MAX,
   ContentStudioDiscoveryCaptureState,
   ContentStudioDiscoveryWindow,
+  contentStudioSourceLimits,
   isContentStudioSourceKind,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
 import {
@@ -49,6 +50,32 @@ const alreadyExists = () =>
 const sourceArchived = () =>
   new HttpException(
     { msg: 'This source is archived.', code: 'CS_SOURCE_ARCHIVED' },
+    409
+  );
+// The organization's technical limits (P8-C1): what it has stays as it is
+const feedLimit = () =>
+  new HttpException(
+    {
+      msg: 'The organization has too many active feeds.',
+      code: 'CS_SOURCE_FEED_LIMIT',
+    },
+    409
+  );
+const sourceLimit = () =>
+  new HttpException(
+    {
+      msg: 'The organization has too many sources.',
+      code: 'CS_SOURCE_LIMIT',
+    },
+    409
+  );
+// concurrent changes of the organization's sources won every attempt
+const sourcesConflict = () =>
+  new HttpException(
+    {
+      msg: 'The sources changed meanwhile. Try again.',
+      code: 'CS_SOURCE_CONFLICT',
+    },
     409
   );
 const integrityError = () =>
@@ -285,7 +312,9 @@ export class ContentStudioSourceService {
   }
 
   // A source starts without versions: nothing is fetched here. One canonical
-  // URL is one source per organization, archived or not
+  // URL is one source per organization, archived or not: an existing one is
+  // CS_SOURCE_ALREADY_EXISTS, whatever the limits. A new feed counts against
+  // the organization's live feeds, a new page against all its pages
   async createSource(input: {
     organizationId: string;
     userId: string;
@@ -307,22 +336,37 @@ export class ContentStudioSourceService {
     if (existing) {
       throw alreadyExists();
     }
+    const limits = contentStudioSourceLimits(input.organizationId);
+    let result;
     try {
-      return toPublicContentStudioSource(
-        await this._contentStudioSourceRepository.createSource({
-          id: randomUUID(),
+      result =
+        await this._contentStudioSourceRepository.createSourcesWithinLimit({
           organizationId: input.organizationId,
           kind: input.kind,
-          name,
-          canonicalUrl,
           createdById: input.userId,
-        })
-      );
+          limit:
+            input.kind === 'feed'
+              ? limits.activeFeedsMax
+              : limits.urlSourcesMax,
+          sources: [{ id: randomUUID(), name, canonicalUrl }],
+        });
     } catch (err) {
       if (isUniqueConstraintError(err)) {
         throw alreadyExists();
       }
       throw err;
+    }
+    if (result.status === 'conflict') {
+      throw sourcesConflict();
+    }
+    const [created] = result.results;
+    switch (created.status) {
+      case 'created':
+        return toPublicContentStudioSource(created.source);
+      case 'exists':
+        throw alreadyExists();
+      default:
+        throw input.kind === 'feed' ? feedLimit() : sourceLimit();
     }
   }
 
@@ -378,9 +422,23 @@ export class ContentStudioSourceService {
     return toPublicContentStudioSource(await this.getRow(organizationId, id));
   }
 
+  // A feed is restored only below the organization's live feed limit, and
+  // stays archived otherwise; a page has no limit to restore
   async restoreSource(organizationId: string, id: string) {
     this.assertId(id);
-    await this._contentStudioSourceRepository.restoreSource(organizationId, id);
+    const result =
+      await this._contentStudioSourceRepository.restoreSourceWithinLimit({
+        organizationId,
+        id,
+        activeFeedsMax:
+          contentStudioSourceLimits(organizationId).activeFeedsMax,
+      });
+    if (result.status === 'limit') {
+      throw feedLimit();
+    }
+    if (result.status === 'conflict') {
+      throw sourcesConflict();
+    }
     return toPublicContentStudioSource(await this.getRow(organizationId, id));
   }
 

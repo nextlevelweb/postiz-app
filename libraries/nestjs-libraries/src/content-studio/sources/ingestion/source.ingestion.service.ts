@@ -29,6 +29,7 @@ import {
 import {
   CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION,
   CONTENT_STUDIO_SOURCE_NAME_MAX,
+  contentStudioSourceLimits,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
 import {
   ContentStudioSourceFeed,
@@ -125,6 +126,24 @@ const versionConflict = () =>
 // Not XML, a document type, not RSS or Atom: nothing of the feed is quoted
 const feedInvalid = () =>
   error(422, 'CS_SOURCE_FEED_INVALID', 'The feed could not be read.');
+const refreshTooSoon = () =>
+  error(
+    429,
+    'CS_SOURCE_REFRESH_TOO_SOON',
+    'This source was captured a moment ago. Try again in a few minutes.'
+  );
+
+// A member's refresh (P8-C1) comes at least the cooldown after the source's
+// last capture, or is refused before anything is fetched. Exactly the
+// cooldown is late enough; a source never captured is always due
+const assertRefreshDue = (
+  lastCaptureAt: Date | null | undefined,
+  cooldownMs: number
+) => {
+  if (lastCaptureAt && Date.now() - lastCaptureAt.getTime() < cooldownMs) {
+    throw refreshTooSoon();
+  }
+};
 
 // One answer per thing the member can do about it: the address cannot be
 // fetched (blocked, refused scheme or port, bad redirect), the page is too
@@ -178,7 +197,8 @@ export interface ContentStudioFeedCaptureSummary {
   // read, but no https page link, a page listed before, or the address of
   // a source that is not a page (a feed)
   entriesSkipped: number;
-  // pages recorded as discovered by this feed
+  // pages recorded as discovered by this feed (but for a new page whose
+  // source lost every creation attempt to concurrent ones: failed)
   entriesAccepted: number;
   // page sources this capture created
   sourcesCreated: number;
@@ -190,14 +210,29 @@ export interface ContentStudioFeedCaptureSummary {
   failed: number;
   // pages whose source is archived: recorded, not captured
   archived: number;
+  // new pages while the organization has its most page sources (P8-C1): no
+  // source, not recorded, not fetched. Never a failure
+  entriesLimited: number;
 }
 
 type EntryOutcome =
   | 'skipped'
+  | 'limited'
   | 'versionCreated'
   | 'unchanged'
   | 'failed'
   | 'archived';
+
+// The page source of a feed entry, or why it has none
+type PageSource =
+  | { source: SourceRow; created: boolean }
+  | 'skipped'
+  | 'limited'
+  | 'failed';
+
+// The address of a source that is not a page (a feed) is no page
+const pageOf = (source: SourceRow, created: boolean): PageSource =>
+  source.kind === 'url' ? { source, created } : 'skipped';
 
 // `items` run through `work` at most `limit` at a time; the results keep the
 // order of the items. The first error stops new work and is thrown once the
@@ -281,13 +316,31 @@ export class ContentStudioSourceIngestionService {
     if (source.archivedAt) {
       throw sourceArchived();
     }
+    const { manualRefreshCooldownMs } = contentStudioSourceLimits(
+      input.organizationId
+    );
     switch (source.kind) {
       case 'url':
         break;
       case 'feed':
+        // its last read
+        assertRefreshDue(source.lastCapturedAt, manualRefreshCooldownMs);
         return this.captureFeed(input.organizationId, source, input.userId);
       default:
         throw kindUnsupported();
+    }
+    // a page's last capture is its current version
+    if (source.latestVersionNumber > 0) {
+      const latest =
+        await this._contentStudioSourceRepository.getVersionByNumber(
+          input.organizationId,
+          source.id,
+          source.latestVersionNumber
+        );
+      if (!latest) {
+        throw integrityError();
+      }
+      assertRefreshDue(latest.fetchedAt, manualRefreshCooldownMs);
     }
 
     const result = await this.captureUrl(
@@ -601,14 +654,20 @@ export class ContentStudioSourceIngestionService {
         : feedInvalid();
     }
 
-    const outcomes = await inBatches(
+    const pages = await this.pageSources(
+      organizationId,
       parsed.entries,
+      userId
+    );
+    const outcomes = await inBatches(
+      parsed.entries.map((entry, index) => ({ entry, page: pages[index] })),
       FEED_CAPTURE_CONCURRENCY,
-      (entry) =>
+      ({ entry, page }) =>
         this.captureFeedEntry(
           organizationId,
           feed.id,
           entry,
+          page,
           userId,
           capturedAt
         )
@@ -619,12 +678,13 @@ export class ContentStudioSourceIngestionService {
       entriesSeen: parsed.entriesSeen,
       entriesIgnored: parsed.entriesIgnored,
       entriesSkipped: parsed.entriesSkipped + count('skipped'),
-      entriesAccepted: outcomes.length - count('skipped'),
+      entriesAccepted: outcomes.length - count('skipped') - count('limited'),
       sourcesCreated: outcomes.filter((item) => item.created).length,
       versionsCreated: count('versionCreated'),
       unchanged: count('unchanged'),
       failed: count('failed'),
       archived: count('archived'),
+      entriesLimited: count('limited'),
     };
 
     await this._contentStudioSourceRepository.markFeedCaptured(
@@ -643,19 +703,20 @@ export class ContentStudioSourceIngestionService {
     return { source: toPublicContentStudioSource(current), capture };
   }
 
-  // One page of a feed: its source (found or created), the discovery, then
-  // its capture. A page that cannot be captured is a counted failure, never
-  // the feed's: what was recorded stays
+  // One page of a feed, with its source (found or created): the discovery,
+  // then its capture. A page that cannot be captured is a counted failure,
+  // never the feed's: what was recorded stays. A new page past the
+  // organization's limit is only counted, and the next entries go on
   private async captureFeedEntry(
     organizationId: string,
     feedSourceId: string,
     entry: ContentStudioSourceFeedEntry,
+    page: PageSource,
     userId: string,
     capturedAt: Date
   ): Promise<{ outcome: EntryOutcome; created: boolean }> {
-    const page = await this.pageSource(organizationId, entry, userId);
-    if (!page) {
-      return { outcome: 'skipped', created: false };
+    if (typeof page === 'string') {
+      return { outcome: page, created: false };
     }
     await this._contentStudioSourceDiscoveryRepository.recordDiscovery({
       organizationId,
@@ -688,50 +749,88 @@ export class ContentStudioSourceIngestionService {
     }
   }
 
-  // The organization's `url` source of the entry's page, created when there
-  // is none. One canonical URL is one source: a source created meanwhile by
-  // another capture or a member is used, never a second one. The address of
-  // a source of another kind is no page
-  private async pageSource(
+  // The organization's `url` sources of the entries' pages, in their order.
+  // One canonical URL is one source: an existing one is used whatever the
+  // limits, and so is one created meanwhile by another capture or a member,
+  // never a second one. The address of a source of another kind is no page
+  // (skipped). The new pages are created together (P8-C1), in one
+  // transaction, so captures of the organization's feeds at the same time
+  // abort each other's at most once each: in the feed's order, while the
+  // organization is below its page source limit, the rest limited. When
+  // that transaction lost every attempt to concurrent ones, the new pages
+  // are left for the next capture (failed)
+  private async pageSources(
     organizationId: string,
-    entry: ContentStudioSourceFeedEntry,
+    entries: ContentStudioSourceFeedEntry[],
     userId: string
-  ): Promise<{ source: SourceRow; created: boolean } | null> {
-    const existing =
-      await this._contentStudioSourceRepository.getSourceByCanonicalUrlForOrganization(
-        organizationId,
-        entry.url
+  ): Promise<PageSource[]> {
+    const known: Array<SourceRow | null> = [];
+    for (const entry of entries) {
+      known.push(
+        await this._contentStudioSourceRepository.getSourceByCanonicalUrlForOrganization(
+          organizationId,
+          entry.url
+        )
       );
-    if (existing) {
-      return existing.kind === 'url'
-        ? { source: existing, created: false }
-        : null;
     }
+    const fresh = entries.filter((_, index) => !known[index]);
+    const created = fresh.length
+      ? await this.newPageSources(organizationId, fresh, userId)
+      : [];
+    let next = 0;
+    return known.map((source) =>
+      source ? pageOf(source, false) : created[next++]
+    );
+  }
+
+  private async newPageSources(
+    organizationId: string,
+    entries: ContentStudioSourceFeedEntry[],
+    userId: string
+  ): Promise<PageSource[]> {
+    let result;
     try {
-      return {
-        source: await this._contentStudioSourceRepository.createSource({
-          id: randomUUID(),
+      result =
+        await this._contentStudioSourceRepository.createSourcesWithinLimit({
           organizationId,
           kind: 'url',
-          name: discoveredSourceName(entry),
-          canonicalUrl: entry.url,
           createdById: userId,
-        }),
-        created: true,
-      };
+          limit: contentStudioSourceLimits(organizationId).urlSourcesMax,
+          sources: entries.map((entry) => ({
+            id: randomUUID(),
+            name: discoveredSourceName(entry),
+            canonicalUrl: entry.url,
+          })),
+        });
     } catch (err) {
       if (!isUniqueConstraintError(err)) {
         throw err;
       }
+      // one of them was created meanwhile and nothing of this transaction
+      // was kept: what exists now is used, the rest waits
+      const pages: PageSource[] = [];
+      for (const entry of entries) {
+        const raced =
+          await this._contentStudioSourceRepository.getSourceByCanonicalUrlForOrganization(
+            organizationId,
+            entry.url
+          );
+        pages.push(raced ? pageOf(raced, false) : 'failed');
+      }
+      return pages;
     }
-    const raced =
-      await this._contentStudioSourceRepository.getSourceByCanonicalUrlForOrganization(
-        organizationId,
-        entry.url
-      );
-    if (!raced) {
-      throw integrityError();
+    if (result.status === 'conflict') {
+      return entries.map(() => 'failed' as const);
     }
-    return raced.kind === 'url' ? { source: raced, created: false } : null;
+    return result.results.map((item) => {
+      switch (item.status) {
+        case 'created':
+          return { source: item.source, created: true };
+        case 'exists':
+          return pageOf(item.source, false);
+        default:
+          return 'limited';
+      }
+    });
   }
 }

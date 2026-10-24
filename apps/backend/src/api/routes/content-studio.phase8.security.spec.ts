@@ -176,9 +176,12 @@ describe('P8-01 the source model', () => {
     const ingestion = CODE.get(
       `${SOURCES}/ingestion/source.ingestion.service.ts`
     )!;
-    expect(ingestion.match(/createSource\(/g)).toHaveLength(1);
+    // P8-C1: within the organization's page source limit
+    expect(ingestion.match(/createSource\w*\(/g)).toEqual([
+      'createSourcesWithinLimit(',
+    ]);
     expect(ingestion).toMatch(
-      /createSource\(\{\s*id: randomUUID\(\),\s*organizationId,\s*kind: 'url',/
+      /createSourcesWithinLimit\(\{\s*organizationId,\s*kind: 'url',/
     );
     expect(users(/appendVersionWithCompareAndSwap\(/)).toEqual([
       `${SOURCES}/ingestion/source.ingestion.service.ts`,
@@ -939,7 +942,8 @@ describe('P8-04A source change detection', () => {
       between(
         ingestion,
         'private async captureFeedEntry(',
-        'private async pageSource('
+        // P8-C1: the entries' page sources are read together
+        'private async pageSources('
       )
     ).toMatch(
       /this\.captureUrl\(\s*organizationId,\s*page\.source,\s*userId,\s*'if-changed'\s*\)/
@@ -1654,5 +1658,340 @@ describe('P8-04B2 News Radar change signals', () => {
       ).toHaveLength(2);
       expect(part.match(/this\.getRow\(/g)).toHaveLength(1);
     }
+  });
+});
+
+describe('P8-C1 organization safety caps', () => {
+  const CAPS = {
+    types: `${SOURCES}/source.types.ts`,
+    ingestion: `${SOURCES}/ingestion/source.ingestion.service.ts`,
+    repository:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.repository.ts',
+    service:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.service.ts',
+    controller: 'apps/backend/src/api/routes/content-studio.controller.ts',
+    api: 'apps/frontend/src/components/content-studio/content-studio.sources.api.ts',
+    ui: 'apps/frontend/src/components/content-studio/content-studio.sources.tsx',
+  };
+  const caps = (key: keyof typeof CAPS) => CODE.get(CAPS[key])!;
+  const repositoryMethod = (name: string) =>
+    between(caps('repository'), `\n  ${name}(`, '\n  }\n');
+  const backend = [
+    CAPS.types,
+    CAPS.ingestion,
+    CAPS.repository,
+    CAPS.service,
+  ] as const;
+
+  it('P8C1-1 no schema change: no limit, counter, pause or interval field or model', () => {
+    expect(createHash('sha256').update(schema).digest('hex')).toBe(
+      '0c0638c523fe2e1439b81130c7e05f9eacdc12465ffac41f5be04b9d377af6e5'
+    );
+    expect(model('ContentStudioSource')).not.toMatch(
+      /limit|quota|usage|paused|interval|nextCapture/i
+    );
+    expect(schema).not.toMatch(
+      /model ContentStudio\w*(Limit|Quota|Counter|Slot|Cap)\w* \{/
+    );
+  });
+
+  it('P8C1-2 no new route, no usage or limit route: 145 in all', () => {
+    const controller = caps('controller');
+    expect(
+      controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
+    ).toHaveLength(145);
+    expect(controller).not.toMatch(
+      /\/limits|\/usage|\/quota|activeFeedsMax|urlSourcesMax|manualRefreshCooldownMs|contentStudioSourceLimits/
+    );
+  });
+
+  it('P8C1-3/P8C1-4/P8C1-5/P8C1-14 nothing deletes a source, a version or a discovery; no retention', () => {
+    expect(
+      users(/contentStudioSource(Version|Discovery)?\.(delete|deleteMany)\(/)
+    ).toEqual([]);
+    const contentStudio = PRODUCTION.filter((file) =>
+      /content-studio|content\.studio/.test(file)
+    );
+    expect(
+      contentStudio.filter((file) =>
+        /retention|purge|keepLast|prune|cleanup/i.test(CODE.get(file)!)
+      )
+    ).toEqual([]);
+  });
+
+  it('P8C1-6/P8C1-12 technical limits only: no pricing, billing, permission or environment in them', () => {
+    for (const file of backend) {
+      expect([file, CODE.get(file)!.match(/process\.env/g)]).toEqual([
+        file,
+        null,
+      ]);
+      expect([
+        file,
+        CODE.get(file)!.match(
+          /pricing|stripe|subscription|billing|PermissionsService|AuthorizationActions|\bplan\b|upgrade/gi
+        ),
+      ]).toEqual([file, null]);
+    }
+    expect(
+      users(/process\.env\.\w*(FEED|SOURCE)\w*(LIMIT|MAX|COOLDOWN)/)
+    ).toEqual([]);
+  });
+
+  it('P8C1-7 the limits are three constants, defined once, read through one resolver', () => {
+    const types = caps('types');
+    expect(types).toContain(
+      'export const CONTENT_STUDIO_ACTIVE_FEEDS_MAX = 100;'
+    );
+    expect(types).toContain(
+      'export const CONTENT_STUDIO_URL_SOURCES_MAX = 100_000;'
+    );
+    expect(types).toContain(
+      'export const CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;'
+    );
+    for (const name of [
+      'CONTENT_STUDIO_ACTIVE_FEEDS_MAX',
+      'CONTENT_STUDIO_URL_SOURCES_MAX',
+      'CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS',
+    ]) {
+      // defined and read in the resolver only
+      expect(users(new RegExp(`\\b${name}\\b`))).toEqual([CAPS.types]);
+    }
+    expect(users(/contentStudioSourceLimits = \(/)).toEqual([CAPS.types]);
+    expect(users(/contentStudioSourceLimits\(/)).toEqual(
+      [CAPS.ingestion, CAPS.service].sort()
+    );
+  });
+
+  it('P8C1-8 every source is created by the one limited create, inside its serializable transaction', () => {
+    expect(users(/contentStudioSource\.(create|createMany|upsert)\(/)).toEqual([
+      CAPS.repository,
+    ]);
+    const repository = caps('repository');
+    expect(repository.match(/contentStudioSource\.create\(/g)).toEqual([
+      'contentStudioSource.create(',
+    ]);
+    const create = repositoryMethod('createSourcesWithinLimit');
+    expect(create).toContain(
+      'return this.withinLimitTransaction(async (tx) =>'
+    );
+    expect(create).toContain('tx.contentStudioSource.create(');
+    // the URLs first, then the count, then the creates
+    expect(create.indexOf('canonicalUrl: {')).toBeLessThan(
+      create.indexOf('.count(')
+    );
+    expect(create.indexOf('.count(')).toBeLessThan(create.indexOf('.create('));
+    expect(create).toMatch(/if \(found\) \{[\s\S]*?if \(room <= 0\) \{/);
+    expect(repository).not.toMatch(/\n  createSource\(/);
+    expect(users(/\.createSourcesWithinLimit\(/)).toEqual(
+      [CAPS.ingestion, CAPS.service].sort()
+    );
+    expect(users(/\.restoreSourceWithinLimit\(/)).toEqual([CAPS.service]);
+  });
+
+  it('P8C1-9/P8C1-10 a feed limit counts live feeds, a page limit every page of the organization', () => {
+    const repository = caps('repository');
+    expect(repository).toMatch(
+      /const limitedSourcesWhere = \(\s*organizationId: string,\s*kind: string\s*\): Prisma\.ContentStudioSourceWhereInput =>\s*kind === 'feed'\s*\? \{ organizationId, kind, archivedAt: null \}\s*: \{ organizationId, kind \};/
+    );
+    expect(repositoryMethod('createSourcesWithinLimit')).toContain(
+      'where: limitedSourcesWhere(input.organizationId, input.kind)'
+    );
+    const restore = repositoryMethod('restoreSourceWithinLimit');
+    expect(restore).toMatch(
+      /source\.kind === 'feed' &&\s*\(await tx\.contentStudioSource\.count\(\{\s*where: limitedSourcesWhere\(input\.organizationId, 'feed'\),/
+    );
+    expect(
+      repository.match(/\.count\(\{\s*where: limitedSourcesWhere/g)
+    ).toHaveLength(2);
+    // the service picks the limit of the kind, from the request organization
+    expect(caps('service')).toMatch(
+      /limit:\s*input\.kind === 'feed'\s*\? limits\.activeFeedsMax\s*: limits\.urlSourcesMax/
+    );
+    expect(caps('service')).toContain(
+      'contentStudioSourceLimits(input.organizationId)'
+    );
+    expect(caps('ingestion')).toContain(
+      'limit: contentStudioSourceLimits(organizationId).urlSourcesMax'
+    );
+  });
+
+  it('P8C1-11 serializable, a bounded retry of P2034 only, no sleep and no raw SQL', () => {
+    const repository = caps('repository');
+    expect(repository).toContain('const LIMIT_TRANSACTION_ATTEMPTS = 3;');
+    expect(repository.match(/isolationLevel:/g)).toHaveLength(1);
+    const run = between(
+      repository,
+      'private async withinLimitTransaction<T>(',
+      '\n  }\n'
+    );
+    expect(run).toMatch(
+      /for \(let attempt = 1; attempt <= LIMIT_TRANSACTION_ATTEMPTS; attempt\+\+\)/
+    );
+    expect(run).toContain(
+      'isolationLevel: Prisma.TransactionIsolationLevel.Serializable'
+    );
+    expect(run).toMatch(
+      /if \(!isSerializationFailure\(err\)\) \{\s*throw err;/
+    );
+    expect(run).toContain("return { status: 'conflict' as const };");
+    expect(repository).toMatch(
+      /const isSerializationFailure = \(err: unknown\) =>\s*err instanceof Prisma\.PrismaClientKnownRequestError && err\.code === 'P2034';/
+    );
+    for (const file of backend) {
+      expect([
+        file,
+        CODE.get(file)!.match(
+          /\$queryRaw|\$executeRaw|Prisma\.sql|pg_advisory|FOR UPDATE|setTimeout|sleep\(/g
+        ),
+      ]).toEqual([file, null]);
+    }
+    expect(
+      users(/isolationLevel|TransactionIsolationLevel/).filter((file) =>
+        /content-studio/.test(file)
+      )
+    ).toEqual([CAPS.repository]);
+  });
+
+  it('P8C1-13 no Temporal change: the feed workflow, its activity and the worker are as they were', () => {
+    const hash = (file: string) =>
+      createHash('sha256').update(raw(file)).digest('hex');
+    expect({
+      workflow: hash(
+        'apps/orchestrator/src/workflows/content.studio.feed.capture.workflow.ts'
+      ),
+      activity: hash(
+        'apps/orchestrator/src/activities/content-studio.source.activity.ts'
+      ),
+      worker: hash(
+        'libraries/nestjs-libraries/src/temporal/temporal.module.ts'
+      ),
+    }).toEqual({
+      workflow:
+        '67962393430dc765ee4e5da47074dd85f9f8114e3da1876d37ee0bf19ae2163b',
+      activity:
+        '1806d5912e2ab2dacfbeddd83773be96c9cb8b24932a173d409d964f9f6afc3b',
+      worker:
+        '9f71b835542268f7bbb38595203b119ddea2f1fda4aa6e8de1d0fa6909ff4327',
+    });
+    expect(caps('ingestion')).toContain(
+      'export const FEED_CAPTURE_CONCURRENCY = 5;'
+    );
+  });
+
+  it('P8C1-15 a new page past the limit is its own outcome: never failed, not recorded, not fetched', () => {
+    const ingestion = caps('ingestion');
+    expect(ingestion).toMatch(/default:\s*return 'limited';/);
+    expect(ingestion).toMatch(
+      /if \(result\.status === 'conflict'\) \{\s*return entries\.map\(\(\) => 'failed' as const\);/
+    );
+    expect(ingestion).toContain("entriesLimited: count('limited'),");
+    expect(ingestion).toContain("failed: count('failed'),");
+    expect(ingestion).toContain(
+      "entriesAccepted: outcomes.length - count('skipped') - count('limited'),"
+    );
+    const entry = between(
+      ingestion,
+      'private async captureFeedEntry(',
+      'private async pageSources('
+    );
+    // no source, so no discovery and no capture
+    expect(entry.indexOf("typeof page === 'string'")).toBeLessThan(
+      entry.indexOf('recordDiscovery(')
+    );
+    expect(entry.indexOf('recordDiscovery(')).toBeLessThan(
+      entry.indexOf('this.captureUrl(')
+    );
+    // the feed capture records what it did whatever the limits
+    const feed = between(
+      ingestion,
+      'private async captureFeed(',
+      'private async captureFeedEntry('
+    );
+    expect(feed).toContain('markFeedCaptured(');
+    expect(feed).not.toMatch(/if \([^)]*limit/i);
+    expect(feed).not.toMatch(/throw[^;]*limit/i);
+  });
+
+  it('P8C1-16 the refresh cooldown is a member refresh only, after the archive check and before any fetch', () => {
+    const ingestion = caps('ingestion');
+    expect(ingestion.match(/assertRefreshDue\(/g)).toHaveLength(2);
+    const refresh = between(
+      ingestion,
+      'async refreshSource(',
+      'async listFeedsDueForCapture('
+    );
+    expect(refresh.match(/assertRefreshDue\(/g)).toHaveLength(2);
+    expect(refresh.indexOf('throw sourceArchived()')).toBeLessThan(
+      refresh.indexOf('assertRefreshDue(')
+    );
+    expect(refresh).toMatch(
+      /assertRefreshDue\(source\.lastCapturedAt, manualRefreshCooldownMs\);\s*return this\.captureFeed\(/
+    );
+    expect(
+      refresh.lastIndexOf('assertRefreshDue(latest.fetchedAt')
+    ).toBeLessThan(refresh.indexOf('this.captureUrl('));
+    expect(ingestion).toMatch(
+      /Date\.now\(\) - lastCaptureAt\.getTime\(\) < cooldownMs/
+    );
+    const scheduled = between(
+      ingestion,
+      'async captureScheduledFeed(',
+      'private async captureUrl('
+    );
+    expect(scheduled).not.toMatch(/assertRefreshDue|Cooldown/);
+  });
+
+  it('P8C1-17 the read routes count nothing new', () => {
+    const service = caps('service');
+    for (const [start, end] of [
+      ['async listSources(', 'async createSource('],
+      ['async listDiscoveries(', 'async listOrganizationDiscoveries('],
+      ['async listOrganizationDiscoveries(', 'private toPublicDiscovery('],
+      ['async listPageChanges(', 'async getVersionChanges('],
+    ]) {
+      expect(between(service, start, end)).not.toMatch(
+        /contentStudioSourceLimits|WithinLimit|limit/i
+      );
+    }
+  });
+
+  it('P8C1-18 the browser maps the codes to fixed words, with no number and no commercial wording', () => {
+    const api = caps('api');
+    for (const code of [
+      'CS_SOURCE_FEED_LIMIT',
+      'CS_SOURCE_LIMIT',
+      'CS_SOURCE_REFRESH_TOO_SOON',
+      'CS_SOURCE_CONFLICT',
+    ]) {
+      expect(api).toContain(`case '${code}':`);
+    }
+    const translation = JSON.parse(
+      raw(
+        'libraries/react-shared-libraries/src/translation/locales/en/translation.json'
+      )
+    ) as Record<string, string>;
+    for (const key of [
+      'content_studio_source_error_feed_limit',
+      'content_studio_source_error_source_limit',
+      'content_studio_source_error_refresh_too_soon',
+      'content_studio_source_error_sources_changed',
+      'content_studio_feed_captured_limited',
+    ]) {
+      expect(translation[key]).toEqual(expect.any(String));
+      expect(translation[key]).not.toMatch(
+        /\d|upgrade|plan|billing|subscription|pay/i
+      );
+    }
+    expect(caps('ui')).toMatch(/\.\.\.\(capture\.entriesLimited\s*\?/);
+    // no usage endpoint and no limit numbers in the browser
+    expect(
+      PRODUCTION.filter(
+        (file) =>
+          file.startsWith('apps/frontend/') &&
+          /\/limits|\/usage|ACTIVE_FEEDS_MAX|URL_SOURCES_MAX|REFRESH_COOLDOWN/.test(
+            CODE.get(file)!
+          )
+      )
+    ).toEqual([]);
   });
 });
