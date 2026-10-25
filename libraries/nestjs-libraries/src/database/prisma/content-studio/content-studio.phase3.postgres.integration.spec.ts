@@ -16,6 +16,7 @@ import { ContentStudioAudienceProfileRepository } from '@gitroom/nestjs-librarie
 import { ContentStudioExpertiseProfileRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.repository';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
+import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
 import { ContentStudioAIExecutionService } from '@gitroom/nestjs-libraries/content-studio/ai/ai.execution.service';
@@ -496,6 +497,7 @@ const cleanPhase3 = async () => {
   await client.contentStudioAIUsage.deleteMany({ where });
   await client.contentStudioAIOperation.deleteMany({ where });
   await client.contentStudioAIConnection.deleteMany({ where });
+  await client.contentStudioSourceCaptureAttempt.deleteMany({ where });
   await client.contentStudioSourceDiscovery.deleteMany({ where });
   await client.contentStudioSourceVersion.deleteMany({ where });
   await client.contentStudioSource.deleteMany({ where });
@@ -559,6 +561,9 @@ beforeAll(async () => {
     sources,
     new ContentStudioSourceDiscoveryRepository(
       new PrismaRepository<'contentStudioSourceDiscovery'>(prisma)
+    ),
+    new ContentStudioSourceCaptureAttemptRepository(
+      new PrismaRepository<'contentStudioSourceCaptureAttempt'>(prisma)
     )
   );
 

@@ -2,9 +2,11 @@ import {
   ActivityFailure,
   ApplicationFailure,
   continueAsNew,
+  isCancellation,
   proxyActivities,
   sleep,
   startChild,
+  workflowInfo,
 } from '@temporalio/workflow';
 import { WorkflowExecutionAlreadyStartedError } from '@temporalio/common';
 import type { ContentStudioSourceActivity } from '@gitroom/orchestrator/activities/content-studio.source.activity';
@@ -29,6 +31,12 @@ import { CONTENT_STUDIO_CAPTURE_TASK_QUEUE } from '@gitroom/nestjs-libraries/tem
 // CS_... code), the feed's next automatic capture is delayed (P8-C4) and the
 // workflow still fails with that failure. Any other failure (the database, a
 // timeout, a lost worker) changes nothing of the feed: it stays due.
+//
+// Each capture run has one record (P8-O1), named by its run id: the capture
+// activity begins it when it starts reading the feed and ends it with a
+// success. After a failure the workflow ends it, once the failure was
+// recorded: source_failed with the CS_ code, or infrastructure_failed. A
+// cancelled run ends nothing.
 
 // How often the scan looks for due feeds (P8-C4). The shortest interval is an
 // hour, so an hourly feed starts 60 to 70 minutes after its last capture,
@@ -63,18 +71,20 @@ const { captureContentStudioFeed } =
     },
   });
 
-// one small database write (P8-C4), on `main`: never behind captures waiting
-// in the capture queue
-const { recordContentStudioFeedCaptureFailure } =
-  proxyActivities<ContentStudioSourceActivity>({
-    startToCloseTimeout: '1 minute',
-    taskQueue: 'main',
-    retry: {
-      maximumAttempts: 3,
-      backoffCoefficient: 1,
-      initialInterval: '1 minute',
-    },
-  });
+// small database writes (P8-C4, P8-O1), on `main`: never behind captures
+// waiting in the capture queue
+const {
+  recordContentStudioFeedCaptureFailure,
+  finishContentStudioFeedCaptureAttempt,
+} = proxyActivities<ContentStudioSourceActivity>({
+  startToCloseTimeout: '1 minute',
+  taskQueue: 'main',
+  retry: {
+    maximumAttempts: 3,
+    backoffCoefficient: 1,
+    initialInterval: '1 minute',
+  },
+});
 
 export async function contentStudioFeedCaptureWorkflowV1(input: {
   organizationId: string;
@@ -86,20 +96,33 @@ export async function contentStudioFeedCaptureWorkflowV1(input: {
       sourceId: input.sourceId,
     });
   } catch (err) {
+    if (!(err instanceof ActivityFailure) || isCancellation(err)) {
+      throw err;
+    }
     // the feed's own failure, its attempts used up: delayed once per capture.
     // If that write itself fails, its failure is the workflow's
-    if (
-      err instanceof ActivityFailure &&
+    const code =
       err.cause instanceof ApplicationFailure &&
       typeof err.cause.type === 'string' &&
       err.cause.type.startsWith('CS_')
-    ) {
+        ? err.cause.type
+        : null;
+    if (code) {
       await recordContentStudioFeedCaptureFailure({
         organizationId: input.organizationId,
         sourceId: input.sourceId,
-        code: err.cause.type,
+        code,
       });
     }
+    // then the run's record ends, with the schedule the failure left. If
+    // that write fails, its failure is the workflow's too
+    await finishContentStudioFeedCaptureAttempt({
+      organizationId: input.organizationId,
+      sourceId: input.sourceId,
+      attemptId: workflowInfo().runId,
+      status: code ? 'source_failed' : 'infrastructure_failed',
+      code,
+    });
     throw err;
   }
 }

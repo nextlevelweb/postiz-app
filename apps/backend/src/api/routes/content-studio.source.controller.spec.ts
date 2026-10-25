@@ -44,6 +44,7 @@ import {
   ListContentStudioSourceVersionsDto,
   ListContentStudioSourceDiscoveriesDto,
   ListContentStudioDiscoveriesDto,
+  ListContentStudioFeedCapturesDto,
   ListContentStudioSourceChangesDto,
   SetContentStudioFeedIntervalDto,
   UpdateContentStudioSourceDto,
@@ -88,6 +89,7 @@ const setup = () => {
     resumeFeed: jest.fn().mockResolvedValue(result),
     setFeedInterval: jest.fn().mockResolvedValue(result),
     listDiscoveries: jest.fn().mockResolvedValue(result),
+    listFeedCaptures: jest.fn().mockResolvedValue(result),
     listOrganizationDiscoveries: jest.fn().mockResolvedValue(result),
     listPageChanges: jest.fn().mockResolvedValue(result),
   };
@@ -160,7 +162,7 @@ const allRoutes = () =>
     .map(route);
 
 describe('ContentStudioController source routes', () => {
-  it('SRC1-SRC8/CR1 declares exactly these fourteen routes, with 200 for archive, restore, pause, resume, refresh and interval', () => {
+  it('SRC1-SRC8/CR1 declares exactly these fifteen routes, with 200 for archive, restore, pause, resume, refresh and interval', () => {
     expect(
       allRoutes()
         .filter((r) => / \/sources/.test(r))
@@ -168,6 +170,8 @@ describe('ContentStudioController source routes', () => {
     ).toEqual([
       'GET /sources',
       'GET /sources/:id',
+      // a feed's capture history (P8-O1), read only
+      'GET /sources/:id/captures',
       // the pages a feed found (P8-01), read only
       'GET /sources/:id/discoveries',
       'GET /sources/:id/versions',
@@ -379,6 +383,9 @@ describe('ContentStudioController source routes', () => {
     expect(types('listSourceDiscoveries')[2]).toBe(
       ListContentStudioSourceDiscoveriesDto
     );
+    expect(types('listSourceCaptures')[2]).toBe(
+      ListContentStudioFeedCapturesDto
+    );
     expect(types('listDiscoveries')[1]).toBe(ListContentStudioDiscoveriesDto);
     expect(types('listSourceChanges')[1]).toBe(
       ListContentStudioSourceChangesDto
@@ -395,8 +402,8 @@ describe('ContentStudioController source routes', () => {
       text.indexOf("@Get('/sources')"),
       text.indexOf("@Get('/writing-profiles')")
     );
-    // the fourteen source routes, News Radar (P8-02) and Changes (P8-04B1)
-    expect(block.match(/@(Get|Post|Patch|Put|Delete)\(/g)).toHaveLength(16);
+    // the fifteen source routes, News Radar (P8-02) and Changes (P8-04B1)
+    expect(block.match(/@(Get|Post|Patch|Put|Delete)\(/g)).toHaveLength(17);
     expect(block).not.toMatch(
       /AIConnection|AIExecution|Role\.|assertManager|actor|users|appendVersion|safeFetch|fetch\(/
     );
@@ -622,6 +629,57 @@ describe('Source DTO validation', () => {
     ]) {
       await rejected(ListContentStudioSourceDiscoveriesDto, query, 'query');
     }
+    // P8-O1: a feed's capture history, one page of it and nothing else: no
+    // size, filter, order, organization or time
+    expect({
+      ...(await run(ListContentStudioFeedCapturesDto, {}, 'query')),
+    }).toEqual({ page: 1 });
+    expect({
+      ...(await run(ListContentStudioFeedCapturesDto, { page: '3' }, 'query')),
+    }).toEqual({ page: 3 });
+    for (const query of [
+      { page: '0' },
+      { page: '-1' },
+      { page: '1.5' },
+      { page: '100001' },
+      { page: 'x' },
+      { limit: '1000' },
+      { take: '1000' },
+      { status: 'success' },
+      { trigger: 'manual' },
+      { organizationId: 'org-b' },
+      { sourceId: ID },
+      { since: '2026-01-01' },
+      { order: 'asc' },
+    ]) {
+      await rejected(ListContentStudioFeedCapturesDto, query, 'query');
+    }
+  });
+});
+
+describe('ContentStudioController feed capture history (P8-O1)', () => {
+  it('P8O1-R1 is GET /sources/:id/captures, the 149th route, read only with the default 200', () => {
+    expect(route('listSourceCaptures')).toBe('GET /sources/:id/captures');
+    expect(
+      Reflect.getMetadata(HTTP_CODE_METADATA, handler('listSourceCaptures'))
+    ).toBeUndefined();
+    expect(allRoutes()).toHaveLength(149);
+    // one history route: no other capture route, none for the organization
+    expect(allRoutes().filter((r) => /captur|attempt|histor/i.test(r))).toEqual(
+      ['GET /sources/:id/captures']
+    );
+  });
+
+  it('P8O1-R2 reads for the request organization with the path id and the page only, for any member', async () => {
+    const { sources, controller } = setup();
+    await expect(
+      controller.listSourceCaptures(ORG, ID, { page: 2 })
+    ).resolves.toEqual({ from: 'service' });
+    expect(sources.listFeedCaptures).toHaveBeenCalledWith({
+      organizationId: 'org-a',
+      sourceId: ID,
+      page: 2,
+    });
   });
 });
 
@@ -670,6 +728,8 @@ describe('Source trusted-provenance boundary', () => {
       'export class SetContentStudioFeedIntervalDto',
       'export class ListContentStudioSourceVersionsDto',
       'export class ListContentStudioSourceDiscoveriesDto',
+      // a page number only (P8-O1)
+      'export class ListContentStudioFeedCapturesDto',
       'export class ListContentStudioDiscoveriesDto',
       'export class ListContentStudioSourceChangesDto',
     ]);
@@ -828,15 +888,15 @@ describe('ContentStudioController source version changes', () => {
     );
   });
 
-  it('R5 is the 144th route (145 with P8-04B1, 147 with P8-C3, 148 with P8-C4)', () => {
-    expect(allRoutes()).toHaveLength(148);
+  it('R5 is the 144th route (145 with P8-04B1, 147 with P8-C3, 148 with P8-C4, 149 with P8-O1)', () => {
+    expect(allRoutes()).toHaveLength(149);
   });
 });
 
 // Organization Changes (P8-04B1): the request organization, a page and a
 // window only. Nothing is fetched or captured
 describe('ContentStudioController organization page changes', () => {
-  it('OC1 is GET /source-changes, the 145th route (147 with P8-C3, 148 with P8-C4), with the default 200', () => {
+  it('OC1 is GET /source-changes, the 145th route (147 with P8-C3, 148 with P8-C4, 149 with P8-O1), with the default 200', () => {
     expect(route('listSourceChanges')).toBe('GET /source-changes');
     expect(
       allRoutes()
@@ -850,7 +910,7 @@ describe('ContentStudioController organization page changes', () => {
     expect(
       Reflect.getMetadata(HTTP_CODE_METADATA, handler('listSourceChanges'))
     ).toBeUndefined();
-    expect(allRoutes()).toHaveLength(148);
+    expect(allRoutes()).toHaveLength(149);
   });
 
   it('OC2 reads for the request organization with the page and window only', async () => {
@@ -1034,8 +1094,8 @@ describe('ContentStudioController feed pause', () => {
     for (const name of ['pauseSource', 'resumeSource']) {
       expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler(name))).toBe(200);
     }
-    // P8-C4: one more, a feed's interval
-    expect(allRoutes()).toHaveLength(148);
+    // P8-C4: one more, a feed's interval; P8-O1: its capture history
+    expect(allRoutes()).toHaveLength(149);
     expect(
       allRoutes().filter((r) => /pause|resume|schedul|interval/i.test(r))
     ).toEqual([
@@ -1102,12 +1162,12 @@ describe('ContentStudioController feed interval (P8-C4)', () => {
       | Record<string, { index: number; data?: string }>
       | undefined;
 
-  it('P8C4-17 is POST /sources/:id/interval, 200, the 148th route', () => {
+  it('P8C4-17 is POST /sources/:id/interval, 200, the 148th route (149 with P8-O1)', () => {
     expect(route('setSourceInterval')).toBe('POST /sources/:id/interval');
     expect(
       Reflect.getMetadata(HTTP_CODE_METADATA, handler('setSourceInterval'))
     ).toBe(200);
-    expect(allRoutes()).toHaveLength(148);
+    expect(allRoutes()).toHaveLength(149);
   });
 
   it('sets the interval for the request organization with the path id and the value only, for any member', async () => {

@@ -14,6 +14,7 @@ import { ContentStudioEditorialPolicyRepository } from '@gitroom/nestjs-librarie
 import { ContentStudioAudienceProfileRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.audience-profile.repository';
 import { ContentStudioExpertiseProfileRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.repository';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
+import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
@@ -331,6 +332,7 @@ const cleanHandoff = async () => {
   await client.contentStudioAIOperation.deleteMany({ where });
   await client.contentStudioAIConnection.deleteMany({ where });
   await client.contentPackage.deleteMany({ where });
+  await client.contentStudioSourceCaptureAttempt.deleteMany({ where });
   await client.contentStudioSourceDiscovery.deleteMany({ where });
   await client.contentStudioSourceVersion.deleteMany({ where });
   await client.contentStudioSource.deleteMany({ where });
@@ -395,6 +397,9 @@ beforeAll(async () => {
     sources,
     new ContentStudioSourceDiscoveryRepository(
       new PrismaRepository<'contentStudioSourceDiscovery'>(prisma)
+    ),
+    new ContentStudioSourceCaptureAttemptRepository(
+      new PrismaRepository<'contentStudioSourceCaptureAttempt'>(prisma)
     )
   );
   // saving a draft and making a revision need the grounding check only

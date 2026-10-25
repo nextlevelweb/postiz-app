@@ -22,6 +22,7 @@ const SOURCES_DIRECTORY =
 const LAYER_FILES = [
   'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.repository.ts',
   'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-discovery.repository.ts',
+  'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-capture-attempt.repository.ts',
   'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.service.ts',
   'libraries/nestjs-libraries/src/dtos/content-studio/content-studio.source.dto.ts',
 ];
@@ -156,7 +157,7 @@ describe('Source layer boundaries', () => {
       /^class-validator$/,
       /^class-transformer$/,
       /^@gitroom\/nestjs-libraries\/content-studio\/(canonical\.json|editorial\/writing\.profile|sources\/source\.[a-z]+)$/,
-      /^@gitroom\/nestjs-libraries\/database\/prisma\/(prisma\.service|content-studio\/content-studio\.source(-discovery)?\.repository)$/,
+      /^@gitroom\/nestjs-libraries\/database\/prisma\/(prisma\.service|content-studio\/content-studio\.source(-discovery|-capture-attempt)?\.repository)$/,
       /^@gitroom\/nestjs-libraries\/dtos\/content-studio\/content-studio\.project\.dto$/,
       // the inert HTML parser of the extractor
       /^parse5$/,
@@ -201,6 +202,8 @@ describe('Source layer boundaries', () => {
       /^crypto$/,
       /^@gitroom\/nestjs-libraries\/dtos\/webhooks\/safe\.fetch$/,
       /^@gitroom\/nestjs-libraries\/database\/prisma\/content-studio\/content-studio\.source(-discovery)?\.(repository|service)$/,
+      // the capture records (P8-O1)
+      /^@gitroom\/nestjs-libraries\/database\/prisma\/content-studio\/content-studio\.source-capture-attempt\.repository$/,
       /^@gitroom\/nestjs-libraries\/content-studio\/sources\/source\.[a-z]+$/,
     ];
     expect(

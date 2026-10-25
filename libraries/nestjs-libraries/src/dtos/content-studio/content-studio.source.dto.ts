@@ -108,6 +108,16 @@ export class ListContentStudioSourceDiscoveriesDto {
   page: number = 1;
 }
 
+// A feed's capture history (P8-O1): one page of it, nothing else
+export class ListContentStudioFeedCapturesDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(PAGE_MAX)
+  @Transform(toQueryInteger)
+  page: number = 1;
+}
+
 // News Radar (P8-02): what the organization's live feeds found. The window is
 // named, never a timestamp: the server reads it as a first sighting at or
 // after now minus the window, 7 days when absent. A feed narrows it to one

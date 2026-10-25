@@ -7,6 +7,7 @@ import {
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
+import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
@@ -205,6 +206,7 @@ const refusal = async (call: Promise<unknown>) => {
 
 const clean = async () => {
   const where = { organizationId: { in: ORGS } };
+  await client.contentStudioSourceCaptureAttempt.deleteMany({ where });
   await client.contentStudioSourceDiscovery.deleteMany({ where });
   await client.contentStudioSourceVersion.deleteMany({ where });
   await client.contentStudioSource.deleteMany({ where });
@@ -232,8 +234,19 @@ beforeAll(async () => {
   const discoveries = new ContentStudioSourceDiscoveryRepository(
     new PrismaRepository<'contentStudioSourceDiscovery'>(prisma)
   );
-  ingestion = new ContentStudioSourceIngestionService(sources, discoveries);
-  service = new ContentStudioSourceService(sources, discoveries);
+  const captureAttempts = new ContentStudioSourceCaptureAttemptRepository(
+    new PrismaRepository<'contentStudioSourceCaptureAttempt'>(prisma)
+  );
+  ingestion = new ContentStudioSourceIngestionService(
+    sources,
+    discoveries,
+    captureAttempts
+  );
+  service = new ContentStudioSourceService(
+    sources,
+    discoveries,
+    captureAttempts
+  );
   await cleanFixtures();
   for (const id of ORGS) {
     await client.organization.create({ data: { id, name: `P8C3 ${id}` } });
@@ -550,6 +563,8 @@ describe('P8-C3 on PostgreSQL: the scan and the scheduled capture', () => {
       await ingestion.captureScheduledFeed({
         organizationId: ORG_A,
         sourceId: feed,
+        attemptId: randomUUID(),
+        attemptCount: 1,
       })
     ).toEqual({ status: 'skipped' });
     expect(mockSafeFetch).not.toHaveBeenCalled();
@@ -564,6 +579,8 @@ describe('P8-C3 on PostgreSQL: the scan and the scheduled capture', () => {
       await ingestion.captureScheduledFeed({
         organizationId: ORG_A,
         sourceId: feed,
+        attemptId: randomUUID(),
+        attemptCount: 1,
       })
     ).toEqual({
       status: 'captured',

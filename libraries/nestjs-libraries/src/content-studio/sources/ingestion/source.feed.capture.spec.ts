@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { HttpException } from '@nestjs/common';
@@ -13,6 +14,7 @@ import {
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
+import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import {
@@ -156,6 +158,7 @@ const setup = () => {
     sources: [] as Row[],
     versions: [] as Row[],
     discoveries: [] as Row[],
+    attempts: [] as Row[],
     deletedOrgs: new Set<string>(),
   };
   let tick = 0;
@@ -200,6 +203,7 @@ const setup = () => {
     sources: state.sources,
     versions: state.versions,
     discoveries: state.discoveries,
+    attempts: state.attempts,
   };
   type Table = keyof typeof tables;
   const unique: Record<Table, (a: Row, b: Row) => boolean> = {
@@ -214,6 +218,7 @@ const setup = () => {
       a.organizationId === b.organizationId &&
       a.feedSourceId === b.feedSourceId &&
       a.discoveredSourceId === b.discoveredSourceId,
+    attempts: (a, b) => a.id === b.id,
   };
   const pick = (table: Table, row: Row, select?: Row): Row => {
     if (!select) {
@@ -293,7 +298,9 @@ const setup = () => {
         ...(table === 'discoveries'
           ? { id: `d-${tick}-${Math.random()}` }
           : {}),
-        ...(table !== 'discoveries' ? { createdAt: at } : {}),
+        ...(table === 'sources' || table === 'versions'
+          ? { createdAt: at }
+          : {}),
         ...(table === 'sources'
           ? {
               updatedAt: at,
@@ -336,9 +343,11 @@ const setup = () => {
   const source = delegate('sources');
   const version = delegate('versions');
   const discovery = delegate('discoveries');
+  const attempt = delegate('attempts');
   const tx = {
     contentStudioSource: source,
     contentStudioSourceVersion: version,
+    contentStudioSourceCaptureAttempt: attempt,
   };
   const transaction = jest.fn(
     async (fn: (client: typeof tx) => unknown, options?: unknown) => fn(tx)
@@ -359,11 +368,19 @@ const setup = () => {
   const discoveries = new ContentStudioSourceDiscoveryRepository({
     model: { contentStudioSourceDiscovery: discovery },
   } as unknown as PrismaRepository<'contentStudioSourceDiscovery'>);
+  const captureAttempts = new ContentStudioSourceCaptureAttemptRepository({
+    model: { contentStudioSourceCaptureAttempt: attempt },
+  } as unknown as PrismaRepository<'contentStudioSourceCaptureAttempt'>);
   const ingestion = new ContentStudioSourceIngestionService(
     repository,
-    discoveries
+    discoveries,
+    captureAttempts
   );
-  const service = new ContentStudioSourceService(repository, discoveries);
+  const service = new ContentStudioSourceService(
+    repository,
+    discoveries,
+    captureAttempts
+  );
   const addSource = (row: Row): Row => {
     const at = now();
     const full: Row = {
@@ -406,6 +423,7 @@ const setup = () => {
     source,
     version,
     discovery,
+    attempt,
   };
 };
 type Setup = ReturnType<typeof setup>;
@@ -1605,6 +1623,8 @@ describe('feed capture: organization limits (P8-C1)', () => {
         t.ingestion.captureScheduledFeed({
           organizationId: ORG,
           sourceId: FEED,
+          attemptId: randomUUID(),
+          attemptCount: 1,
         })
       ).resolves.toMatchObject({
         status: 'captured',
@@ -1622,6 +1642,8 @@ describe('feed capture: organization limits (P8-C1)', () => {
         t.ingestion.captureScheduledFeed({
           organizationId: ORG,
           sourceId: FEED,
+          attemptId: randomUUID(),
+          attemptCount: 1,
         })
       ).resolves.toMatchObject({ capture: { versionsCreated: 1 } });
       expect(versionsOf(t, pageId)).toHaveLength(3);
@@ -1728,6 +1750,8 @@ describe('feed capture: the schedule', () => {
     const result = await t.ingestion.captureScheduledFeed({
       organizationId: ORG,
       sourceId: FEED,
+      attemptId: randomUUID(),
+      attemptCount: 1,
     });
     expect(result).toEqual({
       status: 'captured',
@@ -1752,7 +1776,13 @@ describe('feed capture: the schedule', () => {
       { organizationId: ORG, sourceId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' },
       { organizationId: ORG, sourceId: 'not-an-id' },
     ]) {
-      expect(await t.ingestion.captureScheduledFeed(input)).toEqual({
+      expect(
+        await t.ingestion.captureScheduledFeed({
+          ...input,
+          attemptId: randomUUID(),
+          attemptCount: 1,
+        })
+      ).toEqual({
         status: 'skipped',
       });
     }
@@ -1764,7 +1794,12 @@ describe('feed capture: the schedule', () => {
     t.addFeed();
     fetchMock.mockResolvedValueOnce(answer(FEED_URL, '<nope', 'text/xml'));
     await expect(
-      t.ingestion.captureScheduledFeed({ organizationId: ORG, sourceId: FEED })
+      t.ingestion.captureScheduledFeed({
+        organizationId: ORG,
+        sourceId: FEED,
+        attemptId: randomUUID(),
+        attemptCount: 1,
+      })
     ).rejects.toBeInstanceOf(HttpException);
   });
 
@@ -1902,6 +1937,8 @@ describe('feed capture: a paused feed (P8-C3)', () => {
       await t.ingestion.captureScheduledFeed({
         organizationId: ORG,
         sourceId: FEED,
+        attemptId: randomUUID(),
+        attemptCount: 1,
       })
     ).toEqual({ status: 'skipped' });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -1975,6 +2012,8 @@ describe('feed capture: a paused feed (P8-C3)', () => {
     await t.ingestion.captureScheduledFeed({
       organizationId: ORG,
       sourceId: FEED,
+      attemptId: randomUUID(),
+      attemptCount: 1,
     });
     fetchMock.mockClear();
     t.source.updateMany.mockClear();
@@ -2066,6 +2105,8 @@ describe('feed capture: a paused feed (P8-C3)', () => {
     const result = await t.ingestion.captureScheduledFeed({
       organizationId: ORG,
       sourceId: FEED,
+      attemptId: randomUUID(),
+      attemptCount: 1,
     });
     await pauseDone;
     expect(result).toEqual({
@@ -2092,7 +2133,12 @@ describe('feed capture: the schedule of a feed (P8-C4)', () => {
       (feed) => feed.sourceId
     );
   const scheduled = (t: Setup) =>
-    t.ingestion.captureScheduledFeed({ organizationId: ORG, sourceId: FEED });
+    t.ingestion.captureScheduledFeed({
+      organizationId: ORG,
+      sourceId: FEED,
+      attemptId: randomUUID(),
+      attemptCount: 1,
+    });
   const record = (t: Setup, over: Record<string, string> = {}) =>
     t.ingestion.recordScheduledFeedFailure({
       organizationId: ORG,
@@ -2274,6 +2320,8 @@ describe('feed capture: the schedule of a feed (P8-C4)', () => {
       (await t.ingestion.captureScheduledFeed({
         organizationId: ORG,
         sourceId: FEED,
+        attemptId: randomUUID(),
+        attemptCount: 1,
       })) as { capture: Record<string, number> }
     ).toMatchObject({ capture: { failed: 1, entriesLimited: 1 } });
   });
@@ -2600,6 +2648,704 @@ describe('feed capture: the schedule of a feed (P8-C4)', () => {
     await t.service.restoreSource(ORG, FEED);
     expect(schedule(feedRow(t))).toEqual(kept);
     expect(await due(t)).toEqual([]);
+  });
+});
+
+// Capture history (P8-O1): one record per capture that reads its feed,
+// scheduled (one for all its tries) or a member's refresh, ended once
+describe('feed capture: its record (P8-O1)', () => {
+  const HOUR = 60 * 60 * 1000;
+  const RUN = '77777777-7777-4777-8777-777777777777';
+  const feedRow = (t: Setup) => t.state.sources.find((s) => s.id === FEED)!;
+  const records = (t: Setup) => t.state.attempts;
+  const scheduled = (t: Setup, attemptCount = 1, attemptId = RUN) =>
+    t.ingestion.captureScheduledFeed({
+      organizationId: ORG,
+      sourceId: FEED,
+      attemptId,
+      attemptCount,
+    });
+  const finish = (t: Setup, over: Record<string, unknown> = {}) =>
+    t.ingestion.finishScheduledFeedCapture({
+      organizationId: ORG,
+      sourceId: FEED,
+      attemptId: RUN,
+      status: 'source_failed',
+      code: 'CS_SOURCE_FETCH_FAILED',
+      ...over,
+    } as Parameters<Setup['ingestion']['finishScheduledFeedCapture']>[0]);
+  const readable = () => {
+    const w = web();
+    w.feeds.set(FEED_URL, rss([page(1), page(2)]));
+    w.pages.set(page(1), html('One'));
+    w.pages.set(page(2), html('Two'));
+    return w;
+  };
+  // a record's counts, null when not written
+  const countsOf = (row: Record<string, unknown>) =>
+    Object.fromEntries(
+      Object.keys(NO_COUNTS).map((key) => [key, row[key] ?? null])
+    );
+  const NO_COUNTS = {
+    entriesSeen: null,
+    entriesIgnored: null,
+    entriesSkipped: null,
+    entriesAccepted: null,
+    sourcesCreated: null,
+    versionsCreated: null,
+    unchanged: null,
+    failed: null,
+    archived: null,
+    entriesLimited: null,
+  };
+
+  it('O1U1/M4/M11/M23 a member refresh is one manual record: who asked, one try, its counts and the schedule it left', async () => {
+    const t = setup();
+    t.addFeed({ consecutiveCaptureFailures: 2 });
+    readable();
+    const before = Date.now();
+    const { capture: summary } = await capture(t);
+    expect(records(t)).toHaveLength(1);
+    const [row] = records(t);
+    expect(row).toEqual({
+      id: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      ),
+      organizationId: ORG,
+      sourceId: FEED,
+      trigger: 'manual',
+      status: 'success',
+      requestedByUserId: USER,
+      startedAt: expect.any(Date),
+      finishedAt: expect.any(Date),
+      attemptCount: 1,
+      ...summary,
+      nextCaptureAtAfter: feedRow(t).nextCaptureAt,
+      consecutiveFailuresAfter: 0,
+    });
+    expect(summary.entriesAccepted).toBe(2);
+    expect(row.startedAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(row.finishedAt.getTime()).toBeGreaterThanOrEqual(
+      row.startedAt.getTime()
+    );
+    expect(row.nextCaptureAtAfter.getTime()).toBe(
+      feedRow(t).lastCapturedAt.getTime() + HOUR
+    );
+    // never an error, a message, a URL or a title
+    expect(Object.keys(row)).not.toEqual(
+      expect.arrayContaining(['errorMessage', 'message', 'stack', 'url'])
+    );
+    expect(JSON.stringify(row)).not.toContain('news.example');
+  });
+
+  it('O1U2/M12/M22 a member refresh that fails is recorded with its code; the schedule is left as it was', async () => {
+    const t = setup();
+    const later = new Date(Date.now() + HOUR);
+    t.addFeed({ consecutiveCaptureFailures: 1, nextCaptureAt: later });
+    web().failing.add(FEED_URL);
+    expect((await refusal(capture(t))).body).toEqual({
+      msg: 'The source could not be fetched.',
+      code: 'CS_SOURCE_FETCH_FAILED',
+    });
+    expect(feedRow(t).consecutiveCaptureFailures).toBe(1);
+    expect(feedRow(t).nextCaptureAt).toEqual(later);
+    expect(records(t)).toEqual([
+      {
+        id: expect.any(String),
+        organizationId: ORG,
+        sourceId: FEED,
+        trigger: 'manual',
+        status: 'source_failed',
+        requestedByUserId: USER,
+        startedAt: expect.any(Date),
+        finishedAt: expect.any(Date),
+        attemptCount: 1,
+        errorCode: 'CS_SOURCE_FETCH_FAILED',
+        nextCaptureAtAfter: later,
+        consecutiveFailuresAfter: 1,
+      },
+    ]);
+  });
+
+  it('O1U3/M13 a member refresh that fails in the system is infrastructure_failed, without a code, and the error is the answer', async () => {
+    const t = setup();
+    t.addFeed();
+    readable();
+    t.hooks.discoveries = {
+      beforeCreate: () => {
+        throw new Error('database down');
+      },
+    };
+    await expect(capture(t)).rejects.toThrow('database down');
+    expect(records(t)).toEqual([
+      expect.objectContaining({
+        trigger: 'manual',
+        status: 'infrastructure_failed',
+        errorCode: null,
+        consecutiveFailuresAfter: 0,
+        nextCaptureAtAfter: null,
+      }),
+    ]);
+    expect(countsOf(records(t)[0])).toEqual(NO_COUNTS);
+  });
+
+  it('O1U4/M24/M25 a refresh refused before it reads the feed has no record: too soon, archived, missing, another organization', async () => {
+    mockLimits.manualRefreshCooldownMs = 5 * 60 * 1000;
+    const t = setup();
+    t.addFeed({ lastCapturedAt: new Date() });
+    readable();
+    expect((await refusal(capture(t))).status).toBe(429);
+    feedRow(t).archivedAt = new Date();
+    feedRow(t).lastCapturedAt = null;
+    expect((await refusal(capture(t))).status).toBe(409);
+    feedRow(t).archivedAt = null;
+    expect(
+      (await refusal(capture(t, { organizationId: OTHER_ORG }))).status
+    ).toBe(404);
+    expect((await refusal(capture(t, { sourceId: 'not-an-id' }))).status).toBe(
+      404
+    );
+    expect(records(t)).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('O1U5/M26 a paused feed refreshed by a member is recorded as usual; the pause stays', async () => {
+    const t = setup();
+    const paused = new Date(Date.now() - HOUR);
+    t.addFeed({ scanPausedAt: paused });
+    readable();
+    await capture(t);
+    expect(records(t)).toEqual([
+      expect.objectContaining({ trigger: 'manual', status: 'success' }),
+    ]);
+    expect(feedRow(t).scanPausedAt).toEqual(paused);
+  });
+
+  it('O1U6/M5 a scheduled capture is recorded under its run id, without a member, with this try', async () => {
+    const t = setup();
+    t.addFeed();
+    readable();
+    await scheduled(t, 2);
+    expect(records(t)).toEqual([
+      expect.objectContaining({
+        id: RUN,
+        trigger: 'scheduled',
+        status: 'success',
+        requestedByUserId: null,
+        attemptCount: 2,
+        entriesAccepted: 2,
+        consecutiveFailuresAfter: 0,
+      }),
+    ]);
+  });
+
+  it('O1U7/M1/M2/M3 every try of one scheduled capture keeps one record: its start, and the highest try, never lower', async () => {
+    const t = setup();
+    t.addFeed();
+    const w = readable();
+    w.failing.add(FEED_URL);
+    await expect(scheduled(t, 1)).rejects.toBeInstanceOf(HttpException);
+    const [first] = records(t);
+    const startedAt = first.startedAt;
+    expect(first).toMatchObject({ status: 'running', attemptCount: 1 });
+    await expect(scheduled(t, 3)).rejects.toBeInstanceOf(HttpException);
+    // a try that started reading again after its row was written
+    await expect(scheduled(t, 2)).rejects.toBeInstanceOf(HttpException);
+    expect(records(t)).toHaveLength(1);
+    expect(records(t)[0]).toMatchObject({
+      status: 'running',
+      attemptCount: 3,
+      startedAt,
+    });
+    expect(records(t)[0].finishedAt ?? null).toBeNull();
+    w.failing.delete(FEED_URL);
+    await scheduled(t, 3);
+    expect(records(t)).toHaveLength(1);
+    expect(records(t)[0]).toMatchObject({
+      status: 'success',
+      attemptCount: 3,
+      startedAt,
+    });
+  });
+
+  it('O1U8/M8 a record that has ended is never written again: a late try captures, and its record stays', async () => {
+    const t = setup();
+    t.addFeed();
+    readable();
+    await scheduled(t, 1);
+    const ended = { ...records(t)[0] };
+    await scheduled(t, 2);
+    expect(records(t)).toEqual([ended]);
+    expect(
+      await finish(t, { status: 'infrastructure_failed', code: null })
+    ).toEqual({ status: 'unchanged' });
+    expect(await finish(t)).toEqual({ status: 'unchanged' });
+    expect(records(t)).toEqual([ended]);
+  });
+
+  it('O1U9 a skipped scheduled capture has no record: paused, archived, gone, another kind, another organization', async () => {
+    const t = setup();
+    t.addFeed({ scanPausedAt: new Date() });
+    expect(await scheduled(t)).toEqual({ status: 'skipped' });
+    feedRow(t).scanPausedAt = null;
+    feedRow(t).archivedAt = new Date();
+    expect(await scheduled(t)).toEqual({ status: 'skipped' });
+    t.addSource({ id: FEED_B, organizationId: ORG, canonicalUrl: page(9) });
+    expect(
+      await t.ingestion.captureScheduledFeed({
+        organizationId: ORG,
+        sourceId: FEED_B,
+        attemptId: RUN,
+        attemptCount: 1,
+      })
+    ).toEqual({ status: 'skipped' });
+    expect(
+      await t.ingestion.captureScheduledFeed({
+        organizationId: OTHER_ORG,
+        sourceId: FEED,
+        attemptId: RUN,
+        attemptCount: 1,
+      })
+    ).toEqual({ status: 'skipped' });
+    expect(records(t)).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('O1U10/M14/M17 the end of a failed scheduled capture: after its failure record, with the code and the schedule that left, once', async () => {
+    const t = setup();
+    t.addFeed();
+    web().failing.add(FEED_URL);
+    await expect(scheduled(t, 3)).rejects.toBeInstanceOf(HttpException);
+    const before = Date.now();
+    await t.ingestion.recordScheduledFeedFailure({
+      organizationId: ORG,
+      sourceId: FEED,
+      code: 'CS_SOURCE_FETCH_FAILED',
+    });
+    expect(await finish(t)).toEqual({ status: 'finished' });
+    const [row] = records(t);
+    expect(row).toMatchObject({
+      status: 'source_failed',
+      errorCode: 'CS_SOURCE_FETCH_FAILED',
+      attemptCount: 3,
+      consecutiveFailuresAfter: 1,
+      nextCaptureAtAfter: feedRow(t).nextCaptureAt,
+    });
+    expect(countsOf(row)).toEqual(NO_COUNTS);
+    expect(row.nextCaptureAtAfter.getTime()).toBeGreaterThanOrEqual(
+      before + HOUR
+    );
+    expect(row.finishedAt.getTime()).toBeGreaterThanOrEqual(
+      row.startedAt.getTime()
+    );
+    // again, or as a failure of the system: never changed
+    expect(await finish(t)).toEqual({ status: 'unchanged' });
+    expect(
+      await finish(t, { status: 'infrastructure_failed', code: null })
+    ).toEqual({ status: 'unchanged' });
+    expect(records(t)[0]).toEqual(row);
+  });
+
+  it('O1U11/M18 a failure of the system is ended without a code and leaves the schedule alone', async () => {
+    const t = setup();
+    const due = new Date(Date.now() - HOUR);
+    t.addFeed({ nextCaptureAt: due });
+    t.hooks.discoveries = {
+      beforeCreate: () => {
+        throw new Error('database down');
+      },
+    };
+    readable();
+    await expect(scheduled(t, 3)).rejects.toThrow('database down');
+    expect(
+      await finish(t, { status: 'infrastructure_failed', code: null })
+    ).toEqual({ status: 'finished' });
+    expect(records(t)[0]).toMatchObject({
+      status: 'infrastructure_failed',
+      errorCode: null,
+      nextCaptureAtAfter: due,
+      consecutiveFailuresAfter: 0,
+    });
+    expect(feedRow(t)).toMatchObject({
+      nextCaptureAt: due,
+      consecutiveCaptureFailures: 0,
+    });
+  });
+
+  it.each([
+    ['a code that is no CS_ code', { code: 'Error' }],
+    ['a code with text', { code: 'CS_SOURCE_FETCH_FAILED https://x.test' }],
+    ['no code for a failure of the feed', { code: null }],
+    [
+      'a code for a failure of the system',
+      { status: 'infrastructure_failed', code: 'CS_SOURCE_FETCH_FAILED' },
+    ],
+    ['another outcome', { status: 'success', code: null }],
+    ['running again', { status: 'running', code: null }],
+    ['an attempt id that is no uuid', { attemptId: 'run' }],
+    ['a source id that is no uuid', { sourceId: 'x' }],
+  ])(
+    'O1U12 the end is skipped, with nothing written, for %s',
+    async (_, over) => {
+      const t = setup();
+      t.addFeed();
+      web().failing.add(FEED_URL);
+      await expect(scheduled(t)).rejects.toBeInstanceOf(HttpException);
+      t.attempt.updateMany.mockClear();
+      expect(await finish(t, over)).toEqual({ status: 'skipped' });
+      expect(t.attempt.updateMany).not.toHaveBeenCalled();
+      expect(records(t)[0].status).toBe('running');
+    }
+  );
+
+  it('O1U13 another organization or feed never ends a record; a record never begun is no error', async () => {
+    const t = setup();
+    t.addFeed();
+    t.addFeed({
+      id: FEED_B,
+      organizationId: OTHER_ORG,
+      canonicalUrl: FEED_B_URL,
+    });
+    web().failing.add(FEED_URL);
+    await expect(scheduled(t)).rejects.toBeInstanceOf(HttpException);
+    expect(await finish(t, { organizationId: OTHER_ORG })).toEqual({
+      status: 'unchanged',
+    });
+    expect(
+      await finish(t, { organizationId: OTHER_ORG, sourceId: FEED_B })
+    ).toEqual({ status: 'unchanged' });
+    expect(records(t)[0].status).toBe('running');
+    expect(
+      await finish(t, { attemptId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' })
+    ).toEqual({ status: 'unchanged' });
+  });
+
+  it('O1U14 a record id of another organization, feed or trigger is never taken over: an integrity error before any fetch', async () => {
+    const t = setup();
+    t.addFeed();
+    readable();
+    t.state.attempts.push({
+      id: RUN,
+      organizationId: OTHER_ORG,
+      sourceId: FEED,
+      trigger: 'scheduled',
+      status: 'running',
+      startedAt: new Date(),
+      attemptCount: 1,
+    });
+    expect((await refusal(scheduled(t))).body).toEqual({
+      msg: 'Stored source data could not be verified.',
+      code: 'CS_SOURCE_INTEGRITY_ERROR',
+    });
+    t.state.attempts[0].organizationId = ORG;
+    t.state.attempts[0].trigger = 'manual';
+    expect((await refusal(scheduled(t))).status).toBe(500);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(t.state.attempts).toHaveLength(1);
+  });
+
+  it('O1U15 a capture that ends after a later one leaves the later schedule, and is still a success', async () => {
+    const t = setup();
+    t.addFeed();
+    readable();
+    await scheduled(t, 1, RUN);
+    const later = feedRow(t).nextCaptureAt;
+    // a capture that read the feed first and ends last
+    const older = new Date(feedRow(t).lastCapturedAt.getTime() - 1000);
+    t.state.attempts.push({
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      organizationId: ORG,
+      sourceId: FEED,
+      trigger: 'manual',
+      status: 'running',
+      startedAt: older,
+      attemptCount: 1,
+    });
+    expect(
+      await t.repository.markFeedCaptured(
+        ORG,
+        FEED,
+        older,
+        new Date(older.getTime() + HOUR),
+        {
+          id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+          finishedAt: new Date(),
+          summary: {
+            entriesSeen: 0,
+            entriesIgnored: 0,
+            entriesSkipped: 0,
+            entriesAccepted: 0,
+            sourcesCreated: 0,
+            versionsCreated: 0,
+            unchanged: 0,
+            failed: 0,
+            archived: 0,
+            entriesLimited: 0,
+          },
+        }
+      )
+    ).toEqual({ count: 0, ended: true });
+    expect(feedRow(t).nextCaptureAt).toEqual(later);
+    expect(records(t).map((r) => [r.status, r.nextCaptureAtAfter])).toEqual([
+      ['success', later],
+      ['success', later],
+    ]);
+  });
+});
+
+// Capture history, read (P8-O1)
+describe('feed capture history: the read (P8-O1)', () => {
+  const STALE = 60 * 60 * 1000;
+  const T = new Date('2026-10-20T10:00:00.000Z');
+  const ended = (n: number, over: Record<string, unknown> = {}) => ({
+    id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`,
+    organizationId: ORG,
+    sourceId: FEED,
+    trigger: 'scheduled',
+    status: 'success',
+    requestedByUserId: null,
+    startedAt: new Date(T.getTime() + n * 1000),
+    finishedAt: new Date(T.getTime() + n * 1000 + 2400),
+    attemptCount: 1,
+    errorCode: null,
+    entriesSeen: 4,
+    entriesIgnored: 0,
+    entriesSkipped: 1,
+    entriesAccepted: 3,
+    sourcesCreated: 1,
+    versionsCreated: 1,
+    unchanged: 1,
+    failed: 1,
+    archived: 0,
+    entriesLimited: 0,
+    nextCaptureAtAfter: new Date(T.getTime() + 3_600_000),
+    consecutiveFailuresAfter: 0,
+    ...over,
+  });
+  const read = (t: Setup, page = 1, organizationId = ORG, sourceId = FEED) =>
+    t.service.listFeedCaptures({ organizationId, sourceId, page });
+
+  it('O1R1/M28/M29 newest first, 20 a page, with the total, never more', async () => {
+    const t = setup();
+    t.addFeed();
+    for (let n = 0; n < 45; n++) {
+      t.state.attempts.push(ended(n));
+    }
+    const first = await read(t);
+    expect(first.total).toBe(45);
+    expect(first.pages).toBe(3);
+    expect(first.results).toHaveLength(20);
+    expect(first.results[0].id).toBe(ended(44).id);
+    const all = [
+      ...first.results,
+      ...(await read(t, 2)).results,
+      ...(await read(t, 3)).results,
+    ].map((r) => r.id);
+    expect(new Set(all).size).toBe(45);
+    expect(all).toEqual(Array.from({ length: 45 }, (_, i) => ended(44 - i).id));
+    expect(t.attempt.findMany.mock.calls[0][0]).toEqual({
+      where: { organizationId: ORG, sourceId: FEED },
+      orderBy: [{ startedAt: 'desc' }, { id: 'desc' }],
+      select: expect.any(Object),
+      skip: 0,
+      take: 20,
+    });
+    // M27 the organization's own records only, at every read
+    for (const [args] of [
+      ...t.attempt.findMany.mock.calls,
+      ...t.attempt.count.mock.calls,
+    ]) {
+      expect(args.where).toEqual({ organizationId: ORG, sourceId: FEED });
+    }
+  });
+
+  it('O1R2/M30 another organization reads its feed as missing, and its records never show', async () => {
+    const t = setup();
+    t.addFeed();
+    t.state.attempts.push(ended(1));
+    t.state.attempts.push(
+      ended(2, { organizationId: OTHER_ORG, id: 'x-other' })
+    );
+    expect((await refusal(read(t, 1, OTHER_ORG))).status).toBe(404);
+    expect((await read(t)).results.map((r) => r.id)).toEqual([ended(1).id]);
+  });
+
+  it('O1R3/M32/M33/M34 a record leaves as these fields only: no organization, feed, member, message or stack', async () => {
+    const t = setup();
+    t.addFeed();
+    t.state.attempts.push(
+      ended(1, {
+        requestedByUserId: USER,
+        trigger: 'manual',
+        message: 'raw https://x.test',
+        stack: 'Error',
+      })
+    );
+    const [row] = (await read(t)).results;
+    expect(row).toEqual({
+      id: ended(1).id,
+      trigger: 'manual',
+      status: 'success',
+      startedAt: ended(1).startedAt,
+      finishedAt: ended(1).finishedAt,
+      durationMs: 2400,
+      attemptCount: 1,
+      errorCode: null,
+      summary: {
+        entriesSeen: 4,
+        entriesIgnored: 0,
+        entriesSkipped: 1,
+        entriesAccepted: 3,
+        sourcesCreated: 1,
+        versionsCreated: 1,
+        unchanged: 1,
+        failed: 1,
+        archived: 0,
+        entriesLimited: 0,
+      },
+      nextCaptureAtAfter: ended(1).nextCaptureAtAfter,
+      consecutiveFailuresAfter: 0,
+    });
+  });
+
+  it('O1R4/M39 an archived or paused feed keeps its history; a page has none (400), a missing feed 404', async () => {
+    const t = setup();
+    t.addFeed({ archivedAt: new Date(), scanPausedAt: new Date() });
+    t.state.attempts.push(ended(1));
+    expect((await read(t)).results).toHaveLength(1);
+    t.addSource({ id: FEED_B, organizationId: ORG, canonicalUrl: page(1) });
+    expect(await refusal(read(t, 1, ORG, FEED_B))).toEqual({
+      status: 400,
+      body: {
+        msg: 'This source type has no capture history.',
+        code: 'CS_SOURCE_KIND_UNSUPPORTED',
+      },
+    });
+    expect(
+      (await refusal(read(t, 1, ORG, 'cccccccc-cccc-4ccc-8ccc-cccccccccccc')))
+        .status
+    ).toBe(404);
+    expect((await refusal(read(t, 1, ORG, 'not-an-id'))).status).toBe(404);
+  });
+
+  it('O1R5 a record still running is in progress, and interrupted once past the hour; the row is never changed for it', async () => {
+    const t = setup();
+    t.addFeed();
+    const running = {
+      status: 'running',
+      finishedAt: null,
+      ...Object.fromEntries(
+        [
+          'entriesSeen',
+          'entriesIgnored',
+          'entriesSkipped',
+          'entriesAccepted',
+          'sourcesCreated',
+          'versionsCreated',
+          'unchanged',
+          'failed',
+          'archived',
+          'entriesLimited',
+          'nextCaptureAtAfter',
+          'consecutiveFailuresAfter',
+        ].map((key) => [key, null])
+      ),
+    };
+    t.state.attempts.push(
+      ended(1, { ...running, startedAt: new Date(Date.now() - STALE + 60_000) })
+    );
+    t.state.attempts.push(
+      ended(2, {
+        ...running,
+        startedAt: new Date(Date.now() - STALE - 60_000),
+      })
+    );
+    const { results } = await read(t);
+    expect(results.map((r) => [r.status, r.durationMs, r.summary])).toEqual([
+      ['running', null, null],
+      ['interrupted', null, null],
+    ]);
+    expect(t.state.attempts.map((r) => r.status)).toEqual([
+      'running',
+      'running',
+    ]);
+  });
+
+  it('O1R6 a failure carries its code and no counts; a failure of the system neither', async () => {
+    const t = setup();
+    t.addFeed();
+    const failed = Object.fromEntries(
+      [
+        'entriesSeen',
+        'entriesIgnored',
+        'entriesSkipped',
+        'entriesAccepted',
+        'sourcesCreated',
+        'versionsCreated',
+        'unchanged',
+        'failed',
+        'archived',
+        'entriesLimited',
+      ].map((key) => [key, null])
+    );
+    t.state.attempts.push(
+      ended(1, {
+        ...failed,
+        status: 'source_failed',
+        errorCode: 'CS_SOURCE_FEED_INVALID',
+        attemptCount: 3,
+        consecutiveFailuresAfter: 2,
+      }),
+      ended(2, { ...failed, status: 'infrastructure_failed' })
+    );
+    const { results } = await read(t);
+    expect(
+      results.map((r) => [r.status, r.errorCode, r.summary, r.attemptCount])
+    ).toEqual([
+      ['infrastructure_failed', null, null, 1],
+      ['source_failed', 'CS_SOURCE_FEED_INVALID', null, 3],
+    ]);
+  });
+
+  it.each([
+    ['an unknown status', { status: 'done' }],
+    ['an unknown trigger', { trigger: 'webhook' }],
+    ['a member refresh of two tries', { trigger: 'manual', attemptCount: 2 }],
+    ['no try', { attemptCount: 0 }],
+    ['an end before its start', { finishedAt: new Date(T.getTime() - 1) }],
+    ['an ended record without its end', { finishedAt: null }],
+    ['a success without a count', { failed: null }],
+    ['a negative count', { unchanged: -1 }],
+    ['counts that do not add up', { entriesAccepted: 9 }],
+    ['a success with a code', { errorCode: 'CS_SOURCE_FETCH_FAILED' }],
+    ['no schedule after the end', { consecutiveFailuresAfter: null }],
+    [
+      'a failure of the feed without a code',
+      { status: 'source_failed', errorCode: null },
+    ],
+    [
+      'a failure of the feed with a text code',
+      { status: 'source_failed', errorCode: 'connection refused' },
+    ],
+    [
+      'a failure with counts',
+      { status: 'infrastructure_failed', errorCode: null },
+    ],
+    [
+      'a running record that ended',
+      { status: 'running', consecutiveFailuresAfter: null },
+    ],
+  ])('O1R7 a stored record with %s fails closed', async (_, over) => {
+    const t = setup();
+    t.addFeed();
+    t.state.attempts.push(ended(1, over));
+    expect(await refusal(read(t))).toEqual({
+      status: 500,
+      body: {
+        msg: 'Stored source data could not be verified.',
+        code: 'CS_SOURCE_INTEGRITY_ERROR',
+      },
+    });
   });
 });
 

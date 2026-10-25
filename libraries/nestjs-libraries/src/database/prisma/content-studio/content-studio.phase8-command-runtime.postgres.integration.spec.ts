@@ -149,6 +149,7 @@ const run = async () => {
 const cleanFixtures = async () => {
   const where = { organizationId: ORG };
   await client.contentStudioSourceVersion.deleteMany({ where });
+  await client.contentStudioSourceCaptureAttempt.deleteMany({ where });
   await client.contentStudioSource.deleteMany({ where });
   await client.userOrganization.deleteMany({ where });
   await client.user.deleteMany({ where: { id: USER } });

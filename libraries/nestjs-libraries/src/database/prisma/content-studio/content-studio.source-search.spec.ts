@@ -4,6 +4,7 @@ import {
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
+import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { CONTENT_STUDIO_SOURCE_SEARCH_MAX } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
@@ -122,7 +123,14 @@ const setup = () => {
   const discoveries = new ContentStudioSourceDiscoveryRepository({
     model: { contentStudioSourceDiscovery: discovery },
   } as unknown as PrismaRepository<'contentStudioSourceDiscovery'>);
-  const service = new ContentStudioSourceService(repository, discoveries);
+  const captureAttempts = new ContentStudioSourceCaptureAttemptRepository({
+    model: { contentStudioSourceCaptureAttempt: {} },
+  } as unknown as PrismaRepository<'contentStudioSourceCaptureAttempt'>);
+  const service = new ContentStudioSourceService(
+    repository,
+    discoveries,
+    captureAttempts
+  );
   return { rows, add, source, version, discovery, transaction, service };
 };
 type Context = ReturnType<typeof setup>;

@@ -24,6 +24,7 @@ import {
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
+import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import {
@@ -215,6 +216,14 @@ const recorded: Array<{
   sourceId: string;
   code: string;
 }> = [];
+// the ends of failed capture runs the workflows asked for (P8-O1), in order
+const finished: Array<{
+  organizationId: string;
+  sourceId: string;
+  attemptId: string;
+  status: string;
+  code: string | null;
+}> = [];
 let listFeeds: (input: { afterId: string | null }) => Promise<unknown>;
 const handles: WorkflowHandle[] = [];
 
@@ -241,6 +250,8 @@ const router = {
   async captureScheduledFeed(input: {
     organizationId: string;
     sourceId: string;
+    attemptId: string;
+    attemptCount: number;
   }) {
     calls.set(input.sourceId, (calls.get(input.sourceId) ?? 0) + 1);
     activities.running += 1;
@@ -277,7 +288,25 @@ const router = {
     recorded.push(input);
     return ingestion.recordScheduledFeedFailure(input);
   },
+  // always the real one too (P8-O1): a held capture began no record, and its
+  // end changes nothing
+  finishScheduledFeedCapture(input: {
+    organizationId: string;
+    sourceId: string;
+    attemptId: string;
+    status: string;
+    code: string | null;
+  }) {
+    finished.push(input);
+    return ingestion.finishScheduledFeedCapture(input);
+  },
 };
+// the capture records of a feed (P8-O1), oldest first
+const captureRecords = (sourceId: string) =>
+  client.contentStudioSourceCaptureAttempt.findMany({
+    where: { sourceId },
+    orderBy: [{ startedAt: 'asc' }, { id: 'asc' }],
+  });
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (
@@ -368,6 +397,7 @@ const realFeed = async (organizationId: string, name: string, entries = 1) => {
 
 const clean = async () => {
   const where = { organizationId: { in: ORGS } };
+  await client.contentStudioSourceCaptureAttempt.deleteMany({ where });
   await client.contentStudioSourceDiscovery.deleteMany({ where });
   await client.contentStudioSourceVersion.deleteMany({ where });
   await client.contentStudioSource.deleteMany({ where });
@@ -401,8 +431,19 @@ beforeAll(async () => {
   const discoveries = new ContentStudioSourceDiscoveryRepository(
     new PrismaRepository<'contentStudioSourceDiscovery'>(prisma)
   );
-  ingestion = new ContentStudioSourceIngestionService(sources, discoveries);
-  sourceService = new ContentStudioSourceService(sources, discoveries);
+  const captureAttempts = new ContentStudioSourceCaptureAttemptRepository(
+    new PrismaRepository<'contentStudioSourceCaptureAttempt'>(prisma)
+  );
+  ingestion = new ContentStudioSourceIngestionService(
+    sources,
+    discoveries,
+    captureAttempts
+  );
+  sourceService = new ContentStudioSourceService(
+    sources,
+    discoveries,
+    captureAttempts
+  );
   await cleanFixtures();
   for (const org of ORGS) {
     await client.organization.create({
@@ -475,6 +516,7 @@ beforeEach(async () => {
   broken.clear();
   unreachable.clear();
   recorded.length = 0;
+  finished.length = 0;
   started.length = 0;
   startedAt.clear();
   calls.clear();
@@ -951,6 +993,20 @@ describe('P8-C2 on Temporal and PostgreSQL: the real capture behind the queue', 
         attempts: [1],
       });
     }
+    // P8O1T10 behind the full queue, one success record per run, with what
+    // its capture reported
+    for (const [i, [, id]] of feeds.entries()) {
+      const rows = await captureRecords(id);
+      expect(rows.map((r) => [r.id, r.status, r.attemptCount])).toEqual([
+        [handlesByFeed[i].firstExecutionRunId, 'success', 1],
+      ]);
+      expect(rows[0].entriesAccepted).toBe(
+        byFeed.get(id)!.capture.entriesAccepted
+      );
+      expect(rows[0].entriesLimited).toBe(
+        byFeed.get(id)!.capture.entriesLimited
+      );
+    }
   });
 });
 
@@ -1033,6 +1089,9 @@ describe('P8-C3 on Temporal and PostgreSQL: a paused feed', () => {
     const after = await writes(feed);
     expect(after).toEqual(before);
     expect(after.feed.lastCapturedAt).toEqual(last);
+    // P8O1T6 a skip before the feed is read is no capture: no record
+    expect(await captureRecords(feed)).toEqual([]);
+    expect(finished).toEqual([]);
     // an expected state, not a failure: one attempt, on the capture queue
     expect(await captureEvents(handle)).toEqual({
       queues: [CONTENT_STUDIO_CAPTURE_TASK_QUEUE],
@@ -1222,8 +1281,27 @@ describe('P8-C4 on Temporal and PostgreSQL: the schedule', () => {
     unreachable.add(feedUrl('down'));
     const infra = await realFeed(ORG_B, 'infra');
     broken.set(infra, () => new Error('connection reset'));
+    // P8O1T4 a feed whose capture read it, then lost the database
+    const lost = await realFeed(ORG_C, 'lost');
+    const recordDiscovery =
+      ContentStudioSourceDiscoveryRepository.prototype.recordDiscovery;
+    const lostDatabase = jest
+      .spyOn(
+        ContentStudioSourceDiscoveryRepository.prototype,
+        'recordDiscovery'
+      )
+      .mockImplementation(function (
+        this: ContentStudioSourceDiscoveryRepository,
+        input
+      ) {
+        if (input.feedSourceId === lost) {
+          throw new Error('connection reset');
+        }
+        return recordDiscovery.call(this, input);
+      });
     const downHandle = await startCapture(ORG_A, down);
     const infraHandle = await startCapture(ORG_B, infra);
+    const lostHandle = await startCapture(ORG_C, lost);
     const from = Date.now();
     // the capture's own policy: 3 attempts, 2 minutes apart
     const downFailure = await failureOf(downHandle);
@@ -1233,8 +1311,9 @@ describe('P8-C4 on Temporal and PostgreSQL: the schedule', () => {
       nonRetryable: false,
     });
     // the history keeps the last attempt of each activity: the third of the
-    // capture, the first of the record; the activity ran three times
-    expect((await captureEvents(downHandle)).attempts).toEqual([3, 1]);
+    // capture, the first of the record and of the record's end (P8-O1); the
+    // activity ran three times
+    expect((await captureEvents(downHandle)).attempts).toEqual([3, 1, 1]);
     expect(calls.get(down)).toBe(3);
     expect(
       await activityEvents(downHandle, 'recordContentStudioFeedCaptureFailure')
@@ -1247,12 +1326,42 @@ describe('P8-C4 on Temporal and PostgreSQL: the schedule', () => {
     expect(failed.lastCapturedAt).toBeNull();
     expect(failed.nextCaptureAt!.getTime()).toBeGreaterThanOrEqual(from + HOUR);
     expect(failed.nextCaptureAt!.getTime()).toBeLessThanOrEqual(to + HOUR);
+    // P8O1T2 one record for the three tries, ended after the failure record,
+    // on main: its code, three tries, the schedule that failure left
+    const downRuns = await captureRecords(down);
+    expect(downRuns).toHaveLength(1);
+    expect(downRuns[0]).toMatchObject({
+      id: (await downHandle.describe()).runId,
+      trigger: 'scheduled',
+      status: 'source_failed',
+      errorCode: 'CS_SOURCE_FETCH_FAILED',
+      attemptCount: 3,
+      nextCaptureAtAfter: failed.nextCaptureAt,
+      consecutiveFailuresAfter: 1,
+      entriesSeen: null,
+    });
+    expect(downRuns[0].finishedAt!.getTime()).toBeGreaterThanOrEqual(
+      downRuns[0].startedAt.getTime() + 4 * 60 * 1000
+    );
+    expect(
+      await activityEvents(downHandle, 'finishContentStudioFeedCaptureAttempt')
+    ).toEqual(['main']);
+    expect(finished.filter((f) => f.sourceId === down)).toEqual([
+      {
+        organizationId: ORG_A,
+        sourceId: down,
+        attemptId: downRuns[0].id,
+        status: 'source_failed',
+        code: 'CS_SOURCE_FETCH_FAILED',
+      },
+    ]);
     // the database failure: as many attempts, no record, the feed due
     const infraFailure = await failureOf(infraHandle);
     expect((infraFailure as { cause?: unknown }).cause).toMatchObject({
       type: 'Error',
     });
-    expect((await captureEvents(infraHandle)).attempts).toEqual([3]);
+    // and the end of its run (P8-O1)
+    expect((await captureEvents(infraHandle)).attempts).toEqual([3, 1]);
     expect(calls.get(infra)).toBe(3);
     expect(
       await activityEvents(infraHandle, 'recordContentStudioFeedCaptureFailure')
@@ -1263,10 +1372,64 @@ describe('P8-C4 on Temporal and PostgreSQL: the schedule', () => {
       consecutiveCaptureFailures: 0,
       scanPausedAt: null,
     });
-    // P8C4T3: the next scan starts the due one only
+    // P8O1T4 its run ends as a failure of the system: no code, the feed as
+    // it was. It failed before it read the feed, so it began no record, and
+    // its end changes nothing
+    expect(finished.filter((f) => f.sourceId === infra)).toEqual([
+      {
+        organizationId: ORG_B,
+        sourceId: infra,
+        attemptId: (await infraHandle.describe()).runId,
+        status: 'infrastructure_failed',
+        code: null,
+      },
+    ]);
+    expect(await captureRecords(infra)).toEqual([]);
+    // P8O1T4 the one that read its feed: one record for its three tries,
+    // ended as a failure of the system, the feed as it was
+    const lostFailure = await failureOf(lostHandle);
+    lostDatabase.mockRestore();
+    expect((lostFailure as { cause?: unknown }).cause).toMatchObject({
+      type: 'Error',
+    });
+    expect(calls.get(lost)).toBe(3);
+    expect(
+      await activityEvents(lostHandle, 'recordContentStudioFeedCaptureFailure')
+    ).toEqual([]);
+    expect(
+      await activityEvents(lostHandle, 'finishContentStudioFeedCaptureAttempt')
+    ).toEqual(['main']);
+    expect(
+      (await captureRecords(lost)).map((r) => [
+        r.id,
+        r.status,
+        r.errorCode,
+        r.attemptCount,
+        r.nextCaptureAtAfter,
+        r.consecutiveFailuresAfter,
+      ])
+    ).toEqual([
+      [
+        (await lostHandle.describe()).runId,
+        'infrastructure_failed',
+        null,
+        3,
+        null,
+        0,
+      ],
+    ]);
+    expect(await schedule(lost)).toEqual({
+      lastCapturedAt: null,
+      nextCaptureAt: null,
+      consecutiveCaptureFailures: 0,
+      scanPausedAt: null,
+    });
+    // P8C4T3: the next scan starts the due ones only
     broken.clear();
     const scan = await startScan();
-    expect(await childrenOf(scan)).toEqual([workflowId(infra)]);
+    expect((await childrenOf(scan)).sort()).toEqual(
+      [workflowId(infra), workflowId(lost)].sort()
+    );
     await sleep(500);
     expect(calls.get(down)).toBe(3);
   }, 600_000);
@@ -1280,6 +1443,24 @@ describe('P8-C4 on Temporal and PostgreSQL: the schedule', () => {
     ).toMatchObject({ type: 'CS_SOURCE_FEED_INVALID', nonRetryable: true });
     expect(recorded.map((r) => r.code)).toEqual(['CS_SOURCE_FEED_INVALID']);
     expect((await schedule(refused)).consecutiveCaptureFailures).toBe(1);
+    // P8O1T3 one record, one try, the feed's code
+    expect(
+      (await captureRecords(refused)).map((r) => [
+        r.id,
+        r.status,
+        r.errorCode,
+        r.attemptCount,
+        r.consecutiveFailuresAfter,
+      ])
+    ).toEqual([
+      [
+        handle.firstExecutionRunId,
+        'source_failed',
+        'CS_SOURCE_FEED_INVALID',
+        1,
+        1,
+      ],
+    ]);
     // P8C4-8 the record runs on main, never behind captures in their queue
     expect(
       await activityEvents(handle, 'recordContentStudioFeedCaptureFailure')
@@ -1306,6 +1487,14 @@ describe('P8-C4 on Temporal and PostgreSQL: the schedule', () => {
       after.nextCaptureAt!.getTime() - after.lastCapturedAt!.getTime()
     ).toBe(3 * HOUR);
     expect(recorded).toEqual([]);
+    expect(finished).toEqual([]);
+    expect(
+      (await captureRecords(feed)).map((r) => [
+        r.status,
+        r.nextCaptureAtAfter,
+        r.consecutiveFailuresAfter,
+      ])
+    ).toEqual([['success', after.nextCaptureAt, 0]]);
   });
 
   it('P8C4T5/P8C4T6 a paused feed keeps its schedule and is not started; resumed overdue, it is captured once', async () => {
@@ -1352,6 +1541,108 @@ describe('P8-C4 on Temporal and PostgreSQL: the schedule', () => {
     expect(
       Number(timer.timerStartedEventAttributes!.startToFireTimeout!.seconds)
     ).toBe(600);
+    // P8O1T9 no capture, no record
+    expect(
+      await client.contentStudioSourceCaptureAttempt.count({
+        where: { organizationId: { in: ORGS } },
+      })
+    ).toBe(0);
+    expect(finished).toEqual([]);
+  });
+});
+
+describe('P8-O1 on Temporal and PostgreSQL: the capture history', () => {
+  const HOUR = 60 * 60 * 1000;
+
+  it('P8O1T1/M15/M16 a scheduled success is one record named by its run: one try, its counts, the schedule it set', async () => {
+    const feed = await realFeed(ORG_A, 'o1-success', 2);
+    const handle = await startCapture(ORG_A, feed);
+    const result = (await handle.result()) as {
+      capture: Record<string, number>;
+    };
+    const rows = await captureRecords(feed);
+    const source = await client.contentStudioSource.findUniqueOrThrow({
+      where: { id: feed },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: handle.firstExecutionRunId,
+      organizationId: ORG_A,
+      trigger: 'scheduled',
+      status: 'success',
+      requestedByUserId: null,
+      attemptCount: 1,
+      errorCode: null,
+      ...result.capture,
+      nextCaptureAtAfter: source.nextCaptureAt,
+      consecutiveFailuresAfter: 0,
+    });
+    expect(
+      rows[0].nextCaptureAtAfter!.getTime() - source.lastCapturedAt!.getTime()
+    ).toBe(HOUR);
+    // a success ends its own record: the workflow ends nothing
+    expect(finished).toEqual([]);
+    const { events } = await handle.fetchHistory();
+    expect(
+      events!.filter(
+        (e) =>
+          e.activityTaskScheduledEventAttributes?.activityType?.name ===
+          'finishContentStudioFeedCaptureAttempt'
+      )
+    ).toEqual([]);
+    // read back for the organization, newest first
+    const read = await sourceService.listFeedCaptures({
+      organizationId: ORG_A,
+      sourceId: feed,
+      page: 1,
+    });
+    expect(read.results.map((r) => [r.id, r.trigger, r.status])).toEqual([
+      [handle.firstExecutionRunId, 'scheduled', 'success'],
+    ]);
+  });
+
+  it('P8O1T7/P8O1T8 a scheduled failure, then a member refresh of the paused feed: two records, the feed recovered and still paused', async () => {
+    const feed = await realFeed(ORG_B, 'o1-recover', 1);
+    web.feeds.set(feedUrl('o1-recover'), '<nope');
+    const handle = await startCapture(ORG_B, feed);
+    await handle.result().catch(() => undefined);
+    await sourceService.pauseFeed(ORG_B, feed);
+    web.feeds.set(feedUrl('o1-recover'), rss([page('o1-recover-0')]));
+    mockLimits.manualRefreshCooldownMs = 0;
+    await ingestion.refreshSource({
+      organizationId: ORG_B,
+      userId: USER(ORG_B),
+      sourceId: feed,
+    });
+    const source = await client.contentStudioSource.findUniqueOrThrow({
+      where: { id: feed },
+    });
+    expect(source.consecutiveCaptureFailures).toBe(0);
+    expect(source.scanPausedAt).toBeInstanceOf(Date);
+    expect(
+      source.nextCaptureAt!.getTime() - source.lastCapturedAt!.getTime()
+    ).toBe(HOUR);
+    expect(
+      (await captureRecords(feed)).map((r) => [
+        r.trigger,
+        r.status,
+        r.errorCode,
+        r.requestedByUserId,
+        r.consecutiveFailuresAfter,
+      ])
+    ).toEqual([
+      ['scheduled', 'source_failed', 'CS_SOURCE_FEED_INVALID', null, 1],
+      ['manual', 'success', null, USER(ORG_B), 0],
+    ]);
+    const read = await sourceService.listFeedCaptures({
+      organizationId: ORG_B,
+      sourceId: feed,
+      page: 1,
+    });
+    expect(read.results.map((r) => [r.trigger, r.status])).toEqual([
+      ['manual', 'success'],
+      ['scheduled', 'source_failed'],
+    ]);
   });
 });
 

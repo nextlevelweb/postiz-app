@@ -16,6 +16,7 @@ import {
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
+import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import {
   ContentStudioSourceIngestionService,
@@ -203,9 +204,18 @@ const setup = () => {
   const discoveries = {} as ContentStudioSourceDiscoveryRepository;
   const ingestion = new ContentStudioSourceIngestionService(
     repository,
-    discoveries
+    discoveries,
+    new ContentStudioSourceCaptureAttemptRepository({
+      model: { contentStudioSourceCaptureAttempt: {} },
+    } as unknown as PrismaRepository<'contentStudioSourceCaptureAttempt'>)
   );
-  const sources = new ContentStudioSourceService(repository, discoveries);
+  const sources = new ContentStudioSourceService(
+    repository,
+    discoveries,
+    new ContentStudioSourceCaptureAttemptRepository({
+      model: { contentStudioSourceCaptureAttempt: {} },
+    } as unknown as PrismaRepository<'contentStudioSourceCaptureAttempt'>)
+  );
   const addSource = async (overrides: Row = {}) => {
     await repository.createSourcesWithinLimit({
       organizationId: ORG,

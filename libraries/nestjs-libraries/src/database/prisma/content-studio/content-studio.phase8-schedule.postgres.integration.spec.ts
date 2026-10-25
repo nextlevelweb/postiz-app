@@ -7,6 +7,7 @@ import {
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
+import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
@@ -28,6 +29,18 @@ type Web = {
   failing: Set<string>;
   // a URL whose answer waits until it is released
   held: Map<string, Promise<void>>;
+};
+const NO_COUNTS = {
+  entriesSeen: 0,
+  entriesIgnored: 0,
+  entriesSkipped: 0,
+  entriesAccepted: 0,
+  sourcesCreated: 0,
+  versionsCreated: 0,
+  unchanged: 0,
+  failed: 0,
+  archived: 0,
+  entriesLimited: 0,
 };
 const web: Web = {
   feeds: new Map(),
@@ -179,7 +192,12 @@ const due = async () => {
   return ids.sort();
 };
 const scheduled = (organizationId: string, sourceId: string) =>
-  ingestion.captureScheduledFeed({ organizationId, sourceId });
+  ingestion.captureScheduledFeed({
+    organizationId,
+    sourceId,
+    attemptId: randomUUID(),
+    attemptCount: 1,
+  });
 const refresh = (organizationId: string, sourceId: string) =>
   ingestion.refreshSource({
     organizationId,
@@ -212,6 +230,7 @@ const refusal = async (call: Promise<unknown>) => {
 
 const clean = async () => {
   const where = { organizationId: { in: ORGS } };
+  await client.contentStudioSourceCaptureAttempt.deleteMany({ where });
   await client.contentStudioSourceDiscovery.deleteMany({ where });
   await client.contentStudioSourceVersion.deleteMany({ where });
   await client.contentStudioSource.deleteMany({ where });
@@ -239,8 +258,19 @@ beforeAll(async () => {
   const discoveries = new ContentStudioSourceDiscoveryRepository(
     new PrismaRepository<'contentStudioSourceDiscovery'>(prisma)
   );
-  ingestion = new ContentStudioSourceIngestionService(repository, discoveries);
-  service = new ContentStudioSourceService(repository, discoveries);
+  const captureAttempts = new ContentStudioSourceCaptureAttemptRepository(
+    new PrismaRepository<'contentStudioSourceCaptureAttempt'>(prisma)
+  );
+  ingestion = new ContentStudioSourceIngestionService(
+    repository,
+    discoveries,
+    captureAttempts
+  );
+  service = new ContentStudioSourceService(
+    repository,
+    discoveries,
+    captureAttempts
+  );
   await cleanFixtures();
   for (const id of ORGS) {
     await client.organization.create({
@@ -385,26 +415,40 @@ describe('P8-C4 on PostgreSQL: a successful capture', () => {
     const feed = await fixtureFeed(ORG_A, 'mono');
     const newer = ago(MINUTE);
     const older = ago(2 * MINUTE);
+    // no record of these captures: the feed's write is the same without one
+    const noRecord = () => ({
+      id: randomUUID(),
+      finishedAt: new Date(),
+      summary: NO_COUNTS,
+    });
     expect(
       await repository.markFeedCaptured(
         ORG_A,
         feed,
         newer,
-        new Date(newer.getTime() + HOUR)
+        new Date(newer.getTime() + HOUR),
+        noRecord()
       )
-    ).toEqual({ count: 1 });
+    ).toEqual({ count: 1, ended: false });
     expect(
       await repository.markFeedCaptured(
         ORG_A,
         feed,
         older,
-        new Date(older.getTime() + HOUR)
+        new Date(older.getTime() + HOUR),
+        noRecord()
       )
-    ).toEqual({ count: 0 });
+    ).toEqual({ count: 0, ended: false });
     // the same time again is no later read either
     expect(
-      await repository.markFeedCaptured(ORG_A, feed, newer, ahead(9 * HOUR))
-    ).toEqual({ count: 0 });
+      await repository.markFeedCaptured(
+        ORG_A,
+        feed,
+        newer,
+        ahead(9 * HOUR),
+        noRecord()
+      )
+    ).toEqual({ count: 0, ended: false });
     expect(await schedule(feed)).toEqual({
       lastCapturedAt: newer,
       nextCaptureAt: new Date(newer.getTime() + HOUR),

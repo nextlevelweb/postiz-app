@@ -1,6 +1,6 @@
 import { HttpException, Injectable } from '@nestjs/common';
 import { Activity, ActivityMethod } from 'nestjs-temporal-core';
-import { ApplicationFailure } from '@temporalio/activity';
+import { activityInfo, ApplicationFailure } from '@temporalio/activity';
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 
 // Failures worth another attempt: the feed could not be reached or answered
@@ -27,14 +27,23 @@ export class ContentStudioSourceActivity {
     );
   }
 
+  // One record per capture workflow run (P8-O1): its run id names the
+  // record, and this try's number is its try count. Nothing more comes from
+  // the workflow
   @ActivityMethod()
   async captureContentStudioFeed(input: {
     organizationId: string;
     sourceId: string;
   }) {
+    const { workflowExecution, attempt } = activityInfo();
     try {
       return await this._contentStudioSourceIngestionService.captureScheduledFeed(
-        input
+        {
+          organizationId: input.organizationId,
+          sourceId: input.sourceId,
+          attemptId: workflowExecution.runId,
+          attemptCount: attempt,
+        }
       );
     } catch (err) {
       if (!(err instanceof HttpException)) {
@@ -66,6 +75,23 @@ export class ContentStudioSourceActivity {
     code: string;
   }) {
     return this._contentStudioSourceIngestionService.recordScheduledFeedFailure(
+      input
+    );
+  }
+
+  // The end of a scheduled capture that failed after its tries (P8-O1), once
+  // its failure was recorded: the capture workflow's run id, the outcome and
+  // the CS_ code of a failure of the feed (null for one of the system).
+  // Ended once; a record ended already or never begun is an answer
+  @ActivityMethod()
+  async finishContentStudioFeedCaptureAttempt(input: {
+    organizationId: string;
+    sourceId: string;
+    attemptId: string;
+    status: 'source_failed' | 'infrastructure_failed';
+    code: string | null;
+  }) {
+    return this._contentStudioSourceIngestionService.finishScheduledFeedCapture(
       input
     );
   }

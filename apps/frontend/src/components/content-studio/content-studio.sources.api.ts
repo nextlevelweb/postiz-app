@@ -8,6 +8,7 @@ import {
   request,
   swrOptions,
 } from '@gitroom/frontend/components/content-studio/content-studio.api';
+import type { ContentStudioFeedCaptureTrigger } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
 
 // Sources of the organization: pages it tracks, with their captured versions
 // as provenance, and feeds (RSS or Atom) that find pages. A source is never a
@@ -165,6 +166,38 @@ export interface ContentStudioFeedCaptureResult {
   capture: ContentStudioFeedCaptureCounts;
 }
 
+// One capture of a feed (P8-O1), as the server recorded it: what started it,
+// how it ended, when and how long, and its counts after a success. A record
+// still running long after it started is reported as interrupted. Never a
+// message, a page or who asked
+export interface ContentStudioFeedCapture {
+  id: string;
+  trigger: ContentStudioFeedCaptureTrigger;
+  status:
+    | 'running'
+    | 'interrupted'
+    | 'success'
+    | 'source_failed'
+    | 'infrastructure_failed';
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+  // the tries of a scheduled capture that started reading the feed
+  attemptCount: number;
+  // a failure of the feed only: its fixed code
+  errorCode: string | null;
+  summary: ContentStudioFeedCaptureCounts | null;
+  // the feed's schedule right after the capture ended
+  nextCaptureAtAfter: string | null;
+  consecutiveFailuresAfter: number | null;
+}
+
+export interface ContentStudioFeedCaptureList {
+  pages: number;
+  total: number;
+  results: ContentStudioFeedCapture[];
+}
+
 // A page a feed found, with when this feed listed it. The entry's title and
 // date are what the feed said, as plain text; the page's own text is in its
 // own source. changedSinceFound is the server's answer (P8-04B2): the page
@@ -233,6 +266,8 @@ export const sourceVersionsPath = (id: string, page: number) =>
   `${sourcePath(id)}/versions?page=${page}`;
 export const sourceDiscoveriesPath = (id: string, page: number) =>
   `${sourcePath(id)}/discoveries?page=${page}`;
+export const sourceCapturesPath = (id: string, page: number) =>
+  `${sourcePath(id)}/captures?page=${page}`;
 const sourceVersionPath = (id: string, versionId: string) =>
   `${sourcePath(id)}/versions/${encodeURIComponent(versionId)}`;
 export const sourceVersionChangesPath = (id: string, versionId: string) =>
@@ -296,6 +331,25 @@ export const useContentStudioSourceDiscoveries = (
   );
 };
 
+// A feed's capture history (P8-O1), newest first; loaded for a feed only.
+// Read again when the page is opened or a refresh ends, never polled
+export const useContentStudioFeedCaptures = (
+  id: string,
+  page: number,
+  enabled: boolean
+) => {
+  const fetch = useFetch();
+  const load = useCallback(
+    (path: string) => request<ContentStudioFeedCaptureList>(fetch, path),
+    [fetch]
+  );
+  return useSWR(
+    enabled ? sourceCapturesPath(id, page) : null,
+    load,
+    swrOptions
+  );
+};
+
 // Loaded only for the version the user opens. A version never changes, so
 // its answer is never revalidated
 export const useContentStudioSourceVersion = (
@@ -352,7 +406,8 @@ export const useContentStudioSourceActions = () => {
             (!!id &&
               (key === sourcePath(id) ||
                 key.startsWith(`${sourcePath(id)}/versions?`) ||
-                key.startsWith(`${sourcePath(id)}/discoveries?`))))
+                key.startsWith(`${sourcePath(id)}/discoveries?`) ||
+                key.startsWith(`${sourcePath(id)}/captures?`))))
       ),
     [mutate]
   );
@@ -545,5 +600,51 @@ export const sourceErrorMessage = (t: Translate, error: unknown) => {
         'content_studio_source_error',
         'Something went wrong while updating the source.'
       );
+  }
+};
+
+// Why a recorded feed capture failed (P8-O1), as a past fact: fixed words for
+// each code a capture can end with, never what to do next. Any other code
+// is a capture that failed
+export const feedCaptureErrorLabel = (t: Translate, code: string | null) => {
+  switch (code) {
+    case 'CS_SOURCE_FETCH_FAILED':
+      return t(
+        'content_studio_feed_capture_error_fetch_failed',
+        'The feed could not be fetched.'
+      );
+    case 'CS_SOURCE_FETCH_TIMEOUT':
+      return t(
+        'content_studio_feed_capture_error_timeout',
+        'The feed did not respond in time.'
+      );
+    case 'CS_SOURCE_FETCH_BLOCKED':
+    case 'CS_SOURCE_URL_INVALID':
+      return t(
+        'content_studio_feed_capture_error_blocked',
+        'The feed address cannot be fetched by the current security policy.'
+      );
+    case 'CS_SOURCE_FETCH_TOO_LARGE':
+      return t(
+        'content_studio_feed_capture_error_too_large',
+        'The feed response was too large.'
+      );
+    case 'CS_SOURCE_CONTENT_TYPE_UNSUPPORTED':
+      return t(
+        'content_studio_feed_capture_error_content_type',
+        'The feed content type or character encoding is not supported.'
+      );
+    case 'CS_SOURCE_FEED_INVALID':
+      return t(
+        'content_studio_feed_capture_error_feed_invalid',
+        'The address did not answer with an RSS or Atom feed that could be read.'
+      );
+    case 'CS_SOURCE_INTEGRITY_ERROR':
+      return t(
+        'content_studio_feed_capture_error_integrity',
+        'Stored feed data could not be read safely.'
+      );
+    default:
+      return t('content_studio_feed_capture_error', 'The capture failed.');
   }
 };

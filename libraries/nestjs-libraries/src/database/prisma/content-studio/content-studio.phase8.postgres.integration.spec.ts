@@ -7,6 +7,7 @@ import {
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
+import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
@@ -93,6 +94,7 @@ let prisma: PrismaService;
 let transaction: PrismaTransaction;
 let sources: ContentStudioSourceRepository;
 let discoveries: ContentStudioSourceDiscoveryRepository;
+let captureAttempts: ContentStudioSourceCaptureAttemptRepository;
 let ingestion: ContentStudioSourceIngestionService;
 let sourceService: ContentStudioSourceService;
 
@@ -174,7 +176,11 @@ const perPage = (parties: number) => {
   };
 };
 const ingestionWith = (repository: ContentStudioSourceRepository) =>
-  new ContentStudioSourceIngestionService(repository, discoveries);
+  new ContentStudioSourceIngestionService(
+    repository,
+    discoveries,
+    captureAttempts
+  );
 
 const createFeed = async (
   organizationId: string,
@@ -255,6 +261,7 @@ const refusal = async (call: Promise<unknown>) => {
 
 const cleanPhase8 = async () => {
   const where = { organizationId: { in: ORGS } };
+  await client.contentStudioSourceCaptureAttempt.deleteMany({ where });
   await client.contentStudioSourceDiscovery.deleteMany({ where });
   await client.contentStudioSourceVersion.deleteMany({ where });
   await client.contentStudioSource.deleteMany({ where });
@@ -281,8 +288,15 @@ beforeAll(async () => {
   discoveries = new ContentStudioSourceDiscoveryRepository(
     new PrismaRepository<'contentStudioSourceDiscovery'>(prisma)
   );
+  captureAttempts = new ContentStudioSourceCaptureAttemptRepository(
+    new PrismaRepository<'contentStudioSourceCaptureAttempt'>(prisma)
+  );
   ingestion = ingestionWith(sources);
-  sourceService = new ContentStudioSourceService(sources, discoveries);
+  sourceService = new ContentStudioSourceService(
+    sources,
+    discoveries,
+    captureAttempts
+  );
 
   await cleanFixtures();
   for (const id of ORGS) {
@@ -410,7 +424,12 @@ describe('Phase 8 on PostgreSQL: concurrency', () => {
     web.beforePage = () => barrier();
     const [byHand, scheduled] = await Promise.all([
       manual(ORG_A, feed, ingestion, USER_A2),
-      ingestion.captureScheduledFeed({ organizationId: ORG_A, sourceId: feed }),
+      ingestion.captureScheduledFeed({
+        organizationId: ORG_A,
+        sourceId: feed,
+        attemptId: randomUUID(),
+        attemptCount: 1,
+      }),
     ]);
     expect(scheduled.status).toBe('captured');
     const [s] = await pageSources();
@@ -480,6 +499,8 @@ describe('Phase 8 on PostgreSQL: repeated captures and the schedule', () => {
       await ingestion.captureScheduledFeed({
         organizationId: ORG_A,
         sourceId: feed,
+        attemptId: randomUUID(),
+        attemptCount: 1,
       })
     ).toEqual({ status: 'skipped' });
     expect((await refusal(manual(ORG_A, feed))).status).toBe(409);
@@ -491,6 +512,8 @@ describe('Phase 8 on PostgreSQL: repeated captures and the schedule', () => {
     await ingestion.captureScheduledFeed({
       organizationId: ORG_A,
       sourceId: feed,
+      attemptId: randomUUID(),
+      attemptCount: 1,
     });
     expect(await due()).toEqual([]);
     // the schedule writes in the feed creator's name
@@ -516,6 +539,8 @@ describe('Phase 8 on PostgreSQL: repeated captures and the schedule', () => {
         await ingestion.captureScheduledFeed({
           organizationId: ORG_B,
           sourceId: feed,
+          attemptId: randomUUID(),
+          attemptCount: 1,
         })
       ).toEqual({ status: 'skipped' });
       expect(mockSafeFetch).not.toHaveBeenCalled();
@@ -535,6 +560,8 @@ describe('Phase 8 on PostgreSQL: repeated captures and the schedule', () => {
       await ingestion.captureScheduledFeed({
         organizationId: ORG_B,
         sourceId: feed,
+        attemptId: randomUUID(),
+        attemptCount: 1,
       })
     ).toMatchObject({ status: 'captured' });
   });
@@ -646,6 +673,8 @@ describe('Phase 8 on PostgreSQL: tenancy and integrity', () => {
       await ingestion.captureScheduledFeed({
         organizationId: ORG_B,
         sourceId: feed,
+        attemptId: randomUUID(),
+        attemptCount: 1,
       })
     ).toEqual({ status: 'skipped' });
     await manual(ORG_A, feed);

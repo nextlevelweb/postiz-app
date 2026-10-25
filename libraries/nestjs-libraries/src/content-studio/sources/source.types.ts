@@ -146,3 +146,80 @@ export const nextCaptureAfterSuccess = (
   capturedAt: Date,
   intervalMinutes: number
 ) => new Date(capturedAt.getTime() + intervalMinutes * 60 * 1000);
+
+// What one feed capture did, in counts only: never a URL, a title or a
+// source id. entriesAccepted = versionsCreated + unchanged + failed + archived
+export interface ContentStudioFeedCaptureSummary {
+  // entries in the feed
+  entriesSeen: number;
+  // entries past the capture limit, not read
+  entriesIgnored: number;
+  // read, but no https page link, a page listed before, or the address of
+  // a source that is not a page (a feed)
+  entriesSkipped: number;
+  // pages recorded as discovered by this feed (but for a new page whose
+  // source lost every creation attempt to concurrent ones: failed)
+  entriesAccepted: number;
+  // page sources this capture created
+  sourcesCreated: number;
+  // pages captured as a new version (a new source's first one included)
+  versionsCreated: number;
+  // pages captured with nothing new: no version
+  unchanged: number;
+  // pages that could not be captured this time: no version
+  failed: number;
+  // pages whose source is archived: recorded, not captured
+  archived: number;
+  // new pages while the organization has its most page sources (P8-C1): no
+  // source, not recorded, not fetched. Never a failure
+  entriesLimited: number;
+}
+
+// The counts of a summary, in its order: what a capture's record keeps
+export const CONTENT_STUDIO_FEED_CAPTURE_COUNTS: ReadonlyArray<
+  keyof ContentStudioFeedCaptureSummary
+> = [
+  'entriesSeen',
+  'entriesIgnored',
+  'entriesSkipped',
+  'entriesAccepted',
+  'sourcesCreated',
+  'versionsCreated',
+  'unchanged',
+  'failed',
+  'archived',
+  'entriesLimited',
+];
+
+// One capture of a feed (P8-O1): what started it, the schedule or a member's
+// refresh. Text in the database, like the kinds
+export const CONTENT_STUDIO_FEED_CAPTURE_TRIGGERS = [
+  'scheduled',
+  'manual',
+] as const;
+
+export type ContentStudioFeedCaptureTrigger =
+  (typeof CONTENT_STUDIO_FEED_CAPTURE_TRIGGERS)[number];
+
+// running from the moment it reads the feed until it ends, then once one of
+// the others: a success, a failure for a reason of the feed (a CS_ code), or
+// one of the system (the database, a timeout, a lost worker)
+export const CONTENT_STUDIO_FEED_CAPTURE_STATUSES = [
+  'running',
+  'success',
+  'source_failed',
+  'infrastructure_failed',
+] as const;
+
+export type ContentStudioFeedCaptureStatus =
+  (typeof CONTENT_STUDIO_FEED_CAPTURE_STATUSES)[number];
+
+// The fixed code a capture failed with: CS_ and capitals, nothing quoted
+export const CONTENT_STUDIO_FEED_CAPTURE_ERROR_CODE = /^CS_[A-Z_]{1,60}$/;
+
+// A capture still running this long after it started is reported as
+// interrupted, and never changed for it. A scheduled one ends within 44
+// minutes: 3 tries of at most 10 minutes 2 minutes apart, then at most 5
+// minutes each to record its failure and its end. A member's refresh ends
+// with its request
+export const CONTENT_STUDIO_FEED_CAPTURE_STALE_MS = 60 * 60 * 1000;

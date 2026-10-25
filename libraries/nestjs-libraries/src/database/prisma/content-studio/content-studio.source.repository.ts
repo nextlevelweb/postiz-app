@@ -6,6 +6,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { ContentStudioSourceVersionData } from '@gitroom/nestjs-libraries/content-studio/sources/source.version';
 import { ContentStudioSourcePageChange } from '@gitroom/nestjs-libraries/content-studio/sources/source.change';
+import { ContentStudioFeedCaptureSummary } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
 
 const SOURCE_SUMMARY = {
   id: true,
@@ -440,26 +441,77 @@ export class ContentStudioSourceRepository {
   // had. A paused one too (P8-C3): a member's refresh, or a capture that was
   // already running when it was paused. Only a later read than the last one:
   // a refresh and a scheduled capture can overlap, and the one that read the
-  // feed first may end last, which then changes nothing
+  // feed first may end last, which then changes nothing. The capture's record
+  // (P8-O1) ends in the same transaction, as a success with its counts and
+  // the feed's schedule as it is after this write (another capture's, when
+  // this one changed nothing); a record that has already ended stays as it is
   markFeedCaptured(
     organizationId: string,
     id: string,
     capturedAt: Date,
-    nextCaptureAt: Date
+    nextCaptureAt: Date,
+    attempt: {
+      id: string;
+      finishedAt: Date;
+      summary: ContentStudioFeedCaptureSummary;
+    }
   ) {
-    return this._source.model.contentStudioSource.updateMany({
-      where: {
-        id,
-        organizationId,
-        kind: 'feed',
-        archivedAt: null,
-        OR: [{ lastCapturedAt: null }, { lastCapturedAt: { lt: capturedAt } }],
-      },
-      data: {
-        lastCapturedAt: capturedAt,
-        nextCaptureAt,
-        consecutiveCaptureFailures: 0,
-      },
+    return this._transaction.model.$transaction(async (tx) => {
+      const { count } = await tx.contentStudioSource.updateMany({
+        where: {
+          id,
+          organizationId,
+          kind: 'feed',
+          archivedAt: null,
+          OR: [
+            { lastCapturedAt: null },
+            { lastCapturedAt: { lt: capturedAt } },
+          ],
+        },
+        data: {
+          lastCapturedAt: capturedAt,
+          nextCaptureAt,
+          consecutiveCaptureFailures: 0,
+        },
+      });
+      const feed = await tx.contentStudioSource.findFirst({
+        where: {
+          id,
+          organizationId,
+        },
+        select: {
+          nextCaptureAt: true,
+          consecutiveCaptureFailures: true,
+        },
+      });
+      if (!feed) {
+        return { count, ended: false };
+      }
+      const ended = await tx.contentStudioSourceCaptureAttempt.updateMany({
+        where: {
+          id: attempt.id,
+          organizationId,
+          sourceId: id,
+          status: 'running',
+        },
+        data: {
+          status: 'success',
+          finishedAt: attempt.finishedAt,
+          entriesSeen: attempt.summary.entriesSeen,
+          entriesIgnored: attempt.summary.entriesIgnored,
+          entriesSkipped: attempt.summary.entriesSkipped,
+          entriesAccepted: attempt.summary.entriesAccepted,
+          sourcesCreated: attempt.summary.sourcesCreated,
+          versionsCreated: attempt.summary.versionsCreated,
+          unchanged: attempt.summary.unchanged,
+          failed: attempt.summary.failed,
+          archived: attempt.summary.archived,
+          entriesLimited: attempt.summary.entriesLimited,
+          nextCaptureAtAfter: feed.nextCaptureAt,
+          consecutiveFailuresAfter: feed.consecutiveCaptureFailures,
+        },
+      });
+      return { count, ended: ended.count === 1 };
     });
   }
 

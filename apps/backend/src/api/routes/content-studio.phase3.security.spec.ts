@@ -151,6 +151,8 @@ const refusedFields = async (metatype: unknown, body: object) => {
 const NINE_ROUTES = [
   'GET /sources',
   'GET /sources/:id',
+  // a feed's capture history (P8-O1), read only
+  'GET /sources/:id/captures',
   'GET /sources/:id/discoveries',
   'GET /sources/:id/versions',
   'GET /sources/:id/versions/:versionId',
@@ -169,7 +171,7 @@ const NINE_ROUTES = [
 ];
 
 describe('Phase 3 source authorization', () => {
-  it('P3TRUST1 there are exactly the fourteen source routes', () => {
+  it('P3TRUST1 there are exactly the fifteen source routes', () => {
     expect(sourceHandlers.map(routeOf).sort()).toEqual(NINE_ROUTES);
   });
 
@@ -495,7 +497,7 @@ describe('Phase 3 AI operations and source material', () => {
 describe('Phase 3 Source Library trust surface', () => {
   const api = SOURCE.frontendApi;
 
-  it('P3UI1 the browser calls only the fourteen source routes', () => {
+  it('P3UI1 the browser calls only the fifteen source routes', () => {
     expect(
       Array.from(api.matchAll(/['`](\/content-studio[^'`]*)['`]/g)).map(
         (m) => m[1]
@@ -506,6 +508,8 @@ describe('Phase 3 Source Library trust surface', () => {
     ).map((m) => m[1]);
     expect([...new Set(suffixes)].sort()).toEqual([
       '/archive',
+      // a feed's capture history (P8-O1), read only
+      '/captures',
       // a feed's pages (P8-01), read only
       '/discoveries',
       // a feed's interval (P8-C4)

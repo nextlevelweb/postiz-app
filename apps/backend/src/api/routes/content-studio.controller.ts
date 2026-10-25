@@ -97,6 +97,7 @@ import {
   ListContentStudioSourcesDto,
   ListContentStudioSourceVersionsDto,
   ListContentStudioSourceDiscoveriesDto,
+  ListContentStudioFeedCapturesDto,
   ListContentStudioDiscoveriesDto,
   ListContentStudioSourceChangesDto,
   SetContentStudioFeedIntervalDto,
@@ -738,6 +739,21 @@ export class ContentStudioController {
     @Query() query: ListContentStudioSourceDiscoveriesDto
   ) {
     return this._contentStudioSourceService.listDiscoveries({
+      organizationId: org.id,
+      sourceId: id,
+      page: query.page,
+    });
+  }
+
+  // A feed's capture history (P8-O1), newest first: what each scheduled
+  // capture or refresh did, never what it read. Read only; captures write it
+  @Get('/sources/:id/captures')
+  listSourceCaptures(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Query() query: ListContentStudioFeedCapturesDto
+  ) {
+    return this._contentStudioSourceService.listFeedCaptures({
       organizationId: org.id,
       sourceId: id,
       page: query.page,

@@ -501,6 +501,7 @@ const cleanPhase5 = async () => {
   await client.contentPackage.deleteMany({ where });
   await client.contentStudioDesignRevision.deleteMany({ where });
   await client.contentStudioDesignProject.deleteMany({ where });
+  await client.contentStudioSourceCaptureAttempt.deleteMany({ where });
   await client.contentStudioSourceDiscovery.deleteMany({ where });
   await client.contentStudioSourceVersion.deleteMany({ where });
   await client.contentStudioSource.deleteMany({ where });

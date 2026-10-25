@@ -13,10 +13,14 @@ import { ContentStudioDiscoveryRow } from '@gitroom/frontend/components/content-
 import { radarFeedPagePath } from '@gitroom/frontend/components/content-studio/content-studio.research.api';
 import { ContentStudioUseInContent } from '@gitroom/frontend/components/content-studio/content-studio.package.modal';
 import {
+  ContentStudioFeedCapture,
+  ContentStudioFeedCaptureCounts,
   ContentStudioSourceBlock,
   ContentStudioSourceDetail as SourceDetailData,
   ContentStudioSourceVersionSummary,
+  feedCaptureErrorLabel,
   sourceErrorCode,
+  useContentStudioFeedCaptures,
   useContentStudioSource,
   useContentStudioSourceDiscoveries,
   useContentStudioSourceVersion,
@@ -627,6 +631,195 @@ const FeedDiscoveries: FC<{ feed: SourceDetailData }> = ({ feed }) => {
   );
 };
 
+// How long a capture took, from its first try to its end: under a second,
+// seconds to a tenth, or minutes and seconds
+export const formatCaptureDuration = (ms: number) => {
+  if (ms < 1000) {
+    return '<1s';
+  }
+  if (ms < 60_000) {
+    return `${(Math.floor(ms / 100) / 10).toFixed(1)}s`;
+  }
+  const seconds = Math.floor(ms / 1000);
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+};
+
+// What a successful capture did, in counts only
+const feedCaptureCounts = (
+  t: (key: string, fallback: string) => string,
+  summary: ContentStudioFeedCaptureCounts
+) =>
+  [
+    `${t('content_studio_feed_captured_pages', 'Pages found')}: ${
+      summary.entriesAccepted
+    }`,
+    `${t('content_studio_feed_captured_versions', 'New versions')}: ${
+      summary.versionsCreated
+    }`,
+    `${t('content_studio_feed_capture_unchanged', 'Unchanged')}: ${
+      summary.unchanged
+    }`,
+    ...(summary.failed
+      ? [
+          `${t(
+            'content_studio_feed_captured_failed',
+            'Pages not captured this time'
+          )}: ${summary.failed}`,
+        ]
+      : []),
+    ...(summary.entriesLimited
+      ? [
+          `${t(
+            'content_studio_feed_captured_limited',
+            'Pages not added because the organization reached its source limit'
+          )}: ${summary.entriesLimited}`,
+        ]
+      : []),
+  ].join(' · ');
+
+// One recorded capture (P8-O1): when, what started it, how it ended and how
+// long it took, then its counts or why it failed. A failure of the system
+// never reads as a fault of the feed; nothing the server did not send is
+// shown, and never a code as the message
+const FeedCaptureRow: FC<{ capture: ContentStudioFeedCapture }> = ({
+  capture,
+}) => {
+  const t = useT();
+  const failed =
+    capture.status === 'source_failed' ||
+    capture.status === 'infrastructure_failed' ||
+    capture.status === 'interrupted';
+  const outcome = {
+    running: t('content_studio_feed_capture_running', 'Capture in progress'),
+    interrupted: t(
+      'content_studio_feed_capture_interrupted',
+      'Capture interrupted'
+    ),
+    success: t('content_studio_feed_capture_success', 'Captured successfully'),
+    source_failed: t('content_studio_feed_capture_source_failed', 'Failed'),
+    infrastructure_failed: t(
+      'content_studio_feed_capture_system_failed',
+      'System problem'
+    ),
+  }[capture.status];
+  const detail =
+    capture.status === 'success' && capture.summary
+      ? feedCaptureCounts(t, capture.summary)
+      : capture.status === 'source_failed'
+      ? [
+          feedCaptureErrorLabel(t, capture.errorCode),
+          ...(capture.trigger === 'scheduled' &&
+          capture.nextCaptureAtAfter &&
+          (capture.consecutiveFailuresAfter ?? 0) > 0
+            ? [
+                `${t(
+                  'content_studio_feed_next_try_after',
+                  'Next try after'
+                )} ${formatDate(capture.nextCaptureAtAfter)}.`,
+              ]
+            : []),
+        ].join(' ')
+      : capture.status === 'infrastructure_failed'
+      ? t(
+          'content_studio_feed_capture_system_note',
+          'Capture could not complete because of a temporary system problem. The feed itself may be fine.'
+        )
+      : capture.status === 'interrupted'
+      ? t(
+          'content_studio_feed_capture_interrupted_note',
+          'No result was recorded for this capture.'
+        )
+      : null;
+  return (
+    <li className="flex flex-col gap-[4px] border border-newTableBorder rounded-[8px] p-[12px] min-w-0">
+      <div className="flex flex-wrap items-center gap-x-[12px] gap-y-[4px] text-[13px]">
+        <span
+          className={clsx(
+            'px-[8px] rounded-full border',
+            failed ? 'border-textColor/60 font-[600]' : 'border-newTableBorder'
+          )}
+        >
+          {outcome}
+        </span>
+        <span>
+          {capture.trigger === 'manual'
+            ? t('content_studio_feed_capture_manual', 'Manual')
+            : t('content_studio_feed_capture_scheduled', 'Scheduled')}
+        </span>
+        <span className="text-textItemBlur">
+          {formatDate(capture.startedAt)}
+        </span>
+        {capture.durationMs !== null && (
+          <span className="text-textItemBlur">
+            {formatCaptureDuration(capture.durationMs)}
+          </span>
+        )}
+        {capture.attemptCount > 1 && (
+          <span className="text-textItemBlur">
+            {t('content_studio_feed_capture_tries', 'Tries')}:{' '}
+            {capture.attemptCount}
+          </span>
+        )}
+      </div>
+      {detail && (
+        <div className="text-[13px] text-textItemBlur break-words">
+          {detail}
+        </div>
+      )}
+    </li>
+  );
+};
+
+// A feed's capture history (P8-O1), newest first, one server page at a time:
+// what each scheduled capture or refresh did. Kept for an archived or paused
+// feed; it starts with the first capture after it existed
+const FeedCaptureHistory: FC<{ feed: SourceDetailData }> = ({ feed }) => {
+  const t = useT();
+  const [page, setPage] = useState(1);
+  const list = useContentStudioFeedCaptures(feed.id, page, true);
+  if (list.error) {
+    return (
+      <div role="alert" className="flex flex-col items-start gap-[8px]">
+        <div>
+          {t(
+            'content_studio_feed_captures_load_error',
+            'The capture history could not be loaded.'
+          )}
+        </div>
+        <Button secondary onClick={() => list.mutate()}>
+          {t('content_studio_retry', 'Try again')}
+        </Button>
+      </div>
+    );
+  }
+  if (!list.data) {
+    return <LoadingComponent width={40} height={40} />;
+  }
+  if (!list.data.results.length) {
+    return (
+      <div className="text-textItemBlur">
+        {t('content_studio_feed_captures_empty', 'No capture history yet.')}
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-[12px]">
+      <ul className="flex flex-col gap-[8px]">
+        {list.data.results.map((capture) => (
+          <FeedCaptureRow key={capture.id} capture={capture} />
+        ))}
+      </ul>
+      {list.data.pages > 1 && (
+        <ContentStudioPager
+          page={page}
+          pages={list.data.pages}
+          setPage={setPage}
+        />
+      )}
+    </div>
+  );
+};
+
 // When a running feed is captured next (P8-C4): never an exact time, since
 // the scan looks every 10 minutes and captures may wait in their queue.
 // After failed scheduled captures, that it failed and when it is tried
@@ -914,6 +1107,12 @@ export const ContentStudioSourceDetail: FC<{ sourceId: string }> = ({
       {source.kind === 'feed' ? (
         <>
           <FeedCapture feed={source} busy={busy} commands={commands} />
+          <section className="flex flex-col gap-[12px] min-w-0">
+            <h2 className="text-[16px] font-[600]">
+              {t('content_studio_feed_captures', 'Capture history')}
+            </h2>
+            <FeedCaptureHistory feed={source} />
+          </section>
           <section className="flex flex-col gap-[12px] min-w-0">
             <h2 className="text-[16px] font-[600]">
               {t('content_studio_feed_discoveries', 'Pages found in this feed')}

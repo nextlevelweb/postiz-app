@@ -63,6 +63,7 @@ model Organization {
   contentStudioSources                   ContentStudioSource[]
   contentStudioSourceVersions            ContentStudioSourceVersion[]
   contentStudioSourceDiscoveries         ContentStudioSourceDiscovery[]
+  contentStudioSourceCaptureAttempts     ContentStudioSourceCaptureAttempt[]
   contentStudioBrandKit                  ContentStudioBrandKit?
   contentStudioBrandKitRevisions         ContentStudioBrandKitRevision[]
   contentStudioDesignProjects            ContentStudioDesignProject[]
@@ -171,6 +172,7 @@ model User {
   contentStudioExpertiseProfileRevisions ContentStudioExpertiseProfileRevision[] @relation("ContentStudioExpertiseProfileRevisionCreatedBy")
   contentStudioSources                   ContentStudioSource[]                   @relation("ContentStudioSourceCreatedBy")
   contentStudioSourceVersions            ContentStudioSourceVersion[]            @relation("ContentStudioSourceVersionCreatedBy")
+  contentStudioSourceCaptureAttempts     ContentStudioSourceCaptureAttempt[]     @relation("ContentStudioSourceCaptureAttemptRequestedBy")
   contentStudioBrandKits                 ContentStudioBrandKit[]                 @relation("ContentStudioBrandKitCreatedBy")
   contentStudioBrandKitRevisions         ContentStudioBrandKitRevision[]         @relation("ContentStudioBrandKitRevisionCreatedBy")
   contentStudioDesignProjects            ContentStudioDesignProject[]            @relation("ContentStudioDesignProjectCreatedBy")
@@ -2308,16 +2310,16 @@ model ContentStudioExpertiseProfileRevision {
 // that failed since the last one that succeeded, 0 when healthy. All three
 // stay null, null and 0 for a `url` source
 model ContentStudioSource {
-  id                              String                         @id @default(uuid())
+  id                              String                              @id @default(uuid())
   organizationId                  String
   kind                            String
   name                            String
   canonicalUrl                    String?
-  latestVersionNumber             Int                            @default(0)
+  latestVersionNumber             Int                                 @default(0)
   archivedAt                      DateTime?
   createdById                     String
-  createdAt                       DateTime                       @default(now())
-  updatedAt                       DateTime                       @updatedAt
+  createdAt                       DateTime                            @default(now())
+  updatedAt                       DateTime                            @updatedAt
   lastCapturedAt                  DateTime?
   lastPageChangeAt                DateTime?
   lastPageChangeVersionNumber     Int?
@@ -2326,12 +2328,13 @@ model ContentStudioSource {
   scanPausedAt                    DateTime?
   captureIntervalMinutes          Int?
   nextCaptureAt                   DateTime?
-  consecutiveCaptureFailures      Int                            @default(0)
-  organization                    Organization                   @relation(fields: [organizationId], references: [id])
-  createdBy                       User                           @relation("ContentStudioSourceCreatedBy", fields: [createdById], references: [id])
+  consecutiveCaptureFailures      Int                                 @default(0)
+  organization                    Organization                        @relation(fields: [organizationId], references: [id])
+  createdBy                       User                                @relation("ContentStudioSourceCreatedBy", fields: [createdById], references: [id])
   versions                        ContentStudioSourceVersion[]
-  feedDiscoveries                 ContentStudioSourceDiscovery[] @relation("ContentStudioSourceDiscoveryFeed")
-  discoveredBy                    ContentStudioSourceDiscovery[] @relation("ContentStudioSourceDiscoveryDiscovered")
+  feedDiscoveries                 ContentStudioSourceDiscovery[]      @relation("ContentStudioSourceDiscoveryFeed")
+  discoveredBy                    ContentStudioSourceDiscovery[]      @relation("ContentStudioSourceDiscoveryDiscovered")
+  captureAttempts                 ContentStudioSourceCaptureAttempt[]
 
   @@unique([id, organizationId])
   @@unique([organizationId, canonicalUrl])
@@ -2340,6 +2343,50 @@ model ContentStudioSource {
   @@index([createdById])
   @@index([kind, archivedAt, id])
   @@index([organizationId, lastPageChangeAt])
+}
+
+// One capture of a feed source (P8-O1), scheduled or by a member, from the
+// moment it starts reading the feed: a capture skipped before that (a paused,
+// archived or gone feed) is none. A scheduled capture is one row however many
+// times Temporal tries it: its id is the capture workflow's run id, and
+// attemptCount the highest try that started reading. A member's refresh is
+// one try, with who asked. status is running until the capture ends, then
+// once success, source_failed (a reason of the feed: errorCode is its CS_
+// code) or infrastructure_failed (the database, a timeout, a lost worker),
+// never again. A success keeps the capture's counts; nextCaptureAtAfter and
+// consecutiveFailuresAfter are the feed's schedule right after the capture
+// ended, which another capture may have set. Counts and codes only: never a
+// URL, a title, a message, a page or a version. Sources are never deleted,
+// and neither is this
+model ContentStudioSourceCaptureAttempt {
+  id                       String              @id @default(uuid())
+  organizationId           String
+  sourceId                 String
+  trigger                  String
+  status                   String
+  requestedByUserId        String?
+  startedAt                DateTime
+  finishedAt               DateTime?
+  attemptCount             Int
+  errorCode                String?
+  entriesSeen              Int?
+  entriesIgnored           Int?
+  entriesSkipped           Int?
+  entriesAccepted          Int?
+  sourcesCreated           Int?
+  versionsCreated          Int?
+  unchanged                Int?
+  failed                   Int?
+  archived                 Int?
+  entriesLimited           Int?
+  nextCaptureAtAfter       DateTime?
+  consecutiveFailuresAfter Int?
+  organization             Organization        @relation(fields: [organizationId], references: [id])
+  source                   ContentStudioSource @relation(fields: [sourceId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
+  requestedBy              User?               @relation("ContentStudioSourceCaptureAttemptRequestedBy", fields: [requestedByUserId], references: [id])
+
+  @@index([organizationId, sourceId, startedAt])
+  @@index([requestedByUserId])
 }
 
 // That a feed source listed a page (P8-01): which feed, which `url` source of

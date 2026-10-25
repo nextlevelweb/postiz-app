@@ -24,6 +24,20 @@ const NOW = new Date('2026-10-15T10:00:00.000Z');
 // a feed's next capture (P8-C4)
 const NEXT = new Date('2026-10-15T11:00:00.000Z');
 const FETCHED = new Date('2026-10-15T09:00:00.000Z');
+const LATER = new Date('2026-10-15T13:00:00.000Z');
+const ATTEMPT = '77777777-7777-4777-8777-777777777777';
+const CAPTURE_SUMMARY = {
+  entriesSeen: 4,
+  entriesIgnored: 0,
+  entriesSkipped: 1,
+  entriesAccepted: 3,
+  sourcesCreated: 1,
+  versionsCreated: 1,
+  unchanged: 1,
+  failed: 1,
+  archived: 0,
+  entriesLimited: 0,
+};
 const URL_A = 'https://example.com/news/a';
 const REPO_ROOT = path.resolve(__dirname, '../../../../../..');
 const read = (file: string) =>
@@ -51,10 +65,19 @@ const capture = (text: string, overrides: Record<string, unknown> = {}) =>
 
 type Row = Record<string, unknown>;
 
-const matches = (row: Row, where: Row = {}) =>
+const matches = (row: Row, where: Row = {}): boolean =>
   Object.entries(where).every(([key, value]) => {
     if (value === undefined) {
       return true;
+    }
+    if (key === 'OR') {
+      return (value as Row[]).some((sub) => matches(row, sub));
+    }
+    if (value && typeof value === 'object' && 'lt' in (value as Row)) {
+      return (
+        row[key] instanceof Date &&
+        (row[key] as Date).getTime() < ((value as Row).lt as Date).getTime()
+      );
     }
     if (value && typeof value === 'object' && 'not' in (value as Row)) {
       return row[key] !== (value as Row).not;
@@ -74,8 +97,9 @@ const setup = () => {
   const state = {
     sources: [] as Row[],
     versions: [] as Row[],
+    attempts: [] as Row[],
   };
-  const delegate = (table: 'sources' | 'versions') => ({
+  const delegate = (table: 'sources' | 'versions' | 'attempts') => ({
     findFirst: jest.fn(async (args: { where: Row; select?: Row }) => {
       const row = state[table].find((r) => matches(r, args.where));
       return row ? pick(row, args.select) : null;
@@ -134,9 +158,11 @@ const setup = () => {
   });
   const source = delegate('sources');
   const version = delegate('versions');
+  const attempt = delegate('attempts');
   const tx = {
     contentStudioSource: source,
     contentStudioSourceVersion: version,
+    contentStudioSourceCaptureAttempt: attempt,
   };
   const transaction = {
     // the options (P8-C1: serializable) are only recorded here
@@ -153,6 +179,7 @@ const setup = () => {
         } catch (err) {
           state.sources = snapshot.sources;
           state.versions = snapshot.versions;
+          state.attempts = snapshot.attempts;
           throw err;
         }
       }
@@ -167,7 +194,7 @@ const setup = () => {
     } as unknown as PrismaRepository<'contentStudioSourceVersion'>,
     { model: transaction } as unknown as PrismaTransaction
   );
-  return { repository, source, version, transaction, state };
+  return { repository, source, version, attempt, transaction, state };
 };
 
 // far below any limit: the limits have their own tests
@@ -602,7 +629,11 @@ describe('ContentStudioSourceRepository: sources', () => {
 
   it('P8C4 a capture marks a live feed with its next capture and no failure, only when it read the feed later than the last one', async () => {
     const { repository, source } = setup();
-    await repository.markFeedCaptured(ORG, SOURCE, NOW, NEXT);
+    await repository.markFeedCaptured(ORG, SOURCE, NOW, NEXT, {
+      id: ATTEMPT,
+      finishedAt: NOW,
+      summary: CAPTURE_SUMMARY,
+    });
     expect(source.updateMany.mock.calls[0][0]).toEqual({
       where: {
         id: SOURCE,
@@ -617,6 +648,90 @@ describe('ContentStudioSourceRepository: sources', () => {
         consecutiveCaptureFailures: 0,
       },
     });
+  });
+
+  it('P8O1 the same transaction ends the running record of this capture as a success, with its counts and the schedule after the write', async () => {
+    const { repository, source, attempt, transaction, state } = setup();
+    state.sources.push({
+      id: SOURCE,
+      organizationId: ORG,
+      kind: 'feed',
+      archivedAt: null,
+      lastCapturedAt: null,
+      nextCaptureAt: null,
+      consecutiveCaptureFailures: 2,
+    });
+    state.attempts.push({
+      id: ATTEMPT,
+      organizationId: ORG,
+      sourceId: SOURCE,
+      status: 'running',
+    });
+    expect(
+      await repository.markFeedCaptured(ORG, SOURCE, NOW, NEXT, {
+        id: ATTEMPT,
+        finishedAt: NEXT,
+        summary: CAPTURE_SUMMARY,
+      })
+    ).toEqual({ count: 1, ended: true });
+    expect(transaction.$transaction).toHaveBeenCalledTimes(1);
+    expect(source.updateMany).toHaveBeenCalledTimes(1);
+    expect(attempt.updateMany.mock.calls[0][0]).toEqual({
+      where: {
+        id: ATTEMPT,
+        organizationId: ORG,
+        sourceId: SOURCE,
+        status: 'running',
+      },
+      data: {
+        status: 'success',
+        finishedAt: NEXT,
+        ...CAPTURE_SUMMARY,
+        nextCaptureAtAfter: NEXT,
+        consecutiveFailuresAfter: 0,
+      },
+    });
+    // an ended record stays as it is; the feed is still only moved forward
+    expect(
+      await repository.markFeedCaptured(ORG, SOURCE, NEXT, NEXT, {
+        id: ATTEMPT,
+        finishedAt: NEXT,
+        summary: { ...CAPTURE_SUMMARY, entriesSeen: 9 },
+      })
+    ).toEqual({ count: 1, ended: false });
+    expect(state.attempts[0].entriesSeen).toBe(CAPTURE_SUMMARY.entriesSeen);
+  });
+
+  it('P8O1 a capture whose write changes nothing still ends its record, with the schedule another capture left', async () => {
+    const { repository, state } = setup();
+    state.sources.push({
+      id: SOURCE,
+      organizationId: ORG,
+      kind: 'feed',
+      archivedAt: null,
+      lastCapturedAt: NEXT,
+      nextCaptureAt: LATER,
+      consecutiveCaptureFailures: 0,
+    });
+    state.attempts.push({
+      id: ATTEMPT,
+      organizationId: ORG,
+      sourceId: SOURCE,
+      status: 'running',
+    });
+    expect(
+      await repository.markFeedCaptured(ORG, SOURCE, NOW, NEXT, {
+        id: ATTEMPT,
+        finishedAt: NEXT,
+        summary: CAPTURE_SUMMARY,
+      })
+    ).toEqual({ count: 0, ended: true });
+    expect(state.attempts[0]).toMatchObject({
+      status: 'success',
+      nextCaptureAtAfter: LATER,
+      consecutiveFailuresAfter: 0,
+    });
+    expect(state.sources[0].lastCapturedAt).toEqual(NEXT);
   });
 
   it('P8C4 a failure is one more from the failures read, while the feed is due; the last capture is not touched', async () => {
@@ -1322,6 +1437,8 @@ describe('ContentStudioSource schema', () => {
       versions: 'ContentStudioSourceVersion[]',
       feedDiscoveries: 'ContentStudioSourceDiscovery[]',
       discoveredBy: 'ContentStudioSourceDiscovery[]',
+      // a feed's capture records (P8-O1), a relation only: no column
+      captureAttempts: 'ContentStudioSourceCaptureAttempt[]',
     });
     expect(block('ContentStudioSource')).toMatch(
       /latestVersionNumber\s+Int\s+@default\(0\)/
@@ -1354,6 +1471,50 @@ describe('ContentStudioSource schema', () => {
       createdBy: 'User',
     });
     expect(schema).not.toMatch(/enum ContentStudioSource/);
+  });
+
+  it('P8O1 stores a feed capture as counts, codes and times only, bound to a source of its own organization, newest first by feed', () => {
+    expect(fields('ContentStudioSourceCaptureAttempt')).toEqual({
+      id: 'String',
+      organizationId: 'String',
+      sourceId: 'String',
+      trigger: 'String',
+      status: 'String',
+      requestedByUserId: 'String?',
+      startedAt: 'DateTime',
+      finishedAt: 'DateTime?',
+      attemptCount: 'Int',
+      errorCode: 'String?',
+      entriesSeen: 'Int?',
+      entriesIgnored: 'Int?',
+      entriesSkipped: 'Int?',
+      entriesAccepted: 'Int?',
+      sourcesCreated: 'Int?',
+      versionsCreated: 'Int?',
+      unchanged: 'Int?',
+      failed: 'Int?',
+      archived: 'Int?',
+      entriesLimited: 'Int?',
+      nextCaptureAtAfter: 'DateTime?',
+      consecutiveFailuresAfter: 'Int?',
+      organization: 'Organization',
+      source: 'ContentStudioSource',
+      requestedBy: 'User?',
+    });
+    const attempt = block('ContentStudioSourceCaptureAttempt');
+    expect(attempt).toMatch(
+      /source\s+ContentStudioSource\s+@relation\(fields: \[sourceId, organizationId\], references: \[id, organizationId\], onDelete: Restrict, onUpdate: Restrict\)/
+    );
+    // a deleted member's records stay, without the member (SetNull, the
+    // default of an optional relation)
+    expect(attempt).toMatch(
+      /requestedBy\s+User\?\s+@relation\("ContentStudioSourceCaptureAttemptRequestedBy", fields: \[requestedByUserId\], references: \[id\]\)/
+    );
+    expect(attempt.match(/@@\w+\(.*\)/g)).toEqual([
+      '@@index([organizationId, sourceId, startedAt])',
+      '@@index([requestedByUserId])',
+    ]);
+    expect(schema).not.toMatch(/enum ContentStudio\w*Capture/);
   });
 
   it('binds a version to a source of its own organization, numbered once, and a URL to one source per organization', () => {

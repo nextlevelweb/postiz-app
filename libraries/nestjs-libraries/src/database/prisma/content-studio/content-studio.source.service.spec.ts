@@ -5,6 +5,7 @@ import { HttpException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
+import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { parseContentStudioSourceVersionInput } from '@gitroom/nestjs-libraries/content-studio/sources/source.version';
@@ -154,11 +155,17 @@ const setup = () => {
     ),
     appendVersionWithCompareAndSwap: jest.fn(),
   };
+  // a feed's capture history (P8-O1)
+  const attempts = {
+    listFeedCaptureAttempts: jest.fn(async (): Promise<unknown[]> => []),
+    countFeedCaptureAttempts: jest.fn(async () => 0),
+  };
   const service = new ContentStudioSourceService(
     repository as unknown as ContentStudioSourceRepository,
-    {} as ContentStudioSourceDiscoveryRepository
+    {} as ContentStudioSourceDiscoveryRepository,
+    attempts as unknown as ContentStudioSourceCaptureAttemptRepository
   );
-  return { repository, service };
+  return { repository, attempts, service };
 };
 type Repository = ReturnType<typeof setup>['repository'];
 
@@ -843,6 +850,7 @@ describe('ContentStudioSourceService source', () => {
       'intactContent',
       'lastPageChange',
       'listDiscoveries',
+      'listFeedCaptures',
       'listOrganizationDiscoveries',
       // read only (P8-04B1)
       'listPageChanges',

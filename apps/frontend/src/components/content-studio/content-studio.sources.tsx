@@ -408,8 +408,10 @@ export const useSourceCommands = (onCaptured?: () => void) => {
           onCaptured?.();
         } catch (err) {
           toaster.show(sourceErrorMessage(t, err), 'warning');
-          // another capture, an archive or a removal won: show what is there now
+          // another capture, an archive or a removal won: show what is there
+          // now. A feed's failed refresh is in its capture history (P8-O1)
           if (
+            source.kind === 'feed' ||
             [
               'CS_SOURCE_VERSION_CONFLICT',
               'CS_SOURCE_ARCHIVED',

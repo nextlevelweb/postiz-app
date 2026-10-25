@@ -18,7 +18,10 @@ const mockActivities = {
   listContentStudioFeedsForCapture: jest.fn(),
   captureContentStudioFeed: jest.fn(),
   recordContentStudioFeedCaptureFailure: jest.fn(),
+  finishContentStudioFeedCaptureAttempt: jest.fn(),
 };
+// the capture workflow's run id: its record's id (P8-O1)
+const RUN = '77777777-7777-4777-8777-777777777777';
 const mockProxyOptions: unknown[] = [];
 const mockStartChild = jest.fn();
 const mockSleep = jest.fn();
@@ -35,6 +38,9 @@ jest.mock('@temporalio/workflow', () => ({
   ActivityFailure: jest.requireActual('@temporalio/common').ActivityFailure,
   ApplicationFailure:
     jest.requireActual('@temporalio/common').ApplicationFailure,
+  isCancellation: jest.requireActual('@temporalio/workflow/lib/errors')
+    .isCancellation,
+  workflowInfo: () => ({ runId: RUN }),
   proxyActivities: (options: unknown) => {
     mockProxyOptions.push(options);
     return mockActivities;
@@ -80,6 +86,7 @@ beforeEach(() => {
   mockActivities.listContentStudioFeedsForCapture.mockReset();
   mockActivities.captureContentStudioFeed.mockReset();
   mockActivities.recordContentStudioFeedCaptureFailure.mockReset();
+  mockActivities.finishContentStudioFeedCaptureAttempt.mockReset();
   mockStartChild.mockReset();
   mockSleep.mockReset();
   mockContinueAsNew.mockClear();
@@ -152,7 +159,7 @@ describe('contentStudioFeedCaptureWorkflowV1', () => {
       (err: unknown) => err
     );
 
-  it('WF1 a capture that succeeds records no failure', async () => {
+  it('WF1 a capture that succeeds records no failure; its record ended with it (P8-O1)', async () => {
     mockActivities.captureContentStudioFeed.mockResolvedValue({
       status: 'captured',
     });
@@ -162,6 +169,9 @@ describe('contentStudioFeedCaptureWorkflowV1', () => {
     });
     expect(
       mockActivities.recordContentStudioFeedCaptureFailure
+    ).not.toHaveBeenCalled();
+    expect(
+      mockActivities.finishContentStudioFeedCaptureAttempt
     ).not.toHaveBeenCalled();
   });
 
@@ -184,10 +194,34 @@ describe('contentStudioFeedCaptureWorkflowV1', () => {
       mockActivities.recordContentStudioFeedCaptureFailure.mockResolvedValue({
         status: 'recorded',
       });
+      mockActivities.finishContentStudioFeedCaptureAttempt.mockResolvedValue({
+        status: 'finished',
+      });
       expect(await run()).toBe(failure);
       expect(
         mockActivities.recordContentStudioFeedCaptureFailure.mock.calls
       ).toEqual([[{ organizationId: ORG, sourceId: FEED(1), code: type }]]);
+      // P8O1-WF1 then the run's record, once: the feed's failure, its code
+      expect(
+        mockActivities.finishContentStudioFeedCaptureAttempt.mock.calls
+      ).toEqual([
+        [
+          {
+            organizationId: ORG,
+            sourceId: FEED(1),
+            attemptId: RUN,
+            status: 'source_failed',
+            code: type,
+          },
+        ],
+      ]);
+      expect(
+        mockActivities.recordContentStudioFeedCaptureFailure.mock
+          .invocationCallOrder[0]
+      ).toBeLessThan(
+        mockActivities.finishContentStudioFeedCaptureAttempt.mock
+          .invocationCallOrder[0]
+      );
     }
   );
 
@@ -211,6 +245,34 @@ describe('contentStudioFeedCaptureWorkflowV1', () => {
         new TimeoutFailure('timed out', undefined, TimeoutType.START_TO_CLOSE)
       ),
     ],
+  ])(
+    'M27/P8O1-WF2 %s records no failure; the run ends as a failure of the system, then the workflow fails with it',
+    async (_, failure) => {
+      mockActivities.captureContentStudioFeed.mockRejectedValue(failure);
+      mockActivities.finishContentStudioFeedCaptureAttempt.mockResolvedValue({
+        status: 'finished',
+      });
+      expect(await run()).toBe(failure);
+      expect(
+        mockActivities.recordContentStudioFeedCaptureFailure
+      ).not.toHaveBeenCalled();
+      expect(
+        mockActivities.finishContentStudioFeedCaptureAttempt.mock.calls
+      ).toEqual([
+        [
+          {
+            organizationId: ORG,
+            sourceId: FEED(1),
+            attemptId: RUN,
+            status: 'infrastructure_failed',
+            code: null,
+          },
+        ],
+      ]);
+    }
+  );
+
+  it.each([
     ['a cancellation', activityFailure(new CancelledFailure('cancelled'))],
     ['WF5 a plain error', new Error('raw')],
     [
@@ -221,12 +283,15 @@ describe('contentStudioFeedCaptureWorkflowV1', () => {
       }),
     ],
   ])(
-    'M27 %s records nothing; the workflow fails with it',
+    'M27/P8O1-WF3 %s records nothing and ends nothing; the workflow fails with it',
     async (_, failure) => {
       mockActivities.captureContentStudioFeed.mockRejectedValue(failure);
       expect(await run()).toBe(failure);
       expect(
         mockActivities.recordContentStudioFeedCaptureFailure
+      ).not.toHaveBeenCalled();
+      expect(
+        mockActivities.finishContentStudioFeedCaptureAttempt
       ).not.toHaveBeenCalled();
     }
   );
@@ -242,6 +307,29 @@ describe('contentStudioFeedCaptureWorkflowV1', () => {
       recordFailure
     );
     expect(await run()).toBe(recordFailure);
+    expect(
+      mockActivities.recordContentStudioFeedCaptureFailure
+    ).toHaveBeenCalledTimes(1);
+    // the record stays running, never ended without the failure written
+    expect(
+      mockActivities.finishContentStudioFeedCaptureAttempt
+    ).not.toHaveBeenCalled();
+  });
+
+  it('P8O1-WF4 an end that failed every attempt fails the workflow with that failure, never quietly', async () => {
+    mockActivities.captureContentStudioFeed.mockRejectedValue(
+      activityFailure(
+        ApplicationFailure.create({ type: 'CS_SOURCE_FETCH_FAILED' })
+      )
+    );
+    mockActivities.recordContentStudioFeedCaptureFailure.mockResolvedValue({
+      status: 'recorded',
+    });
+    const finishFailure = activityFailure(new Error('database down'));
+    mockActivities.finishContentStudioFeedCaptureAttempt.mockRejectedValue(
+      finishFailure
+    );
+    expect(await run()).toBe(finishFailure);
     expect(
       mockActivities.recordContentStudioFeedCaptureFailure
     ).toHaveBeenCalledTimes(1);

@@ -6,6 +6,7 @@ import {
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
+import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import {
   ContentStudioSourceService,
@@ -164,7 +165,10 @@ const setup = () => {
     ),
     new ContentStudioSourceDiscoveryRepository({
       model: { contentStudioSourceDiscovery: discovery },
-    } as unknown as PrismaRepository<'contentStudioSourceDiscovery'>)
+    } as unknown as PrismaRepository<'contentStudioSourceDiscovery'>),
+    new ContentStudioSourceCaptureAttemptRepository({
+      model: { contentStudioSourceCaptureAttempt: {} },
+    } as unknown as PrismaRepository<'contentStudioSourceCaptureAttempt'>)
   );
   const addSource = (row: Row) => {
     const full = {

@@ -357,7 +357,7 @@ describe('P8-01 routes', () => {
       // P8-04B1: one more, the organization's page changes
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(148);
+    ).toHaveLength(149);
     const handler = controller.slice(
       controller.indexOf("@Get('/sources/:id/discoveries')"),
       controller.indexOf("@Post('/sources/:id/archive')")
@@ -472,8 +472,9 @@ describe('P8-02 News Radar', () => {
     // by P804B1-1/P804B1-2)
     // P8-C3 adds the feed pause time, nothing this forbids (P8C3-1)
     // P8-C4 adds a feed's schedule, nothing this forbids (P8C4-1)
+    // P8-O1 adds the capture history model, nothing this forbids (P8O1-1)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '968fbd7794b0572a19cddea846531894c88fc5ca19fdca0d4d653f7549a666e8'
+      '1022a91501470f7b2f6fbb372eccb867091a49daae651913f7c8cf523d4461db'
     );
     // the Radar reads the P8-01 indexes
     expect(model('ContentStudioSourceDiscovery')).toMatch(
@@ -522,7 +523,7 @@ describe('P8-02 News Radar', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(148);
+    ).toHaveLength(149);
     expect(controller.match(/@Get\('\/discoveries'\)/g)).toHaveLength(1);
     expect(controller).not.toMatch(
       /@(Post|Put|Patch|Delete)\('\/discoveries|\/research|\/radar/
@@ -587,8 +588,9 @@ describe('P8-03 research into content', () => {
     // fields (P802-5 pins the same hash)
     // P8-C3 adds the feed pause time, nothing this forbids (P8C3-1)
     // P8-C4 adds a feed's schedule, nothing this forbids (P8C4-1)
+    // P8-O1 adds the capture history model, nothing this forbids (P8O1-1)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '968fbd7794b0572a19cddea846531894c88fc5ca19fdca0d4d653f7549a666e8'
+      '1022a91501470f7b2f6fbb372eccb867091a49daae651913f7c8cf523d4461db'
     );
     expect(schema).not.toMatch(
       /model \w*(Research|Selection|Basket|Collection|Radar)\w* \{/
@@ -621,6 +623,8 @@ describe('P8-03 research into content', () => {
       'versions',
       'feedDiscoveries',
       'discoveredBy',
+      // a relation only (P8-O1): the capture records
+      'captureAttempts',
     ]);
     expect(fields('ContentPackage').join('\n')).not.toMatch(
       /research|source|discover|feed/i
@@ -652,7 +656,7 @@ describe('P8-03 research into content', () => {
       // P8-04B1: one more, the organization's page changes
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(148);
+    ).toHaveLength(149);
     // the routes of sources: the P8-02 ones, nothing to resolve or keep a
     // selection with
     expect(
@@ -671,6 +675,8 @@ describe('P8-03 research into content', () => {
       // P8-04A, read only
       'GET /sources/:id/versions/:versionId/changes',
       'GET /sources/:id/discoveries',
+      // a feed's capture history (P8-O1)
+      'GET /sources/:id/captures',
       'POST /sources/:id/archive',
       'POST /sources/:id/restore',
       // P8-C3, a feed's schedule
@@ -842,8 +848,9 @@ describe('P8-04A source change detection', () => {
     // (P804B1-1) and nothing this forbids
     // P8-C3 adds the feed pause time, nothing this forbids (P8C3-1)
     // P8-C4 adds a feed's schedule, nothing this forbids (P8C4-1)
+    // P8-O1 adds the capture history model, nothing this forbids (P8O1-1)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '968fbd7794b0572a19cddea846531894c88fc5ca19fdca0d4d653f7549a666e8'
+      '1022a91501470f7b2f6fbb372eccb867091a49daae651913f7c8cf523d4461db'
     );
     expect(schema).not.toMatch(/model \w*(Change|Diff|Comparison)\w* \{/);
     expect(schema).not.toMatch(
@@ -857,7 +864,7 @@ describe('P8-04A source change detection', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(148);
+    ).toHaveLength(149);
     expect(controller.match(/\/changes'/g)).toEqual(["/changes'"]);
     const handler = between(
       controller,
@@ -1352,7 +1359,7 @@ describe('P8-04B1 organization page changes', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(148);
+    ).toHaveLength(149);
     expect(controller.match(/'\/source-changes'/g)).toEqual([
       "'/source-changes'",
     ]);
@@ -1553,8 +1560,9 @@ describe('P8-04B2 News Radar change signals', () => {
   it('P804B2-1 no schema change: no discovery change field, table or enum', () => {
     // P8-C3 adds the feed pause time, nothing this forbids (P8C3-1)
     // P8-C4 adds a feed's schedule, nothing this forbids (P8C4-1)
+    // P8-O1 adds the capture history model, nothing this forbids (P8O1-1)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '968fbd7794b0572a19cddea846531894c88fc5ca19fdca0d4d653f7549a666e8'
+      '1022a91501470f7b2f6fbb372eccb867091a49daae651913f7c8cf523d4461db'
     );
     expect(model('ContentStudioSourceDiscovery')).not.toMatch(/change/i);
     expect(schema).not.toMatch(/changedSinceFound/);
@@ -1568,7 +1576,7 @@ describe('P8-04B2 News Radar change signals', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(148);
+    ).toHaveLength(149);
     expect(controller).not.toMatch(/changedSinceFound|radar-changes|\/changed/);
   });
 
@@ -1721,8 +1729,9 @@ describe('P8-C1 organization safety caps', () => {
   it('P8C1-1 no schema change: no limit, counter, pause or interval field or model', () => {
     // P8-C3 adds the feed pause time, nothing this forbids (P8C3-1)
     // P8-C4 adds a feed's schedule, nothing this forbids (P8C4-1)
+    // P8-O1 adds the capture history model, nothing this forbids (P8O1-1)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '968fbd7794b0572a19cddea846531894c88fc5ca19fdca0d4d653f7549a666e8'
+      '1022a91501470f7b2f6fbb372eccb867091a49daae651913f7c8cf523d4461db'
     );
     // the feed pause came with P8-C3 (P8C3-1), the schedule with P8-C4
     // (P8C4-1); nothing else here
@@ -1730,7 +1739,7 @@ describe('P8-C1 organization safety caps', () => {
       model('ContentStudioSource').replace(SCHEDULE_FIELDS, '')
     ).not.toMatch(/limit|quota|usage|paused|interval|nextCapture/i);
     expect(schema).not.toMatch(
-      /model ContentStudio\w*(Limit|Quota|Counter|Slot|Cap)\w* \{/
+      /model ContentStudio\w*(Limit|Quota|Counter|Slot|Cap(?!ture))\w* \{/
     );
   });
 
@@ -1740,7 +1749,7 @@ describe('P8-C1 organization safety caps', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(148);
+    ).toHaveLength(149);
     expect(controller).not.toMatch(
       /\/limits|\/usage|\/quota|activeFeedsMax|urlSourcesMax|manualRefreshCooldownMs|contentStudioSourceLimits/
     );
@@ -1897,7 +1906,7 @@ describe('P8-C1 organization safety caps', () => {
   // pinned below); the activity and the feed capture itself are untouched
   it('P8C1-13 no Temporal change: the feed workflow, its activity and the worker are as they were', () => {
     // P8-C4 changes the workflow and adds an activity (P8C4-4..P8C4-8);
-    // the worker stays as it was
+    // P8-O1 the capture's record (P8O1-WF); the worker stays as it was
     const hash = (file: string) =>
       createHash('sha256').update(raw(file)).digest('hex');
     expect({
@@ -1912,9 +1921,9 @@ describe('P8-C1 organization safety caps', () => {
       ),
     }).toEqual({
       workflow:
-        '08674e5b73b26b7e2bfbaabc104156c0184ba8e912f477b3feaa8f45a2d8538c',
+        'c12780dc43f49a574826390d732b99e567d6945839d0556a83ee46c2ac6ae723',
       activity:
-        'e364542b5f952de80f17853db75f049c7b8baff2885288e69abac50e39c11390',
+        '45eb972ec1100fc174928f3e4b26d581522a20f46a5f7c378651590e6651a064',
       worker:
         '412efbac60853923ad81f0e2c2191fd8f5fa72bef6d4f7fb2812bede9b35a305',
     });
@@ -1970,7 +1979,7 @@ describe('P8-C1 organization safety caps', () => {
       refresh.indexOf('assertRefreshDue(')
     );
     expect(refresh).toMatch(
-      /assertRefreshDue\(source\.lastCapturedAt, manualRefreshCooldownMs\);\s*return this\.captureFeed\(/
+      /assertRefreshDue\(source\.lastCapturedAt, manualRefreshCooldownMs\);\s*return this\.refreshFeed\(/
     );
     expect(
       refresh.lastIndexOf('assertRefreshDue(latest.fetchedAt')
@@ -2064,7 +2073,7 @@ describe('P8-C2 global feed-capture concurrency', () => {
     // P8-C3 adds the feed pause time, nothing this forbids (P8C3-1)
     // P8-C4 adds a feed's schedule (P8C4-1), and no queue or priority
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '968fbd7794b0572a19cddea846531894c88fc5ca19fdca0d4d653f7549a666e8'
+      '1022a91501470f7b2f6fbb372eccb867091a49daae651913f7c8cf523d4461db'
     );
     // the feed pause came with P8-C3 (P8C3-1), the schedule with P8-C4
     // (P8C4-1); nothing else here
@@ -2079,7 +2088,7 @@ describe('P8-C2 global feed-capture concurrency', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(148);
+    ).toHaveLength(149);
     expect(controller).not.toMatch(
       /CAPTURE_CONCURRENCY|capture-queue|TaskQueue/
     );
@@ -2162,9 +2171,9 @@ describe('P8-C2 global feed-capture concurrency', () => {
     );
     expect(workflow).not.toMatch(/executeChild|Promise\.all|scheduleToStart/);
     // the activity is as it was, but for the failure record of P8-C4
-    // (P8C4-7/P8C4-8)
+    // (P8C4-7/P8C4-8) and the capture's record of P8-O1 (P8O1-WF)
     expect(createHash('sha256').update(raw(C2.activity)).digest('hex')).toBe(
-      'e364542b5f952de80f17853db75f049c7b8baff2885288e69abac50e39c11390'
+      '45eb972ec1100fc174928f3e4b26d581522a20f46a5f7c378651590e6651a064'
     );
   });
 
@@ -2261,7 +2270,7 @@ describe('P8-C3 feed pause', () => {
   it('P8C3-1/M27/M28 one nullable pause time on the source, no default, no index, feed-neutral', () => {
     // P8-C4 adds a feed's schedule after it (P8C4-1)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '968fbd7794b0572a19cddea846531894c88fc5ca19fdca0d4d653f7549a666e8'
+      '1022a91501470f7b2f6fbb372eccb867091a49daae651913f7c8cf523d4461db'
     );
     const source = fields('ContentStudioSource');
     expect(source.filter((f) => /paus/i.test(f))).toEqual([
@@ -2270,7 +2279,8 @@ describe('P8-C3 feed pause', () => {
     // after the P8-04B1 fields, then the P8-C4 ones, then the relations
     expect(source.slice(15, 16)).toEqual(['scanPausedAt DateTime?']);
     expect(source[19]).toBe('organization Organization');
-    expect(source).toHaveLength(24);
+    // P8-O1: one relation more, no column (captureAttempts)
+    expect(source).toHaveLength(25);
     expect(model('ContentStudioSource')).toMatch(
       /\n\s*scanPausedAt\s+DateTime\?\n/
     );
@@ -2360,7 +2370,8 @@ describe('P8-C3 feed pause', () => {
     );
     const hash = (file: string) =>
       createHash('sha256').update(raw(file)).digest('hex');
-    // P8-C4 changes the workflow and the activity (P8C4-4..P8C4-8)
+    // P8-C4 changes the workflow and the activity (P8C4-4..P8C4-8), P8-O1
+    // adds the capture's record to both (P8O1-WF)
     expect({
       queue: hash(C3.queue),
       workflow: hash(
@@ -2375,9 +2386,9 @@ describe('P8-C3 feed pause', () => {
     }).toEqual({
       queue: '0013e83698f582fd597a5a7a7f70f4248cae5a3e5491e087a1d7f217e3061c13',
       workflow:
-        '08674e5b73b26b7e2bfbaabc104156c0184ba8e912f477b3feaa8f45a2d8538c',
+        'c12780dc43f49a574826390d732b99e567d6945839d0556a83ee46c2ac6ae723',
       activity:
-        'e364542b5f952de80f17853db75f049c7b8baff2885288e69abac50e39c11390',
+        '45eb972ec1100fc174928f3e4b26d581522a20f46a5f7c378651590e6651a064',
       worker:
         '412efbac60853923ad81f0e2c2191fd8f5fa72bef6d4f7fb2812bede9b35a305',
     });
@@ -2461,7 +2472,7 @@ describe('P8-C3 feed pause', () => {
     // no failure; never the pause (P8C4-9)
     const mark = repositoryMethod('markFeedCaptured');
     expect(mark).toMatch(
-      /where: \{\s*id,\s*organizationId,\s*kind: 'feed',\s*archivedAt: null,\s*OR: \[\{ lastCapturedAt: null \}, \{ lastCapturedAt: \{ lt: capturedAt \} \}\],\s*\},\s*data: \{\s*lastCapturedAt: capturedAt,\s*nextCaptureAt,\s*consecutiveCaptureFailures: 0,\s*\}/
+      /where: \{\s*id,\s*organizationId,\s*kind: 'feed',\s*archivedAt: null,\s*OR: \[\s*\{ lastCapturedAt: null \},\s*\{ lastCapturedAt: \{ lt: capturedAt \} \},\s*\],\s*\},\s*data: \{\s*lastCapturedAt: capturedAt,\s*nextCaptureAt,\s*consecutiveCaptureFailures: 0,\s*\}/
     );
     expect(mark).not.toMatch(/scanPausedAt/);
     // only the two pause writes set the field
@@ -2617,16 +2628,19 @@ describe('P8-C4 feed schedule and retries', () => {
     );
     expect(
       schema.match(
-        /captureIntervalMinutes|nextCaptureAt|consecutiveCaptureFailures/g
+        /\b(captureIntervalMinutes|nextCaptureAt|consecutiveCaptureFailures)\b/g
       )
     ).toHaveLength(6);
     // the scan keeps the id order and the indexes it had (P8-C3)
     expect(block).not.toMatch(
       /@@index\(\[[^\]]*(nextCaptureAt|captureInterval|consecutiveCapture)/
     );
-    expect(schema).not.toMatch(
-      /model \w*(Schedule|Interval|Attempt|CaptureHistory|CaptureRun)\w* \{/
-    );
+    // the capture records came with P8-O1 (P8O1-1), nothing else
+    expect(
+      schema.match(
+        /model \w*(Schedule|Interval|Attempt|CaptureHistory|CaptureRun)\w* \{/g
+      )
+    ).toEqual(['model ContentStudioSourceCaptureAttempt {']);
   });
 
   it('P8C4-2 the 50-minute rule is gone: the old constant exists nowhere', () => {
@@ -2681,8 +2695,10 @@ describe('P8-C4 feed schedule and retries', () => {
       'export async function contentStudioFeedCaptureWorkflowV1(',
       '\n}\n'
     );
+    // P8-O1: the run's record ends after the failure was recorded
+    // (P8O1-WF), and a cancellation is left alone
     expect(capture).toMatch(
-      /\} catch \(err\) \{\s*if \(\s*err instanceof ActivityFailure &&\s*err\.cause instanceof ApplicationFailure &&\s*typeof err\.cause\.type === 'string' &&\s*err\.cause\.type\.startsWith\('CS_'\)\s*\) \{\s*await recordContentStudioFeedCaptureFailure\(\{\s*organizationId: input\.organizationId,\s*sourceId: input\.sourceId,\s*code: err\.cause\.type,\s*\}\);\s*\}\s*throw err;\s*\}/
+      /\} catch \(err\) \{\s*if \(!\(err instanceof ActivityFailure\) \|\| isCancellation\(err\)\) \{\s*throw err;\s*\}[\s\S]*const code =\s*err\.cause instanceof ApplicationFailure &&\s*typeof err\.cause\.type === 'string' &&\s*err\.cause\.type\.startsWith\('CS_'\)\s*\? err\.cause\.type\s*: null;\s*if \(code\) \{\s*await recordContentStudioFeedCaptureFailure\(\{\s*organizationId: input\.organizationId,\s*sourceId: input\.sourceId,\s*code,\s*\}\);\s*\}[\s\S]*await finishContentStudioFeedCaptureAttempt\([\s\S]*\}\);\s*throw err;\s*\}/
     );
     expect(
       capture.match(/recordContentStudioFeedCaptureFailure\(/g)
@@ -2696,14 +2712,16 @@ describe('P8-C4 feed schedule and retries', () => {
     expect(c4('activity')).toContain(
       'this._contentStudioSourceIngestionService.recordScheduledFeedFailure(\n      input\n    );'
     );
+    // with the end of the run's record (P8-O1), the same options
     expect(c4('workflow')).toMatch(
-      /const \{ recordContentStudioFeedCaptureFailure \} =\s*proxyActivities<ContentStudioSourceActivity>\(\{\s*startToCloseTimeout: '1 minute',\s*taskQueue: 'main',\s*retry: \{\s*maximumAttempts: 3,\s*backoffCoefficient: 1,\s*initialInterval: '1 minute',\s*\},\s*\}\);/
+      /const \{\s*recordContentStudioFeedCaptureFailure,\s*finishContentStudioFeedCaptureAttempt,\s*\} = proxyActivities<ContentStudioSourceActivity>\(\{\s*startToCloseTimeout: '1 minute',\s*taskQueue: 'main',\s*retry: \{\s*maximumAttempts: 3,\s*backoffCoefficient: 1,\s*initialInterval: '1 minute',\s*\},\s*\}\);/
     );
-    // the ingestion reads the code and stores nothing of it yet
+    // the ingestion reads the code and stores nothing of it; the run's
+    // record keeps it (P8-O1)
     const record = between(
       c4('ingestion'),
       'async recordScheduledFeedFailure(',
-      'private async captureUrl('
+      'async finishScheduledFeedCapture('
     );
     expect(record).toContain('code: string;');
     expect(record).not.toMatch(/input\.code/);
@@ -2804,7 +2822,12 @@ describe('P8-C4 feed schedule and retries', () => {
 
   it('P8C4-15/P8C4-16 no error code, attempt time, capture history or conditional request is stored', () => {
     expect(schema).not.toMatch(
-      /lastCaptureErrorCode|lastCaptureAttemptAt|lastCaptureError|captureAttempt|etag|lastModified/i
+      /lastCaptureErrorCode|lastCaptureAttemptAt|lastCaptureError|etag|lastModified/i
+    );
+    // the capture history came with P8-O1 as its own model (P8O1-1), never
+    // as fields of the source
+    expect(model('ContentStudioSource')).not.toMatch(
+      /\n\s*(errorCode|attemptCount|startedAt|finishedAt)\s/
     );
     // Content Studio's own code: SafeFetch itself knows the headers
     expect(
@@ -2815,11 +2838,11 @@ describe('P8-C4 feed schedule and retries', () => {
     expect(c4('ingestion')).not.toMatch(/jitter|Math\.random/);
   });
 
-  it('P8C4-17 one more route, the interval: 148, for the request organization, the path id and a preset', () => {
+  it('P8C4-17 one more route, the interval: 148 (149 with P8-O1), for the request organization, the path id and a preset', () => {
     const controller = c4('controller');
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(148);
+    ).toHaveLength(149);
     const block = between(
       controller,
       "@Post('/sources/:id/interval')",
@@ -2857,5 +2880,340 @@ describe('P8-C4 feed schedule and retries', () => {
     expect(
       between(ingestion, 'export const captureFailureDelayMinutes', '\n};\n')
     ).not.toMatch(/interval/i);
+  });
+});
+
+describe('P8-O1 feed capture history', () => {
+  const O1 = {
+    attempts:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-capture-attempt.repository.ts',
+    repository:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.repository.ts',
+    discoveries:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-discovery.repository.ts',
+    service:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.service.ts',
+    ingestion: `${SOURCES}/ingestion/source.ingestion.service.ts`,
+    types: `${SOURCES}/source.types.ts`,
+    dto: 'libraries/nestjs-libraries/src/dtos/content-studio/content-studio.source.dto.ts',
+    controller: 'apps/backend/src/api/routes/content-studio.controller.ts',
+    workflow:
+      'apps/orchestrator/src/workflows/content.studio.feed.capture.workflow.ts',
+    activity:
+      'apps/orchestrator/src/activities/content-studio.source.activity.ts',
+    queue:
+      'libraries/nestjs-libraries/src/temporal/content.studio.capture.queue.ts',
+    api: 'apps/frontend/src/components/content-studio/content-studio.sources.api.ts',
+    list: 'apps/frontend/src/components/content-studio/content-studio.sources.tsx',
+    detail:
+      'apps/frontend/src/components/content-studio/content-studio.source.detail.tsx',
+    research:
+      'apps/frontend/src/components/content-studio/content-studio.research.tsx',
+  };
+  const o1 = (key: keyof typeof O1) => CODE.get(O1[key])!;
+  const MODEL = 'ContentStudioSourceCaptureAttempt';
+
+  it('P8O1-1 exactly one capture history model: one row per feed capture, its one read index and the member index', () => {
+    expect(
+      schema.match(
+        /model \w*(Attempt|CaptureHistory|CaptureRun|CaptureLog|CaptureEvent)\w* \{/g
+      )
+    ).toEqual([`model ${MODEL} {`]);
+    expect(model(MODEL).match(/@@\w+\(.*\)/g)).toEqual([
+      '@@index([organizationId, sourceId, startedAt])',
+      '@@index([requestedByUserId])',
+    ]);
+    // the id is the row's only key: a scheduled capture's run id
+    expect(model(MODEL)).not.toMatch(/@unique|@@unique/);
+    // the schedule keeps its fields and indexes (P8-C4)
+    expect(model('ContentStudioSource')).not.toMatch(
+      /@@index\(\[[^\]]*(nextCaptureAt|captureInterval|consecutiveCapture)/
+    );
+  });
+
+  it('P8O1-2 no version, discovery or page reference: the history can be kept apart from versions', () => {
+    expect(model(MODEL)).not.toMatch(
+      /ContentStudioSourceVersion|ContentStudioSourceDiscovery|versionId|discoveryId|pageId/
+    );
+    expect(
+      fields(MODEL)
+        .map((f) => f.split(' ')[1])
+        .filter((type) => /^ContentStudio/.test(type))
+    ).toEqual(['ContentStudioSource']);
+  });
+
+  it('P8O1-3 counts, codes and times only: no message, stack, body, header, URL, title or address field', () => {
+    expect(
+      fields(MODEL)
+        .map((f) => f.split(' ')[0])
+        .filter((name) =>
+          /message|stack|body|header|url|title|xml|content|redirect|address|agent|detail|raw|json/i.test(
+            name
+          )
+        )
+    ).toEqual([]);
+    expect(
+      fields(MODEL)
+        .map((f) => f.split(' ')[1])
+        .filter((type) => /Json|Bytes/.test(type))
+    ).toEqual([]);
+    // a failure keeps its fixed code, never what the error said
+    const ingestion = o1('ingestion');
+    expect(
+      between(ingestion, 'const feedCaptureFailure =', '\n};\n')
+    ).not.toMatch(/\.message|\.stack|String\(err|JSON\.stringify/);
+    expect(
+      between(
+        o1('service'),
+        'const storedFeedCaptureAttempt',
+        'export const toPublicContentStudioSource ='
+      )
+    ).not.toMatch(
+      /\.message|\.stack|requestedByUserId|organizationId|sourceId/
+    );
+  });
+
+  it('P8O1-4 every query of the history names the organization and the feed; none looks a record up by its id alone', () => {
+    const attempts = o1('attempts');
+    expect(attempts).not.toMatch(
+      /findUnique|\.update\(|upsert|\$queryRaw|\$executeRaw/
+    );
+    const wheres = Array.from(
+      attempts.matchAll(/where: \{([\s\S]*?)\}/g),
+      (m) => m[1]
+    );
+    expect(wheres.length).toBeGreaterThanOrEqual(4);
+    for (const where of wheres) {
+      expect(where).toMatch(/organizationId/);
+      expect(where).toMatch(/sourceId/);
+    }
+    // the success ends the record inside the feed's own transaction, scoped
+    // the same way
+    expect(
+      between(
+        o1('repository'),
+        'tx.contentStudioSourceCaptureAttempt.updateMany({',
+        '});'
+      )
+    ).toMatch(
+      /where: \{\s*id: attempt\.id,\s*organizationId,\s*sourceId: id,\s*status: 'running',\s*\}/
+    );
+  });
+
+  it('P8O1-5 the read is bounded: one page of 20, a page number only, no size from the request', () => {
+    const list = between(o1('service'), 'async listFeedCaptures(', '\n  }\n');
+    expect(list).toContain('take: PAGE_SIZE,');
+    expect(list).toContain('skip: (input.page - 1) * PAGE_SIZE,');
+    expect(o1('service')).toMatch(/\nconst PAGE_SIZE = 20;/);
+    const dto = between(
+      o1('dto'),
+      'export class ListContentStudioFeedCapturesDto',
+      '\n}\n'
+    );
+    expect(dto.match(/^\s+\w+(\?)?:/gm)).toEqual(['  page:']);
+    expect(dto).toContain('@Max(PAGE_MAX)');
+  });
+
+  it('P8O1-6/P8O1-15 one history route, for a feed of the request organization: 149 routes, no organization-wide history', () => {
+    const controller = o1('controller');
+    expect(
+      controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
+    ).toHaveLength(149);
+    expect(
+      Array.from(
+        controller.matchAll(/@(Get|Post|Put|Patch|Delete)\('([^']*)'\)/g),
+        (m) => `${m[1].toUpperCase()} ${m[2]}`
+      ).filter((route) => /captur|attempt|histor/i.test(route))
+    ).toEqual(['GET /sources/:id/captures']);
+    const block = between(
+      controller,
+      "@Get('/sources/:id/captures')",
+      '\n  }\n'
+    );
+    expect(block).toContain('@GetOrgFromRequest() org: Organization');
+    expect(block).toContain('@Query() query: ListContentStudioFeedCapturesDto');
+    expect(block).not.toMatch(/@Body|GetUserFromRequest|@Req|Role|Polic/);
+  });
+
+  it('P8O1-7 News Radar never reads the history', () => {
+    expect(o1('discoveries')).not.toMatch(/CaptureAttempt|captureAttempt/);
+    const { method } = radarCode();
+    expect(method).not.toMatch(
+      /CaptureAttempt|captureAttempt|listFeedCaptures/
+    );
+    expect(o1('research')).not.toMatch(/Captures|captures/);
+  });
+
+  it('P8O1-8 the Source list never reads a history: one feed at a time, on its own page', () => {
+    expect(between(o1('service'), 'async listSources(', '\n  }\n')).not.toMatch(
+      /CaptureAttempt|listFeedCaptures/
+    );
+    expect(o1('list')).not.toMatch(/useContentStudioFeedCaptures|\/captures/);
+    expect(
+      users(/useContentStudioFeedCaptures\(/).filter((file) =>
+        /content-studio/.test(file)
+      )
+    ).toEqual([O1.detail]);
+    // the history is read alone, never joined from a source
+    expect(o1('repository')).not.toMatch(/captureAttempts:\s*\{/);
+  });
+
+  it('P8O1-9 the P8-C4 schedule is as it was: presets, cadence, failure delays', () => {
+    expect(o1('types')).toContain(
+      'export const CONTENT_STUDIO_FEED_INTERVALS = [60, 180, 360, 720, 1440] as const;'
+    );
+    expect(o1('workflow')).toContain("const SCAN_CADENCE = '10 minutes';");
+    expect(o1('ingestion')).toContain(
+      'export const FEED_CAPTURE_FAILURE_DELAY_BASE_MINUTES = 60;'
+    );
+    expect(o1('ingestion')).toContain(
+      'export const FEED_CAPTURE_FAILURE_DELAY_MAX_MINUTES = 1440;'
+    );
+    // the success write and the failure record are the P8-C4 ones
+    expect(o1('repository')).toMatch(
+      /data: \{\s*lastCapturedAt: capturedAt,\s*nextCaptureAt,\s*consecutiveCaptureFailures: 0,\s*\}/
+    );
+    expect(o1('repository')).toMatch(
+      /consecutiveCaptureFailures: input\.expectedFailures,\s*OR: \[\s*\{ nextCaptureAt: null \},\s*\{ nextCaptureAt: \{ lte: input\.failedAt \} \},\s*\],/
+    );
+  });
+
+  it('P8O1-10 the P8-C2 queue is as it was; the capture keeps its queue, the record ends on main', () => {
+    expect(createHash('sha256').update(raw(O1.queue)).digest('hex')).toBe(
+      '0013e83698f582fd597a5a7a7f70f4248cae5a3e5491e087a1d7f217e3061c13'
+    );
+    expect(o1('workflow')).toMatch(
+      /const \{ captureContentStudioFeed \} =\s*proxyActivities<ContentStudioSourceActivity>\(\{\s*startToCloseTimeout: '10 minute',\s*taskQueue: CONTENT_STUDIO_CAPTURE_TASK_QUEUE,\s*retry: \{\s*maximumAttempts: 3,\s*backoffCoefficient: 1,\s*initialInterval: '2 minutes',\s*\},\s*\}\);/
+    );
+    expect(o1('workflow')).toMatch(
+      /finishContentStudioFeedCaptureAttempt,\s*\} = proxyActivities<ContentStudioSourceActivity>\(\{\s*startToCloseTimeout: '1 minute',\s*taskQueue: 'main',/
+    );
+    expect(
+      o1('workflow').match(/taskQueue: CONTENT_STUDIO_CAPTURE_TASK_QUEUE/g)
+    ).toHaveLength(1);
+  });
+
+  it('P8O1-11 the P8-C1 limits are as they were', () => {
+    expect(o1('types')).toContain(
+      'export const CONTENT_STUDIO_ACTIVE_FEEDS_MAX = 100;'
+    );
+    expect(o1('types')).toContain(
+      'export const CONTENT_STUDIO_URL_SOURCES_MAX = 100_000;'
+    );
+    expect(o1('types')).toContain(
+      'export const CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;'
+    );
+    // the cooldown comes before the record: a refused refresh has none
+    expect(
+      between(
+        o1('ingestion'),
+        'async refreshSource(',
+        'async listFeedsDueForCapture('
+      )
+    ).toMatch(
+      /assertRefreshDue\(source\.lastCapturedAt, manualRefreshCooldownMs\);\s*return this\.refreshFeed\(/
+    );
+  });
+
+  it('P8O1-12 the pause is as it was: a paused feed is never scheduled, and skipped before any record', () => {
+    const scheduled = between(
+      o1('ingestion'),
+      'async captureScheduledFeed(',
+      'async recordScheduledFeedFailure('
+    );
+    expect(scheduled).toMatch(
+      /source\.scanPausedAt \|\|[\s\S]*return \{ status: 'skipped' as const \};[\s\S]*this\.captureFeed\(/
+    );
+    expect(scheduled).not.toMatch(/beginFeedCaptureAttempt|throw/);
+    expect(o1('repository')).toMatch(/archivedAt: null,\s*scanPausedAt: null,/);
+  });
+
+  it('P8O1-13 nothing deletes a record: no retention, purge or cleanup', () => {
+    expect(
+      users(
+        /contentStudioSourceCaptureAttempt\.(delete|deleteMany)\(|captureAttempts?:\s*\{\s*delete/
+      )
+    ).toEqual([]);
+    expect(o1('attempts')).not.toMatch(/delete|retention|purge|cleanup/i);
+    expect(schema).not.toMatch(/onDelete: Cascade[^\n]*ContentStudioSource\b/);
+    expect(model(MODEL)).toMatch(
+      /source\s+ContentStudioSource\s+@relation\(fields: \[sourceId, organizationId\], references: \[id, organizationId\], onDelete: Restrict, onUpdate: Restrict\)/
+    );
+  });
+
+  it('P8O1-14 the P8-C4 failure record keeps its contract: the ids and the code, nothing more', () => {
+    expect(o1('activity')).toMatch(
+      /async recordContentStudioFeedCaptureFailure\(input: \{\s*organizationId: string;\s*sourceId: string;\s*code: string;\s*\}\)/
+    );
+    expect(o1('workflow')).toMatch(
+      /await recordContentStudioFeedCaptureFailure\(\{\s*organizationId: input\.organizationId,\s*sourceId: input\.sourceId,\s*code,\s*\}\);/
+    );
+    // the capture activity's input is as it was too
+    expect(o1('activity')).toMatch(
+      /async captureContentStudioFeed\(input: \{\s*organizationId: string;\s*sourceId: string;\s*\}\)/
+    );
+    expect(o1('workflow')).toMatch(
+      /await captureContentStudioFeed\(\{\s*organizationId: input\.organizationId,\s*sourceId: input\.sourceId,\s*\}\)/
+    );
+  });
+
+  it('P8O1-16 one record per run: its id is the run id, from Temporal, never made up in the workflow', () => {
+    const workflow = o1('workflow');
+    expect(workflow).toContain('attemptId: workflowInfo().runId,');
+    expect(workflow).not.toMatch(
+      /Date\.now|new Date|Math\.random|randomUUID|uuid4|crypto/
+    );
+    expect(o1('activity')).toContain(
+      'const { workflowExecution, attempt } = activityInfo();'
+    );
+    expect(o1('activity')).toMatch(
+      /attemptId: workflowExecution\.runId,\s*attemptCount: attempt,/
+    );
+    // a try never lowers the count, and never restarts the record
+    const begin = between(
+      o1('attempts'),
+      'async beginFeedCaptureAttempt(',
+      'finishFeedCaptureAttempt('
+    );
+    expect(begin).toMatch(/attemptCount: \{ lt: input\.attemptCount \}/);
+    expect(begin).not.toMatch(
+      /startedAt: input\.startedAt,\s*\},\s*\}\);\s*return \{ status: 'resumed'/
+    );
+  });
+
+  it('P8O1-17 a record ends once, from running only', () => {
+    for (const block of [
+      between(
+        o1('attempts'),
+        'finishFeedCaptureAttempt(',
+        'listFeedCaptureAttempts('
+      ),
+      between(
+        o1('repository'),
+        'tx.contentStudioSourceCaptureAttempt.updateMany({',
+        '});'
+      ),
+    ]) {
+      expect(block).toMatch(/status: 'running',\s*\}/);
+    }
+  });
+
+  it('P8O1-18 who asked comes from the request only, and is never shown', () => {
+    const block = between(
+      o1('controller'),
+      "@Post('/sources/:id/refresh')",
+      '\n  }\n'
+    );
+    expect(block).toContain('@GetUserFromRequest() user: User');
+    expect(block).toContain('userId: user.id,');
+    expect(o1('dto')).not.toMatch(/requestedBy|userId/);
+    expect(o1('api')).not.toMatch(/requestedBy/);
+    expect(
+      between(
+        o1('service'),
+        'export const toPublicContentStudioFeedCapture',
+        '\n};\n'
+      )
+    ).not.toMatch(/requestedBy/);
   });
 });

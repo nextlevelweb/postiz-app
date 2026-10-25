@@ -8,6 +8,7 @@ import {
 } from '@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
+import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import {
   toPublicContentStudioSource,
   toPublicContentStudioSourceVersion,
@@ -27,8 +28,11 @@ import {
   isContentStudioSourcePageChange,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.change';
 import {
+  CONTENT_STUDIO_FEED_CAPTURE_ERROR_CODE,
   CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION,
   CONTENT_STUDIO_SOURCE_NAME_MAX,
+  ContentStudioFeedCaptureSummary,
+  ContentStudioFeedCaptureTrigger,
   contentStudioSourceLimits,
   effectiveFeedIntervalMinutes,
   nextCaptureAfterSuccess,
@@ -217,33 +221,36 @@ interface FeedRow extends SourceRow {
   captureIntervalMinutes: number | null;
 }
 
-// What one feed capture did, in counts only: never a URL, a title or a
-// source id. entriesAccepted = versionsCreated + unchanged + failed + archived
-export interface ContentStudioFeedCaptureSummary {
-  // entries in the feed
-  entriesSeen: number;
-  // entries past the capture limit, not read
-  entriesIgnored: number;
-  // read, but no https page link, a page listed before, or the address of
-  // a source that is not a page (a feed)
-  entriesSkipped: number;
-  // pages recorded as discovered by this feed (but for a new page whose
-  // source lost every creation attempt to concurrent ones: failed)
-  entriesAccepted: number;
-  // page sources this capture created
-  sourcesCreated: number;
-  // pages captured as a new version (a new source's first one included)
-  versionsCreated: number;
-  // pages captured with nothing new: no version
-  unchanged: number;
-  // pages that could not be captured this time: no version
-  failed: number;
-  // pages whose source is archived: recorded, not captured
-  archived: number;
-  // new pages while the organization has its most page sources (P8-C1): no
-  // source, not recorded, not fetched. Never a failure
-  entriesLimited: number;
+// The record of one feed capture (P8-O1): its id, what started it, who asked
+// (a member's refresh only) and the highest try that started reading
+interface FeedCaptureAttempt {
+  id: string;
+  trigger: ContentStudioFeedCaptureTrigger;
+  requestedByUserId: string | null;
+  attemptCount: number;
 }
+
+type FeedCaptureFailure =
+  | { status: 'source_failed'; code: string }
+  | { status: 'infrastructure_failed'; code: null };
+
+// How a capture failed, as its record keeps it: a refusal of ours is the
+// feed's (its CS_ code, the scheduled capture's generic one without), anything
+// else the system's. Never the message
+const feedCaptureFailure = (err: unknown): FeedCaptureFailure => {
+  if (!(err instanceof HttpException)) {
+    return { status: 'infrastructure_failed', code: null };
+  }
+  const code = (err.getResponse() as { code?: unknown } | undefined)?.code;
+  return {
+    status: 'source_failed',
+    code:
+      typeof code === 'string' &&
+      CONTENT_STUDIO_FEED_CAPTURE_ERROR_CODE.test(code)
+        ? code
+        : 'CS_SOURCE_CAPTURE_FAILED',
+  };
+};
 
 type EntryOutcome =
   | 'skipped'
@@ -324,7 +331,8 @@ const discoveredSourceName = (entry: ContentStudioSourceFeedEntry) =>
 export class ContentStudioSourceIngestionService {
   constructor(
     private _contentStudioSourceRepository: ContentStudioSourceRepository,
-    private _contentStudioSourceDiscoveryRepository: ContentStudioSourceDiscoveryRepository
+    private _contentStudioSourceDiscoveryRepository: ContentStudioSourceDiscoveryRepository,
+    private _contentStudioSourceCaptureAttemptRepository: ContentStudioSourceCaptureAttemptRepository
   ) {}
 
   async refreshSource(input: {
@@ -356,7 +364,7 @@ export class ContentStudioSourceIngestionService {
         // its last read. A paused feed too (P8-C3): pausing stops only the
         // schedule, and the refresh leaves it paused
         assertRefreshDue(source.lastCapturedAt, manualRefreshCooldownMs);
-        return this.captureFeed(input.organizationId, source, input.userId);
+        return this.refreshFeed(input.organizationId, source, input.userId);
       default:
         throw kindUnsupported();
     }
@@ -421,11 +429,15 @@ export class ContentStudioSourceIngestionService {
   // right before its capture, so only the stored URL of a live feed of that
   // organization is ever fetched. Anything else (gone, archived, paused
   // (P8-C3), another kind) is skipped, never an error to retry, and left as
-  // it is. The captures are recorded in the name of the member who created
-  // the feed
+  // it is, with no record (P8-O1). The captures are recorded in the name of
+  // the member who created the feed. `attemptId` is the capture workflow's
+  // run id and `attemptCount` this try, both from Temporal (the activity's
+  // own context): every try of one scheduled capture keeps one record
   async captureScheduledFeed(input: {
     organizationId: string;
     sourceId: string;
+    attemptId: string;
+    attemptCount: number;
   }) {
     if (
       typeof input.organizationId !== 'string' ||
@@ -450,7 +462,13 @@ export class ContentStudioSourceIngestionService {
     const { capture } = await this.captureFeed(
       input.organizationId,
       source,
-      source.createdById
+      source.createdById,
+      {
+        id: input.attemptId,
+        trigger: 'scheduled',
+        requestedByUserId: null,
+        attemptCount: input.attemptCount,
+      }
     );
     return { status: 'captured' as const, capture };
   }
@@ -463,7 +481,8 @@ export class ContentStudioSourceIngestionService {
   // this one, a concurrent one, a member's successful refresh) changes
   // nothing and is not tried again. A paused feed is recorded: the pause
   // keeps it out of the scan either way. `code` is the failure's fixed code
-  // (CS_...), kept in the contract for its later record; nothing stores it yet
+  // (CS_...): the capture's record keeps it (finishScheduledFeedCapture,
+  // P8-O1), this write does not
   async recordScheduledFeedFailure(input: {
     organizationId: string;
     sourceId: string;
@@ -500,6 +519,53 @@ export class ContentStudioSourceIngestionService {
       });
     return {
       status: count === 1 ? ('recorded' as const) : ('unchanged' as const),
+    };
+  }
+
+  // For the feed capture schedule only: the end of a scheduled capture that
+  // failed after its tries (P8-O1), once its failure was recorded: the
+  // feed's (source_failed, its CS_ code) or the system's
+  // (infrastructure_failed, no code). The record ends once, with the feed's
+  // schedule as it is now; a record that has ended, or none (the capture
+  // never read the feed), stays as it is. Anything else is skipped
+  async finishScheduledFeedCapture(input: {
+    organizationId: string;
+    sourceId: string;
+    attemptId: string;
+    status: string;
+    code: string | null;
+  }) {
+    if (
+      typeof input.organizationId !== 'string' ||
+      typeof input.sourceId !== 'string' ||
+      !UUID.test(input.sourceId) ||
+      typeof input.attemptId !== 'string' ||
+      !UUID.test(input.attemptId)
+    ) {
+      return { status: 'skipped' as const };
+    }
+    let failure: FeedCaptureFailure;
+    if (
+      input.status === 'source_failed' &&
+      typeof input.code === 'string' &&
+      CONTENT_STUDIO_FEED_CAPTURE_ERROR_CODE.test(input.code)
+    ) {
+      failure = { status: 'source_failed', code: input.code };
+    } else if (
+      input.status === 'infrastructure_failed' &&
+      input.code === null
+    ) {
+      failure = { status: 'infrastructure_failed', code: null };
+    } else {
+      return { status: 'skipped' as const };
+    }
+    return {
+      status: await this.finishFeedCapture(
+        input.organizationId,
+        input.sourceId,
+        input.attemptId,
+        failure
+      ),
     };
   }
 
@@ -693,15 +759,95 @@ export class ContentStudioSourceIngestionService {
     }
   }
 
-  // One capture of a live feed source of the organization (see the class).
-  // A success, by a member or the schedule, schedules the feed's next
-  // automatic capture from this capture's own time and ends its failures
-  // (P8-C4); a failure changes nothing here
-  private async captureFeed(
+  // A member's refresh of a feed (P8-O1): one recorded capture, ended here
+  // whatever happens. A failure changes nothing of the feed's schedule
+  // (P8-C4) and is answered as before; if its record cannot be ended, that
+  // error is the answer
+  private async refreshFeed(
     organizationId: string,
     feed: FeedRow,
     userId: string
   ) {
+    const attemptId = randomUUID();
+    try {
+      return await this.captureFeed(organizationId, feed, userId, {
+        id: attemptId,
+        trigger: 'manual',
+        requestedByUserId: userId,
+        attemptCount: 1,
+      });
+    } catch (err) {
+      await this.finishFeedCapture(
+        organizationId,
+        feed.id,
+        attemptId,
+        feedCaptureFailure(err)
+      );
+      throw err;
+    }
+  }
+
+  // The end of a failed capture's record, with the feed's schedule as it is
+  // now: after the failure was recorded (P8-C4), or as another capture left
+  // it. `unchanged`: the record had ended already, or there is none
+  private async finishFeedCapture(
+    organizationId: string,
+    sourceId: string,
+    attemptId: string,
+    failure: FeedCaptureFailure
+  ) {
+    const feed =
+      await this._contentStudioSourceRepository.getSourceForOrganization(
+        organizationId,
+        sourceId
+      );
+    if (!feed) {
+      return 'unchanged' as const;
+    }
+    const { count } =
+      await this._contentStudioSourceCaptureAttemptRepository.finishFeedCaptureAttempt(
+        {
+          id: attemptId,
+          organizationId,
+          sourceId,
+          status: failure.status,
+          errorCode: failure.code,
+          finishedAt: new Date(),
+          nextCaptureAtAfter: feed.nextCaptureAt,
+          consecutiveFailuresAfter: feed.consecutiveCaptureFailures,
+        }
+      );
+    return count === 1 ? ('finished' as const) : ('unchanged' as const);
+  }
+
+  // One capture of a live feed source of the organization (see the class),
+  // recorded from here on (P8-O1). A success, by a member or the schedule,
+  // schedules the feed's next automatic capture from this capture's own time
+  // and ends its failures (P8-C4), and ends its record with its counts, in
+  // one transaction; a failure changes nothing here. A try of a scheduled
+  // capture whose record has ended (its success was written, its answer
+  // lost) captures again, and its record stays as it was
+  private async captureFeed(
+    organizationId: string,
+    feed: FeedRow,
+    userId: string,
+    attempt: FeedCaptureAttempt
+  ) {
+    const begun =
+      await this._contentStudioSourceCaptureAttemptRepository.beginFeedCaptureAttempt(
+        {
+          id: attempt.id,
+          organizationId,
+          sourceId: feed.id,
+          trigger: attempt.trigger,
+          requestedByUserId: attempt.requestedByUserId,
+          startedAt: new Date(),
+          attemptCount: attempt.attemptCount,
+        }
+      );
+    if (begun.status === 'mismatch') {
+      throw integrityError();
+    }
     // a stored interval that is no preset is never used as it is
     const intervalMinutes = effectiveFeedIntervalMinutes(
       feed.captureIntervalMinutes
@@ -784,7 +930,8 @@ export class ContentStudioSourceIngestionService {
       organizationId,
       feed.id,
       capturedAt,
-      nextCaptureAfterSuccess(capturedAt, intervalMinutes)
+      nextCaptureAfterSuccess(capturedAt, intervalMinutes),
+      { id: attempt.id, finishedAt: new Date(), summary: capture }
     );
     const current =
       await this._contentStudioSourceRepository.getSourceForOrganization(

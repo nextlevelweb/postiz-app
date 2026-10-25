@@ -3,8 +3,14 @@ import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
+import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import {
   CONTENT_STUDIO_DISCOVERY_DEFAULT_WINDOW,
+  CONTENT_STUDIO_FEED_CAPTURE_COUNTS,
+  CONTENT_STUDIO_FEED_CAPTURE_ERROR_CODE,
+  CONTENT_STUDIO_FEED_CAPTURE_STALE_MS,
+  CONTENT_STUDIO_FEED_CAPTURE_TRIGGERS,
+  ContentStudioFeedCaptureSummary,
   CONTENT_STUDIO_SOURCE_NAME_MAX,
   CONTENT_STUDIO_SOURCE_SEARCH_MAX,
   ContentStudioDiscoveryCaptureState,
@@ -98,6 +104,15 @@ const kindUnsupported = () =>
   new HttpException(
     {
       msg: 'This source type has no discoveries.',
+      code: 'CS_SOURCE_KIND_UNSUPPORTED',
+    },
+    400
+  );
+
+const kindHasNoCaptures = () =>
+  new HttpException(
+    {
+      msg: 'This source type has no capture history.',
       code: 'CS_SOURCE_KIND_UNSUPPORTED',
     },
     400
@@ -269,6 +284,120 @@ interface VersionRow {
   createdAt: Date;
 }
 
+// A feed capture's record (P8-O1) as stored
+interface FeedCaptureAttemptRow
+  extends Record<keyof ContentStudioFeedCaptureSummary, number | null> {
+  id: string;
+  trigger: string;
+  status: string;
+  startedAt: Date;
+  finishedAt: Date | null;
+  attemptCount: number;
+  errorCode: string | null;
+  nextCaptureAtAfter: Date | null;
+  consecutiveFailuresAfter: number | null;
+}
+
+const isCount = (value: unknown): value is number =>
+  Number.isInteger(value) && (value as number) >= 0;
+
+// A record as the capture writes it, or undefined: a known trigger, a member's
+// refresh one try; running with nothing ended, or ended once at or after its
+// start with the feed's schedule after it; counts for a success only, all of
+// them and adding up (P8-C1); a CS_ code for a failure of the feed only
+const storedFeedCaptureAttempt = (row: FeedCaptureAttemptRow) => {
+  const counts = CONTENT_STUDIO_FEED_CAPTURE_COUNTS.map((key) => row[key]);
+  if (
+    !(CONTENT_STUDIO_FEED_CAPTURE_TRIGGERS as readonly string[]).includes(
+      row.trigger
+    ) ||
+    !(row.startedAt instanceof Date) ||
+    !Number.isInteger(row.attemptCount) ||
+    row.attemptCount < 1 ||
+    // a member's refresh is one try
+    (row.trigger !== 'scheduled' && row.attemptCount !== 1)
+  ) {
+    return undefined;
+  }
+  if (row.status === 'running') {
+    return row.finishedAt === null &&
+      row.errorCode === null &&
+      row.consecutiveFailuresAfter === null &&
+      row.nextCaptureAtAfter === null &&
+      counts.every((count) => count === null)
+      ? { ...row, summary: null }
+      : undefined;
+  }
+  if (
+    !(row.finishedAt instanceof Date) ||
+    row.finishedAt.getTime() < row.startedAt.getTime() ||
+    !isCount(row.consecutiveFailuresAfter) ||
+    !(row.nextCaptureAtAfter === null || row.nextCaptureAtAfter instanceof Date)
+  ) {
+    return undefined;
+  }
+  switch (row.status) {
+    case 'success': {
+      if (row.errorCode !== null || !counts.every(isCount)) {
+        return undefined;
+      }
+      const summary = Object.fromEntries(
+        CONTENT_STUDIO_FEED_CAPTURE_COUNTS.map((key) => [key, row[key]])
+      ) as unknown as ContentStudioFeedCaptureSummary;
+      return summary.entriesAccepted ===
+        summary.versionsCreated +
+          summary.unchanged +
+          summary.failed +
+          summary.archived
+        ? { ...row, summary }
+        : undefined;
+    }
+    case 'source_failed':
+    case 'infrastructure_failed':
+      return (row.status === 'source_failed'
+        ? typeof row.errorCode === 'string' &&
+          CONTENT_STUDIO_FEED_CAPTURE_ERROR_CODE.test(row.errorCode)
+        : row.errorCode === null) && counts.every((count) => count === null)
+        ? { ...row, summary: null }
+        : undefined;
+    default:
+      return undefined;
+  }
+};
+
+// Built field by field: never the organization, the feed, who asked or a
+// message. A record still running past CONTENT_STUDIO_FEED_CAPTURE_STALE_MS is
+// reported as interrupted, and left as it is
+export const toPublicContentStudioFeedCapture = (
+  row: FeedCaptureAttemptRow,
+  now: Date
+) => {
+  const attempt = storedFeedCaptureAttempt(row);
+  if (!attempt) {
+    throw integrityError();
+  }
+  return {
+    id: attempt.id,
+    trigger: attempt.trigger,
+    status:
+      attempt.status === 'running' &&
+      now.getTime() - attempt.startedAt.getTime() >
+        CONTENT_STUDIO_FEED_CAPTURE_STALE_MS
+        ? 'interrupted'
+        : attempt.status,
+    startedAt: attempt.startedAt,
+    finishedAt: attempt.finishedAt,
+    durationMs: attempt.finishedAt
+      ? attempt.finishedAt.getTime() - attempt.startedAt.getTime()
+      : null,
+    attemptCount: attempt.attemptCount,
+    errorCode: attempt.errorCode,
+    summary: attempt.summary,
+    nextCaptureAtAfter: attempt.nextCaptureAtAfter,
+    consecutiveFailuresAfter: attempt.consecutiveFailuresAfter,
+  };
+};
+
 // Built field by field: no organization, creator or stored text leaves.
 // Shared with source ingestion, so a refresh answers in the same shape
 export const toPublicContentStudioSource = (row: SourceRow) => ({
@@ -322,7 +451,8 @@ export const toPublicContentStudioSourceVersion = (row: VersionRow) => ({
 export class ContentStudioSourceService {
   constructor(
     private _contentStudioSourceRepository: ContentStudioSourceRepository,
-    private _contentStudioSourceDiscoveryRepository: ContentStudioSourceDiscoveryRepository
+    private _contentStudioSourceDiscoveryRepository: ContentStudioSourceDiscoveryRepository,
+    private _contentStudioSourceCaptureAttemptRepository: ContentStudioSourceCaptureAttemptRepository
   ) {}
 
   async listSources(input: {
@@ -607,6 +737,44 @@ export class ContentStudioSourceService {
     return {
       ...toPublicContentStudioSourceVersion(row),
       content: this.intactContent(row),
+    };
+  }
+
+  // A feed's capture history (P8-O1), newest first, one page at a time:
+  // what each capture did, never what it read. Read for a feed only,
+  // archived or paused or not. A record that is not what a capture writes
+  // fails the request
+  async listFeedCaptures(input: {
+    organizationId: string;
+    sourceId: string;
+    page: number;
+  }) {
+    const feed = await this.getRow(input.organizationId, input.sourceId);
+    if (feed.kind === 'url') {
+      throw kindHasNoCaptures();
+    }
+    if (feed.kind !== 'feed') {
+      throw integrityError();
+    }
+    const [rows, count] = await Promise.all([
+      this._contentStudioSourceCaptureAttemptRepository.listFeedCaptureAttempts(
+        {
+          organizationId: input.organizationId,
+          sourceId: feed.id,
+          skip: (input.page - 1) * PAGE_SIZE,
+          take: PAGE_SIZE,
+        }
+      ),
+      this._contentStudioSourceCaptureAttemptRepository.countFeedCaptureAttempts(
+        input.organizationId,
+        feed.id
+      ),
+    ]);
+    const now = new Date();
+    return {
+      pages: Math.ceil(count / PAGE_SIZE),
+      total: count,
+      results: rows.map((row) => toPublicContentStudioFeedCapture(row, now)),
     };
   }
 

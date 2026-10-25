@@ -7,6 +7,7 @@ import {
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
+import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
@@ -259,6 +260,7 @@ const refusal = async (call: Promise<unknown>) => {
 
 const clean = async () => {
   const where = { organizationId: { in: ORGS } };
+  await client.contentStudioSourceCaptureAttempt.deleteMany({ where });
   await client.contentStudioSourceDiscovery.deleteMany({ where });
   await client.contentStudioSourceVersion.deleteMany({ where });
   await client.contentStudioSource.deleteMany({ where });
@@ -280,9 +282,20 @@ const services = (prisma: PrismaService) => {
   const discoveries = new ContentStudioSourceDiscoveryRepository(
     new PrismaRepository<'contentStudioSourceDiscovery'>(prisma)
   );
+  const captureAttempts = new ContentStudioSourceCaptureAttemptRepository(
+    new PrismaRepository<'contentStudioSourceCaptureAttempt'>(prisma)
+  );
   return {
-    ingestion: new ContentStudioSourceIngestionService(sources, discoveries),
-    service: new ContentStudioSourceService(sources, discoveries),
+    ingestion: new ContentStudioSourceIngestionService(
+      sources,
+      discoveries,
+      captureAttempts
+    ),
+    service: new ContentStudioSourceService(
+      sources,
+      discoveries,
+      captureAttempts
+    ),
   };
 };
 

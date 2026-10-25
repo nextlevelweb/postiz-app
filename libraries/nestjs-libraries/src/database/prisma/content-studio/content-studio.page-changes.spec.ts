@@ -6,6 +6,7 @@ import {
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
+import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 
@@ -239,7 +240,14 @@ const setup = () => {
   const discoveries = new ContentStudioSourceDiscoveryRepository({
     model: { contentStudioSourceDiscovery: {} },
   } as unknown as PrismaRepository<'contentStudioSourceDiscovery'>);
-  const service = new ContentStudioSourceService(repository, discoveries);
+  const captureAttempts = new ContentStudioSourceCaptureAttemptRepository({
+    model: { contentStudioSourceCaptureAttempt: {} },
+  } as unknown as PrismaRepository<'contentStudioSourceCaptureAttempt'>);
+  const service = new ContentStudioSourceService(
+    repository,
+    discoveries,
+    captureAttempts
+  );
   // every page, as the command runs it
   const backfill = async () => {
     const total = { updated: 0, unchanged: 0, failed: [] as string[] };

@@ -133,6 +133,9 @@ type Summary = {
 let feed: Summary;
 let pageSource: Summary;
 let discoveries: Array<Record<string, unknown>>;
+// the feed's capture history (P8-O1), newest first; 45 records in all when
+// set, so there are three pages
+let captures: Array<Record<string, unknown>>;
 let override: (
   method: string,
   url: string
@@ -186,6 +189,17 @@ const server = (method: string, url: string, body: any): Reply => {
       pages: discoveries.length ? 2 : 0,
       total: discoveries.length ? 51 : 0,
       results: page === 1 ? discoveries : [],
+    });
+  }
+  if (
+    method === 'GET' &&
+    pathname === `/content-studio/sources/${FEED_ID}/captures`
+  ) {
+    const page = Number(searchParams.get('page'));
+    return reply(200, {
+      pages: captures.length ? 3 : 0,
+      total: captures.length ? 45 : 0,
+      results: page === 1 ? captures : [],
     });
   }
   if (method === 'GET' && /\/versions\?/.test(url)) {
@@ -245,6 +259,7 @@ const row = (name: string) =>
 
 beforeEach(() => {
   mockModals.set([]);
+  captures = [];
   feed = summary({});
   pageSource = summary({
     id: PAGE_ID,
@@ -685,5 +700,246 @@ describe('Source Library: a feed', () => {
       'This address did not answer with an RSS or Atom feed that can be read.',
       'warning'
     );
+  });
+});
+
+// A feed's capture history (P8-O1): what each scheduled capture or refresh
+// did, as the server recorded it
+describe('Source Library: a feed capture history', () => {
+  const renderFeed = async () => {
+    wrap(h(ContentStudioSourceDetail, { sourceId: FEED_ID }));
+    await flush();
+  };
+  const history = () =>
+    screen.getByRole('heading', { name: 'Capture history' })
+      .parentElement as HTMLElement;
+  const COUNTS = {
+    entriesSeen: 30,
+    entriesIgnored: 5,
+    entriesSkipped: 2,
+    entriesAccepted: 12,
+    sourcesCreated: 1,
+    versionsCreated: 4,
+    unchanged: 7,
+    failed: 1,
+    archived: 0,
+    entriesLimited: 0,
+  };
+  const capture = (over: Record<string, unknown>) => ({
+    id: `c-${Math.random()}`,
+    trigger: 'scheduled',
+    status: 'success',
+    startedAt: T1,
+    finishedAt: T1,
+    durationMs: 2400,
+    attemptCount: 1,
+    errorCode: null,
+    summary: COUNTS,
+    nextCaptureAtAfter: T2,
+    consecutiveFailuresAfter: 0,
+    ...over,
+  });
+  const rows = () => within(history()).queryAllByRole('listitem');
+
+  it('UI1/UI3 a feed has a Capture history section, empty until its first capture', async () => {
+    await renderFeed();
+    expect(within(history()).getByText('No capture history yet.')).toBeTruthy();
+    expect(calls().filter((c) => c.url.includes('/captures'))).toEqual([
+      {
+        method: 'GET',
+        url: `/content-studio/sources/${FEED_ID}/captures?page=1`,
+        body: undefined,
+      },
+    ]);
+  });
+
+  it('UI2 a web page source has no capture history and never asks for one', async () => {
+    wrap(h(ContentStudioSourceDetail, { sourceId: PAGE_ID }));
+    await flush();
+    expect(
+      screen.queryByRole('heading', { name: 'Capture history' })
+    ).toBeNull();
+    expect(calls().filter((c) => c.url.includes('/captures'))).toEqual([]);
+  });
+
+  it('UI4/UI8/UI9 a scheduled success: its time, trigger, duration and counts', async () => {
+    captures = [capture({})];
+    await renderFeed();
+    const [row] = rows();
+    expect(row.textContent).toContain('Captured successfully');
+    expect(row.textContent).toContain('Scheduled');
+    expect(row.textContent).toContain(date(T1));
+    expect(row.textContent).toContain('2.4s');
+    expect(row.textContent).toContain(
+      'Pages found: 12 · New versions: 4 · Unchanged: 7 · Pages not captured this time: 1'
+    );
+    expect(row.textContent).not.toContain('Tries');
+    expect(row.textContent).not.toContain('source limit');
+  });
+
+  it('UI5 a manual success reads Manual; limited pages are counted apart', async () => {
+    captures = [
+      capture({
+        trigger: 'manual',
+        summary: { ...COUNTS, failed: 0, entriesLimited: 3 },
+      }),
+    ];
+    await renderFeed();
+    const [row] = rows();
+    expect(row.textContent).toContain('Manual');
+    expect(row.textContent).not.toContain('Scheduled');
+    expect(row.textContent).toContain(
+      'Pages not added because the organization reached its source limit: 3'
+    );
+    expect(row.textContent).not.toContain('Pages not captured this time');
+  });
+
+  it('UI6/UI14 a failure of the feed reads as fixed words, with its tries and next try, never the code or a server message', async () => {
+    captures = [
+      capture({
+        status: 'source_failed',
+        errorCode: 'CS_SOURCE_FETCH_FAILED',
+        summary: null,
+        attemptCount: 3,
+        durationMs: 272_000,
+        nextCaptureAtAfter: T2,
+        consecutiveFailuresAfter: 1,
+        msg: 'server text https://x.test',
+        stack: 'Error: at line 1',
+      }),
+    ];
+    await renderFeed();
+    const [row] = rows();
+    expect(row.textContent).toContain('Failed');
+    expect(row.textContent).toContain('The feed could not be fetched.');
+    expect(row.textContent).toContain(`Next try after ${date(T2)}.`);
+    expect(row.textContent).toContain('Tries: 3');
+    expect(row.textContent).toContain('4m 32s');
+    expect(row.textContent).not.toMatch(/CS_|server text|https|Error:/);
+  });
+
+  it('UI6 an unknown code is a capture that failed; a member refresh that failed promises no next try', async () => {
+    captures = [
+      capture({
+        trigger: 'manual',
+        status: 'source_failed',
+        errorCode: 'CS_SOURCE_SOMETHING_NEW',
+        summary: null,
+        consecutiveFailuresAfter: 0,
+      }),
+    ];
+    await renderFeed();
+    const [row] = rows();
+    expect(row.textContent).toContain('The capture failed.');
+    expect(row.textContent).not.toContain('Next try');
+    expect(row.textContent).not.toContain('CS_');
+  });
+
+  it('UI7 a failure of the system has its own words: the feed itself may be fine', async () => {
+    captures = [capture({ status: 'infrastructure_failed', summary: null })];
+    await renderFeed();
+    const [row] = rows();
+    expect(row.textContent).toContain('System problem');
+    expect(row.textContent).toContain(
+      'Capture could not complete because of a temporary system problem. The feed itself may be fine.'
+    );
+    expect(row.textContent).not.toContain('The feed could not be fetched.');
+  });
+
+  it('a running capture is in progress; one the server reports interrupted says no result was recorded', async () => {
+    captures = [
+      capture({
+        status: 'running',
+        finishedAt: null,
+        durationMs: null,
+        summary: null,
+        nextCaptureAtAfter: null,
+        consecutiveFailuresAfter: null,
+      }),
+      capture({
+        status: 'interrupted',
+        finishedAt: null,
+        durationMs: null,
+        summary: null,
+        nextCaptureAtAfter: null,
+        consecutiveFailuresAfter: null,
+      }),
+    ];
+    await renderFeed();
+    const [running, interrupted] = rows();
+    expect(running.textContent).toContain('Capture in progress');
+    expect(running.textContent).not.toMatch(/\ds\b/);
+    expect(interrupted.textContent).toContain('Capture interrupted');
+    expect(interrupted.textContent).toContain(
+      'No result was recorded for this capture.'
+    );
+  });
+
+  it('UI8 durations: under a second, tenths of seconds, minutes and seconds', async () => {
+    const { formatCaptureDuration } = require('./content-studio.source.detail');
+    expect(formatCaptureDuration(0)).toBe('<1s');
+    expect(formatCaptureDuration(999)).toBe('<1s');
+    expect(formatCaptureDuration(1000)).toBe('1.0s');
+    expect(formatCaptureDuration(2400)).toBe('2.4s');
+    expect(formatCaptureDuration(59_999)).toBe('59.9s');
+    expect(formatCaptureDuration(60_000)).toBe('1m 0s');
+    expect(formatCaptureDuration(72_000)).toBe('1m 12s');
+  });
+
+  it('UI10 a longer history is paged by the server, 20 at a time', async () => {
+    captures = Array.from({ length: 20 }, (_, i) => capture({ id: `c${i}` }));
+    await renderFeed();
+    expect(rows()).toHaveLength(20);
+    await click(within(history()).getByRole('button', { name: /next/i }));
+    expect(calls().map((c) => c.url)).toContain(
+      `/content-studio/sources/${FEED_ID}/captures?page=2`
+    );
+  });
+
+  it('UI11/UI12 an archived or paused feed keeps its history', async () => {
+    captures = [capture({})];
+    feed = summary({ archivedAt: T1 });
+    await renderFeed();
+    expect(rows()).toHaveLength(1);
+    cleanup();
+    feed = summary({ scanPausedAt: T1 });
+    await renderFeed();
+    expect(rows()).toHaveLength(1);
+  });
+
+  it('UI13 a refresh, whether it succeeds or fails, reads the history again', async () => {
+    await renderFeed();
+    const before = calls().filter((c) => c.url.includes('/captures')).length;
+    await click(
+      screen.getByRole('button', { name: 'Capture feed Company newsroom' })
+    );
+    const afterSuccess = calls().filter((c) =>
+      c.url.includes('/captures')
+    ).length;
+    expect(afterSuccess).toBeGreaterThan(before);
+    override = (method, url) =>
+      method === 'POST' && url.endsWith('/refresh')
+        ? reply(502, { msg: 'x', code: 'CS_SOURCE_FETCH_FAILED' })
+        : undefined;
+    await click(
+      screen.getByRole('button', { name: /Refresh feed Company newsroom/ })
+    );
+    expect(
+      calls().filter((c) => c.url.includes('/captures')).length
+    ).toBeGreaterThan(afterSuccess);
+  });
+
+  it('UI15 a history that cannot be loaded says so and can be tried again', async () => {
+    override = (method, url) =>
+      method === 'GET' && url.includes('/captures')
+        ? reply(500, { msg: 'x', code: 'CS_SOURCE_INTEGRITY_ERROR' })
+        : undefined;
+    await renderFeed();
+    expect(within(history()).getByRole('alert').textContent).toContain(
+      'The capture history could not be loaded.'
+    );
+    override = () => undefined;
+    await click(within(history()).getByRole('button', { name: 'Try again' }));
+    expect(within(history()).getByText('No capture history yet.')).toBeTruthy();
   });
 });

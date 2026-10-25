@@ -7,6 +7,7 @@ import {
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
+import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
@@ -250,6 +251,7 @@ const invariants = async () => {
 
 const clean = async () => {
   const where = { organizationId: { in: ORGS } };
+  await client.contentStudioSourceCaptureAttempt.deleteMany({ where });
   await client.contentStudioSourceDiscovery.deleteMany({ where });
   await client.contentStudioSourceVersion.deleteMany({ where });
   await client.contentStudioSource.deleteMany({ where });
@@ -329,9 +331,20 @@ const services = (prisma: PrismaService) => {
   const discoveries = new ContentStudioSourceDiscoveryRepository(
     new PrismaRepository<'contentStudioSourceDiscovery'>(prisma)
   );
+  const captureAttempts = new ContentStudioSourceCaptureAttemptRepository(
+    new PrismaRepository<'contentStudioSourceCaptureAttempt'>(prisma)
+  );
   return {
-    ingestion: new ContentStudioSourceIngestionService(sources, discoveries),
-    service: new ContentStudioSourceService(sources, discoveries),
+    ingestion: new ContentStudioSourceIngestionService(
+      sources,
+      discoveries,
+      captureAttempts
+    ),
+    service: new ContentStudioSourceService(
+      sources,
+      discoveries,
+      captureAttempts
+    ),
   };
 };
 
@@ -680,12 +693,18 @@ describe('P8-C1 on PostgreSQL: a 25-entry feed', () => {
     ).toBe(0);
     // a lookup per entry, then one transaction for the new pages (begin,
     // isolation, their URLs, the count, commit); and the feed's read, its
-    // update (in a transaction of its own) and its read again
+    // update (in a transaction of its own) and its read again. P8-O1 adds
+    // three per capture, none per entry: the capture's record, and in the
+    // update's transaction the feed's schedule and the record's end
     expect(queries.filter((q) => /^BEGIN/.test(q))).toHaveLength(2);
     expect(queries.filter((q) => /SERIALIZABLE/.test(q))).toHaveLength(1);
     expect(queries.filter((q) => /COUNT\(/i.test(q))).toHaveLength(1);
-    expect(queries.filter((q) => /^INSERT/.test(q))).toHaveLength(0);
-    expect(queries.length).toBe(25 + 5 + 5);
+    expect(queries.filter((q) => /^INSERT/.test(q))).toEqual([
+      expect.stringMatching(
+        /^INSERT INTO "public"\."ContentStudioSourceCaptureAttempt"/
+      ),
+    ]);
+    expect(queries.length).toBe(25 + 5 + 5 + 3);
   });
 
   it('P8C1PG-M2 with room: 25 sources and discoveries, each create one serializable transaction, all within their attempts', async () => {
@@ -713,9 +732,10 @@ describe('P8-C1 on PostgreSQL: a 25-entry feed', () => {
     // their URLs, the count, the 25 inserts, commit. The plain create of
     // before (P8-04B2) was the insert alone, measured the same way below: the
     // limit adds five statements per feed capture with new pages, none per
-    // page (280 before, 285 now)
-    expect(queries.filter((q) => /^INSERT/.test(q))).toHaveLength(25 * 3);
-    expect(queries.length).toBe(285);
+    // page (280 before, 285 now). P8-O1 adds three per capture, one of them
+    // an insert, none per page (288)
+    expect(queries.filter((q) => /^INSERT/.test(q))).toHaveLength(25 * 3 + 1);
+    expect(queries.length).toBe(288);
     queries = [];
     await logged.contentStudioSource.create({
       data: {
@@ -829,6 +849,8 @@ describe('P8-C1 on PostgreSQL: the member refresh cooldown', () => {
       await ingestion.captureScheduledFeed({
         organizationId: ORG_A,
         sourceId: feed,
+        attemptId: randomUUID(),
+        attemptCount: 1,
       })
     ).toMatchObject({
       status: 'captured',
@@ -839,6 +861,8 @@ describe('P8-C1 on PostgreSQL: the member refresh cooldown', () => {
       await ingestion.captureScheduledFeed({
         organizationId: ORG_A,
         sourceId: feed,
+        attemptId: randomUUID(),
+        attemptCount: 1,
       })
     ).toMatchObject({ capture: { versionsCreated: 1 } });
     // and a page a feed captured a moment ago waits for a member refresh
@@ -877,6 +901,8 @@ describe('P8-C1 on PostgreSQL: what stays', () => {
     await ingestion.captureScheduledFeed({
       organizationId: ORG_A,
       sourceId: feed,
+      attemptId: randomUUID(),
+      attemptCount: 1,
     });
     const ids = new Set(
       (

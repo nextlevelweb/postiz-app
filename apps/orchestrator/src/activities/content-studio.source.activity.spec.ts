@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { HttpException } from '@nestjs/common';
-import { ApplicationFailure } from '@temporalio/activity';
+import { activityInfo, ApplicationFailure } from '@temporalio/activity';
 import { ContentStudioSourceActivity } from './content-studio.source.activity';
 import type { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 
@@ -11,12 +11,31 @@ import type { ContentStudioSourceIngestionService } from '@gitroom/nestjs-librar
 const ORG = '11111111-1111-4111-8111-111111111111';
 const FEED = '33333333-3333-4333-8333-333333333333';
 const MARKER = 'ACTIVITY_PRIVATE_URL_MARKER_123';
+const RUN = '77777777-7777-4777-8777-777777777777';
+
+// the Temporal context of a running activity (P8-O1): its workflow run and
+// which try this is
+jest.mock('@temporalio/activity', () => ({
+  ...jest.requireActual('@temporalio/activity'),
+  activityInfo: jest.fn(),
+}));
+const infoMock = jest.mocked(activityInfo);
+beforeEach(() => {
+  infoMock.mockReturnValue({
+    workflowExecution: {
+      workflowId: `content-studio-feed-capture-${FEED}`,
+      runId: RUN,
+    },
+    attempt: 2,
+  } as ReturnType<typeof activityInfo>);
+});
 
 const setup = () => {
   const ingestion = {
     listFeedsDueForCapture: jest.fn(),
     captureScheduledFeed: jest.fn(),
     recordScheduledFeedFailure: jest.fn(),
+    finishScheduledFeedCapture: jest.fn(),
   };
   const activity = new ContentStudioSourceActivity(
     ingestion as unknown as ContentStudioSourceIngestionService
@@ -55,7 +74,46 @@ describe('ContentStudioSourceActivity', () => {
     expect(ingestion.captureScheduledFeed).toHaveBeenCalledWith({
       organizationId: ORG,
       sourceId: FEED,
+      attemptId: RUN,
+      attemptCount: 2,
     });
+  });
+
+  it('P8O1 a capture names its record by its workflow run and counts this try; nothing else comes from the workflow', async () => {
+    const { ingestion, activity } = setup();
+    ingestion.captureScheduledFeed.mockResolvedValue({ status: 'skipped' });
+    await activity.captureContentStudioFeed({
+      organizationId: ORG,
+      sourceId: FEED,
+      attemptId: 'from-the-workflow',
+      attemptCount: 99,
+    } as Parameters<typeof activity.captureContentStudioFeed>[0]);
+    expect(ingestion.captureScheduledFeed).toHaveBeenCalledWith({
+      organizationId: ORG,
+      sourceId: FEED,
+      attemptId: RUN,
+      attemptCount: 2,
+    });
+  });
+
+  it('P8O1 the end of a failed capture goes to the ingestion service as it is, and its answer comes back', async () => {
+    const { ingestion, activity } = setup();
+    ingestion.finishScheduledFeedCapture.mockResolvedValue({
+      status: 'finished',
+    });
+    const input = {
+      organizationId: ORG,
+      sourceId: FEED,
+      attemptId: RUN,
+      status: 'source_failed' as const,
+      code: 'CS_SOURCE_FETCH_FAILED',
+    };
+    await expect(
+      activity.finishContentStudioFeedCaptureAttempt(input)
+    ).resolves.toEqual({ status: 'finished' });
+    expect(ingestion.finishScheduledFeedCapture).toHaveBeenCalledWith(input);
+    expect(ingestion.recordScheduledFeedFailure).not.toHaveBeenCalled();
+    expect(ingestion.captureScheduledFeed).not.toHaveBeenCalled();
   });
 
   it.each([
