@@ -26,6 +26,7 @@ const ATTEMPT_SUMMARY = {
   failed: true,
   archived: true,
   entriesLimited: true,
+  notModified: true,
   nextCaptureAtAfter: true,
   consecutiveFailuresAfter: true,
 } as const;

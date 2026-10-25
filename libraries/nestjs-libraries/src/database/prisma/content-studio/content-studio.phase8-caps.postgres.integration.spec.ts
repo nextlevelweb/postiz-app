@@ -695,7 +695,8 @@ describe('P8-C1 on PostgreSQL: a 25-entry feed', () => {
     // isolation, their URLs, the count, commit); and the feed's read, its
     // update (in a transaction of its own) and its read again. P8-O1 adds
     // three per capture, none per entry: the capture's record, and in the
-    // update's transaction the feed's schedule and the record's end
+    // update's transaction the feed's schedule and the record's end. P8-G1
+    // adds one, none per entry: the feed's HTTP validators before its fetch
     expect(queries.filter((q) => /^BEGIN/.test(q))).toHaveLength(2);
     expect(queries.filter((q) => /SERIALIZABLE/.test(q))).toHaveLength(1);
     expect(queries.filter((q) => /COUNT\(/i.test(q))).toHaveLength(1);
@@ -704,7 +705,7 @@ describe('P8-C1 on PostgreSQL: a 25-entry feed', () => {
         /^INSERT INTO "public"\."ContentStudioSourceCaptureAttempt"/
       ),
     ]);
-    expect(queries.length).toBe(25 + 5 + 5 + 3);
+    expect(queries.length).toBe(25 + 5 + 5 + 3 + 1);
   });
 
   it('P8C1PG-M2 with room: 25 sources and discoveries, each create one serializable transaction, all within their attempts', async () => {
@@ -733,9 +734,11 @@ describe('P8-C1 on PostgreSQL: a 25-entry feed', () => {
     // before (P8-04B2) was the insert alone, measured the same way below: the
     // limit adds five statements per feed capture with new pages, none per
     // page (280 before, 285 now). P8-O1 adds three per capture, one of them
-    // an insert, none per page (288)
+    // an insert, none per page (288). P8-G1 one, the feed's validators read;
+    // none per page: a new page has none, and its version writes its own in
+    // the same update (289)
     expect(queries.filter((q) => /^INSERT/.test(q))).toHaveLength(25 * 3 + 1);
-    expect(queries.length).toBe(288);
+    expect(queries.length).toBe(289);
     queries = [];
     await logged.contentStudioSource.create({
       data: {

@@ -223,6 +223,43 @@ const route: http.RequestListener = (req, res) => {
     res.writeHead(304);
     return res.end();
   }
+  // A resource with validators (P8-G1): 304 when the request's If-None-Match
+  // (or, without one, If-Modified-Since) matches, with `next` as the ETag it
+  // answers; else the whole representation. Header names in mixed case
+  if (pathname === '/conditional') {
+    const etag = searchParams.get('etag') ?? '"c1"';
+    const lastModified = 'Sun, 11 Oct 2026 10:00:00 GMT';
+    const ifNoneMatch = req.headers['if-none-match'];
+    const matched = ifNoneMatch
+      ? ifNoneMatch === etag
+      : req.headers['if-modified-since'] === lastModified;
+    if (matched) {
+      res.writeHead(304, {
+        ETag: searchParams.get('next') ?? etag,
+        'Last-Modified': lastModified,
+      });
+      return res.end();
+    }
+    res.writeHead(200, {
+      'Content-Type': 'text/html',
+      ETag: etag,
+      'Last-Modified': lastModified,
+    });
+    return res.end('fresh');
+  }
+  if (pathname === '/conditional-redirect') {
+    return redirect(302, '/conditional');
+  }
+  if (pathname === '/duplicate-etag') {
+    res.setHeader('content-type', 'text/html');
+    res.setHeader('etag', ['"a"', '"b"']);
+    res.writeHead(200);
+    return res.end('two');
+  }
+  if (pathname === '/precondition-failed') {
+    res.writeHead(412, { 'content-type': 'text/html' });
+    return res.end('SECRET-BODY');
+  }
   if (pathname === '/type') {
     const type = searchParams.get('value');
     res.writeHead(200, type ? { 'content-type': type } : {});
@@ -679,6 +716,183 @@ describe('safeFetch', () => {
       expect(result.status).toBe(304);
       expect(result.bytesRead).toBe(0);
       expect(lastRequest().headers['if-none-match']).toBe('"v1"');
+    });
+  });
+
+  // HTTP validators (P8-G1): SafeFetch carries the two conditional headers
+  // it allows, exactly, and accepts a 304 only as the answer to them
+  describe('conditional requests', () => {
+    const CONDITIONAL = `/conditional`;
+    const at = (path: string) =>
+      `http://public.test:${publicServer.port}${path}`;
+
+    it('SF1 an ordinary request sends no conditional header', async () => {
+      const result = await localFetch()(at(CONDITIONAL), {
+        allowedContentTypes: HTML,
+      });
+      expect(result.status).toBe(200);
+      expect(lastRequest().headers).not.toHaveProperty('if-none-match');
+      expect(lastRequest().headers).not.toHaveProperty('if-modified-since');
+    });
+
+    it('SF2/SF5/SF6/SF8/SF9 a matching If-None-Match, weak and quoted, is sent exactly; the 304 has no body, no type and no size to check', async () => {
+      const result = await localFetch()(
+        at(`${CONDITIONAL}?etag=${encodeURIComponent('W/"v 1"')}`),
+        {
+          // no type the answer could have, and a cap of one byte
+          allowedContentTypes: ['application/rss+xml'],
+          maxBytes: 1,
+          headers: { 'If-None-Match': 'W/"v 1"' },
+        }
+      );
+      expect(lastRequest().headers['if-none-match']).toBe('W/"v 1"');
+      expect(lastRequest().headers).not.toHaveProperty('if-modified-since');
+      expect(result).toMatchObject({
+        status: 304,
+        bytesRead: 0,
+        redirects: [],
+        headers: {
+          etag: 'W/"v 1"',
+          lastModified: 'Sun, 11 Oct 2026 10:00:00 GMT',
+        },
+      });
+      expect(result.body.byteLength).toBe(0);
+      expect(result.headers.contentType).toBeUndefined();
+    });
+
+    it('SF3 If-Modified-Since alone, exactly', async () => {
+      const result = await localFetch()(at(CONDITIONAL), {
+        allowedContentTypes: HTML,
+        headers: { 'If-Modified-Since': 'Sun, 11 Oct 2026 10:00:00 GMT' },
+      });
+      expect(result.status).toBe(304);
+      expect(lastRequest().headers['if-modified-since']).toBe(
+        'Sun, 11 Oct 2026 10:00:00 GMT'
+      );
+      expect(lastRequest().headers).not.toHaveProperty('if-none-match');
+    });
+
+    it('SF4/SF15 both are sent; a 304 answers with a new ETag, read case-insensitively', async () => {
+      const result = await localFetch()(at(`${CONDITIONAL}?next=%22c2%22`), {
+        allowedContentTypes: HTML,
+        headers: {
+          'If-None-Match': '"c1"',
+          'If-Modified-Since': 'Sun, 11 Oct 2026 10:00:00 GMT',
+        },
+      });
+      expect(lastRequest().headers).toMatchObject({
+        'if-none-match': '"c1"',
+        'if-modified-since': 'Sun, 11 Oct 2026 10:00:00 GMT',
+      });
+      expect(result.status).toBe(304);
+      expect(result.headers.etag).toBe('"c2"');
+    });
+
+    it('SF10 a server that does not match answers 200, read and checked as ever', async () => {
+      const result = await localFetch()(at(CONDITIONAL), {
+        allowedContentTypes: HTML,
+        headers: { 'If-None-Match': '"old"' },
+      });
+      expect(result.status).toBe(200);
+      expect(text(result.body)).toBe('fresh');
+      expect(result.headers).toMatchObject({
+        contentType: 'text/html',
+        etag: '"c1"',
+      });
+      const err = await failure(
+        localFetch()(at(CONDITIONAL), {
+          allowedContentTypes: ['application/rss+xml'],
+          headers: { 'If-None-Match': '"old"' },
+        })
+      );
+      expect(err.category).toBe('UNSUPPORTED_CONTENT_TYPE');
+    });
+
+    it('SF7 a 304 without a conditional header is a failed status, never a success', async () => {
+      const err = await failure(
+        localFetch()(at('/not-modified'), {
+          allowedContentTypes: HTML,
+          headers: { Accept: 'text/html' },
+        })
+      );
+      expect(err).toMatchObject({ category: 'HTTP_STATUS', statusCode: 304 });
+    });
+
+    it('a 412 is a failed status like any other: no retry, no body', async () => {
+      const before = publicServer.requests.length;
+      const err = await failure(
+        localFetch()(at('/precondition-failed'), {
+          allowedContentTypes: HTML,
+          headers: { 'If-None-Match': '"c1"' },
+        })
+      );
+      expect(err).toMatchObject({ category: 'HTTP_STATUS', statusCode: 412 });
+      expect(publicServer.requests.length).toBe(before + 1);
+      expect(JSON.stringify(err)).not.toContain('SECRET-BODY');
+    });
+
+    it.each([
+      ['an ETag with CR LF', { 'If-None-Match': '"a"\r\nX-Injected: 1' }],
+      ['an ETag with LF', { 'If-None-Match': '"a"\n' }],
+      ['an ETag with NUL', { 'If-None-Match': '"a\u0000"' }],
+      [
+        'an ETag of 1025 characters',
+        { 'If-None-Match': `"${'x'.repeat(1023)}"` },
+      ],
+      [
+        'a date with CR LF',
+        { 'If-Modified-Since': 'Sun, 11 Oct 2026\r\n10:00:00 GMT' },
+      ],
+      ['a date of 1025 characters', { 'If-Modified-Since': 'x'.repeat(1025) }],
+    ])('SF11-SF14 refuses %s before any request', async (_label, headers) => {
+      const before = publicServer.requests.length;
+      const err = await failure(
+        localFetch()(at(CONDITIONAL), { allowedContentTypes: HTML, headers })
+      );
+      expect(err.category).toBe('INVALID_REQUEST');
+      expect(publicServer.requests.length).toBe(before);
+    });
+
+    it('SF15 a repeated ETag is joined by the platform, as one value', async () => {
+      const result = await localFetch()(at('/duplicate-etag'), {
+        allowedContentTypes: HTML,
+      });
+      expect(result.headers.etag).toBe('"a", "b"');
+    });
+
+    it('SF16 a redirect is checked again, and its target gets the same conditional headers', async () => {
+      const result = await localFetch()(at('/conditional-redirect'), {
+        allowedContentTypes: HTML,
+        headers: { 'If-None-Match': '"c1"' },
+      });
+      expect(result.status).toBe(304);
+      expect(result.redirects).toEqual([
+        { url: at('/conditional-redirect'), status: 302 },
+      ]);
+      expect(result.finalUrl).toBe(at(CONDITIONAL));
+      expect(lastRequest()).toMatchObject({
+        url: CONDITIONAL,
+        headers: { 'if-none-match': '"c1"' },
+      });
+      // a conditional request goes nowhere an ordinary one could not
+      for (const path of ['/to-private-literal', '/to-private-dns']) {
+        const before = privateServer.requests.length;
+        const err = await failure(
+          localFetch()(at(path), {
+            allowedContentTypes: HTML,
+            headers: { 'If-None-Match': '"c1"' },
+          })
+        );
+        expect(err.category).toBe('BLOCKED_DESTINATION');
+        expect(privateServer.requests.length).toBe(before);
+      }
+      const err = await failure(
+        localFetch()(`http://private.test:${privateServer.port}/`, {
+          allowedContentTypes: HTML,
+          headers: { 'If-Modified-Since': 'Sun, 11 Oct 2026 10:00:00 GMT' },
+        })
+      );
+      expect(err.category).toBe('BLOCKED_DESTINATION');
     });
   });
 

@@ -473,8 +473,10 @@ describe('P8-02 News Radar', () => {
     // P8-C3 adds the feed pause time, nothing this forbids (P8C3-1)
     // P8-C4 adds a feed's schedule, nothing this forbids (P8C4-1)
     // P8-O1 adds the capture history model, nothing this forbids (P8O1-1)
+    // P8-G1 adds the HTTP validators and notModified, nothing this forbids
+    // (P8G1-4)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '1022a91501470f7b2f6fbb372eccb867091a49daae651913f7c8cf523d4461db'
+      'a7622590115d8b660e7783196d0577335f4afb70379d2ce1d386368776d69aed'
     );
     // the Radar reads the P8-01 indexes
     expect(model('ContentStudioSourceDiscovery')).toMatch(
@@ -589,8 +591,10 @@ describe('P8-03 research into content', () => {
     // P8-C3 adds the feed pause time, nothing this forbids (P8C3-1)
     // P8-C4 adds a feed's schedule, nothing this forbids (P8C4-1)
     // P8-O1 adds the capture history model, nothing this forbids (P8O1-1)
+    // P8-G1 adds the HTTP validators and notModified, nothing this forbids
+    // (P8G1-4)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '1022a91501470f7b2f6fbb372eccb867091a49daae651913f7c8cf523d4461db'
+      'a7622590115d8b660e7783196d0577335f4afb70379d2ce1d386368776d69aed'
     );
     expect(schema).not.toMatch(
       /model \w*(Research|Selection|Basket|Collection|Radar)\w* \{/
@@ -618,6 +622,9 @@ describe('P8-03 research into content', () => {
       'captureIntervalMinutes',
       'nextCaptureAt',
       'consecutiveCaptureFailures',
+      // P8-G1: the HTTP validators of a capture, not research
+      'httpEtag',
+      'httpLastModified',
       'organization',
       'createdBy',
       'versions',
@@ -849,8 +856,10 @@ describe('P8-04A source change detection', () => {
     // P8-C3 adds the feed pause time, nothing this forbids (P8C3-1)
     // P8-C4 adds a feed's schedule, nothing this forbids (P8C4-1)
     // P8-O1 adds the capture history model, nothing this forbids (P8O1-1)
+    // P8-G1 adds the HTTP validators and notModified, nothing this forbids
+    // (P8G1-4)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '1022a91501470f7b2f6fbb372eccb867091a49daae651913f7c8cf523d4461db'
+      'a7622590115d8b660e7783196d0577335f4afb70379d2ce1d386368776d69aed'
     );
     expect(schema).not.toMatch(/model \w*(Change|Diff|Comparison)\w* \{/);
     expect(schema).not.toMatch(
@@ -938,8 +947,9 @@ describe('P8-04A source change detection', () => {
     const ingestion = change('ingestion');
     // P8-04B1: through the one transition classifier, whose repeat is
     // exactly this rule
+    // (P8-G1: the page's HTTP validators are kept first, nothing else)
     expect(ingestion).toMatch(
-      /if \(mode === 'if-changed' && transition === 'repeat'\) \{\s*return \{ status: 'unchanged' as const \};/
+      /if \(mode === 'if-changed' && transition === 'repeat'\) \{\s*if \(page\) \{\s*await this\.keepPageValidators\(organizationId, page, answer\.validators\);\s*\}\s*return \{ status: 'unchanged' as const \};/
     );
     // no second copy of the rule in the Source layer
     const backend = PRODUCTION.filter(
@@ -1200,7 +1210,7 @@ describe('P8-04B1 organization page changes', () => {
       /contentStudioSource\.update\(|\$transaction[\s\S]*\$transaction/
     );
     expect(append).toMatch(
-      /data: \{\s*latestVersionNumber: \{\s*increment: 1,\s*\},\s*\.\.\.\(input\.pageChange \? pageChangeData\(input\.pageChange\) : \{\}\),\s*\},\s*\}\);\s*if \(count !== 1\) \{\s*return \{ status: 'changed' as const \};\s*\}\s*const version = await tx\.contentStudioSourceVersion\.create\(/
+      /data: \{\s*latestVersionNumber: \{\s*increment: 1,\s*\},\s*\.\.\.\(input\.pageChange \? pageChangeData\(input\.pageChange\) : \{\}\),\s*\.\.\.validatorData\(input\.validators\),\s*\},\s*\}\);\s*if \(count !== 1\) \{\s*return \{ status: 'changed' as const \};\s*\}\s*const version = await tx\.contentStudioSourceVersion\.create\(/
     );
     // pageChange reaches the append from the ingestion only
     expect(pageChange('ingestion').match(/pageChange,\n/g) ?? []).toHaveLength(
@@ -1561,8 +1571,10 @@ describe('P8-04B2 News Radar change signals', () => {
     // P8-C3 adds the feed pause time, nothing this forbids (P8C3-1)
     // P8-C4 adds a feed's schedule, nothing this forbids (P8C4-1)
     // P8-O1 adds the capture history model, nothing this forbids (P8O1-1)
+    // P8-G1 adds the HTTP validators and notModified, nothing this forbids
+    // (P8G1-4)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '1022a91501470f7b2f6fbb372eccb867091a49daae651913f7c8cf523d4461db'
+      'a7622590115d8b660e7783196d0577335f4afb70379d2ce1d386368776d69aed'
     );
     expect(model('ContentStudioSourceDiscovery')).not.toMatch(/change/i);
     expect(schema).not.toMatch(/changedSinceFound/);
@@ -1730,8 +1742,10 @@ describe('P8-C1 organization safety caps', () => {
     // P8-C3 adds the feed pause time, nothing this forbids (P8C3-1)
     // P8-C4 adds a feed's schedule, nothing this forbids (P8C4-1)
     // P8-O1 adds the capture history model, nothing this forbids (P8O1-1)
+    // P8-G1 adds the HTTP validators and notModified, nothing this forbids
+    // (P8G1-4)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '1022a91501470f7b2f6fbb372eccb867091a49daae651913f7c8cf523d4461db'
+      'a7622590115d8b660e7783196d0577335f4afb70379d2ce1d386368776d69aed'
     );
     // the feed pause came with P8-C3 (P8C3-1), the schedule with P8-C4
     // (P8C4-1); nothing else here
@@ -2072,8 +2086,10 @@ describe('P8-C2 global feed-capture concurrency', () => {
   it('P8C2-1/NG1/NG4/NG5 no schema change: no pause, interval or queue field', () => {
     // P8-C3 adds the feed pause time, nothing this forbids (P8C3-1)
     // P8-C4 adds a feed's schedule (P8C4-1), and no queue or priority
+    // P8-G1 adds the HTTP validators and notModified, nothing this forbids
+    // (P8G1-4)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '1022a91501470f7b2f6fbb372eccb867091a49daae651913f7c8cf523d4461db'
+      'a7622590115d8b660e7783196d0577335f4afb70379d2ce1d386368776d69aed'
     );
     // the feed pause came with P8-C3 (P8C3-1), the schedule with P8-C4
     // (P8C4-1); nothing else here
@@ -2269,18 +2285,21 @@ describe('P8-C3 feed pause', () => {
 
   it('P8C3-1/M27/M28 one nullable pause time on the source, no default, no index, feed-neutral', () => {
     // P8-C4 adds a feed's schedule after it (P8C4-1)
+    // P8-G1 adds the HTTP validators and notModified, nothing this forbids
+    // (P8G1-4)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '1022a91501470f7b2f6fbb372eccb867091a49daae651913f7c8cf523d4461db'
+      'a7622590115d8b660e7783196d0577335f4afb70379d2ce1d386368776d69aed'
     );
     const source = fields('ContentStudioSource');
     expect(source.filter((f) => /paus/i.test(f))).toEqual([
       'scanPausedAt DateTime?',
     ]);
-    // after the P8-04B1 fields, then the P8-C4 ones, then the relations
+    // after the P8-04B1 fields, then the P8-C4 ones, the P8-G1 HTTP
+    // validators, then the relations
     expect(source.slice(15, 16)).toEqual(['scanPausedAt DateTime?']);
-    expect(source[19]).toBe('organization Organization');
+    expect(source[21]).toBe('organization Organization');
     // P8-O1: one relation more, no column (captureAttempts)
-    expect(source).toHaveLength(25);
+    expect(source).toHaveLength(27);
     expect(model('ContentStudioSource')).toMatch(
       /\n\s*scanPausedAt\s+DateTime\?\n/
     );
@@ -2305,10 +2324,13 @@ describe('P8-C3 feed pause', () => {
 
   it('P8C3-2/P8C3-3/M27/M28/M32 no capture history or schedule of its own; the next capture, interval and backoff came with P8-C4', () => {
     // P8-C4 adds the next capture, the interval and the failure count
-    // (P8C4-1); still no capture history, error or conditional request
-    expect(schema).not.toMatch(
-      /lastCaptureError|failureDelay|backoff|etag|lastModified/i
-    );
+    // (P8C4-1); still no capture history or error. The HTTP validators
+    // came with P8-G1 (P8G1-4), as those two fields only
+    expect(
+      schema
+        .replace(/^\s*\/\/.*$/gm, '')
+        .replace(/^\s+http(Etag|LastModified)\s+String\?$/gm, '')
+    ).not.toMatch(/lastCaptureError|failureDelay|backoff|etag|lastModified/i);
     expect(
       users(/lastCaptureError|ScheduleClient|scheduleHandle|\.schedule\.create/)
     ).toEqual([]);
@@ -2472,7 +2494,7 @@ describe('P8-C3 feed pause', () => {
     // no failure; never the pause (P8C4-9)
     const mark = repositoryMethod('markFeedCaptured');
     expect(mark).toMatch(
-      /where: \{\s*id,\s*organizationId,\s*kind: 'feed',\s*archivedAt: null,\s*OR: \[\s*\{ lastCapturedAt: null \},\s*\{ lastCapturedAt: \{ lt: capturedAt \} \},\s*\],\s*\},\s*data: \{\s*lastCapturedAt: capturedAt,\s*nextCaptureAt,\s*consecutiveCaptureFailures: 0,\s*\}/
+      /where: \{\s*id,\s*organizationId,\s*kind: 'feed',\s*archivedAt: null,\s*OR: \[\s*\{ lastCapturedAt: null \},\s*\{ lastCapturedAt: \{ lt: capturedAt \} \},\s*\],\s*\},\s*data: \{\s*lastCapturedAt: capturedAt,\s*nextCaptureAt,\s*consecutiveCaptureFailures: 0,\s*\.\.\.validatorData\(validators\),\s*\}/
     );
     expect(mark).not.toMatch(/scanPausedAt/);
     // only the two pause writes set the field
@@ -2821,7 +2843,13 @@ describe('P8-C4 feed schedule and retries', () => {
   });
 
   it('P8C4-15/P8C4-16 no error code, attempt time, capture history or conditional request is stored', () => {
-    expect(schema).not.toMatch(
+    // the conditional request came with P8-G1 (P8G1-1/P8G1-4): the two
+    // HTTP validators of the source, nothing else
+    expect(
+      schema
+        .replace(/^\s*\/\/.*$/gm, '')
+        .replace(/^\s+http(Etag|LastModified)\s+String\?$/gm, '')
+    ).not.toMatch(
       /lastCaptureErrorCode|lastCaptureAttemptAt|lastCaptureError|etag|lastModified/i
     );
     // the capture history came with P8-O1 as its own model (P8O1-1), never
@@ -2829,12 +2857,15 @@ describe('P8-C4 feed schedule and retries', () => {
     expect(model('ContentStudioSource')).not.toMatch(
       /\n\s*(errorCode|attemptCount|startedAt|finishedAt)\s/
     );
-    // Content Studio's own code: SafeFetch itself knows the headers
+    // Content Studio's own code: SafeFetch itself knows the headers, and
+    // ingestion alone sends them (P8-G1)
     expect(
       users(
         /lastCaptureErrorCode|lastCaptureAttemptAt|If-None-Match|If-Modified-Since/i
       ).filter((file) => /content-studio|content\.studio/.test(file))
-    ).toEqual([]);
+    ).toEqual([
+      'libraries/nestjs-libraries/src/content-studio/sources/ingestion/source.ingestion.service.ts',
+    ]);
     expect(c4('ingestion')).not.toMatch(/jitter|Math\.random/);
   });
 
@@ -3071,7 +3102,7 @@ describe('P8-O1 feed capture history', () => {
     );
     // the success write and the failure record are the P8-C4 ones
     expect(o1('repository')).toMatch(
-      /data: \{\s*lastCapturedAt: capturedAt,\s*nextCaptureAt,\s*consecutiveCaptureFailures: 0,\s*\}/
+      /data: \{\s*lastCapturedAt: capturedAt,\s*nextCaptureAt,\s*consecutiveCaptureFailures: 0,\s*\.\.\.validatorData\(validators\),\s*\}/
     );
     expect(o1('repository')).toMatch(
       /consecutiveCaptureFailures: input\.expectedFailures,\s*OR: \[\s*\{ nextCaptureAt: null \},\s*\{ nextCaptureAt: \{ lte: input\.failedAt \} \},\s*\],/
@@ -3215,5 +3246,322 @@ describe('P8-O1 feed capture history', () => {
         '\n};\n'
       )
     ).not.toMatch(/requestedBy/);
+  });
+});
+
+// P8-G1: conditional fetching. A source's HTTP validators are sent back to
+// its server through SafeFetch only, a 304 is a success with nothing read,
+// and nothing else of P8 moves
+describe('P8-G1 conditional source fetching', () => {
+  const G1 = {
+    safeFetch: 'libraries/nestjs-libraries/src/dtos/webhooks/safe.fetch.ts',
+    ingestion: `${SOURCES}/ingestion/source.ingestion.service.ts`,
+    repository:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.repository.ts',
+    attempts:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-capture-attempt.repository.ts',
+    service:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.service.ts',
+    dto: 'libraries/nestjs-libraries/src/dtos/content-studio/content-studio.source.dto.ts',
+    controller: 'apps/backend/src/api/routes/content-studio.controller.ts',
+    types: `${SOURCES}/source.types.ts`,
+    queue:
+      'libraries/nestjs-libraries/src/temporal/content.studio.capture.queue.ts',
+    workflow:
+      'apps/orchestrator/src/workflows/content.studio.feed.capture.workflow.ts',
+    activity:
+      'apps/orchestrator/src/activities/content-studio.source.activity.ts',
+    worker: 'libraries/nestjs-libraries/src/temporal/temporal.module.ts',
+    api: 'apps/frontend/src/components/content-studio/content-studio.sources.api.ts',
+    detail:
+      'apps/frontend/src/components/content-studio/content-studio.source.detail.tsx',
+  };
+  const g1 = (key: keyof typeof G1) => CODE.get(G1[key])!;
+  const hash = (file: string) =>
+    createHash('sha256').update(raw(file)).digest('hex');
+  const VALIDATORS = /httpEtag|httpLastModified/;
+  const method = (text: string, name: string) =>
+    between(text, `\n  ${name}(`, '\n  }\n');
+
+  it('P8G1-1 conditional requests go through SafeFetch only, which is as it was', () => {
+    expect(hash(G1.safeFetch)).toBe(
+      '3d6640c5bb58941bafdcc846130d41e33d8361cb9cc4277b7b69f563ba88b979'
+    );
+    expect(
+      users(/If-None-Match|If-Modified-Since/i).filter(
+        (file) => file !== G1.safeFetch
+      )
+    ).toEqual([G1.ingestion]);
+    const ingestion = g1('ingestion');
+    expect(ingestion.match(/\bsafeFetch\(/g)).toHaveLength(1);
+    expect(between(ingestion, 'const fetchSource = async (', '\n};\n')).toMatch(
+      /fetched = await safeFetch\(url, \{/
+    );
+    expect(ingestion).not.toMatch(
+      /createSafeFetch|\bfetch\(|axios|undici|node:http|getSsrfSafeDispatcher/
+    );
+  });
+
+  it('P8G1-2/P8G1-6 the two conditional headers only, from stored validators only; never Authorization or Cookie', () => {
+    const ingestion = g1('ingestion');
+    const headers = between(
+      ingestion,
+      'export const conditionalRequestHeaders = (',
+      '\n});\n'
+    );
+    expect(headers.match(/'[A-Za-z-]+':/g)).toEqual([
+      "'If-None-Match':",
+      "'If-Modified-Since':",
+    ]);
+    expect(between(ingestion, 'const fetchSource = async (', '\n};\n')).toMatch(
+      /const headers = conditionalRequestHeaders\(sent\);[\s\S]*\.\.\.\(conditional \? \{ headers \} : \{\}\),/
+    );
+    expect(ingestion).not.toMatch(
+      /authorization|cookie|user-agent|referer|x-[a-z]+-/i
+    );
+    // SafeFetch still lets a caller send these four only
+    expect(g1('safeFetch')).toMatch(
+      /const CALLER_HEADERS = new Set\(\[\s*'accept',\s*'accept-language',\s*'if-none-match',\s*'if-modified-since',\s*\]\);/
+    );
+  });
+
+  it('P8G1-3/P8G1-4 validators never come from or go to a route, the frontend or the Source list', () => {
+    for (const key of ['dto', 'controller', 'api', 'detail'] as const) {
+      expect([
+        key,
+        g1(key).match(/etag|lastModified|If-None|If-Modified/gi),
+      ]).toEqual([key, null]);
+    }
+    expect(
+      users(VALIDATORS).filter((file) => !file.startsWith('libraries/'))
+    ).toEqual([]);
+    expect(users(VALIDATORS)).toEqual([G1.repository, G1.ingestion].sort());
+    expect(
+      between(
+        g1('service'),
+        'export const toPublicContentStudioSource =',
+        '\n});\n'
+      )
+    ).not.toMatch(VALIDATORS);
+    expect(
+      between(g1('repository'), 'const SOURCE_SUMMARY = {', '}')
+    ).not.toMatch(VALIDATORS);
+    // the schema: two nullable texts on the source, no default and no index
+    expect(
+      fields('ContentStudioSource').filter((f) => /^http/i.test(f))
+    ).toEqual(['httpEtag String?', 'httpLastModified String?']);
+    expect(model('ContentStudioSource')).toMatch(
+      /\n\s*httpEtag\s+String\?\n\s*httpLastModified\s+String\?\n/
+    );
+    expect(model('ContentStudioSource')).not.toMatch(/@@\w+\([^)]*http/);
+  });
+
+  it('P8G1-5 no raw response header, status or body is stored', () => {
+    for (const name of [
+      'ContentStudioSource',
+      'ContentStudioSourceVersion',
+      'ContentStudioSourceCaptureAttempt',
+      'ContentStudioSourceDiscovery',
+    ]) {
+      expect([
+        name,
+        fields(name).filter((f) =>
+          /header|etag|modified|cache|vary|expires/i.test(f.split(' ')[0])
+        ),
+      ]).toEqual([
+        name,
+        {
+          ContentStudioSource: ['httpEtag String?', 'httpLastModified String?'],
+          ContentStudioSourceVersion: [],
+          ContentStudioSourceCaptureAttempt: ['notModified Boolean?'],
+          ContentStudioSourceDiscovery: [],
+        }[name],
+      ]);
+    }
+    expect(fields('ContentStudioSourceCaptureAttempt')).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/^httpStatus /)])
+    );
+    // of an answer's headers only these are read: the type, the ETag and
+    // the Last-Modified
+    expect(
+      [...new Set(g1('ingestion').match(/\.headers\.\w+/g))].sort()
+    ).toEqual([
+      '.headers.contentType',
+      '.headers.etag',
+      '.headers.lastModified',
+    ]);
+  });
+
+  it('P8G1-7 a member refresh of a page never asks conditionally', () => {
+    const ingestion = g1('ingestion');
+    const capture = between(
+      ingestion,
+      'private async captureUrl(\n    organizationId: string,\n    source: SourceRow | PageRow,',
+      '\n  }\n'
+    );
+    expect(capture).toMatch(
+      /const page =\s*mode === 'if-changed' && expectedLatestVersionNumber > 0\s*\? \(source as PageRow\)\s*: null;\s*const sent = page \? storedValidators\(page\) : NO_VALIDATORS;/
+    );
+    expect(between(ingestion, 'async refreshSource(input', '\n  }\n')).toMatch(
+      /this\.captureUrl\(\s*input\.organizationId,\s*source,\s*input\.userId,\s*'always'\s*\)/
+    );
+  });
+
+  it('P8G1-8/P8G1-9 a 304 of a page stores no version and no page change: its validators only, updatedAt kept', () => {
+    const capture = between(
+      g1('ingestion'),
+      'private async captureUrl(\n    organizationId: string,\n    source: SourceRow | PageRow,',
+      '\n  }\n'
+    );
+    expect(capture).toMatch(
+      /if \(answer\.status === 'not-modified'\) \{\s*await this\.keepPageValidators\(organizationId, page!, answer\.validators\);\s*return \{ status: 'not-modified' as const \};\s*\}/
+    );
+    expect(capture.indexOf("answer.status === 'not-modified'")).toBeLessThan(
+      capture.indexOf('extractContentStudioSource(')
+    );
+    const unchanged = method(g1('repository'), 'markPageUnchanged');
+    expect(between(unchanged, 'data: {', '}')).toMatch(
+      /^data: \{\s*\.\.\.validatorData\(input\.validators\),\s*updatedAt: input\.expected\.updatedAt,\s*$/
+    );
+    expect(unchanged).not.toMatch(
+      /lastPageChange|increment|contentStudioSourceVersion|fetchedAt/
+    );
+    expect(unchanged).toMatch(
+      /latestVersionNumber: input\.expected\.latestVersionNumber,\s*updatedAt: input\.expected\.updatedAt,\s*httpEtag: input\.expected\.httpEtag,\s*httpLastModified: input\.expected\.httpLastModified,/
+    );
+    // nothing updates a version, ever
+    expect(
+      users(/contentStudioSourceVersion\.(update|updateMany|upsert)\(/)
+    ).toEqual([]);
+  });
+
+  it('P8G1-10 a 304 of a feed is a success: the same monotonic write, schedule and failures, and its record', () => {
+    const ingestion = g1('ingestion');
+    const feed = between(ingestion, 'private async captureFeed(', '\n  }\n');
+    expect(feed).toMatch(
+      /if \(answer\.status === 'not-modified'\) \{\s*return this\.feedCaptured\([\s\S]*?NOT_MODIFIED_CAPTURE,\s*true\s*\);\s*\}/
+    );
+    expect(feed.indexOf("answer.status === 'not-modified'")).toBeLessThan(
+      feed.indexOf('parseContentStudioSourceFeed(')
+    );
+    expect(
+      between(ingestion, 'const NOT_MODIFIED_CAPTURE', '\n};\n').match(/: 0,/g)
+    ).toHaveLength(10);
+    const mark = method(g1('repository'), 'markFeedCaptured');
+    expect(mark).toMatch(
+      /OR: \[\s*\{ lastCapturedAt: null \},\s*\{ lastCapturedAt: \{ lt: capturedAt \} \},\s*\],\s*\},\s*data: \{\s*lastCapturedAt: capturedAt,\s*nextCaptureAt,\s*consecutiveCaptureFailures: 0,\s*\.\.\.validatorData\(validators\),\s*\}/
+    );
+    expect(mark).toMatch(/notModified: attempt\.notModified,/);
+  });
+
+  it('P8G1-11/P8G1-12/P8G1-13/P8G1-16 the P8-C1 caps, P8-C2 queue, P8-C4 schedule and the scan are as they were', () => {
+    expect({
+      queue: hash(G1.queue),
+      workflow: hash(G1.workflow),
+      activity: hash(G1.activity),
+      worker: hash(G1.worker),
+    }).toEqual({
+      queue: '0013e83698f582fd597a5a7a7f70f4248cae5a3e5491e087a1d7f217e3061c13',
+      workflow:
+        'c12780dc43f49a574826390d732b99e567d6945839d0556a83ee46c2ac6ae723',
+      activity:
+        '45eb972ec1100fc174928f3e4b26d581522a20f46a5f7c378651590e6651a064',
+      worker:
+        '412efbac60853923ad81f0e2c2191fd8f5fa72bef6d4f7fb2812bede9b35a305',
+    });
+    const types = g1('types');
+    for (const line of [
+      'export const CONTENT_STUDIO_ACTIVE_FEEDS_MAX = 100;',
+      'export const CONTENT_STUDIO_URL_SOURCES_MAX = 100_000;',
+      'export const CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;',
+    ]) {
+      expect(types).toContain(line);
+    }
+    expect(types).toMatch(
+      /CONTENT_STUDIO_FEED_INTERVALS = \[60, 180, 360, 720, 1440\]/
+    );
+    const ingestion = g1('ingestion');
+    for (const line of [
+      'export const FEED_CAPTURE_CONCURRENCY = 5;',
+      'export const FEED_SCAN_PAGE_SIZE = 200;',
+      'export const FEED_CAPTURE_FAILURE_DELAY_BASE_MINUTES = 60;',
+      'export const FEED_CAPTURE_FAILURE_DELAY_MAX_MINUTES = 1440;',
+      'export const SOURCE_FETCH_MAX_BYTES = 2_097_152;',
+      'export const SOURCE_FETCH_TIMEOUT_MS = 15_000;',
+      'export const FEED_FETCH_MAX_BYTES = 5_242_880;',
+      'export const FEED_FETCH_TIMEOUT_MS = 15_000;',
+    ]) {
+      expect(ingestion).toContain(line);
+    }
+    // P8G1-16: the scan reads by nextCaptureAt, in id order, as it did, and
+    // no index came with the validators
+    expect(method(g1('repository'), 'listFeedsDueForCapture')).toMatch(
+      /orderBy: \{\s*id: 'asc',\s*\}/
+    );
+    expect(
+      model('ContentStudioSource')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith('@@'))
+    ).toEqual([
+      '@@unique([id, organizationId])',
+      '@@unique([organizationId, canonicalUrl])',
+      '@@index([organizationId, archivedAt])',
+      '@@index([organizationId, kind])',
+      '@@index([createdById])',
+      '@@index([kind, archivedAt, id])',
+      '@@index([organizationId, lastPageChangeAt])',
+    ]);
+    expect(
+      g1('controller').match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
+    ).toHaveLength(149);
+  });
+
+  it('P8G1-14 still one record per feed capture, written by the capture, whatever the answer', () => {
+    expect(model('ContentStudioSourceCaptureAttempt')).toMatch(
+      /\n\s*notModified\s+Boolean\?\n/
+    );
+    expect(model('ContentStudioSourceCaptureAttempt')).not.toMatch(
+      /notModified[^\n]*@default/
+    );
+    // set by a success only, in its one transaction (and read back by the
+    // history's mapper); never by a failure
+    expect(users(/notModified: attempt\.notModified/)).toEqual(
+      [G1.repository, G1.service].sort()
+    );
+    expect(
+      between(
+        g1('service'),
+        'export const toPublicContentStudioFeedCapture',
+        '\n};\n'
+      )
+    ).toContain('notModified: attempt.notModified,');
+    // the begin and a failure's end never write it: it stays null
+    expect(
+      between(
+        g1('attempts'),
+        'async beginFeedCaptureAttempt(',
+        'listFeedCaptureAttempts('
+      )
+    ).not.toMatch(/notModified/);
+    expect(
+      between(g1('ingestion'), 'private async captureFeed(', '\n  }\n').match(
+        /beginFeedCaptureAttempt\(/g
+      )
+    ).toHaveLength(1);
+  });
+
+  it('P8G1-15 nothing is deleted or pruned: no retention', () => {
+    expect(
+      users(
+        /contentStudioSource(Version|Discovery|CaptureAttempt)?\.(delete|deleteMany)\(/
+      )
+    ).toEqual([]);
+    for (const key of ['repository', 'ingestion', 'service'] as const) {
+      expect([
+        key,
+        g1(key).match(/retention|purge|prune|cleanup|keepLast/gi),
+      ]).toEqual([key, null]);
+    }
   });
 });

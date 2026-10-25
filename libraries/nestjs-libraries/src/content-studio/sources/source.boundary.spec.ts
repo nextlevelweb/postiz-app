@@ -213,9 +213,10 @@ describe('Source layer boundaries', () => {
     expect(body).not.toMatch(
       /\bfetch\(|\brequire\(|\bimport\(|XMLHttpRequest|WebSocket|axios|undici|createSafeFetch|\bdns\b|\bnet\.|lookup\(|process\.env|console\.|Logger/
     );
-    // two calls, each with its fixed policy constants: a page's and (P8-01)
-    // a feed's
-    expect(body.match(/\bsafeFetch\(/g)).toHaveLength(2);
+    // one call (P8-G1: fetchSource), given each capture's fixed policy
+    // constants, a page's and (P8-01) a feed's, and no header but the two
+    // conditional ones
+    expect(body.match(/\bsafeFetch\(/g)).toHaveLength(1);
   });
 
   it('67 keeps the controller source routes free of fetching and version writes', () => {

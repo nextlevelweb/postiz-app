@@ -5,8 +5,12 @@ import {
   safeFetch,
   SafeFetchError,
   SafeFetchErrorCategory,
+  SafeFetchResult,
 } from '@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch';
-import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
+import {
+  ContentStudioSourceRepository,
+  ContentStudioSourceValidatorUpdate,
+} from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import {
@@ -48,8 +52,9 @@ import {
 // The one place Content Studio fetches a source, and only through safeFetch:
 // it refuses private, loopback, link-local and reserved destinations, checks
 // every redirect hop again, allows https only and caps time and size. Nothing
-// here resolves names, follows redirects or sends headers of its own. Fixed
-// limits, never configuration. Two limits belong to SafeFetch's production
+// here resolves names or follows redirects, and the only headers it sends are
+// the two conditional ones (P8-G1, fetchSource). Fixed limits, never
+// configuration. Two limits belong to SafeFetch's production
 // policy and are deliberately not widened here (createSafeFetch is not used):
 // - an http:// source is a valid source URL but is refused when refreshed
 // - at most 5 redirects; safeFetch takes no per-request redirect limit
@@ -96,6 +101,66 @@ export const nextCaptureAfterFailure = (failedAt: Date, failures: number) =>
   new Date(
     failedAt.getTime() + captureFailureDelayMinutes(failures) * 60 * 1000
   );
+
+// HTTP validators (P8-G1): a source's ETag and Last-Modified, sent back so the
+// server can answer 304 Not Modified when its representation did not change.
+// They come from the server, so one is kept, and sent, only when it is safe
+// as a header value: printable ASCII (spaces inside only), so no CR, LF, NUL
+// or other control character, not empty, and short: an ETag at most
+// SafeFetch's own cap on a request header, a Last-Modified far above an HTTP
+// date (29 characters). Exactly as the server sent it: a weak W/"..." ETag
+// stays weak and quoted, a date is not parsed or rewritten (a server ignores
+// an If-Modified-Since it cannot read). Anything else is not used
+export const SOURCE_ETAG_MAX_LENGTH = 1024;
+export const SOURCE_LAST_MODIFIED_MAX_LENGTH = 256;
+const HEADER_VALUE = /^[\x21-\x7E](?:[\x20-\x7E]*[\x21-\x7E])?$/;
+
+export const usableSourceValidator = (value: unknown, maxLength: number) =>
+  typeof value === 'string' &&
+  value.length <= maxLength &&
+  HEADER_VALUE.test(value)
+    ? value
+    : null;
+
+interface SourceValidators {
+  etag: string | null;
+  lastModified: string | null;
+}
+
+// What a capture sends: the stored validators that are still usable, each
+// one on its own. None: an ordinary request
+const storedValidators = (row: {
+  httpEtag: string | null;
+  httpLastModified: string | null;
+}): SourceValidators => ({
+  etag: usableSourceValidator(row.httpEtag, SOURCE_ETAG_MAX_LENGTH),
+  lastModified: usableSourceValidator(
+    row.httpLastModified,
+    SOURCE_LAST_MODIFIED_MAX_LENGTH
+  ),
+});
+
+const NO_VALIDATORS: SourceValidators = { etag: null, lastModified: null };
+
+// The validators of an answer, as the server sent them (Headers already
+// joins a repeated header), or null when absent or not usable
+const answerValidators = (fetched: SafeFetchResult): SourceValidators => ({
+  etag: usableSourceValidator(fetched.headers.etag, SOURCE_ETAG_MAX_LENGTH),
+  lastModified: usableSourceValidator(
+    fetched.headers.lastModified,
+    SOURCE_LAST_MODIFIED_MAX_LENGTH
+  ),
+});
+
+// Only If-None-Match and If-Modified-Since, only for a validator there is
+export const conditionalRequestHeaders = (
+  validators: SourceValidators
+): Record<string, string> => ({
+  ...(validators.etag ? { 'If-None-Match': validators.etag } : {}),
+  ...(validators.lastModified
+    ? { 'If-Modified-Since': validators.lastModified }
+    : {}),
+});
 
 // Fixed messages only: never the URL, a host, an address, the page or the
 // SafeFetch error itself
@@ -201,6 +266,90 @@ const fromSafeFetchError = (err: unknown) =>
     ? FETCH_ERRORS[err.category]()
     : fetchFailed();
 
+// One fetch of a source's stored URL (P8-G1), conditional when validators are
+// given: `not-modified` (304, no body: nothing to read, hash or extract) is
+// only possible then, as SafeFetch refuses a 304 to an ordinary request.
+// The answer has to come from the requested URL, or a redirect chain that
+// starts there (SafeFetch checks every hop, with the same headers). What the
+// answer would leave on the source is decided here and written only by the
+// success it belongs to: a representation read replaces both validators, a
+// 304 replaces only the usable ones it sent and keeps the others
+type SourceFetch =
+  | {
+      status: 'not-modified';
+      validators: ContentStudioSourceValidatorUpdate;
+    }
+  | {
+      status: 'fetched';
+      fetched: SafeFetchResult;
+      validators: ContentStudioSourceValidatorUpdate;
+    };
+
+const fetchSource = async (
+  url: string,
+  request: {
+    allowedContentTypes: string[];
+    maxBytes: number;
+    timeoutMs: number;
+  },
+  sent: SourceValidators
+): Promise<SourceFetch> => {
+  const headers = conditionalRequestHeaders(sent);
+  const conditional = Object.keys(headers).length > 0;
+  let fetched;
+  try {
+    fetched = await safeFetch(url, {
+      method: 'GET',
+      ...request,
+      ...(conditional ? { headers } : {}),
+    });
+  } catch (err) {
+    throw fromSafeFetchError(err);
+  }
+  // SafeFetch records each URL that redirected: the first is the requested
+  // one, and without redirects the answer came from the requested URL
+  if (
+    fetched.redirects.length
+      ? fetched.redirects[0].url !== fetched.requestedUrl
+      : fetched.finalUrl !== fetched.requestedUrl
+  ) {
+    throw fetchFailed();
+  }
+  const answered = answerValidators(fetched);
+  if (fetched.status === 304) {
+    if (!conditional) {
+      throw fetchFailed();
+    }
+    return {
+      status: 'not-modified',
+      validators: {
+        mode: 'merge',
+        ...(answered.etag ? { etag: answered.etag } : {}),
+        ...(answered.lastModified
+          ? { lastModified: answered.lastModified }
+          : {}),
+      },
+    };
+  }
+  return {
+    status: 'fetched',
+    fetched,
+    validators: { mode: 'replace', ...answered },
+  };
+};
+
+// The validators a source has after an update, to write only a change
+const afterValidatorUpdate = (
+  stored: SourceValidators,
+  update: ContentStudioSourceValidatorUpdate
+): SourceValidators =>
+  update.mode === 'replace'
+    ? { etag: update.etag, lastModified: update.lastModified }
+    : {
+        etag: update.etag ?? stored.etag,
+        lastModified: update.lastModified ?? stored.lastModified,
+      };
+
 // Source and version ids are Prisma uuid() values; anything else cannot exist
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -214,6 +363,14 @@ interface SourceRow {
   canonicalUrl: string | null;
   latestVersionNumber: number;
   archivedAt: Date | null;
+}
+
+// A page as a feed capture reads it (P8-G1): with its stored validators,
+// and its updatedAt, which writing them keeps
+interface PageRow extends SourceRow {
+  updatedAt: Date;
+  httpEtag: string | null;
+  httpLastModified: string | null;
 }
 
 // A feed's own schedule setting (P8-C4), null for the default
@@ -252,6 +409,20 @@ const feedCaptureFailure = (err: unknown): FeedCaptureFailure => {
   };
 };
 
+// A feed that answered 304 Not Modified (P8-G1): nothing of it was read
+const NOT_MODIFIED_CAPTURE: ContentStudioFeedCaptureSummary = {
+  entriesSeen: 0,
+  entriesIgnored: 0,
+  entriesSkipped: 0,
+  entriesAccepted: 0,
+  sourcesCreated: 0,
+  versionsCreated: 0,
+  unchanged: 0,
+  failed: 0,
+  archived: 0,
+  entriesLimited: 0,
+};
+
 type EntryOutcome =
   | 'skipped'
   | 'limited'
@@ -262,13 +433,13 @@ type EntryOutcome =
 
 // The page source of a feed entry, or why it has none
 type PageSource =
-  | { source: SourceRow; created: boolean }
+  | { source: PageRow; created: boolean }
   | 'skipped'
   | 'limited'
   | 'failed';
 
 // The address of a source that is not a page (a feed) is no page
-const pageOf = (source: SourceRow, created: boolean): PageSource =>
+const pageOf = (source: PageRow, created: boolean): PageSource =>
   source.kind === 'url' ? { source, created } : 'skipped';
 
 // `items` run through `work` at most `limit` at a time; the results keep the
@@ -575,7 +746,16 @@ export class ContentStudioSourceIngestionService {
   // another capture appended meanwhile as that capture. Both compare the
   // capture with the current version by blocks hash, title and extraction
   // only (never the blocks themselves), and a change of the page is kept on
-  // the source in the same append (P8-04B1)
+  // the source in the same append (P8-04B1).
+  //
+  // HTTP validators (P8-G1): `if-changed` asks conditionally with the page's
+  // stored validators, once it has a version. A 304 is the current version
+  // again (`not-modified`): nothing is read, extracted or stored but the
+  // validators. `always` never asks conditionally, so a member's refresh
+  // always reads the page and appends it, as before. A new version brings
+  // the validators of its own answer; a page found as its current version
+  // keeps them only from the state the capture started from
+  // (markPageUnchanged)
   private async captureUrl(
     organizationId: string,
     source: SourceRow,
@@ -587,7 +767,7 @@ export class ContentStudioSourceIngestionService {
   }>;
   private async captureUrl(
     organizationId: string,
-    source: SourceRow,
+    source: PageRow,
     userId: string,
     mode: 'if-changed'
   ): Promise<
@@ -596,10 +776,11 @@ export class ContentStudioSourceIngestionService {
         version: Parameters<typeof toPublicContentStudioSourceVersion>[0];
       }
     | { status: 'unchanged' }
+    | { status: 'not-modified' }
   >;
   private async captureUrl(
     organizationId: string,
-    source: SourceRow,
+    source: SourceRow | PageRow,
     userId: string,
     mode: 'always' | 'if-changed'
   ) {
@@ -608,28 +789,29 @@ export class ContentStudioSourceIngestionService {
     }
     // the version this capture follows, read before the fetch
     const expectedLatestVersionNumber = source.latestVersionNumber;
+    // the validators it sends, of that version's page: only a feed capture
+    // of a page that has one
+    const page =
+      mode === 'if-changed' && expectedLatestVersionNumber > 0
+        ? (source as PageRow)
+        : null;
+    const sent = page ? storedValidators(page) : NO_VALIDATORS;
 
-    let fetched;
-    try {
-      fetched = await safeFetch(source.canonicalUrl, {
-        method: 'GET',
+    const answer = await fetchSource(
+      source.canonicalUrl,
+      {
         allowedContentTypes: SOURCE_FETCH_ALLOWED_CONTENT_TYPES,
         maxBytes: SOURCE_FETCH_MAX_BYTES,
         timeoutMs: SOURCE_FETCH_TIMEOUT_MS,
-      });
-    } catch (err) {
-      throw fromSafeFetchError(err);
+      },
+      sent
+    );
+    if (answer.status === 'not-modified') {
+      await this.keepPageValidators(organizationId, page!, answer.validators);
+      return { status: 'not-modified' as const };
     }
+    const { fetched } = answer;
     const fetchedAt = new Date();
-    // SafeFetch records each URL that redirected: the first is the requested
-    // one, and without redirects the answer came from the requested URL
-    if (
-      fetched.redirects.length
-        ? fetched.redirects[0].url !== fetched.requestedUrl
-        : fetched.finalUrl !== fetched.requestedUrl
-    ) {
-      throw fetchFailed();
-    }
     // the exact bytes SafeFetch returned (after HTTP content encoding is
     // undone), before anything is extracted from them
     const sourceHash = createHash('sha256').update(fetched.body).digest('hex');
@@ -706,6 +888,9 @@ export class ContentStudioSourceIngestionService {
       version
     );
     if (mode === 'if-changed' && transition === 'repeat') {
+      if (page) {
+        await this.keepPageValidators(organizationId, page, answer.validators);
+      }
       return { status: 'unchanged' as const };
     }
     // a change of the page itself becomes the source's last page change,
@@ -733,6 +918,7 @@ export class ContentStudioSourceIngestionService {
             version,
             createdById: userId,
             pageChange,
+            validators: answer.validators,
           }
         );
     } catch (err) {
@@ -757,6 +943,40 @@ export class ContentStudioSourceIngestionService {
         }
         throw versionConflict();
     }
+  }
+
+  // The validators of a page that a feed capture found as its current version
+  // (P8-G1), written only when they change, and only from the page as it
+  // was read before the fetch: if the page changed meanwhile (a version, a
+  // rename, an archive, or validators another capture wrote first), they
+  // stay as they are
+  private async keepPageValidators(
+    organizationId: string,
+    page: PageRow,
+    validators: ContentStudioSourceValidatorUpdate
+  ) {
+    const stored = {
+      etag: page.httpEtag ?? null,
+      lastModified: page.httpLastModified ?? null,
+    };
+    const after = afterValidatorUpdate(stored, validators);
+    if (
+      after.etag === stored.etag &&
+      after.lastModified === stored.lastModified
+    ) {
+      return;
+    }
+    await this._contentStudioSourceRepository.markPageUnchanged({
+      organizationId,
+      id: page.id,
+      expected: {
+        latestVersionNumber: page.latestVersionNumber,
+        updatedAt: page.updatedAt,
+        httpEtag: stored.etag,
+        httpLastModified: stored.lastModified,
+      },
+      validators,
+    });
   }
 
   // A member's refresh of a feed (P8-O1): one recorded capture, ended here
@@ -826,7 +1046,14 @@ export class ContentStudioSourceIngestionService {
   // and ends its failures (P8-C4), and ends its record with its counts, in
   // one transaction; a failure changes nothing here. A try of a scheduled
   // capture whose record has ended (its success was written, its answer
-  // lost) captures again, and its record stays as it was
+  // lost) captures again, and its record stays as it was.
+  //
+  // The feed is asked conditionally with its stored validators (P8-G1),
+  // whoever started the capture. A 304 Not Modified is a success like any
+  // other (schedule, failures, record), with nothing read: no entry, page,
+  // discovery or version, every count 0. The validators are written only
+  // with that success, so a feed that could not be read or processed keeps
+  // the ones it had and is read in full next time
   private async captureFeed(
     organizationId: string,
     feed: FeedRow,
@@ -855,26 +1082,34 @@ export class ContentStudioSourceIngestionService {
     if (!feed.canonicalUrl || intervalMinutes === undefined) {
       throw integrityError();
     }
-    let fetched;
-    try {
-      fetched = await safeFetch(feed.canonicalUrl, {
-        method: 'GET',
+    const stored = await this._contentStudioSourceRepository.getFeedValidators(
+      organizationId,
+      feed.id
+    );
+    const answer = await fetchSource(
+      feed.canonicalUrl,
+      {
         allowedContentTypes: FEED_FETCH_ALLOWED_CONTENT_TYPES,
         maxBytes: FEED_FETCH_MAX_BYTES,
         timeoutMs: FEED_FETCH_TIMEOUT_MS,
-      });
-    } catch (err) {
-      throw fromSafeFetchError(err);
-    }
+      },
+      stored ? storedValidators(stored) : NO_VALIDATORS
+    );
     // the time of this capture: every page it lists was seen then
     const capturedAt = new Date();
-    if (
-      fetched.redirects.length
-        ? fetched.redirects[0].url !== fetched.requestedUrl
-        : fetched.finalUrl !== fetched.requestedUrl
-    ) {
-      throw fetchFailed();
+    if (answer.status === 'not-modified') {
+      return this.feedCaptured(
+        organizationId,
+        feed.id,
+        capturedAt,
+        intervalMinutes,
+        answer.validators,
+        attempt,
+        NOT_MODIFIED_CAPTURE,
+        true
+      );
     }
+    const { fetched } = answer;
 
     let parsed: ContentStudioSourceFeed;
     try {
@@ -926,22 +1161,50 @@ export class ContentStudioSourceIngestionService {
     };
 
     // pages that failed or were limited are counted: the feed was read
-    await this._contentStudioSourceRepository.markFeedCaptured(
+    return this.feedCaptured(
       organizationId,
       feed.id,
       capturedAt,
+      intervalMinutes,
+      answer.validators,
+      attempt,
+      capture,
+      false
+    );
+  }
+
+  // The success of a feed capture (see captureFeed), read or not modified
+  private async feedCaptured(
+    organizationId: string,
+    feedId: string,
+    capturedAt: Date,
+    intervalMinutes: number,
+    validators: ContentStudioSourceValidatorUpdate,
+    attempt: FeedCaptureAttempt,
+    capture: ContentStudioFeedCaptureSummary,
+    notModified: boolean
+  ) {
+    await this._contentStudioSourceRepository.markFeedCaptured(
+      organizationId,
+      feedId,
+      capturedAt,
       nextCaptureAfterSuccess(capturedAt, intervalMinutes),
-      { id: attempt.id, finishedAt: new Date(), summary: capture }
+      validators,
+      { id: attempt.id, finishedAt: new Date(), summary: capture, notModified }
     );
     const current =
       await this._contentStudioSourceRepository.getSourceForOrganization(
         organizationId,
-        feed.id
+        feedId
       );
     if (!current) {
       throw integrityError();
     }
-    return { source: toPublicContentStudioSource(current), capture };
+    return {
+      source: toPublicContentStudioSource(current),
+      capture,
+      notModified,
+    };
   }
 
   // One page of a feed, with its source (found or created): the discovery,
@@ -972,6 +1235,7 @@ export class ContentStudioSourceIngestionService {
       return { outcome: 'archived', created: page.created };
     }
     try {
+      // a page that answered 304 Not Modified (P8-G1) is unchanged too
       const result = await this.captureUrl(
         organizationId,
         page.source,
@@ -1005,7 +1269,7 @@ export class ContentStudioSourceIngestionService {
     entries: ContentStudioSourceFeedEntry[],
     userId: string
   ): Promise<PageSource[]> {
-    const known: Array<SourceRow | null> = [];
+    const known: Array<PageRow | null> = [];
     for (const entry of entries) {
       known.push(
         await this._contentStudioSourceRepository.getSourceByCanonicalUrlForOrganization(

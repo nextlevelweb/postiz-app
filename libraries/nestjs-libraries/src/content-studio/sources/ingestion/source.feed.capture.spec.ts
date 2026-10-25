@@ -29,8 +29,14 @@ import {
   SOURCE_FETCH_ALLOWED_CONTENT_TYPES,
   SOURCE_FETCH_MAX_BYTES,
   SOURCE_FETCH_TIMEOUT_MS,
+  SOURCE_ETAG_MAX_LENGTH,
+  SOURCE_LAST_MODIFIED_MAX_LENGTH,
+  conditionalRequestHeaders,
+  usableSourceValidator,
 } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
+import * as feedModule from '@gitroom/nestjs-libraries/content-studio/sources/source.feed';
 import { SOURCE_FEED_MAX_ENTRIES } from '@gitroom/nestjs-libraries/content-studio/sources/source.feed';
+import * as extractModule from '@gitroom/nestjs-libraries/content-studio/sources/source.extract';
 import {
   CONTENT_STUDIO_FEED_INTERVAL_DEFAULT_MINUTES,
   CONTENT_STUDIO_FEED_INTERVALS,
@@ -329,7 +335,8 @@ const setup = () => {
               ? row[key] + (data as Row).increment
               : data;
         }
-        if (table === 'sources') {
+        // @updatedAt: unless the write sets it itself (P8-G1 keeps it)
+        if (table === 'sources' && !('updatedAt' in args.data)) {
           row.updatedAt = now();
         }
       }
@@ -440,6 +447,7 @@ const capture = (
   }) as unknown as Promise<{
     source: Record<string, unknown>;
     capture: Record<string, number>;
+    notModified: boolean;
   }>;
 
 const refusal = async (promise: Promise<unknown>) => {
@@ -2720,6 +2728,8 @@ describe('feed capture: its record (P8-O1)', () => {
       finishedAt: expect.any(Date),
       attemptCount: 1,
       ...summary,
+      // the feed was read (P8-G1)
+      notModified: false,
       nextCaptureAtAfter: feedRow(t).nextCaptureAt,
       consecutiveFailuresAfter: 0,
     });
@@ -3067,8 +3077,10 @@ describe('feed capture: its record (P8-O1)', () => {
         FEED,
         older,
         new Date(older.getTime() + HOUR),
+        { mode: 'replace', etag: null, lastModified: null },
         {
           id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+          notModified: false,
           finishedAt: new Date(),
           summary: {
             entriesSeen: 0,
@@ -3203,6 +3215,8 @@ describe('feed capture history: the read (P8-O1)', () => {
         archived: 0,
         entriesLimited: 0,
       },
+      // a success from before P8-G1: not known
+      notModified: null,
       nextCaptureAtAfter: ended(1).nextCaptureAtAfter,
       consecutiveFailuresAfter: 0,
     });
@@ -3616,7 +3630,8 @@ describe('feed capture boundaries', () => {
     expect(ingestion).not.toMatch(
       /rss-parser|parseURL|\bfetch\(|axios|undici|autopost|AutopostService|createSafeFetch/i
     );
-    expect(ingestion.match(/\bsafeFetch\(/g)).toHaveLength(2);
+    // one call (P8-G1: fetchSource), for pages and feeds
+    expect(ingestion.match(/\bsafeFetch\(/g)).toHaveLength(1);
   });
 
   it('P801-3/P801-5/P801-6/P801-7 makes ordinary url sources; no AI, scoring, topic or competitor', () => {
@@ -3624,5 +3639,867 @@ describe('feed capture boundaries', () => {
     expect(ingestion).not.toMatch(
       /AIConnection|AIExecution|AIOperation|AIUsage|openai|anthropic|embedding|score|sentiment|topic|cluster|competitor|summari[sz]/i
     );
+  });
+});
+
+// Conditional fetching (P8-G1): the stored HTTP validators of a source are
+// sent back (If-None-Match, If-Modified-Since), a 304 Not Modified is a
+// success with nothing read, and the validators move only with the success
+// they belong to
+describe('conditional fetching (P8-G1)', () => {
+  const HOUR = 60 * 60 * 1000;
+  const RUN = '88888888-8888-4888-8888-888888888888';
+  const A = '"etag-a"';
+  const B = 'W/"etag-b"';
+  const L1 = 'Sun, 18 Oct 2026 10:00:00 GMT';
+  const L2 = 'Mon, 19 Oct 2026 10:00:00 GMT';
+  const FEED_TYPE = 'application/rss+xml';
+  const PAGE_TYPE = 'text/html; charset=utf-8';
+
+  // A web that answers conditionally: 304 when the request's If-None-Match
+  // (or, without one, If-Modified-Since) matches the resource, with the
+  // resource's validators or `notModified` (exactly those headers) if set;
+  // else the whole resource. Like SafeFetch, never a 304 to an ordinary
+  // request. Every request is logged with its headers
+  interface Resource {
+    body: string;
+    contentType: string;
+    etag?: string;
+    lastModified?: string;
+    notModified?: { etag?: string; lastModified?: string };
+  }
+  const conditionalWeb = () => {
+    const resources = new Map<string, Resource>();
+    const requests: Array<{ url: string; headers: Record<string, string> }> =
+      [];
+    const failing = new Set<string>();
+    fetchMock.mockImplementation(async (url: string, options) => {
+      const headers = { ...(options?.headers ?? {}) };
+      requests.push({ url, headers });
+      if (failing.has(url)) {
+        throw new SafeFetchError('HTTP_STATUS', { statusCode: 503 });
+      }
+      const resource = resources.get(url);
+      if (!resource) {
+        throw new SafeFetchError('HTTP_STATUS', { statusCode: 404 });
+      }
+      const ifNoneMatch = headers['If-None-Match'];
+      const ifModifiedSince = headers['If-Modified-Since'];
+      const matched =
+        ifNoneMatch !== undefined
+          ? ifNoneMatch === resource.etag
+          : ifModifiedSince !== undefined &&
+            ifModifiedSince === resource.lastModified;
+      if (matched) {
+        return {
+          requestedUrl: url,
+          finalUrl: url,
+          redirects: [],
+          status: 304,
+          headers: resource.notModified ?? {
+            etag: resource.etag,
+            lastModified: resource.lastModified,
+          },
+          body: new Uint8Array(0),
+          bytesRead: 0,
+        };
+      }
+      return answer(url, resource.body, resource.contentType, {
+        headers: {
+          contentType: resource.contentType,
+          etag: resource.etag,
+          lastModified: resource.lastModified,
+        },
+      });
+    });
+    const feed = (body: string, validators: Partial<Resource> = {}) =>
+      resources.set(FEED_URL, {
+        body,
+        contentType: FEED_TYPE,
+        ...validators,
+      });
+    const pageAt = (
+      url: string,
+      body: string,
+      validators: Partial<Resource> = {}
+    ) => resources.set(url, { body, contentType: PAGE_TYPE, ...validators });
+    const sent = (url: string) =>
+      requests.filter((request) => request.url === url);
+    return { resources, requests, failing, feed, pageAt, sent };
+  };
+
+  const feedRow = (t: Setup) => t.state.sources.find((s) => s.id === FEED)!;
+  const validatorsOf = (row: Record<string, unknown>) => ({
+    httpEtag: row.httpEtag ?? null,
+    httpLastModified: row.httpLastModified ?? null,
+  });
+  const scheduled = (t: Setup, attemptId = RUN, attemptCount = 1) =>
+    t.ingestion.captureScheduledFeed({
+      organizationId: ORG,
+      sourceId: FEED,
+      attemptId,
+      attemptCount,
+    });
+  const record = (t: Setup, id: string) =>
+    t.state.attempts.find((row) => row.id === id)!;
+  const snapshot = (t: Setup) =>
+    JSON.stringify({
+      pages: pagesOf(t),
+      versions: t.state.versions,
+      discoveries: t.state.discoveries,
+    });
+  const ZEROS = {
+    entriesSeen: 0,
+    entriesIgnored: 0,
+    entriesSkipped: 0,
+    entriesAccepted: 0,
+    sourcesCreated: 0,
+    versionsCreated: 0,
+    unchanged: 0,
+    failed: 0,
+    archived: 0,
+    entriesLimited: 0,
+  };
+  // a feed listing one page, both read once with their validators
+  const capturedOnce = async () => {
+    const t = setup();
+    t.addFeed();
+    const w = conditionalWeb();
+    w.feed(rss([page(1)]), { etag: A, lastModified: L1 });
+    w.pageAt(page(1), html('One'), { etag: '"p1"', lastModified: L1 });
+    await scheduled(t, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    w.requests.length = 0;
+    return { t, w };
+  };
+
+  describe('validators', () => {
+    it('VH1/VH2/VH7/VH9/VH10 a usable validator is kept exactly: strong or weak ETag, any header-safe date', () => {
+      for (const value of [
+        '"abc"',
+        'W/"abc"',
+        '"a b"',
+        '"a", "b"',
+        `"${'x'.repeat(SOURCE_ETAG_MAX_LENGTH - 2)}"`,
+      ]) {
+        expect(usableSourceValidator(value, SOURCE_ETAG_MAX_LENGTH)).toBe(
+          value
+        );
+      }
+      for (const value of [
+        L1,
+        // not an HTTP date, but safe as a header: sent as it is, and a
+        // server ignores an If-Modified-Since it cannot read
+        'yesterday',
+        'x'.repeat(SOURCE_LAST_MODIFIED_MAX_LENGTH),
+      ]) {
+        expect(
+          usableSourceValidator(value, SOURCE_LAST_MODIFIED_MAX_LENGTH)
+        ).toBe(value);
+      }
+      expect(SOURCE_ETAG_MAX_LENGTH).toBe(1024);
+      expect(SOURCE_LAST_MODIFIED_MAX_LENGTH).toBe(256);
+    });
+
+    it('VH3-VH6/VH8 anything else is not used: empty, a control character, too long, not ASCII, not a string', () => {
+      for (const value of [
+        '',
+        ' ',
+        '"a\rb"',
+        '"a\nb"',
+        '"a\r\nX-Injected: 1"',
+        '"a\u0000b"',
+        '"a\tb"',
+        '"a\u007fb"',
+        ' "abc"',
+        '"abc" ',
+        '"é"',
+        `"${'x'.repeat(SOURCE_ETAG_MAX_LENGTH - 1)}"`,
+        undefined,
+        null,
+        42,
+      ]) {
+        expect(usableSourceValidator(value, SOURCE_ETAG_MAX_LENGTH)).toBeNull();
+      }
+      expect(
+        usableSourceValidator(
+          'x'.repeat(SOURCE_LAST_MODIFIED_MAX_LENGTH + 1),
+          SOURCE_LAST_MODIFIED_MAX_LENGTH
+        )
+      ).toBeNull();
+    });
+
+    it('SF1-SF4 only the two conditional headers, only for a validator there is', () => {
+      expect(
+        conditionalRequestHeaders({ etag: null, lastModified: null })
+      ).toEqual({});
+      expect(
+        conditionalRequestHeaders({ etag: B, lastModified: null })
+      ).toEqual({ 'If-None-Match': B });
+      expect(
+        conditionalRequestHeaders({ etag: null, lastModified: L1 })
+      ).toEqual({ 'If-Modified-Since': L1 });
+      expect(conditionalRequestHeaders({ etag: A, lastModified: L1 })).toEqual({
+        'If-None-Match': A,
+        'If-Modified-Since': L1,
+      });
+    });
+  });
+
+  describe('a feed', () => {
+    it("F1/P1/H1/M17 the first capture asks nothing; its validators, and a new page's, are kept after the success", async () => {
+      const t = setup();
+      t.addFeed();
+      const w = conditionalWeb();
+      w.feed(rss([page(1)]), { etag: A, lastModified: L1 });
+      w.pageAt(page(1), html('One'), { etag: '"p1"' });
+      const result = await scheduled(t);
+      expect(result).toMatchObject({ status: 'captured' });
+      for (const request of w.requests) {
+        expect(request.headers).toEqual({});
+      }
+      expect(fetchMock.mock.calls[0][1]).not.toHaveProperty('headers');
+      expect(validatorsOf(feedRow(t))).toEqual({
+        httpEtag: A,
+        httpLastModified: L1,
+      });
+      // a page without Last-Modified: null
+      expect(validatorsOf(sourceByUrl(t, page(1)))).toEqual({
+        httpEtag: '"p1"',
+        httpLastModified: null,
+      });
+      expect(record(t, RUN)).toMatchObject({
+        status: 'success',
+        notModified: false,
+        entriesAccepted: 1,
+      });
+    });
+
+    it('F2/F8/P8G1-10/H2/M10-M16/M44 a 304 is a success with nothing read: no entry, page, discovery or version; the schedule and failures move, the record says so', async () => {
+      const { t, w } = await capturedOnce();
+      const parse = jest.spyOn(feedModule, 'parseContentStudioSourceFeed');
+      const extract = jest.spyOn(extractModule, 'extractContentStudioSource');
+      feedRow(t).consecutiveCaptureFailures = 3;
+      feedRow(t).nextCaptureAt = new Date(Date.now() - HOUR);
+      const lastBefore = feedRow(t).lastCapturedAt as Date;
+      const before = snapshot(t);
+      const discoveriesBefore = JSON.stringify(t.state.discoveries);
+
+      const result = await scheduled(t);
+
+      expect(w.requests).toEqual([
+        {
+          url: FEED_URL,
+          headers: { 'If-None-Match': A, 'If-Modified-Since': L1 },
+        },
+      ]);
+      expect(parse).not.toHaveBeenCalled();
+      expect(extract).not.toHaveBeenCalled();
+      expect(result).toEqual({ status: 'captured', capture: ZEROS });
+      expect(snapshot(t)).toBe(before);
+      expect(JSON.stringify(t.state.discoveries)).toBe(discoveriesBefore);
+      const feed = feedRow(t);
+      expect(feed.lastCapturedAt.getTime()).toBeGreaterThan(
+        lastBefore.getTime()
+      );
+      expect(feed.nextCaptureAt.getTime()).toBe(
+        feed.lastCapturedAt.getTime() + HOUR
+      );
+      expect(feed.consecutiveCaptureFailures).toBe(0);
+      expect(feed.latestVersionNumber).toBe(0);
+      expect(validatorsOf(feed)).toEqual({
+        httpEtag: A,
+        httpLastModified: L1,
+      });
+      expect(record(t, RUN)).toMatchObject({
+        status: 'success',
+        notModified: true,
+        ...ZEROS,
+        nextCaptureAtAfter: feed.nextCaptureAt,
+        consecutiveFailuresAfter: 0,
+      });
+      parse.mockRestore();
+      extract.mockRestore();
+    });
+
+    it('F3/M16 a 304 with a new ETag and no Last-Modified: the ETag moves, the date stays', async () => {
+      const { t, w } = await capturedOnce();
+      w.resources.get(FEED_URL)!.notModified = { etag: B };
+      await scheduled(t);
+      expect(validatorsOf(feedRow(t))).toEqual({
+        httpEtag: B,
+        httpLastModified: L1,
+      });
+    });
+
+    it('P8G1 a 304 whose validators are not usable keeps the ones the feed had', async () => {
+      const { t, w } = await capturedOnce();
+      w.resources.get(FEED_URL)!.notModified = {
+        etag: '"bad\r\nX: 1"',
+        lastModified: 'x'.repeat(SOURCE_LAST_MODIFIED_MAX_LENGTH + 1),
+      };
+      await scheduled(t);
+      expect(record(t, RUN).notModified).toBe(true);
+      expect(validatorsOf(feedRow(t))).toEqual({
+        httpEtag: A,
+        httpLastModified: L1,
+      });
+    });
+
+    it('F4/M17 a 200 after a conditional request replaces both: a validator it did not send is cleared', async () => {
+      const { t, w } = await capturedOnce();
+      w.feed(rss([page(1), page(2)]), { etag: B });
+      w.pageAt(page(2), html('Two'));
+      await scheduled(t);
+      expect(w.sent(FEED_URL)[0].headers).toEqual({
+        'If-None-Match': A,
+        'If-Modified-Since': L1,
+      });
+      expect(validatorsOf(feedRow(t))).toEqual({
+        httpEtag: B,
+        httpLastModified: null,
+      });
+      expect(record(t, RUN)).toMatchObject({
+        notModified: false,
+        entriesAccepted: 2,
+      });
+    });
+
+    it('P8G1 a 200 whose validator is not usable clears it: it is no validator of this representation', async () => {
+      const { t, w } = await capturedOnce();
+      w.feed(rss([page(1)]), {
+        etag: `"${'x'.repeat(SOURCE_ETAG_MAX_LENGTH)}"`,
+        lastModified: L2,
+      });
+      await scheduled(t);
+      expect(validatorsOf(feedRow(t))).toEqual({
+        httpEtag: null,
+        httpLastModified: L2,
+      });
+    });
+
+    it("F5/M18 a 200 that cannot be read keeps the old validators; the failure is the feed's, as before", async () => {
+      const { t, w } = await capturedOnce();
+      w.feed('<html>not a feed</html>', { etag: B, lastModified: L2 });
+      await expect(scheduled(t)).rejects.toMatchObject({
+        response: { code: 'CS_SOURCE_FEED_INVALID' },
+      });
+      expect(validatorsOf(feedRow(t))).toEqual({
+        httpEtag: A,
+        httpLastModified: L1,
+      });
+      expect(record(t, RUN).status).toBe('running');
+      expect(record(t, RUN).notModified ?? null).toBeNull();
+      expect(
+        await t.ingestion.finishScheduledFeedCapture({
+          organizationId: ORG,
+          sourceId: FEED,
+          attemptId: RUN,
+          status: 'source_failed',
+          code: 'CS_SOURCE_FEED_INVALID',
+        })
+      ).toEqual({ status: 'finished' });
+      expect(record(t, RUN)).toMatchObject({
+        status: 'source_failed',
+      });
+      expect(record(t, RUN).notModified ?? null).toBeNull();
+      // and the next capture asks with the old ones, so the server sends
+      // the representation again
+      w.requests.length = 0;
+      w.feed(rss([page(1)]), { etag: B, lastModified: L2 });
+      await scheduled(t, '99999999-9999-4999-8999-999999999999');
+      expect(w.sent(FEED_URL)[0].headers).toEqual({
+        'If-None-Match': A,
+        'If-Modified-Since': L1,
+      });
+      expect(validatorsOf(feedRow(t))).toEqual({
+        httpEtag: B,
+        httpLastModified: L2,
+      });
+    });
+
+    it('F6/M19 a 200 whose processing fails in the database keeps the old validators; a system failure', async () => {
+      const { t, w } = await capturedOnce();
+      w.feed(rss([page(1), page(2)]), { etag: B, lastModified: L2 });
+      w.pageAt(page(2), html('Two'));
+      const lost = jest
+        .spyOn(t.discoveries, 'recordDiscovery')
+        .mockRejectedValue(new Error('connection lost'));
+      await expect(scheduled(t)).rejects.toThrow('connection lost');
+      lost.mockRestore();
+      expect(validatorsOf(feedRow(t))).toEqual({
+        httpEtag: A,
+        httpLastModified: L1,
+      });
+      expect(record(t, RUN).status).toBe('running');
+    });
+
+    it('F9/M35 an older success never replaces the validators of a newer one; its record is still a success', async () => {
+      const { t } = await capturedOnce();
+      const newer = feedRow(t).lastCapturedAt as Date;
+      const older = new Date(newer.getTime() - 60_000);
+      t.state.attempts.push({
+        id: RUN,
+        organizationId: ORG,
+        sourceId: FEED,
+        status: 'running',
+      });
+      expect(
+        await t.repository.markFeedCaptured(
+          ORG,
+          FEED,
+          older,
+          new Date(older.getTime() + HOUR),
+          { mode: 'replace', etag: B, lastModified: L2 },
+          {
+            id: RUN,
+            finishedAt: new Date(),
+            summary: ZEROS,
+            notModified: false,
+          }
+        )
+      ).toEqual({ count: 0, ended: true });
+      expect(validatorsOf(feedRow(t))).toEqual({
+        httpEtag: A,
+        httpLastModified: L1,
+      });
+      expect(record(t, RUN)).toMatchObject({
+        status: 'success',
+        notModified: false,
+      });
+      // a merge from an older 304 neither
+      await t.repository.markFeedCaptured(
+        ORG,
+        FEED,
+        older,
+        new Date(older.getTime() + HOUR),
+        { mode: 'merge', etag: B },
+        { id: RUN, finishedAt: new Date(), summary: ZEROS, notModified: true }
+      );
+      expect(feedRow(t).httpEtag).toBe(A);
+    });
+
+    it('P8G1 a stored validator that is not usable is never sent', async () => {
+      const t = setup();
+      t.addFeed({ httpEtag: '"a"\r\nX-Injected: 1', httpLastModified: L1 });
+      const w = conditionalWeb();
+      w.feed(rss([]), { lastModified: L1 });
+      await scheduled(t);
+      expect(w.sent(FEED_URL)[0].headers).toEqual({
+        'If-Modified-Since': L1,
+      });
+      // the 304 keeps what it did not answer: the unusable ETag is not
+      // repaired by it, and still never sent
+      expect(record(t, RUN).notModified).toBe(true);
+    });
+
+    it('F7/M1/H2 a member refresh asks conditionally too: a 304 answers notModified, starts the cooldown and is one manual record', async () => {
+      const { t, w } = await capturedOnce();
+      feedRow(t).consecutiveCaptureFailures = 2;
+      const result = await capture(t);
+      expect(w.sent(FEED_URL)[0].headers).toEqual({
+        'If-None-Match': A,
+        'If-Modified-Since': L1,
+      });
+      expect(result.notModified).toBe(true);
+      expect(result.capture).toEqual(ZEROS);
+      expect(result.source.lastCapturedAt).toEqual(feedRow(t).lastCapturedAt);
+      expect(feedRow(t).consecutiveCaptureFailures).toBe(0);
+      const manual = t.state.attempts.filter((row) => row.trigger === 'manual');
+      expect(manual).toHaveLength(1);
+      expect(manual[0]).toMatchObject({
+        status: 'success',
+        notModified: true,
+        attemptCount: 1,
+        requestedByUserId: USER,
+      });
+      // M5: the cooldown starts from this success: refused before any fetch,
+      // nothing changes
+      mockLimits.manualRefreshCooldownMs = 5 * 60 * 1000;
+      w.requests.length = 0;
+      const stateBefore = JSON.stringify(feedRow(t));
+      expect((await refusal(capture(t))).status).toBe(429);
+      expect(w.requests).toEqual([]);
+      expect(JSON.stringify(feedRow(t))).toBe(stateBefore);
+    });
+
+    it('M2 a member refresh that fails keeps the validators; its answer and record are as before', async () => {
+      const { t, w } = await capturedOnce();
+      w.failing.add(FEED_URL);
+      expect((await refusal(capture(t))).status).toBe(502);
+      expect(validatorsOf(feedRow(t))).toEqual({
+        httpEtag: A,
+        httpLastModified: L1,
+      });
+      const manual = t.state.attempts.find((row) => row.trigger === 'manual')!;
+      expect(manual.status).toBe('source_failed');
+      expect(manual.notModified ?? null).toBeNull();
+    });
+
+    it('a 200 answers notModified false to a member', async () => {
+      const t = setup();
+      t.addFeed();
+      conditionalWeb().feed(rss([]), { etag: A });
+      expect((await capture(t)).notModified).toBe(false);
+    });
+  });
+
+  describe('the lifecycle', () => {
+    it('P8G1/M36/M37 pause, resume, archive, restore and rename keep the validators of a feed and a page', async () => {
+      const { t } = await capturedOnce();
+      const one = sourceByUrl(t, page(1));
+      const kept = () => [
+        validatorsOf(feedRow(t)),
+        validatorsOf(sourceByUrl(t, page(1))),
+      ];
+      const before = kept();
+      expect(before).toEqual([
+        { httpEtag: A, httpLastModified: L1 },
+        { httpEtag: '"p1"', httpLastModified: L1 },
+      ]);
+      await t.service.pauseFeed(ORG, FEED);
+      await t.service.resumeFeed(ORG, FEED);
+      await t.service.renameSource(ORG, FEED, 'Renamed feed');
+      for (const id of [FEED, one.id]) {
+        await t.service.archiveSource(ORG, id);
+        await t.service.restoreSource(ORG, id);
+      }
+      expect(kept()).toEqual(before);
+    });
+  });
+
+  describe('a page found by a feed', () => {
+    // the feed changes (a second page), so it is read; its first page asks
+    // with its own validators
+    const feedChanged = (w: ReturnType<typeof conditionalWeb>) => {
+      w.feed(rss([page(1), page(2)]), { etag: B });
+      w.pageAt(page(2), html('Two'));
+    };
+
+    it('P2/P8G1-8/P8G1-9/M20-M23/M45 a 304: no extraction, no version, no page change, counted unchanged; updatedAt kept', async () => {
+      const { t, w } = await capturedOnce();
+      const one = sourceByUrl(t, page(1));
+      const before = { ...one };
+      const versionsBefore = JSON.stringify(versionsOf(t, one.id));
+      feedChanged(w);
+      const extract = jest.spyOn(extractModule, 'extractContentStudioSource');
+      const result = await scheduled(t);
+      expect(w.sent(page(1))).toEqual([
+        {
+          url: page(1),
+          headers: { 'If-None-Match': '"p1"', 'If-Modified-Since': L1 },
+        },
+      ]);
+      // page 2 only: the new page
+      expect(extract).toHaveBeenCalledTimes(1);
+      extract.mockRestore();
+      expect(result).toMatchObject({
+        capture: { unchanged: 1, versionsCreated: 1, entriesAccepted: 2 },
+      });
+      expect(JSON.stringify(versionsOf(t, one.id))).toBe(versionsBefore);
+      expect(sourceByUrl(t, page(1))).toEqual(before);
+    });
+
+    it('P2 a 304 with a new ETag and no date merges, and keeps updatedAt', async () => {
+      const { t, w } = await capturedOnce();
+      w.resources.get(page(1))!.notModified = { etag: '"p1b"' };
+      const before = { ...sourceByUrl(t, page(1)) };
+      feedChanged(w);
+      await scheduled(t);
+      expect(sourceByUrl(t, page(1))).toEqual({
+        ...before,
+        httpEtag: '"p1b"',
+      });
+      expect(t.source.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: before.id,
+          organizationId: ORG,
+          kind: 'url',
+          archivedAt: null,
+          latestVersionNumber: 1,
+          updatedAt: before.updatedAt,
+          httpEtag: '"p1"',
+          httpLastModified: L1,
+        },
+        data: { httpEtag: '"p1b"', updatedAt: before.updatedAt },
+      });
+    });
+
+    it('P3/M27 a 200 with the same content: no version, the validators replaced, updatedAt kept', async () => {
+      const { t, w } = await capturedOnce();
+      w.pageAt(page(1), html('One'), { etag: '"p1-rotated"' });
+      const before = { ...sourceByUrl(t, page(1)) };
+      feedChanged(w);
+      const result = await scheduled(t);
+      expect(result).toMatchObject({ capture: { unchanged: 1 } });
+      expect(versionsOf(t, before.id)).toHaveLength(1);
+      expect(sourceByUrl(t, page(1))).toEqual({
+        ...before,
+        httpEtag: '"p1-rotated"',
+        httpLastModified: null,
+      });
+    });
+
+    it('P3 a 200 with the same content and the same validators writes nothing', async () => {
+      const { t, w } = await capturedOnce();
+      // the server ignores the conditional request
+      w.resources.get(page(1))!.etag = '"p1"';
+      fetchMock.mockClear();
+      const before = { ...sourceByUrl(t, page(1)) };
+      feedChanged(w);
+      t.source.updateMany.mockClear();
+      await scheduled(t);
+      const pageWrites = t.source.updateMany.mock.calls.filter(
+        ([args]) => args.where.id === before.id
+      );
+      expect(pageWrites).toEqual([]);
+      expect(sourceByUrl(t, page(1))).toEqual(before);
+    });
+
+    it('P4 a 200 with new content: a version, its page change, and its validators in the one append', async () => {
+      const { t, w } = await capturedOnce();
+      w.pageAt(page(1), html('One, changed'), {
+        etag: '"p1-v2"',
+        lastModified: L2,
+      });
+      feedChanged(w);
+      const result = await scheduled(t);
+      expect(result).toMatchObject({ capture: { versionsCreated: 2 } });
+      expect(sourceByUrl(t, page(1))).toMatchObject({
+        latestVersionNumber: 2,
+        lastPageChangeVersionNumber: 2,
+        lastPageChangeKind: 'content_changed',
+        httpEtag: '"p1-v2"',
+        httpLastModified: L2,
+      });
+    });
+
+    it('P7/M28 an older answer never replaces newer validators: the page moved since it was read', async () => {
+      const { t } = await capturedOnce();
+      const one = sourceByUrl(t, page(1));
+      const read = { ...one };
+      // another capture confirmed the page first, with new validators
+      one.httpEtag = '"newer"';
+      expect(
+        await t.repository.markPageUnchanged({
+          organizationId: ORG,
+          id: one.id,
+          expected: {
+            latestVersionNumber: read.latestVersionNumber,
+            updatedAt: read.updatedAt,
+            httpEtag: read.httpEtag,
+            httpLastModified: read.httpLastModified,
+          },
+          validators: { mode: 'merge', etag: '"older"' },
+        })
+      ).toEqual({ count: 0 });
+      expect(one.httpEtag).toBe('"newer"');
+      // a version appended meanwhile neither
+      one.httpEtag = read.httpEtag;
+      one.latestVersionNumber = 2;
+      expect(
+        (
+          await t.repository.markPageUnchanged({
+            organizationId: ORG,
+            id: one.id,
+            expected: {
+              latestVersionNumber: 1,
+              updatedAt: read.updatedAt,
+              httpEtag: read.httpEtag,
+              httpLastModified: read.httpLastModified,
+            },
+            validators: {
+              mode: 'replace',
+              etag: '"older"',
+              lastModified: null,
+            },
+          })
+        ).count
+      ).toBe(0);
+      expect(one.httpEtag).toBe(read.httpEtag);
+    });
+
+    it("P8G1 a page at the organization's limit is still asked conditionally; a new one past it is never fetched", async () => {
+      const { t, w } = await capturedOnce();
+      mockLimits.urlSourcesMax = pagesOf(t).length;
+      feedChanged(w);
+      const result = await scheduled(t);
+      expect(result).toMatchObject({
+        capture: { unchanged: 1, entriesLimited: 1, versionsCreated: 0 },
+      });
+      expect(w.sent(page(1))[0].headers).toEqual({
+        'If-None-Match': '"p1"',
+        'If-Modified-Since': L1,
+      });
+      expect(w.sent(page(2))).toEqual([]);
+    });
+
+    it('an archived page is not fetched, so its validators stay', async () => {
+      const { t, w } = await capturedOnce();
+      sourceByUrl(t, page(1)).archivedAt = new Date();
+      feedChanged(w);
+      await scheduled(t);
+      expect(w.sent(page(1))).toEqual([]);
+      expect(sourceByUrl(t, page(1)).httpEtag).toBe('"p1"');
+    });
+  });
+
+  describe('a member refresh of a page', () => {
+    const addPage = (t: Setup, over: Record<string, unknown> = {}) =>
+      t.addSource({
+        id: '99999999-0000-4000-8000-000000000001',
+        organizationId: ORG,
+        canonicalUrl: page(1),
+        ...over,
+      });
+    const refreshPage = (t: Setup) =>
+      t.ingestion.refreshSource({
+        organizationId: ORG,
+        userId: USER,
+        sourceId: '99999999-0000-4000-8000-000000000001',
+      });
+
+    it("P5/M3/M4/M25/M26/P8G1-7 never asks conditionally: it reads, appends a duplicate version and keeps that answer's validators", async () => {
+      const t = setup();
+      addPage(t);
+      const w = conditionalWeb();
+      w.pageAt(page(1), html('One'), { etag: '"p1"', lastModified: L1 });
+      await refreshPage(t);
+      await refreshPage(t);
+      expect(w.sent(page(1)).map((r) => r.headers)).toEqual([{}, {}]);
+      expect(fetchMock.mock.calls[1][1]).not.toHaveProperty('headers');
+      const versions = versionsOf(t, '99999999-0000-4000-8000-000000000001');
+      expect(versions).toHaveLength(2);
+      expect(versions[0].contentHash).toBe(versions[1].contentHash);
+      expect(validatorsOf(sourceByUrl(t, page(1)))).toEqual({
+        httpEtag: '"p1"',
+        httpLastModified: L1,
+      });
+      // a rotated validator follows the next refresh
+      w.resources.get(page(1))!.etag = '"p1b"';
+      await refreshPage(t);
+      expect(sourceByUrl(t, page(1)).httpEtag).toBe('"p1b"');
+    });
+
+    it('P6 a refresh that fails keeps the validators', async () => {
+      const t = setup();
+      addPage(t, {
+        latestVersionNumber: 0,
+        httpEtag: '"p1"',
+        httpLastModified: L1,
+      });
+      const w = conditionalWeb();
+      w.failing.add(page(1));
+      expect((await refusal(refreshPage(t))).status).toBe(502);
+      expect(w.sent(page(1))[0].headers).toEqual({});
+      expect(validatorsOf(sourceByUrl(t, page(1)))).toEqual({
+        httpEtag: '"p1"',
+        httpLastModified: L1,
+      });
+    });
+  });
+
+  describe('the record, read', () => {
+    const T = new Date('2026-10-20T10:00:00.000Z');
+    const row = (over: Record<string, unknown> = {}) => ({
+      id: '00000000-0000-4000-8000-000000000001',
+      organizationId: ORG,
+      sourceId: FEED,
+      trigger: 'scheduled',
+      status: 'success',
+      requestedByUserId: null,
+      startedAt: T,
+      finishedAt: new Date(T.getTime() + 300),
+      attemptCount: 1,
+      errorCode: null,
+      ...ZEROS,
+      notModified: true,
+      nextCaptureAtAfter: new Date(T.getTime() + HOUR),
+      consecutiveFailuresAfter: 0,
+      ...over,
+    });
+    const read = async (t: Setup) =>
+      (
+        await t.service.listFeedCaptures({
+          organizationId: ORG,
+          sourceId: FEED,
+          page: 1,
+        })
+      ).results;
+    const NULLS = Object.fromEntries(
+      Object.keys(ZEROS).map((key) => [key, null])
+    );
+
+    it('H1/H2/H6 a success says whether the feed was modified; one from before P8-G1 does not know', async () => {
+      for (const [notModified, counts] of [
+        [true, ZEROS],
+        [false, { ...ZEROS, entriesSeen: 2, entriesSkipped: 2 }],
+        [null, ZEROS],
+      ] as const) {
+        const t = setup();
+        t.addFeed();
+        t.state.attempts.push(row({ notModified, ...counts }));
+        const [result] = await read(t);
+        expect(result).toMatchObject({
+          status: 'success',
+          notModified,
+          summary: counts,
+        });
+        expect(JSON.stringify(result)).not.toMatch(
+          /etag|lastModified|httpStatus|304/i
+        );
+      }
+    });
+
+    it('H3-H5 running and failed records have none; anything else is refused as corrupt', async () => {
+      for (const over of [
+        {
+          status: 'running',
+          finishedAt: null,
+          nextCaptureAtAfter: null,
+          consecutiveFailuresAfter: null,
+          ...NULLS,
+          notModified: null,
+        },
+        {
+          status: 'source_failed',
+          errorCode: 'CS_SOURCE_FETCH_FAILED',
+          ...NULLS,
+          notModified: null,
+        },
+        { status: 'infrastructure_failed', ...NULLS, notModified: null },
+      ]) {
+        const t = setup();
+        t.addFeed();
+        t.state.attempts.push(row(over));
+        expect((await read(t))[0].notModified).toBeNull();
+      }
+      for (const over of [
+        // not modified, but something was read
+        { notModified: true, entriesSeen: 1 },
+        { notModified: true, versionsCreated: 1, entriesAccepted: 1 },
+        { notModified: 'yes' },
+        { notModified: 1 },
+        {
+          status: 'running',
+          finishedAt: null,
+          nextCaptureAtAfter: null,
+          consecutiveFailuresAfter: null,
+          ...NULLS,
+          notModified: false,
+        },
+        {
+          status: 'source_failed',
+          errorCode: 'CS_SOURCE_FETCH_FAILED',
+          ...NULLS,
+          notModified: true,
+        },
+        { status: 'infrastructure_failed', ...NULLS, notModified: false },
+      ]) {
+        const t = setup();
+        t.addFeed();
+        t.state.attempts.push(row(over));
+        expect((await refusal(read(t))).status).toBe(500);
+      }
+    });
   });
 });

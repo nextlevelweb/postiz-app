@@ -316,6 +316,7 @@ const sourceVersion = async (organizationId = ORG_A) => {
       },
     }),
     createdById: OWNER[organizationId],
+    validators: { mode: 'replace', etag: null, lastModified: null },
   });
   if (result.status !== 'created') {
     throw new Error('fixture capture failed');

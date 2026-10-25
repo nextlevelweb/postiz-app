@@ -182,6 +182,7 @@ const append = (
     versionId: options.versionId ?? randomUUID(),
     version,
     createdById: options.createdById ?? OWNER[organizationId],
+    validators: { mode: 'replace', etag: null, lastModified: null },
   });
 
 // A source of the organization with its first capture

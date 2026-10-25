@@ -730,6 +730,10 @@ const FeedCaptureRow: FC<{ capture: ContentStudioFeedCapture }> = ({
           'No result was recorded for this capture.'
         )
       : null;
+  // a success the feed answered with "not modified" (P8-G1), never an older
+  // success: nothing was read, so it shows no counts
+  const notModified =
+    capture.status === 'success' && capture.notModified === true;
   return (
     <li className="flex flex-col gap-[4px] border border-newTableBorder rounded-[8px] p-[12px] min-w-0">
       <div className="flex flex-wrap items-center gap-x-[12px] gap-y-[4px] text-[13px]">
@@ -739,7 +743,12 @@ const FeedCaptureRow: FC<{ capture: ContentStudioFeedCapture }> = ({
             failed ? 'border-textColor/60 font-[600]' : 'border-newTableBorder'
           )}
         >
-          {outcome}
+          {notModified
+            ? t(
+                'content_studio_feed_capture_not_modified',
+                'No changes detected'
+              )
+            : outcome}
         </span>
         <span>
           {capture.trigger === 'manual'
@@ -761,10 +770,19 @@ const FeedCaptureRow: FC<{ capture: ContentStudioFeedCapture }> = ({
           </span>
         )}
       </div>
-      {detail && (
+      {notModified ? (
         <div className="text-[13px] text-textItemBlur break-words">
-          {detail}
+          {t(
+            'content_studio_feed_capture_not_modified_note',
+            'The source reported that it has not changed since the previous capture.'
+          )}
         </div>
+      ) : (
+        detail && (
+          <div className="text-[13px] text-textItemBlur break-words">
+            {detail}
+          </div>
+        )
       )}
     </li>
   );

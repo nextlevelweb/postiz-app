@@ -439,6 +439,7 @@ describe('Page changes kept by captures on PostgreSQL', () => {
         versionId: randomUUID(),
         version: data,
         createdById: USER_A,
+        validators: { mode: 'replace', etag: null, lastModified: null },
         pageChange: {
           at: data.fetchedAt,
           versionNumber: 2,
@@ -482,6 +483,7 @@ describe('Page changes kept by captures on PostgreSQL', () => {
         versionId: rows[0].id,
         version: data,
         createdById: USER_A,
+        validators: { mode: 'replace', etag: null, lastModified: null },
         pageChange: {
           at: data.fetchedAt,
           versionNumber: 3,

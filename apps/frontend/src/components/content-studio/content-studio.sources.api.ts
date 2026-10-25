@@ -164,6 +164,9 @@ export interface ContentStudioFeedCaptureCounts {
 export interface ContentStudioFeedCaptureResult {
   source: ContentStudioSourceSummary;
   capture: ContentStudioFeedCaptureCounts;
+  // the feed answered that it had not changed since its last capture
+  // (P8-G1): nothing was read, every count is 0
+  notModified: boolean;
 }
 
 // One capture of a feed (P8-O1), as the server recorded it: what started it,
@@ -187,6 +190,9 @@ export interface ContentStudioFeedCapture {
   // a failure of the feed only: its fixed code
   errorCode: string | null;
   summary: ContentStudioFeedCaptureCounts | null;
+  // a success only (P8-G1): true when the feed had not changed since the
+  // capture before, false when it was read, null for an older success
+  notModified: boolean | null;
   // the feed's schedule right after the capture ended
   nextCaptureAtAfter: string | null;
   consecutiveFailuresAfter: number | null;

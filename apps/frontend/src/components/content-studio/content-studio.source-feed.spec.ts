@@ -942,4 +942,112 @@ describe('Source Library: a feed capture history', () => {
     await click(within(history()).getByRole('button', { name: 'Try again' }));
     expect(within(history()).getByText('No capture history yet.')).toBeTruthy();
   });
+
+  // P8-G1: a feed that answered it had not changed since the capture before
+  describe('a feed that had not changed (P8-G1)', () => {
+    const ZERO = Object.fromEntries(Object.keys(COUNTS).map((k) => [k, 0]));
+
+    it('G1-UI1/G1-UI4/G1-UI5 says No changes detected, with why, never a count, a status code or a validator', async () => {
+      captures = [
+        {
+          ...capture({ notModified: true, summary: ZERO, durationMs: 300 }),
+          // never shown, even if a server sent them
+          httpEtag: 'W/"secret-etag"',
+          httpLastModified: 'Sun, 18 Oct 2026 10:00:00 GMT',
+        },
+      ];
+      await renderFeed();
+      const [row] = rows();
+      expect(row.textContent).toContain('No changes detected');
+      expect(row.textContent).toContain(
+        'The source reported that it has not changed since the previous capture.'
+      );
+      expect(row.textContent).toContain('Scheduled');
+      expect(row.textContent).toContain('<1s');
+      expect(row.textContent).not.toContain('Captured successfully');
+      expect(row.textContent).not.toMatch(
+        /Pages found|New versions|Unchanged|304|HTTP|Not Modified|etag|secret|GMT/i
+      );
+      expect(
+        within(row).getByText('No changes detected').className
+      ).not.toMatch(/font-\[600\]|textColor\/60/);
+    });
+
+    it('G1-UI2/G1-UI3 a success that was read, or one from before, reads as before', async () => {
+      captures = [
+        capture({ id: 'read', notModified: false }),
+        capture({ id: 'older' }),
+      ];
+      await renderFeed();
+      for (const row of rows()) {
+        expect(row.textContent).toContain('Captured successfully');
+        expect(row.textContent).toContain('Pages found: 12');
+        expect(row.textContent).not.toContain('No changes detected');
+      }
+    });
+
+    it('G1-UI6/G1-UI7 paging and failures are as they were', async () => {
+      captures = [
+        ...Array.from({ length: 10 }, (_, i) =>
+          capture({ id: `n${i}`, notModified: true, summary: ZERO })
+        ),
+        ...Array.from({ length: 9 }, (_, i) => capture({ id: `r${i}` })),
+        capture({
+          id: 'failed',
+          status: 'source_failed',
+          errorCode: 'CS_SOURCE_FETCH_FAILED',
+          summary: null,
+          notModified: null,
+        }),
+      ];
+      await renderFeed();
+      expect(rows()).toHaveLength(20);
+      expect(
+        rows().filter((row) => row.textContent!.includes('No changes detected'))
+      ).toHaveLength(10);
+      const failed = rows()[19];
+      expect(failed.textContent).toContain('Failed');
+      expect(failed.textContent).toContain('The feed could not be fetched.');
+      expect(failed.textContent).not.toContain('No changes detected');
+    });
+
+    it('G1-UI8 a member refresh the feed answered with not modified says so', async () => {
+      override = (method, url) =>
+        method === 'POST' && url.endsWith('/refresh')
+          ? reply(200, { source: feed, capture: ZERO, notModified: true })
+          : undefined;
+      await renderFeed();
+      await click(
+        screen.getByRole('button', { name: 'Capture feed Company newsroom' })
+      );
+      expect(mockToast).toHaveBeenCalledWith(
+        'Feed checked. No changes detected since its last capture.',
+        'success'
+      );
+      // and one that was read, exactly as before
+      mockToast.mockClear();
+      override = (method, url) =>
+        method === 'POST' && url.endsWith('/refresh')
+          ? reply(200, {
+              source: feed,
+              capture: {
+                ...ZERO,
+                entriesSeen: 1,
+                entriesAccepted: 1,
+                unchanged: 1,
+              },
+              notModified: false,
+            })
+          : undefined;
+      await click(
+        screen.getByRole('button', {
+          name: /(Capture|Refresh) feed Company newsroom/,
+        })
+      );
+      expect(mockToast).toHaveBeenCalledWith(
+        'Feed captured. Pages found: 1. New sources: 0. New versions: 0.',
+        'success'
+      );
+    });
+  });
 });

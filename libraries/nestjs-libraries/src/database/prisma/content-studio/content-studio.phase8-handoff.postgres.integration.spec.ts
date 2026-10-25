@@ -141,6 +141,7 @@ const append = async (
     versionId: randomUUID(),
     version: capture(text),
     createdById: OWNER[organizationId],
+    validators: { mode: 'replace', etag: null, lastModified: null },
   });
   if (result.status !== 'created') {
     throw new Error(`fixture capture failed: ${result.status}`);

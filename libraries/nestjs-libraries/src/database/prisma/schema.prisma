@@ -2308,7 +2308,13 @@ model ContentStudioExpertiseProfileRevision {
 // may start its next capture, null for due now (a new feed, and every feed
 // before P8-C4); consecutiveCaptureFailures counts the scheduled captures
 // that failed since the last one that succeeded, 0 when healthy. All three
-// stay null, null and 0 for a `url` source
+// stay null, null and 0 for a `url` source. httpEtag and httpLastModified
+// (P8-G1) are the HTTP validators (ETag, Last-Modified) of the source's last
+// representation that a capture processed successfully, exactly as the
+// server sent them, or null (none sent, none usable, never captured, and
+// every source before P8-G1). A capture sends them back (If-None-Match,
+// If-Modified-Since) so the server can answer 304 Not Modified instead of the
+// whole page or feed. Fetch metadata only: never shown, never in a version
 model ContentStudioSource {
   id                              String                              @id @default(uuid())
   organizationId                  String
@@ -2329,6 +2335,8 @@ model ContentStudioSource {
   captureIntervalMinutes          Int?
   nextCaptureAt                   DateTime?
   consecutiveCaptureFailures      Int                                 @default(0)
+  httpEtag                        String?
+  httpLastModified                String?
   organization                    Organization                        @relation(fields: [organizationId], references: [id])
   createdBy                       User                                @relation("ContentStudioSourceCreatedBy", fields: [createdById], references: [id])
   versions                        ContentStudioSourceVersion[]
@@ -2355,9 +2363,12 @@ model ContentStudioSource {
 // code) or infrastructure_failed (the database, a timeout, a lost worker),
 // never again. A success keeps the capture's counts; nextCaptureAtAfter and
 // consecutiveFailuresAfter are the feed's schedule right after the capture
-// ended, which another capture may have set. Counts and codes only: never a
-// URL, a title, a message, a page or a version. Sources are never deleted,
-// and neither is this
+// ended, which another capture may have set. notModified (P8-G1) is set by
+// a success only: true when the feed answered 304 Not Modified (nothing was
+// read, every count 0), false when its document was read; null while
+// running, after a failure, and for every success before P8-G1. Counts and
+// codes only: never a URL, a title, a message, a page, a version, an HTTP
+// status or a header. Sources are never deleted, and neither is this
 model ContentStudioSourceCaptureAttempt {
   id                       String              @id @default(uuid())
   organizationId           String
@@ -2379,6 +2390,7 @@ model ContentStudioSourceCaptureAttempt {
   failed                   Int?
   archived                 Int?
   entriesLimited           Int?
+  notModified              Boolean?
   nextCaptureAtAfter       DateTime?
   consecutiveFailuresAfter Int?
   organization             Organization        @relation(fields: [organizationId], references: [id])

@@ -294,6 +294,7 @@ interface FeedCaptureAttemptRow
   finishedAt: Date | null;
   attemptCount: number;
   errorCode: string | null;
+  notModified: boolean | null;
   nextCaptureAtAfter: Date | null;
   consecutiveFailuresAfter: number | null;
 }
@@ -304,7 +305,9 @@ const isCount = (value: unknown): value is number =>
 // A record as the capture writes it, or undefined: a known trigger, a member's
 // refresh one try; running with nothing ended, or ended once at or after its
 // start with the feed's schedule after it; counts for a success only, all of
-// them and adding up (P8-C1); a CS_ code for a failure of the feed only
+// them and adding up (P8-C1); a CS_ code for a failure of the feed only;
+// notModified (P8-G1) for a success only (null before P8-G1), and a feed
+// that was not modified read nothing, so every count is 0
 const storedFeedCaptureAttempt = (row: FeedCaptureAttemptRow) => {
   const counts = CONTENT_STUDIO_FEED_CAPTURE_COUNTS.map((key) => row[key]);
   if (
@@ -322,6 +325,7 @@ const storedFeedCaptureAttempt = (row: FeedCaptureAttemptRow) => {
   if (row.status === 'running') {
     return row.finishedAt === null &&
       row.errorCode === null &&
+      row.notModified === null &&
       row.consecutiveFailuresAfter === null &&
       row.nextCaptureAtAfter === null &&
       counts.every((count) => count === null)
@@ -338,7 +342,12 @@ const storedFeedCaptureAttempt = (row: FeedCaptureAttemptRow) => {
   }
   switch (row.status) {
     case 'success': {
-      if (row.errorCode !== null || !counts.every(isCount)) {
+      if (
+        row.errorCode !== null ||
+        !counts.every(isCount) ||
+        !(row.notModified === null || typeof row.notModified === 'boolean') ||
+        (row.notModified === true && counts.some((count) => count !== 0))
+      ) {
         return undefined;
       }
       const summary = Object.fromEntries(
@@ -357,7 +366,9 @@ const storedFeedCaptureAttempt = (row: FeedCaptureAttemptRow) => {
       return (row.status === 'source_failed'
         ? typeof row.errorCode === 'string' &&
           CONTENT_STUDIO_FEED_CAPTURE_ERROR_CODE.test(row.errorCode)
-        : row.errorCode === null) && counts.every((count) => count === null)
+        : row.errorCode === null) &&
+        row.notModified === null &&
+        counts.every((count) => count === null)
         ? { ...row, summary: null }
         : undefined;
     default:
@@ -393,6 +404,9 @@ export const toPublicContentStudioFeedCapture = (
     attemptCount: attempt.attemptCount,
     errorCode: attempt.errorCode,
     summary: attempt.summary,
+    // a success only (P8-G1): true when the feed answered that it had not
+    // changed, false when it was read, null for a success before P8-G1
+    notModified: attempt.notModified,
     nextCaptureAtAfter: attempt.nextCaptureAtAfter,
     consecutiveFailuresAfter: attempt.consecutiveFailuresAfter,
   };

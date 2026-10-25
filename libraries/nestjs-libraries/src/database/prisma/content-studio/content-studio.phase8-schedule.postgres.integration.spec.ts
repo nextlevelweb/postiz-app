@@ -420,6 +420,7 @@ describe('P8-C4 on PostgreSQL: a successful capture', () => {
       id: randomUUID(),
       finishedAt: new Date(),
       summary: NO_COUNTS,
+      notModified: false,
     });
     expect(
       await repository.markFeedCaptured(
@@ -427,6 +428,7 @@ describe('P8-C4 on PostgreSQL: a successful capture', () => {
         feed,
         newer,
         new Date(newer.getTime() + HOUR),
+        { mode: 'replace', etag: null, lastModified: null },
         noRecord()
       )
     ).toEqual({ count: 1, ended: false });
@@ -436,6 +438,7 @@ describe('P8-C4 on PostgreSQL: a successful capture', () => {
         feed,
         older,
         new Date(older.getTime() + HOUR),
+        { mode: 'replace', etag: null, lastModified: null },
         noRecord()
       )
     ).toEqual({ count: 0, ended: false });
@@ -446,6 +449,7 @@ describe('P8-C4 on PostgreSQL: a successful capture', () => {
         feed,
         newer,
         ahead(9 * HOUR),
+        { mode: 'replace', etag: null, lastModified: null },
         noRecord()
       )
     ).toEqual({ count: 0, ended: false });

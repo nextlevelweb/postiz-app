@@ -239,6 +239,7 @@ const append = (
     versionId: `version-${expectedLatestVersionNumber + 1}-${text}`,
     version: capture(text),
     createdById: USER,
+    validators: { mode: 'replace', etag: null, lastModified: null },
   });
 
 const SOURCE_FIELDS = {
@@ -255,6 +256,13 @@ const SOURCE_FIELDS = {
   captureIntervalMinutes: true,
   nextCaptureAt: true,
   consecutiveCaptureFailures: true,
+};
+// what ingestion reads of a page it captures from a feed (P8-G1): the
+// summary and the HTTP validators, never the Source list's or a route's
+const SOURCE_CAPTURE_FIELDS = {
+  ...SOURCE_FIELDS,
+  httpEtag: true,
+  httpLastModified: true,
 };
 const VERSION_FIELDS = {
   id: true,
@@ -289,7 +297,7 @@ describe('ContentStudioSourceRepository: sources', () => {
         latestVersionNumber: 0,
         createdById: USER,
       },
-      select: SOURCE_FIELDS,
+      select: SOURCE_CAPTURE_FIELDS,
     });
     expect(result).toEqual({
       id: SOURCE,
@@ -466,7 +474,7 @@ describe('ContentStudioSourceRepository: sources', () => {
     ).toBeNull();
     expect(source.findFirst.mock.calls[0][0]).toEqual({
       where: { organizationId: ORG, canonicalUrl: URL_A },
-      select: SOURCE_FIELDS,
+      select: SOURCE_CAPTURE_FIELDS,
     });
   });
 
@@ -629,11 +637,19 @@ describe('ContentStudioSourceRepository: sources', () => {
 
   it('P8C4 a capture marks a live feed with its next capture and no failure, only when it read the feed later than the last one', async () => {
     const { repository, source } = setup();
-    await repository.markFeedCaptured(ORG, SOURCE, NOW, NEXT, {
-      id: ATTEMPT,
-      finishedAt: NOW,
-      summary: CAPTURE_SUMMARY,
-    });
+    await repository.markFeedCaptured(
+      ORG,
+      SOURCE,
+      NOW,
+      NEXT,
+      { mode: 'replace', etag: null, lastModified: null },
+      {
+        id: ATTEMPT,
+        finishedAt: NOW,
+        summary: CAPTURE_SUMMARY,
+        notModified: false,
+      }
+    );
     expect(source.updateMany.mock.calls[0][0]).toEqual({
       where: {
         id: SOURCE,
@@ -646,6 +662,8 @@ describe('ContentStudioSourceRepository: sources', () => {
         lastCapturedAt: NOW,
         nextCaptureAt: NEXT,
         consecutiveCaptureFailures: 0,
+        httpEtag: null,
+        httpLastModified: null,
       },
     });
   });
@@ -668,11 +686,19 @@ describe('ContentStudioSourceRepository: sources', () => {
       status: 'running',
     });
     expect(
-      await repository.markFeedCaptured(ORG, SOURCE, NOW, NEXT, {
-        id: ATTEMPT,
-        finishedAt: NEXT,
-        summary: CAPTURE_SUMMARY,
-      })
+      await repository.markFeedCaptured(
+        ORG,
+        SOURCE,
+        NOW,
+        NEXT,
+        { mode: 'replace', etag: null, lastModified: null },
+        {
+          id: ATTEMPT,
+          finishedAt: NEXT,
+          summary: CAPTURE_SUMMARY,
+          notModified: false,
+        }
+      )
     ).toEqual({ count: 1, ended: true });
     expect(transaction.$transaction).toHaveBeenCalledTimes(1);
     expect(source.updateMany).toHaveBeenCalledTimes(1);
@@ -687,17 +713,26 @@ describe('ContentStudioSourceRepository: sources', () => {
         status: 'success',
         finishedAt: NEXT,
         ...CAPTURE_SUMMARY,
+        notModified: false,
         nextCaptureAtAfter: NEXT,
         consecutiveFailuresAfter: 0,
       },
     });
     // an ended record stays as it is; the feed is still only moved forward
     expect(
-      await repository.markFeedCaptured(ORG, SOURCE, NEXT, NEXT, {
-        id: ATTEMPT,
-        finishedAt: NEXT,
-        summary: { ...CAPTURE_SUMMARY, entriesSeen: 9 },
-      })
+      await repository.markFeedCaptured(
+        ORG,
+        SOURCE,
+        NEXT,
+        NEXT,
+        { mode: 'replace', etag: null, lastModified: null },
+        {
+          id: ATTEMPT,
+          finishedAt: NEXT,
+          summary: { ...CAPTURE_SUMMARY, entriesSeen: 9 },
+          notModified: false,
+        }
+      )
     ).toEqual({ count: 1, ended: false });
     expect(state.attempts[0].entriesSeen).toBe(CAPTURE_SUMMARY.entriesSeen);
   });
@@ -720,11 +755,19 @@ describe('ContentStudioSourceRepository: sources', () => {
       status: 'running',
     });
     expect(
-      await repository.markFeedCaptured(ORG, SOURCE, NOW, NEXT, {
-        id: ATTEMPT,
-        finishedAt: NEXT,
-        summary: CAPTURE_SUMMARY,
-      })
+      await repository.markFeedCaptured(
+        ORG,
+        SOURCE,
+        NOW,
+        NEXT,
+        { mode: 'replace', etag: null, lastModified: null },
+        {
+          id: ATTEMPT,
+          finishedAt: NEXT,
+          summary: CAPTURE_SUMMARY,
+          notModified: false,
+        }
+      )
     ).toEqual({ count: 0, ended: true });
     expect(state.attempts[0]).toMatchObject({
       status: 'success',
@@ -804,6 +847,8 @@ describe('ContentStudioSourceRepository: sources', () => {
       'countVersionsForSource',
       // the only create of sources, within the organization's limit (P8-C1)
       'createSourcesWithinLimit',
+      // a feed's HTTP validators, before its fetch (P8-G1)
+      'getFeedValidators',
       // reads (P8-04A)
       'getFirstRepeatOfVersion',
       'getPageSourceForBackfill',
@@ -823,6 +868,8 @@ describe('ContentStudioSourceRepository: sources', () => {
       'listVersionCapturesForBackfill',
       'listVersionsForSource',
       'markFeedCaptured',
+      // a page found as its latest version: its HTTP validators only (P8-G1)
+      'markPageUnchanged',
       // a feed's scheduled captures (P8-C3): that field only
       'pauseFeed',
       // a feed's schedule (P8-C4): a failure, and its interval
@@ -1083,6 +1130,7 @@ describe('ContentStudioSourceRepository: version append', () => {
       versionId: 'version-1',
       version: data,
       createdById: USER,
+      validators: { mode: 'replace', etag: null, lastModified: null },
     });
 
     expect(transaction.$transaction).toHaveBeenCalledTimes(1);
@@ -1188,7 +1236,12 @@ describe('ContentStudioSourceRepository: version append', () => {
         archivedAt: null,
         latestVersionNumber: 0,
       },
-      data: { latestVersionNumber: { increment: 1 } },
+      // the validators of the answer the version was read from (P8-G1)
+      data: {
+        latestVersionNumber: { increment: 1 },
+        httpEtag: null,
+        httpLastModified: null,
+      },
     });
   });
 
@@ -1427,6 +1480,9 @@ describe('ContentStudioSource schema', () => {
       captureIntervalMinutes: 'Int?',
       nextCaptureAt: 'DateTime?',
       consecutiveCaptureFailures: 'Int',
+      // the HTTP validators of its last processed representation (P8-G1)
+      httpEtag: 'String?',
+      httpLastModified: 'String?',
       // a page's last page change, derived from its versions (P8-04B1)
       lastPageChangeAt: 'DateTime?',
       lastPageChangeVersionNumber: 'Int?',
@@ -1495,6 +1551,8 @@ describe('ContentStudioSource schema', () => {
       failed: 'Int?',
       archived: 'Int?',
       entriesLimited: 'Int?',
+      // a success only (P8-G1): whether the feed answered 304
+      notModified: 'Boolean?',
       nextCaptureAtAfter: 'DateTime?',
       consecutiveFailuresAfter: 'Int?',
       organization: 'Organization',
@@ -1568,5 +1626,87 @@ describe('ContentStudioSourceRepository: grounding evidence versions', () => {
     expect(
       await repository.getVersionsByIdsForOrganization(OTHER_ORG, ids)
     ).toEqual([]);
+  });
+});
+
+// HTTP validators (P8-G1): written only with the success they belong to
+describe('ContentStudioSourceRepository: HTTP validators (P8-G1)', () => {
+  const EXPECTED = {
+    latestVersionNumber: 3,
+    updatedAt: NOW,
+    httpEtag: '"a"',
+    httpLastModified: 'Sun, 18 Oct 2026 10:00:00 GMT',
+  };
+
+  it('G1R1 a feed reads its validators by the organization, its id and its kind', async () => {
+    const { repository, source } = setup();
+    await repository.getFeedValidators(ORG, SOURCE);
+    expect(source.findFirst.mock.calls[0][0]).toEqual({
+      where: { id: SOURCE, organizationId: ORG, kind: 'feed' },
+      select: { httpEtag: true, httpLastModified: true },
+    });
+  });
+
+  it('G1R2 a page found as its latest version: only its validators, from the state read, updatedAt kept', async () => {
+    const { repository, source } = setup();
+    await repository.markPageUnchanged({
+      organizationId: ORG,
+      id: SOURCE,
+      expected: EXPECTED,
+      validators: { mode: 'merge', etag: '"b"' },
+    });
+    expect(source.updateMany.mock.calls[0][0]).toEqual({
+      where: {
+        id: SOURCE,
+        organizationId: ORG,
+        kind: 'url',
+        archivedAt: null,
+        ...EXPECTED,
+      },
+      data: { httpEtag: '"b"', updatedAt: NOW },
+    });
+  });
+
+  it('G1R3 replace writes both, null included; merge writes only what it has', async () => {
+    const { repository, source } = setup();
+    for (const validators of [
+      { mode: 'replace' as const, etag: null, lastModified: null },
+      { mode: 'replace' as const, etag: '"b"', lastModified: null },
+      { mode: 'merge' as const },
+      { mode: 'merge' as const, lastModified: 'Mon, 19 Oct 2026 10:00:00 GMT' },
+    ]) {
+      await repository.markPageUnchanged({
+        organizationId: ORG,
+        id: SOURCE,
+        expected: EXPECTED,
+        validators,
+      });
+    }
+    expect(source.updateMany.mock.calls.map(([args]) => args.data)).toEqual([
+      { httpEtag: null, httpLastModified: null, updatedAt: NOW },
+      { httpEtag: '"b"', httpLastModified: null, updatedAt: NOW },
+      { updatedAt: NOW },
+      { httpLastModified: 'Mon, 19 Oct 2026 10:00:00 GMT', updatedAt: NOW },
+    ]);
+  });
+
+  it('G1R4 a version brings the validators of its answer in its one source update', async () => {
+    const { repository, source } = setup();
+    await create(repository);
+    await repository.appendVersionWithCompareAndSwap({
+      organizationId: ORG,
+      sourceId: SOURCE,
+      expectedLatestVersionNumber: 0,
+      versionId: 'version-1',
+      version: capture('First capture.'),
+      createdById: USER,
+      validators: { mode: 'replace', etag: 'W/"v1"', lastModified: null },
+    });
+    expect(source.updateMany).toHaveBeenCalledTimes(1);
+    expect(source.updateMany.mock.calls[0][0].data).toEqual({
+      latestVersionNumber: { increment: 1 },
+      httpEtag: 'W/"v1"',
+      httpLastModified: null,
+    });
   });
 });

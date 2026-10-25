@@ -31,7 +31,11 @@ import {
   ContentStudioSourceIngestionService,
   FEED_CAPTURE_CONCURRENCY,
 } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
-import type { SafeFetchResult } from '@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch';
+import type {
+  SafeFetchOptions,
+  SafeFetchResult,
+} from '@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch';
+import * as feedModule from '@gitroom/nestjs-libraries/content-studio/sources/source.feed';
 import { CONTENT_STUDIO_CAPTURE_TASK_QUEUE } from '@gitroom/nestjs-libraries/temporal/content.studio.capture.queue';
 import { getTemporalModule } from '@gitroom/nestjs-libraries/temporal/temporal.module';
 import { ContentStudioSourceActivity } from '@gitroom/orchestrator/activities/content-studio.source.activity';
@@ -76,72 +80,115 @@ const fetchHolds = new Map<
 >();
 // feeds a test makes unreachable (P8-C4): the answer of a server error
 const unreachable = new Set<string>();
-const mockSafeFetch = jest.fn(async (url: string): Promise<SafeFetchResult> => {
-  const hold = fetchHolds.get(url);
-  if (hold) {
-    hold.reached();
-    await hold.released;
+// the HTTP validators a URL answers with (P8-G1): a request whose
+// If-None-Match (or, without one, If-Modified-Since) matches gets a 304 with
+// them (or `notModified`'s, exactly), any other the whole answer with them
+const validated = new Map<
+  string,
+  {
+    etag?: string;
+    lastModified?: string;
+    notModified?: { etag?: string; lastModified?: string };
   }
-  if (unreachable.has(url)) {
+>();
+// every request, with its headers (P8-G1)
+const requests: Array<{ url: string; headers: Record<string, string> }> = [];
+const mockSafeFetch = jest.fn(
+  async (url: string, options?: SafeFetchOptions): Promise<SafeFetchResult> => {
+    const headers = { ...(options?.headers ?? {}) };
+    requests.push({ url, headers });
+    const hold = fetchHolds.get(url);
+    if (hold) {
+      hold.reached();
+      await hold.released;
+    }
+    if (unreachable.has(url)) {
+      const { SafeFetchError } = jest.requireActual(
+        '@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch'
+      );
+      throw new SafeFetchError('HTTP_STATUS', { statusCode: 503 });
+    }
+    const resource = validated.get(url);
+    const matched =
+      !!resource &&
+      (headers['If-None-Match'] !== undefined
+        ? headers['If-None-Match'] === resource.etag
+        : headers['If-Modified-Since'] !== undefined &&
+          headers['If-Modified-Since'] === resource.lastModified);
+    const answer = (body: string, contentType: string): SafeFetchResult => {
+      if (matched) {
+        return {
+          requestedUrl: url,
+          finalUrl: url,
+          redirects: [],
+          status: 304,
+          headers: resource!.notModified ?? {
+            etag: resource!.etag,
+            lastModified: resource!.lastModified,
+          },
+          body: new Uint8Array(0),
+          bytesRead: 0,
+        };
+      }
+      const bytes = new TextEncoder().encode(body);
+      return {
+        requestedUrl: url,
+        finalUrl: url,
+        redirects: [],
+        status: 200,
+        headers: {
+          contentType,
+          etag: resource?.etag,
+          lastModified: resource?.lastModified,
+        },
+        body: bytes,
+        bytesRead: bytes.byteLength,
+      };
+    };
+    if (web.feeds.has(url)) {
+      inFlight.feeds += 1;
+      inFlight.feedsMax = Math.max(inFlight.feedsMax, inFlight.feeds);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      inFlight.feeds -= 1;
+      return answer(web.feeds.get(url)!, 'application/rss+xml');
+    }
+    if (web.pages.has(url)) {
+      inFlight.pages += 1;
+      inFlight.pagesMax = Math.max(inFlight.pagesMax, inFlight.pages);
+      const gate = inFlight.gate;
+      if (gate) {
+        await new Promise<void>((resolve) => {
+          gate.waiting.push(resolve);
+          const open = () => {
+            if (inFlight.gate === gate) {
+              inFlight.gate = null;
+              gate.waiting.forEach((go) => go());
+            }
+          };
+          if (gate.waiting.length >= gate.size) {
+            open();
+          } else if (gate.waiting.length === 1) {
+            setTimeout(() => {
+              gate.timedOut = inFlight.gate === gate;
+              open();
+            }, 10_000).unref();
+          }
+        });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight.pages -= 1;
+      return answer(web.pages.get(url)!, 'text/html; charset=utf-8');
+    }
     const { SafeFetchError } = jest.requireActual(
       '@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch'
     );
-    throw new SafeFetchError('HTTP_STATUS', { statusCode: 503 });
+    throw new SafeFetchError('HTTP_STATUS', { statusCode: 404 });
   }
-  const answer = (body: string, contentType: string): SafeFetchResult => {
-    const bytes = new TextEncoder().encode(body);
-    return {
-      requestedUrl: url,
-      finalUrl: url,
-      redirects: [],
-      status: 200,
-      headers: { contentType },
-      body: bytes,
-      bytesRead: bytes.byteLength,
-    };
-  };
-  if (web.feeds.has(url)) {
-    inFlight.feeds += 1;
-    inFlight.feedsMax = Math.max(inFlight.feedsMax, inFlight.feeds);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    inFlight.feeds -= 1;
-    return answer(web.feeds.get(url)!, 'application/rss+xml');
-  }
-  if (web.pages.has(url)) {
-    inFlight.pages += 1;
-    inFlight.pagesMax = Math.max(inFlight.pagesMax, inFlight.pages);
-    const gate = inFlight.gate;
-    if (gate) {
-      await new Promise<void>((resolve) => {
-        gate.waiting.push(resolve);
-        const open = () => {
-          if (inFlight.gate === gate) {
-            inFlight.gate = null;
-            gate.waiting.forEach((go) => go());
-          }
-        };
-        if (gate.waiting.length >= gate.size) {
-          open();
-        } else if (gate.waiting.length === 1) {
-          setTimeout(() => {
-            gate.timedOut = inFlight.gate === gate;
-            open();
-          }, 10_000).unref();
-        }
-      });
-    }
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    inFlight.pages -= 1;
-    return answer(web.pages.get(url)!, 'text/html; charset=utf-8');
-  }
-  const { SafeFetchError } = jest.requireActual(
-    '@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch'
-  );
-  throw new SafeFetchError('HTTP_STATUS', { statusCode: 404 });
-});
+);
 jest.mock('@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch', () => ({
   ...jest.requireActual('@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch'),
-  safeFetch: (...args: unknown[]) => mockSafeFetch(...(args as [string])),
+  safeFetch: (...args: unknown[]) =>
+    mockSafeFetch(...(args as [string, SafeFetchOptions])),
 }));
 // the P8-C1 limits, unchanged unless a test lowers one
 const mockLimits = {
@@ -537,6 +584,8 @@ beforeEach(async () => {
   });
   listFeeds = async () => ({ feeds: [], next: null });
   fetchHolds.clear();
+  validated.clear();
+  requests.length = 0;
   mockSafeFetch.mockClear();
 });
 
@@ -1072,7 +1121,12 @@ describe('P8-C3 on Temporal and PostgreSQL: a paused feed', () => {
     const last = new Date(Date.now() - 2 * 60 * 60 * 1000);
     await client.contentStudioSource.update({
       where: { id: feed },
-      data: { lastCapturedAt: last },
+      // P8-G1: and validators, which the skip leaves as they are
+      data: {
+        lastCapturedAt: last,
+        httpEtag: '"t5"',
+        httpLastModified: 'Sun, 18 Oct 2026 10:00:00 GMT',
+      },
     });
     const handle = await startCapture(ORG_A, feed);
     await until(
@@ -1089,6 +1143,12 @@ describe('P8-C3 on Temporal and PostgreSQL: a paused feed', () => {
     const after = await writes(feed);
     expect(after).toEqual(before);
     expect(after.feed.lastCapturedAt).toEqual(last);
+    // P8G1T5 no request, so no validator changes
+    expect(requests).toEqual([]);
+    expect(after.feed).toMatchObject({
+      httpEtag: '"t5"',
+      httpLastModified: 'Sun, 18 Oct 2026 10:00:00 GMT',
+    });
     // P8O1T6 a skip before the feed is read is no capture: no record
     expect(await captureRecords(feed)).toEqual([]);
     expect(finished).toEqual([]);
@@ -1299,6 +1359,18 @@ describe('P8-C4 on Temporal and PostgreSQL: the schedule', () => {
         }
         return recordDiscovery.call(this, input);
       });
+    // P8G1T4/P8G1T7: both feeds have validators; the lost one answers a new
+    // representation (200, new validators) that its capture cannot store
+    for (const id of [down, lost]) {
+      await setSchedule(id, {
+        httpEtag: '"t4-a"',
+        httpLastModified: 'Sun, 18 Oct 2026 10:00:00 GMT',
+      });
+    }
+    validated.set(feedUrl('lost'), {
+      etag: '"t4-b"',
+      lastModified: 'Mon, 19 Oct 2026 10:00:00 GMT',
+    });
     const downHandle = await startCapture(ORG_A, down);
     const infraHandle = await startCapture(ORG_B, infra);
     const lostHandle = await startCapture(ORG_C, lost);
@@ -1343,6 +1415,26 @@ describe('P8-C4 on Temporal and PostgreSQL: the schedule', () => {
     expect(downRuns[0].finishedAt!.getTime()).toBeGreaterThanOrEqual(
       downRuns[0].startedAt.getTime() + 4 * 60 * 1000
     );
+    // P8G1T7 every try asked conditionally, one record for all three, and
+    // the failure kept the validators
+    expect(
+      requests.filter((r) => r.url === feedUrl('down')).map((r) => r.headers)
+    ).toEqual(
+      Array(3).fill({
+        'If-None-Match': '"t4-a"',
+        'If-Modified-Since': 'Sun, 18 Oct 2026 10:00:00 GMT',
+      })
+    );
+    expect(downRuns[0].notModified).toBeNull();
+    expect(
+      await client.contentStudioSource.findUniqueOrThrow({
+        where: { id: down },
+        select: { httpEtag: true, httpLastModified: true },
+      })
+    ).toEqual({
+      httpEtag: '"t4-a"',
+      httpLastModified: 'Sun, 18 Oct 2026 10:00:00 GMT',
+    });
     expect(
       await activityEvents(downHandle, 'finishContentStudioFeedCaptureAttempt')
     ).toEqual(['main']);
@@ -1423,6 +1515,22 @@ describe('P8-C4 on Temporal and PostgreSQL: the schedule', () => {
       nextCaptureAt: null,
       consecutiveCaptureFailures: 0,
       scanPausedAt: null,
+    });
+    // P8G1T4 the new representation was read three times (each try asked
+    // with the old validators) and never stored: the old ones stay
+    expect(
+      requests
+        .filter((r) => r.url === feedUrl('lost'))
+        .map((r) => r.headers['If-None-Match'])
+    ).toEqual(['"t4-a"', '"t4-a"', '"t4-a"']);
+    expect(
+      await client.contentStudioSource.findUniqueOrThrow({
+        where: { id: lost },
+        select: { httpEtag: true, httpLastModified: true },
+      })
+    ).toEqual({
+      httpEtag: '"t4-a"',
+      httpLastModified: 'Sun, 18 Oct 2026 10:00:00 GMT',
     });
     // P8C4T3: the next scan starts the due ones only
     broken.clear();
@@ -1643,6 +1751,250 @@ describe('P8-O1 on Temporal and PostgreSQL: the capture history', () => {
       ['manual', 'success'],
       ['scheduled', 'source_failed'],
     ]);
+  });
+});
+
+describe('P8-G1 on Temporal and PostgreSQL: conditional fetching', () => {
+  const HOUR = 60 * 60 * 1000;
+  const A = '"g1t-a"';
+  const B = 'W/"g1t-b"';
+  const L1 = 'Sun, 18 Oct 2026 10:00:00 GMT';
+  const L2 = 'Mon, 19 Oct 2026 10:00:00 GMT';
+  const ZEROS = Object.fromEntries(Object.keys(SUMMARY).map((key) => [key, 0]));
+  const realDueList = () => {
+    listFeeds = async (input) => {
+      const due = await ingestion.listFeedsDueForCapture(input);
+      return {
+        ...due,
+        feeds: due.feeds.filter((f) => ORGS.includes(f.organizationId)),
+      };
+    };
+  };
+  // one scan: the capture workflows it started, each run to its end
+  const scanOnce = async () => {
+    const scan = await temporal.workflow.start(
+      'contentStudioFeedScanWorkflowV1',
+      { taskQueue: 'main', workflowId: `p8g1-scan-${randomUUID()}`, args: [{}] }
+    );
+    handles.push(scan);
+    await until(
+      async () =>
+        (
+          await scan.fetchHistory()
+        ).events!.some((e) => e.timerStartedEventAttributes),
+      'the scan to sleep'
+    );
+    return (await scan.fetchHistory())
+      .events!.filter(
+        (e) => e.startChildWorkflowExecutionInitiatedEventAttributes
+      )
+      .map(
+        (e) =>
+          e.startChildWorkflowExecutionInitiatedEventAttributes!.workflowId!
+      );
+  };
+  const source = (id: string) =>
+    client.contentStudioSource.findUniqueOrThrow({ where: { id } });
+  const counts = async () => ({
+    sources: await client.contentStudioSource.count({
+      where: { organizationId: { in: ORGS } },
+    }),
+    versions: await client.contentStudioSourceVersion.count({
+      where: { organizationId: { in: ORGS } },
+    }),
+    discoveries: await client.contentStudioSourceDiscovery.findMany({
+      where: { organizationId: { in: ORGS } },
+      orderBy: { id: 'asc' },
+    }),
+  });
+
+  it('P8G1T1/M10-M15/M44 a scheduled 200, then, due again, a 304: the run completes, one record says not modified, nothing is read, the schedule moves', async () => {
+    realDueList();
+    const feed = await realFeed(ORG_A, 'g1-cond', 2);
+    validated.set(feedUrl('g1-cond'), { etag: A, lastModified: L1 });
+    const first = await startCapture(ORG_A, feed);
+    await first.result();
+    expect(requests.find((r) => r.url === feedUrl('g1-cond'))!.headers).toEqual(
+      {}
+    );
+    expect(await source(feed)).toMatchObject({
+      httpEtag: A,
+      httpLastModified: L1,
+    });
+    expect((await captureRecords(feed)).map((r) => r.notModified)).toEqual([
+      false,
+    ]);
+    // due again
+    await client.contentStudioSource.update({
+      where: { id: feed },
+      data: { nextCaptureAt: new Date(Date.now() - HOUR) },
+    });
+    const before = { feed: await source(feed), ...(await counts()) };
+    requests.length = 0;
+    const parse = jest.spyOn(feedModule, 'parseContentStudioSourceFeed');
+    expect(await scanOnce()).toEqual([workflowId(feed)]);
+    const second = temporal.workflow.getHandle(workflowId(feed));
+    expect(await second.result()).toEqual({
+      status: 'captured',
+      capture: ZEROS,
+    });
+    expect((await second.describe()).status.name).toBe('COMPLETED');
+    expect(parse).not.toHaveBeenCalled();
+    parse.mockRestore();
+    expect(requests).toEqual([
+      {
+        url: feedUrl('g1-cond'),
+        headers: { 'If-None-Match': A, 'If-Modified-Since': L1 },
+      },
+    ]);
+    const { feed: after, ...rest } = {
+      feed: await source(feed),
+      ...(await counts()),
+    };
+    const { feed: _, ...restBefore } = before;
+    expect(rest).toEqual(restBefore);
+    expect(after.lastCapturedAt!.getTime()).toBeGreaterThan(
+      before.feed.lastCapturedAt!.getTime()
+    );
+    expect(after.nextCaptureAt!.getTime()).toBe(
+      after.lastCapturedAt!.getTime() + HOUR
+    );
+    expect(after.consecutiveCaptureFailures).toBe(0);
+    // no failure record or end: a success
+    expect(recorded.filter((r) => r.sourceId === feed)).toEqual([]);
+    expect(finished.filter((f) => f.sourceId === feed)).toEqual([]);
+    const rows = await captureRecords(feed);
+    expect(rows).toHaveLength(2);
+    expect(rows[1]).toMatchObject({
+      id: (await second.describe()).runId,
+      trigger: 'scheduled',
+      status: 'success',
+      attemptCount: 1,
+      notModified: true,
+      ...ZEROS,
+      nextCaptureAtAfter: after.nextCaptureAt,
+      consecutiveFailuresAfter: 0,
+    });
+    // on the capture queue, one attempt
+    expect(await captureEvents(second)).toEqual({
+      queues: [CONTENT_STUDIO_CAPTURE_TASK_QUEUE],
+      attempts: [1],
+    });
+    const read = await sourceService.listFeedCaptures({
+      organizationId: ORG_A,
+      sourceId: feed,
+      page: 1,
+    });
+    expect(read.results.map((r) => [r.status, r.notModified])).toEqual([
+      ['success', true],
+      ['success', false],
+    ]);
+  });
+
+  it('P8G1T2/M14 a feed failing for a while answers 304: its failures end and its interval follows', async () => {
+    realDueList();
+    const feed = await realFeed(ORG_B, 'g1-recover', 1);
+    validated.set(feedUrl('g1-recover'), {
+      etag: A,
+      lastModified: L1,
+      notModified: { etag: B },
+    });
+    await client.contentStudioSource.update({
+      where: { id: feed },
+      data: {
+        httpEtag: A,
+        httpLastModified: L1,
+        consecutiveCaptureFailures: 4,
+        lastCapturedAt: new Date(Date.now() - 20 * HOUR),
+        nextCaptureAt: new Date(Date.now() - HOUR),
+      },
+    });
+    expect(await scanOnce()).toEqual([workflowId(feed)]);
+    await temporal.workflow.getHandle(workflowId(feed)).result();
+    const after = await source(feed);
+    expect(after).toMatchObject({
+      consecutiveCaptureFailures: 0,
+      httpEtag: B,
+      httpLastModified: L1,
+    });
+    expect(after.nextCaptureAt!.getTime()).toBe(
+      after.lastCapturedAt!.getTime() + HOUR
+    );
+    expect(
+      (await captureRecords(feed)).map((r) => [
+        r.status,
+        r.notModified,
+        r.consecutiveFailuresAfter,
+      ])
+    ).toEqual([['success', true, 0]]);
+    expect(await counts()).toMatchObject({ sources: 1, versions: 0 });
+  });
+
+  it("P8G1T3/M18 a new representation that cannot be read: the run fails as the feed's, its validators are not stored", async () => {
+    const feed = await realFeed(ORG_C, 'g1-invalid', 1);
+    await client.contentStudioSource.update({
+      where: { id: feed },
+      data: { httpEtag: A, httpLastModified: L1 },
+    });
+    web.feeds.set(feedUrl('g1-invalid'), '<nope');
+    validated.set(feedUrl('g1-invalid'), { etag: B, lastModified: L2 });
+    const handle = await startCapture(ORG_C, feed);
+    const error = await handle.result().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(WorkflowFailedError);
+    expect(requests.filter((r) => r.url === feedUrl('g1-invalid'))).toEqual([
+      {
+        url: feedUrl('g1-invalid'),
+        headers: { 'If-None-Match': A, 'If-Modified-Since': L1 },
+      },
+    ]);
+    expect(await source(feed)).toMatchObject({
+      httpEtag: A,
+      httpLastModified: L1,
+      consecutiveCaptureFailures: 1,
+    });
+    expect(
+      (await captureRecords(feed)).map((r) => [
+        r.status,
+        r.errorCode,
+        r.notModified,
+      ])
+    ).toEqual([['source_failed', 'CS_SOURCE_FEED_INVALID', null]]);
+  });
+
+  it('P8G1T6 conditional captures still wait for the bounded capture queue: never more than its slots at once', async () => {
+    const feeds: string[] = [];
+    for (let i = 0; i < 2 * LIMIT; i++) {
+      const name = `g1-queue-${i}`;
+      const id = await realFeed(i % 2 ? ORG_A : ORG_B, name, 1);
+      validated.set(feedUrl(name), { etag: `"q${i}"` });
+      await client.contentStudioSource.update({
+        where: { id },
+        data: { httpEtag: `"q${i}"` },
+      });
+      feeds.push(id);
+    }
+    const all = await Promise.all(
+      feeds.map((id, i) => startCapture(i % 2 ? ORG_A : ORG_B, id))
+    );
+    for (const handle of all) {
+      expect(await handle.result()).toEqual({
+        status: 'captured',
+        capture: ZEROS,
+      });
+      expect((await captureEvents(handle)).queues).toEqual([
+        CONTENT_STUDIO_CAPTURE_TASK_QUEUE,
+      ]);
+    }
+    expect(activities.max).toBeLessThanOrEqual(LIMIT);
+    expect(inFlight.feedsMax).toBeLessThanOrEqual(LIMIT);
+    expect(
+      requests.every((r) => r.headers['If-None-Match']?.startsWith('"q'))
+    ).toBe(true);
+    for (const id of feeds) {
+      expect((await captureRecords(id)).map((r) => r.notModified)).toEqual([
+        true,
+      ]);
+    }
   });
 });
 

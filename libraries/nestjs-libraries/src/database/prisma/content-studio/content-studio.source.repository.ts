@@ -24,6 +24,36 @@ const SOURCE_SUMMARY = {
   consecutiveCaptureFailures: true,
 } as const;
 
+// What ingestion reads of a page it captures from a feed: the summary and
+// the HTTP validators (P8-G1), which never leave the server
+const SOURCE_CAPTURE = {
+  ...SOURCE_SUMMARY,
+  httpEtag: true,
+  httpLastModified: true,
+} as const;
+
+// The HTTP validators a successful capture leaves on a source (P8-G1). A
+// representation that was read and processed replaces both: one the server
+// did not send, or sent unusable, becomes null, so an old one is never sent
+// for a new representation. A 304 Not Modified replaces only the ones it
+// sent (usable) and keeps the others. A failed capture writes none
+export type ContentStudioSourceValidatorUpdate =
+  | { mode: 'replace'; etag: string | null; lastModified: string | null }
+  | { mode: 'merge'; etag?: string; lastModified?: string };
+
+const validatorData = (validators: ContentStudioSourceValidatorUpdate) =>
+  validators.mode === 'replace'
+    ? {
+        httpEtag: validators.etag,
+        httpLastModified: validators.lastModified,
+      }
+    : {
+        ...(validators.etag !== undefined ? { httpEtag: validators.etag } : {}),
+        ...(validators.lastModified !== undefined
+          ? { httpLastModified: validators.lastModified }
+          : {}),
+      };
+
 // Version lists, the current version and the compare-and-swap never load the
 // content
 const VERSION_SUMMARY = {
@@ -225,7 +255,8 @@ export class ContentStudioSourceRepository {
   }
 
   // Archived sources included: the URL stays taken until the source is gone,
-  // which it never is
+  // which it never is. With the HTTP validators (P8-G1): a feed capture
+  // reads its pages here
   getSourceByCanonicalUrlForOrganization(
     organizationId: string,
     canonicalUrl: string
@@ -235,7 +266,23 @@ export class ContentStudioSourceRepository {
         organizationId,
         canonicalUrl,
       },
-      select: SOURCE_SUMMARY,
+      select: SOURCE_CAPTURE,
+    });
+  }
+
+  // A feed's HTTP validators (P8-G1), read by its capture right before the
+  // fetch, scheduled or a member's refresh
+  getFeedValidators(organizationId: string, id: string) {
+    return this._source.model.contentStudioSource.findFirst({
+      where: {
+        id,
+        organizationId,
+        kind: 'feed',
+      },
+      select: {
+        httpEtag: true,
+        httpLastModified: true,
+      },
     });
   }
 
@@ -262,7 +309,7 @@ export class ContentStudioSourceRepository {
             in: input.sources.map((source) => source.canonicalUrl),
           },
         },
-        select: SOURCE_SUMMARY,
+        select: SOURCE_CAPTURE,
       });
       let room =
         input.limit -
@@ -295,7 +342,7 @@ export class ContentStudioSourceRepository {
               latestVersionNumber: 0,
               createdById: input.createdById,
             },
-            select: SOURCE_SUMMARY,
+            select: SOURCE_CAPTURE,
           }),
         });
       }
@@ -441,19 +488,24 @@ export class ContentStudioSourceRepository {
   // had. A paused one too (P8-C3): a member's refresh, or a capture that was
   // already running when it was paused. Only a later read than the last one:
   // a refresh and a scheduled capture can overlap, and the one that read the
-  // feed first may end last, which then changes nothing. The capture's record
-  // (P8-O1) ends in the same transaction, as a success with its counts and
-  // the feed's schedule as it is after this write (another capture's, when
-  // this one changed nothing); a record that has already ended stays as it is
+  // feed first may end last, which then changes nothing. The feed's HTTP
+  // validators (P8-G1) are written with it, so they move only with that later
+  // read: an older answer never replaces a newer one's. The capture's record
+  // (P8-O1) ends in the same transaction, as a success with its counts,
+  // whether the feed answered 304 Not Modified (P8-G1), and the feed's
+  // schedule as it is after this write (another capture's, when this one
+  // changed nothing); a record that has already ended stays as it is
   markFeedCaptured(
     organizationId: string,
     id: string,
     capturedAt: Date,
     nextCaptureAt: Date,
+    validators: ContentStudioSourceValidatorUpdate,
     attempt: {
       id: string;
       finishedAt: Date;
       summary: ContentStudioFeedCaptureSummary;
+      notModified: boolean;
     }
   ) {
     return this._transaction.model.$transaction(async (tx) => {
@@ -472,6 +524,7 @@ export class ContentStudioSourceRepository {
           lastCapturedAt: capturedAt,
           nextCaptureAt,
           consecutiveCaptureFailures: 0,
+          ...validatorData(validators),
         },
       });
       const feed = await tx.contentStudioSource.findFirst({
@@ -507,6 +560,7 @@ export class ContentStudioSourceRepository {
           failed: attempt.summary.failed,
           archived: attempt.summary.archived,
           entriesLimited: attempt.summary.entriesLimited,
+          notModified: attempt.notModified,
           nextCaptureAtAfter: feed.nextCaptureAt,
           consecutiveFailuresAfter: feed.consecutiveCaptureFailures,
         },
@@ -630,6 +684,10 @@ export class ContentStudioSourceRepository {
     // the source's new last page change (P8-04B1), when this version is one:
     // written with the version number, so it stands or falls with the version
     pageChange?: ContentStudioSourcePageChangeData | null;
+    // the HTTP validators of the representation this version was read from
+    // (P8-G1), with the version number too: the validators of a page are
+    // always those of its latest version, never of a capture that lost
+    validators: ContentStudioSourceValidatorUpdate;
   }) {
     return this._transaction.model.$transaction(async (tx) => {
       const source = await tx.contentStudioSource.findFirst({
@@ -668,6 +726,7 @@ export class ContentStudioSourceRepository {
           },
           // anything else leaves the last page change as it is
           ...(input.pageChange ? pageChangeData(input.pageChange) : {}),
+          ...validatorData(input.validators),
         },
       });
       if (count !== 1) {
@@ -698,6 +757,44 @@ export class ContentStudioSourceRepository {
         select: VERSION_SUMMARY,
       });
       return { status: 'created' as const, version };
+    });
+  }
+
+  // For server-side ingestion only: a page captured from a feed that is still
+  // its latest version (P8-G1): it answered 304 Not Modified, or the same
+  // content again. Only its HTTP validators change, and only from the state
+  // the capture started from: the same latest version, the validators it
+  // sent and the same updatedAt. A version appended meanwhile, another
+  // capture that confirmed the page first, a rename or an archive leave the
+  // page as it is (count 0), so an older answer never replaces a newer one.
+  // No version, no page change, and updatedAt is kept: fetch metadata is no
+  // change of the source, and the Source list stays in its order
+  markPageUnchanged(input: {
+    organizationId: string;
+    id: string;
+    expected: {
+      latestVersionNumber: number;
+      updatedAt: Date;
+      httpEtag: string | null;
+      httpLastModified: string | null;
+    };
+    validators: ContentStudioSourceValidatorUpdate;
+  }) {
+    return this._source.model.contentStudioSource.updateMany({
+      where: {
+        id: input.id,
+        organizationId: input.organizationId,
+        kind: 'url',
+        archivedAt: null,
+        latestVersionNumber: input.expected.latestVersionNumber,
+        updatedAt: input.expected.updatedAt,
+        httpEtag: input.expected.httpEtag,
+        httpLastModified: input.expected.httpLastModified,
+      },
+      data: {
+        ...validatorData(input.validators),
+        updatedAt: input.expected.updatedAt,
+      },
     });
   }
 

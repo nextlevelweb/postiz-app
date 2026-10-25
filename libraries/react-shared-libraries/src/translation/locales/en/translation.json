@@ -2073,5 +2073,8 @@
   "content_studio_feed_capture_error_content_type": "The feed content type or character encoding is not supported.",
   "content_studio_feed_capture_error_feed_invalid": "The address did not answer with an RSS or Atom feed that could be read.",
   "content_studio_feed_capture_error_integrity": "Stored feed data could not be read safely.",
-  "content_studio_feed_capture_error": "The capture failed."
+  "content_studio_feed_capture_error": "The capture failed.",
+  "content_studio_feed_capture_not_modified": "No changes detected",
+  "content_studio_feed_capture_not_modified_note": "The source reported that it has not changed since the previous capture.",
+  "content_studio_feed_captured_not_modified": "Feed checked. No changes detected since its last capture."
 }

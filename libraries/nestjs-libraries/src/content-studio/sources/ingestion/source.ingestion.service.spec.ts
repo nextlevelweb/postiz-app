@@ -516,9 +516,9 @@ describe('ContentStudioSourceIngestionService: SafeFetch', () => {
     expect(text).not.toMatch(
       /createSafeFetch|\bfetch\(|axios|undici|node:http|from 'https?'|from '(node:)?dns|lookup\(|net\.isIP|isBlocked|127\.0\.0\.1|169\.254|10\.0\.0|192\.168|localhost|isPrivate|allowHttp|allowedPorts|maxRedirects|process\.env|headers:/
     );
-    // two calls, each with its fixed policy constants: a page's and (P8-01)
-    // a feed's
-    expect(text.match(/\bsafeFetch\(/g)).toHaveLength(2);
+    // one call (P8-G1: fetchSource), given each capture's fixed policy
+    // constants, a page's and (P8-01) a feed's
+    expect(text.match(/\bsafeFetch\(/g)).toHaveLength(1);
   });
 
   it.each<[SafeFetchErrorCategory, number, string]>([
@@ -1312,6 +1312,9 @@ describe('ContentStudioSourceIngestionService: last page change', () => {
         lastPageChangeVersionNumber: 2,
         lastPageChangeKind: 'content_changed',
         lastPageChangePreviousCaptureAt: state.versions[0].fetchedAt,
+        // the validators of the answer (P8-G1), with the version
+        httpEtag: '"abc"',
+        httpLastModified: null,
       },
     });
     // a member's refresh reads it before the fetch, for its cooldown
@@ -1323,11 +1326,13 @@ describe('ContentStudioSourceIngestionService: last page change', () => {
         select: expect.not.objectContaining({ content: true }),
       });
     }
-    // a repeat: the number only
+    // a repeat: the number and the answer's validators (P8-G1) only
     source.updateMany.mockClear();
     await refreshWith(ingestion, '<p>B</p>');
     expect(source.updateMany.mock.calls[0][0].data).toEqual({
       latestVersionNumber: { increment: 1 },
+      httpEtag: '"abc"',
+      httpLastModified: null,
     });
   });
 
@@ -1454,7 +1459,9 @@ describe('ContentStudioSourceIngestionService: refresh cooldown (P8-C1)', () => 
     ) as PromiseRejectedResult;
     expect((rejected.reason as HttpException).getResponse()).toEqual(CONFLICT);
     expect(state.versions).toHaveLength(2);
-    // and the one stored makes the next refresh too soon
+    // and the one stored makes the next refresh too soon (a moment after
+    // it: both captures can fall in the same millisecond)
+    at((state.versions[1].fetchedAt as Date).getTime() + 1000);
     expect(await httpError(refresh(ingestion))).toEqual({
       status: 429,
       body: TOO_SOON,

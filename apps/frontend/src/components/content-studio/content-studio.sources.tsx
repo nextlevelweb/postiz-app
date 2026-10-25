@@ -400,8 +400,14 @@ export const useSourceCommands = (onCaptured?: () => void) => {
         try {
           const result = await actions.captureSource(source.id);
           toaster.show(
+            // a feed that had not changed (P8-G1) only says so
             'capture' in result
-              ? feedCaptureMessage(t, result.capture)
+              ? result.notModified
+                ? t(
+                    'content_studio_feed_captured_not_modified',
+                    'Feed checked. No changes detected since its last capture.'
+                  )
+                : feedCaptureMessage(t, result.capture)
               : t('content_studio_source_captured', 'Source captured.'),
             'success'
           );
