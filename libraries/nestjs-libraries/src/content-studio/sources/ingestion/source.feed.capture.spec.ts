@@ -16,8 +16,10 @@ import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/databas
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import {
+  captureFailureDelayMinutes,
   ContentStudioSourceIngestionService,
-  FEED_CAPTURE_INTERVAL_MS,
+  FEED_CAPTURE_FAILURE_DELAY_BASE_MINUTES,
+  FEED_CAPTURE_FAILURE_DELAY_MAX_MINUTES,
   FEED_FETCH_ALLOWED_CONTENT_TYPES,
   FEED_FETCH_MAX_BYTES,
   FEED_FETCH_TIMEOUT_MS,
@@ -27,7 +29,14 @@ import {
   SOURCE_FETCH_TIMEOUT_MS,
 } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 import { SOURCE_FEED_MAX_ENTRIES } from '@gitroom/nestjs-libraries/content-studio/sources/source.feed';
-import { CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
+import {
+  CONTENT_STUDIO_FEED_INTERVAL_DEFAULT_MINUTES,
+  CONTENT_STUDIO_FEED_INTERVALS,
+  CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS,
+  contentStudioFeedIntervals,
+  effectiveFeedIntervalMinutes,
+  nextCaptureAfterSuccess,
+} from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
 
 // Feed capture (P8-01) with no database and no network: the repositories are
 // the real ones over in-memory Prisma delegates that keep the unique keys of
@@ -173,6 +182,9 @@ const setup = () => {
         if ('lt' in c) {
           return value(row, key) !== null && compare(row[key], c.lt) < 0;
         }
+        if ('lte' in c) {
+          return value(row, key) !== null && compare(row[key], c.lte) <= 0;
+        }
         if ('gt' in c) {
           return value(row, key) !== null && compare(row[key], c.gt) > 0;
         }
@@ -288,6 +300,9 @@ const setup = () => {
               archivedAt: null,
               lastCapturedAt: null,
               scanPausedAt: null,
+              captureIntervalMinutes: null,
+              nextCaptureAt: null,
+              consecutiveCaptureFailures: 0,
             }
           : {}),
         ...args.data,
@@ -361,6 +376,9 @@ const setup = () => {
       updatedAt: at,
       lastCapturedAt: null,
       scanPausedAt: null,
+      captureIntervalMinutes: null,
+      nextCaptureAt: null,
+      consecutiveCaptureFailures: 0,
       ...row,
     };
     state.sources.push(full);
@@ -434,6 +452,51 @@ const sourceByUrl = (t: Setup, url: string, organizationId = ORG) =>
 beforeEach(() => {
   fetchMock.mockReset();
   Object.assign(mockLimits, NO_LIMITS);
+});
+
+// The schedule's own rules (P8-C4), without a feed
+describe('feed schedule rules (P8-C4)', () => {
+  it('U6 the presets, the default and the presets an organization may choose', () => {
+    expect(CONTENT_STUDIO_FEED_INTERVALS).toEqual([60, 180, 360, 720, 1440]);
+    expect(CONTENT_STUDIO_FEED_INTERVAL_DEFAULT_MINUTES).toBe(60);
+    expect(contentStudioFeedIntervals(ORG)).toEqual([60, 180, 360, 720, 1440]);
+  });
+
+  it('U1-U4 the minutes of a feed: the default for null, a preset itself, nothing for anything else', () => {
+    expect(effectiveFeedIntervalMinutes(null)).toBe(60);
+    for (const minutes of [60, 180, 360, 720, 1440]) {
+      expect(effectiveFeedIntervalMinutes(minutes)).toBe(minutes);
+    }
+    for (const stored of [0, -60, 59, 61, 90, 60.5, 2880, NaN]) {
+      expect(effectiveFeedIntervalMinutes(stored)).toBeUndefined();
+    }
+  });
+
+  it('U5 the next capture after a success: its own time plus the interval', () => {
+    const at = new Date('2026-10-24T10:40:00.000Z');
+    expect(nextCaptureAfterSuccess(at, 60)).toEqual(
+      new Date('2026-10-24T11:40:00.000Z')
+    );
+    expect(nextCaptureAfterSuccess(at, 1440)).toEqual(
+      new Date('2026-10-25T10:40:00.000Z')
+    );
+    // never the argument itself
+    expect(at).toEqual(new Date('2026-10-24T10:40:00.000Z'));
+  });
+
+  it('B1-B7 the failure delay: an hour, doubled each time, a day at most', () => {
+    expect(FEED_CAPTURE_FAILURE_DELAY_BASE_MINUTES).toBe(60);
+    expect(FEED_CAPTURE_FAILURE_DELAY_MAX_MINUTES).toBe(1440);
+    expect(
+      [1, 2, 3, 4, 5, 6, 7, 8, 50, 2000].map(captureFailureDelayMinutes)
+    ).toEqual([60, 120, 240, 480, 960, 1440, 1440, 1440, 1440, 1440]);
+  });
+
+  it('B8 no delay without a failure', () => {
+    for (const failures of [0, -1, 1.5, NaN, Infinity]) {
+      expect(() => captureFailureDelayMinutes(failures)).toThrow(RangeError);
+    }
+  });
 });
 
 describe('feed capture: a manual capture', () => {
@@ -1705,20 +1768,26 @@ describe('feed capture: the schedule', () => {
     ).rejects.toBeInstanceOf(HttpException);
   });
 
-  it('lists live feeds of live organizations not captured within the interval, in id pages', async () => {
+  it('P8C4-3 lists live feeds of live organizations whose next capture is due (or not set), in id pages', async () => {
     const t = setup();
+    // P8-C4: the last capture alone decides nothing
     const recent = new Date(Date.now() - 60_000);
-    const old = new Date(Date.now() - FEED_CAPTURE_INTERVAL_MS - 60_000);
-    t.addFeed({ id: '10000000-0000-4000-8000-000000000001' });
+    const soon = new Date(Date.now() + 60_000);
+    t.addFeed({
+      id: '10000000-0000-4000-8000-000000000001',
+      lastCapturedAt: recent,
+    });
     t.addFeed({
       id: '10000000-0000-4000-8000-000000000002',
       canonicalUrl: 'https://a.example/1',
-      lastCapturedAt: old,
+      lastCapturedAt: recent,
+      nextCaptureAt: recent,
     });
     t.addFeed({
       id: '10000000-0000-4000-8000-000000000003',
       canonicalUrl: 'https://a.example/2',
-      lastCapturedAt: recent,
+      lastCapturedAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+      nextCaptureAt: soon,
     });
     t.addFeed({
       id: '10000000-0000-4000-8000-000000000004',
@@ -1791,27 +1860,28 @@ describe('feed capture: the schedule', () => {
 
 describe('feed capture: a paused feed (P8-C3)', () => {
   const PAUSED_AT = new Date('2026-10-20T08:00:00.000Z');
-  const OLD = () => new Date(Date.now() - FEED_CAPTURE_INTERVAL_MS - 60_000);
+  // a time that has passed: due by it (P8-C4)
+  const OLD = () => new Date(Date.now() - 60 * 60 * 1000);
   const due = async (t: Setup) =>
     (await t.ingestion.listFeedsDueForCapture({ afterId: null })).feeds.map(
       (feed) => feed.sourceId
     );
   const feedRow = (t: Setup) => t.state.sources.find((s) => s.id === FEED)!;
 
-  it('P8C3PG8/M9 the scan never lists a paused feed; P8C3PG9 resumed, it is due by its last capture again', async () => {
+  it('P8C3PG8/M9 the scan never lists a paused feed; P8C3PG9 resumed, it is due by its next capture time again', async () => {
     const t = setup();
-    t.addFeed({ lastCapturedAt: OLD(), scanPausedAt: PAUSED_AT });
+    t.addFeed({ nextCaptureAt: OLD(), scanPausedAt: PAUSED_AT });
     t.addFeed({
       id: FEED_B,
       canonicalUrl: FEED_B_URL,
-      lastCapturedAt: OLD(),
+      nextCaptureAt: OLD(),
     });
     expect(await due(t)).toEqual([FEED_B]);
     await t.service.resumeFeed(ORG, FEED);
     expect(await due(t)).toEqual([FEED, FEED_B]);
-    // captured a moment before the pause: not due until the interval passed
+    // its next capture not yet due: not listed until that time (P8-C4)
     await t.service.pauseFeed(ORG, FEED);
-    feedRow(t).lastCapturedAt = new Date(Date.now() - 60_000);
+    feedRow(t).nextCaptureAt = new Date(Date.now() + 60_000);
     await t.service.resumeFeed(ORG, FEED);
     expect(await due(t)).toEqual([FEED_B]);
   });
@@ -1863,8 +1933,8 @@ describe('feed capture: a paused feed (P8-C3)', () => {
     expect(feedRow(t).lastCapturedAt).toEqual(expect.any(Date));
     expect(t.state.discoveries).toHaveLength(1);
     expect(versionsOf(t, pagesOf(t)[0].id)).toHaveLength(1);
-    // and the schedule still leaves it out
-    feedRow(t).lastCapturedAt = OLD();
+    // and the schedule still leaves it out, due or not
+    feedRow(t).nextCaptureAt = OLD();
     expect(await due(t)).toEqual([]);
   });
 
@@ -2006,7 +2076,529 @@ describe('feed capture: a paused feed (P8-C3)', () => {
     expect(feedRow(t).lastCapturedAt.getTime()).toBeGreaterThan(
       Date.now() - 60_000
     );
-    feedRow(t).lastCapturedAt = OLD();
+    feedRow(t).nextCaptureAt = OLD();
+    expect(await due(t)).toEqual([]);
+  });
+});
+
+// The schedule of a feed (P8-C4): its next automatic capture follows from
+// its last successful one, a scheduled failure delays it, and nothing a
+// member does by hand makes that worse
+describe('feed capture: the schedule of a feed (P8-C4)', () => {
+  const HOUR = 60 * 60 * 1000;
+  const feedRow = (t: Setup) => t.state.sources.find((s) => s.id === FEED)!;
+  const due = async (t: Setup) =>
+    (await t.ingestion.listFeedsDueForCapture({ afterId: null })).feeds.map(
+      (feed) => feed.sourceId
+    );
+  const scheduled = (t: Setup) =>
+    t.ingestion.captureScheduledFeed({ organizationId: ORG, sourceId: FEED });
+  const record = (t: Setup, over: Record<string, string> = {}) =>
+    t.ingestion.recordScheduledFeedFailure({
+      organizationId: ORG,
+      sourceId: FEED,
+      code: 'CS_SOURCE_FETCH_FAILED',
+      ...over,
+    });
+  const readable = () => {
+    const w = web();
+    w.feeds.set(FEED_URL, rss([page(1)]));
+    w.pages.set(page(1), html('One'));
+    return w;
+  };
+  // a time between `from` and now plus `minutes`, both read around the call
+  const around = (date: Date, from: number, to: number, minutes: number) => {
+    expect(date.getTime()).toBeGreaterThanOrEqual(from + minutes * 60_000);
+    expect(date.getTime()).toBeLessThanOrEqual(to + minutes * 60_000);
+  };
+  const schedule = (row: Record<string, any>) => ({
+    lastCapturedAt: row.lastCapturedAt,
+    nextCaptureAt: row.nextCaptureAt,
+    consecutiveCaptureFailures: row.consecutiveCaptureFailures,
+    captureIntervalMinutes: row.captureIntervalMinutes,
+  });
+
+  it('IG1/U1/U5/P8C4PG2/M9/M10/M11 a scheduled success: the next capture an hour after this capture, no failure left, not due again', async () => {
+    const t = setup();
+    t.addFeed({
+      consecutiveCaptureFailures: 3,
+      nextCaptureAt: new Date(Date.now() - HOUR),
+    });
+    readable();
+    expect(await due(t)).toEqual([FEED]);
+    await scheduled(t);
+    const row = feedRow(t);
+    expect(row.lastCapturedAt).toEqual(expect.any(Date));
+    // the same time: the capture's own, never the time of the write
+    expect(row.nextCaptureAt.getTime() - row.lastCapturedAt.getTime()).toBe(
+      HOUR
+    );
+    expect(row.consecutiveCaptureFailures).toBe(0);
+    expect(await due(t)).toEqual([]);
+  });
+
+  it.each([
+    [60, 1],
+    [180, 3],
+    [360, 6],
+    [720, 12],
+    [1440, 24],
+  ])(
+    'U2/U3 a feed set to %i minutes is next captured %i hours after its capture',
+    async (minutes, hours) => {
+      const t = setup();
+      t.addFeed({ captureIntervalMinutes: minutes });
+      readable();
+      await scheduled(t);
+      const row = feedRow(t);
+      expect(row.nextCaptureAt.getTime() - row.lastCapturedAt.getTime()).toBe(
+        hours * HOUR
+      );
+      expect(row.captureIntervalMinutes).toBe(minutes);
+    }
+  );
+
+  it('U4 a stored interval that is no preset fails closed: an integrity error, nothing fetched or written', async () => {
+    const t = setup();
+    t.addFeed({ captureIntervalMinutes: 90 });
+    t.source.updateMany.mockClear();
+    expect(await refusal(scheduled(t))).toEqual({
+      status: 500,
+      body: {
+        msg: 'Stored source data could not be verified.',
+        code: 'CS_SOURCE_INTEGRITY_ERROR',
+      },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(t.source.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('IG2/M12 a member refresh schedules the same way and ends the failures', async () => {
+    const t = setup();
+    const later = new Date(Date.now() + 10 * HOUR);
+    t.addFeed({
+      captureIntervalMinutes: 360,
+      consecutiveCaptureFailures: 2,
+      nextCaptureAt: later,
+    });
+    readable();
+    const result = await capture(t);
+    const row = feedRow(t);
+    expect(row.nextCaptureAt.getTime() - row.lastCapturedAt.getTime()).toBe(
+      6 * HOUR
+    );
+    expect(row.consecutiveCaptureFailures).toBe(0);
+    expect(result.source).toMatchObject({
+      captureIntervalMinutes: 360,
+      nextCaptureAt: row.nextCaptureAt,
+      consecutiveCaptureFailures: 0,
+    });
+  });
+
+  it('IG3/M13 a member refresh of a paused feed schedules it too; it stays paused and out of the scan', async () => {
+    const t = setup();
+    const pausedAt = new Date(Date.now() - 2 * HOUR);
+    t.addFeed({
+      scanPausedAt: pausedAt,
+      consecutiveCaptureFailures: 1,
+      nextCaptureAt: new Date(Date.now() - HOUR),
+    });
+    readable();
+    await capture(t);
+    const row = feedRow(t);
+    expect(row.scanPausedAt).toBe(pausedAt);
+    expect(row.nextCaptureAt.getTime() - row.lastCapturedAt.getTime()).toBe(
+      HOUR
+    );
+    expect(row.consecutiveCaptureFailures).toBe(0);
+    expect(await due(t)).toEqual([]);
+    // resumed, it waits for that time: no capture right after the refresh
+    await t.service.resumeFeed(ORG, FEED);
+    expect(await due(t)).toEqual([]);
+  });
+
+  it('IG4/M25 a member refresh that fails writes nothing: no failure, no next or last capture', async () => {
+    const t = setup();
+    const last = new Date(Date.now() - 3 * HOUR);
+    const later = new Date(Date.now() + HOUR);
+    t.addFeed({
+      lastCapturedAt: last,
+      consecutiveCaptureFailures: 1,
+      nextCaptureAt: later,
+    });
+    web().failing.add(FEED_URL);
+    t.source.updateMany.mockClear();
+    expect((await refusal(capture(t))).body).toEqual({
+      msg: 'The source could not be fetched.',
+      code: 'CS_SOURCE_FETCH_FAILED',
+    });
+    expect(t.source.updateMany).not.toHaveBeenCalled();
+    expect(schedule(feedRow(t))).toEqual({
+      lastCapturedAt: last,
+      nextCaptureAt: later,
+      consecutiveCaptureFailures: 1,
+      captureIntervalMinutes: null,
+    });
+  });
+
+  it('IG5/M26 a skipped scheduled capture writes nothing', async () => {
+    const t = setup();
+    const before = new Date(Date.now() - HOUR);
+    t.addFeed({ archivedAt: new Date(), nextCaptureAt: before });
+    t.source.updateMany.mockClear();
+    expect(await scheduled(t)).toEqual({ status: 'skipped' });
+    expect(t.source.updateMany).not.toHaveBeenCalled();
+    expect(schedule(feedRow(t))).toEqual({
+      lastCapturedAt: null,
+      nextCaptureAt: before,
+      consecutiveCaptureFailures: 0,
+      captureIntervalMinutes: null,
+    });
+  });
+
+  it('IG6/IG7/M15/M16 pages that failed or were past the page limit still make a success for the schedule', async () => {
+    mockLimits.urlSourcesMax = 2;
+    const t = setup();
+    t.addFeed({ consecutiveCaptureFailures: 4 });
+    const w = web();
+    w.feeds.set(FEED_URL, rss([page(1), page(2), page(3)]));
+    w.pages.set(page(1), html('One'));
+    w.failing.add(page(2));
+    await scheduled(t);
+    const row = feedRow(t);
+    expect(row.consecutiveCaptureFailures).toBe(0);
+    expect(row.nextCaptureAt.getTime() - row.lastCapturedAt.getTime()).toBe(
+      HOUR
+    );
+    expect(
+      (await t.ingestion.captureScheduledFeed({
+        organizationId: ORG,
+        sourceId: FEED,
+      })) as { capture: Record<string, number> }
+    ).toMatchObject({ capture: { failed: 1, entriesLimited: 1 } });
+  });
+
+  it('IG8/P8C4PG3/M14 a capture that read the feed before another one, and ends after it, changes nothing', async () => {
+    const t = setup();
+    t.addFeed();
+    readable();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let held = false;
+    const fetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url, options) => {
+      if (url === page(1) && !held) {
+        // the member's refresh read the feed first, then waits on its page
+        held = true;
+        await gate;
+      }
+      return fetch(url, options);
+    });
+    const refresh = capture(t);
+    while (!held) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await scheduled(t);
+    const after = schedule(feedRow(t));
+    release();
+    const result = await refresh;
+    expect(schedule(feedRow(t))).toEqual(after);
+    expect(result.source.lastCapturedAt).toEqual(after.lastCapturedAt);
+    expect(after.nextCaptureAt.getTime() - after.lastCapturedAt.getTime()).toBe(
+      HOUR
+    );
+  });
+
+  it('B1/P8C4PG4/M22 a recorded failure: one more, the next try an hour later, the last capture kept; recorded again it changes nothing', async () => {
+    const t = setup();
+    const last = new Date(Date.now() - 2 * HOUR);
+    t.addFeed({
+      lastCapturedAt: last,
+      nextCaptureAt: new Date(Date.now() - HOUR),
+      captureIntervalMinutes: 1440,
+    });
+    const from = Date.now();
+    expect(await record(t)).toEqual({ status: 'recorded' });
+    const to = Date.now();
+    const row = feedRow(t);
+    expect(row.consecutiveCaptureFailures).toBe(1);
+    // M20 an hour, not the feed's day
+    around(row.nextCaptureAt, from, to, 60);
+    expect(row.lastCapturedAt).toBe(last);
+    const next = row.nextCaptureAt;
+    // the same write again (a retried activity): its next try is ahead now
+    expect(await record(t)).toEqual({ status: 'unchanged' });
+    expect(feedRow(t).consecutiveCaptureFailures).toBe(1);
+    expect(feedRow(t).nextCaptureAt).toBe(next);
+    expect(await due(t)).toEqual([]);
+  });
+
+  it('B1-B7/M17-M19 each failure in a row doubles the delay, up to a day', async () => {
+    const t = setup();
+    t.addFeed();
+    const delays = [];
+    for (let n = 1; n <= 8; n++) {
+      // the next try is due: its capture ran and failed again
+      feedRow(t).nextCaptureAt = new Date(Date.now() - 1000);
+      const from = Date.now();
+      expect(await record(t)).toEqual({ status: 'recorded' });
+      const to = Date.now();
+      const row = feedRow(t);
+      expect(row.consecutiveCaptureFailures).toBe(n);
+      const minutes = Math.round((row.nextCaptureAt.getTime() - from) / 60_000);
+      around(row.nextCaptureAt, from, to, minutes);
+      delays.push(minutes);
+    }
+    expect(delays).toEqual([60, 120, 240, 480, 960, 1440, 1440, 1440]);
+    // a success ends it
+    readable();
+    feedRow(t).nextCaptureAt = new Date(Date.now() - 1000);
+    await scheduled(t);
+    expect(feedRow(t).consecutiveCaptureFailures).toBe(0);
+  });
+
+  it('P8C4PG5/M23 two records from the same state count once', async () => {
+    const t = setup();
+    t.addFeed();
+    const results = await Promise.all([record(t), record(t), record(t)]);
+    expect(results.map((r) => r.status).sort()).toEqual([
+      'recorded',
+      'unchanged',
+      'unchanged',
+    ]);
+    expect(feedRow(t).consecutiveCaptureFailures).toBe(1);
+  });
+
+  it('P8C4PG6/M24 a member success between a failure and its record wins: the record changes nothing', async () => {
+    const t = setup();
+    t.addFeed({ nextCaptureAt: new Date(Date.now() - HOUR) });
+    readable();
+    await capture(t);
+    const after = schedule(feedRow(t));
+    expect(await record(t)).toEqual({ status: 'unchanged' });
+    expect(schedule(feedRow(t))).toEqual(after);
+    expect(after.consecutiveCaptureFailures).toBe(0);
+  });
+
+  it('a paused feed records its failure; a feed gone, archived, of another organization or no feed is skipped', async () => {
+    const t = setup();
+    t.addFeed({ scanPausedAt: new Date() });
+    expect(await record(t)).toEqual({ status: 'recorded' });
+    expect(feedRow(t).consecutiveCaptureFailures).toBe(1);
+    const u = setup();
+    u.addFeed({ archivedAt: new Date() });
+    u.addSource({ id: FEED_B, organizationId: ORG, canonicalUrl: page(1) });
+    u.source.updateMany.mockClear();
+    for (const input of [
+      { organizationId: ORG, sourceId: FEED },
+      { organizationId: ORG, sourceId: FEED_B },
+      { organizationId: OTHER_ORG, sourceId: FEED },
+      { organizationId: ORG, sourceId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' },
+      { organizationId: ORG, sourceId: 'not-an-id' },
+    ]) {
+      expect(
+        await u.ingestion.recordScheduledFeedFailure({
+          ...input,
+          code: 'CS_SOURCE_FEED_INVALID',
+        })
+      ).toEqual({ status: 'skipped' });
+    }
+    expect(u.source.updateMany).not.toHaveBeenCalled();
+  });
+
+  describe('the interval of a feed', () => {
+    const set = (t: Setup, minutes: unknown, id = FEED, org = ORG) =>
+      t.service.setFeedInterval(org, id, minutes);
+
+    it('SI5/P8C4PG7/M34 shorter: an hour after the last capture, due at once when that has passed', async () => {
+      const t = setup();
+      const last = new Date(Date.now() - 5 * HOUR);
+      t.addFeed({
+        lastCapturedAt: last,
+        captureIntervalMinutes: 1440,
+        nextCaptureAt: new Date(last.getTime() + 24 * HOUR),
+      });
+      expect(await due(t)).toEqual([]);
+      const result = await set(t, 60);
+      expect(feedRow(t).nextCaptureAt).toEqual(new Date(last.getTime() + HOUR));
+      expect(result).toMatchObject({
+        captureIntervalMinutes: 60,
+        nextCaptureAt: new Date(last.getTime() + HOUR),
+      });
+      expect(await due(t)).toEqual([FEED]);
+    });
+
+    it('SI6/P8C4PG8/M35 longer: a day after the last capture', async () => {
+      const t = setup();
+      const last = new Date(Date.now() - HOUR / 2);
+      t.addFeed({
+        lastCapturedAt: last,
+        nextCaptureAt: new Date(last.getTime() + HOUR),
+      });
+      await set(t, 1440);
+      expect(feedRow(t).nextCaptureAt).toEqual(
+        new Date(last.getTime() + 24 * HOUR)
+      );
+      expect(feedRow(t).captureIntervalMinutes).toBe(1440);
+    });
+
+    it('SI7 never captured: still due now', async () => {
+      const t = setup();
+      t.addFeed();
+      await set(t, 720);
+      expect(schedule(feedRow(t))).toEqual({
+        lastCapturedAt: null,
+        nextCaptureAt: null,
+        consecutiveCaptureFailures: 0,
+        captureIntervalMinutes: 720,
+      });
+      expect(await due(t)).toEqual([FEED]);
+    });
+
+    it('SI8/M33 a paused feed may change its interval; it stays paused', async () => {
+      const t = setup();
+      const pausedAt = new Date();
+      const last = new Date(Date.now() - HOUR);
+      t.addFeed({ scanPausedAt: pausedAt, lastCapturedAt: last });
+      await set(t, 180);
+      expect(feedRow(t)).toMatchObject({
+        scanPausedAt: pausedAt,
+        captureIntervalMinutes: 180,
+        nextCaptureAt: new Date(last.getTime() + 3 * HOUR),
+      });
+    });
+
+    it('SI9/P8C4PG9/M36 after failures the failure delay stays; the next success uses the new interval', async () => {
+      const t = setup();
+      const later = new Date(Date.now() + 4 * HOUR);
+      t.addFeed({
+        lastCapturedAt: new Date(Date.now() - 10 * HOUR),
+        consecutiveCaptureFailures: 3,
+        nextCaptureAt: later,
+      });
+      await set(t, 60);
+      expect(feedRow(t)).toMatchObject({
+        captureIntervalMinutes: 60,
+        consecutiveCaptureFailures: 3,
+        nextCaptureAt: later,
+      });
+      readable();
+      feedRow(t).nextCaptureAt = new Date(Date.now() - 1000);
+      await scheduled(t);
+      const row = feedRow(t);
+      expect(row.nextCaptureAt.getTime() - row.lastCapturedAt.getTime()).toBe(
+        HOUR
+      );
+    });
+
+    it('SI10/M37 the same value again writes nothing; null and an explicit hour stay apart', async () => {
+      const t = setup();
+      t.addFeed({ captureIntervalMinutes: 60 });
+      const { updatedAt } = feedRow(t);
+      t.source.updateMany.mockClear();
+      await expect(set(t, 60)).resolves.toMatchObject({
+        captureIntervalMinutes: 60,
+      });
+      expect(t.source.updateMany).not.toHaveBeenCalled();
+      expect(feedRow(t).updatedAt).toBe(updatedAt);
+      // M38 null is the default, never "no schedule"
+      await expect(set(t, null)).resolves.toMatchObject({
+        captureIntervalMinutes: null,
+        nextCaptureAt: null,
+      });
+      expect(t.source.updateMany).toHaveBeenCalledTimes(1);
+      expect(await due(t)).toEqual([FEED]);
+    });
+
+    it('SI11 a capture that ended between the read and the write: decided again from what it left', async () => {
+      const t = setup();
+      t.addFeed({ lastCapturedAt: new Date(Date.now() - 5 * HOUR) });
+      const fresh = new Date(Date.now() - 60_000);
+      const write = t.source.updateMany.getMockImplementation()!;
+      t.source.updateMany.mockImplementationOnce(async (args) => {
+        feedRow(t).lastCapturedAt = fresh;
+        return write(args);
+      });
+      await set(t, 180);
+      expect(t.source.updateMany).toHaveBeenCalledTimes(2);
+      expect(feedRow(t).nextCaptureAt).toEqual(
+        new Date(fresh.getTime() + 3 * HOUR)
+      );
+    });
+
+    it('SI12 captures ending between every read and write: a conflict after three attempts, nothing changed', async () => {
+      const t = setup();
+      t.addFeed({ lastCapturedAt: new Date(Date.now() - 5 * HOUR) });
+      const write = t.source.updateMany.getMockImplementation()!;
+      t.source.updateMany.mockImplementation(async (args) => {
+        feedRow(t).lastCapturedAt = new Date(
+          feedRow(t).lastCapturedAt.getTime() + 1
+        );
+        return write(args);
+      });
+      expect(await refusal(set(t, 180))).toEqual({
+        status: 409,
+        body: {
+          msg: 'The sources changed meanwhile. Try again.',
+          code: 'CS_SOURCE_CONFLICT',
+        },
+      });
+      expect(t.source.updateMany).toHaveBeenCalledTimes(3);
+      expect(feedRow(t).captureIntervalMinutes).toBeNull();
+    });
+
+    it('SI1-SI4/M30-M32 another organization, a page, an archived feed, then a value that is no preset, in that order', async () => {
+      const t = setup();
+      t.addFeed({ archivedAt: new Date() });
+      t.addSource({ id: FEED_B, organizationId: ORG, canonicalUrl: page(1) });
+      t.source.updateMany.mockClear();
+      expect((await refusal(set(t, 90, FEED, OTHER_ORG))).status).toBe(404);
+      expect((await refusal(set(t, 90, 'not-an-id'))).status).toBe(404);
+      expect(await refusal(set(t, 90, FEED_B))).toEqual({
+        status: 400,
+        body: {
+          msg: 'This source type has no scheduled captures.',
+          code: 'CS_SOURCE_KIND_UNSUPPORTED',
+        },
+      });
+      expect(await refusal(set(t, 90))).toEqual({
+        status: 409,
+        body: { msg: 'This source is archived.', code: 'CS_SOURCE_ARCHIVED' },
+      });
+      const u = setup();
+      u.addFeed();
+      for (const value of [90, 0, -60, 60.5, '60', 1e9, undefined, {}]) {
+        expect(await refusal(set(u, value))).toEqual({
+          status: 400,
+          body: {
+            msg: 'This capture interval is not available.',
+            code: 'CS_SOURCE_INTERVAL_INVALID',
+          },
+        });
+      }
+      expect(t.source.updateMany).not.toHaveBeenCalled();
+      expect(u.source.updateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  it('P8C4PG10/P8C4PG11 pause, resume, archive and restore keep the interval, the next capture and the failures', async () => {
+    const t = setup();
+    const kept = {
+      lastCapturedAt: new Date(Date.now() - 2 * HOUR),
+      nextCaptureAt: new Date(Date.now() + 3 * HOUR),
+      consecutiveCaptureFailures: 2,
+      captureIntervalMinutes: 720,
+    };
+    t.addFeed({ ...kept });
+    await t.service.pauseFeed(ORG, FEED);
+    expect(schedule(feedRow(t))).toEqual(kept);
+    await t.service.resumeFeed(ORG, FEED);
+    expect(schedule(feedRow(t))).toEqual(kept);
+    await t.service.archiveSource(ORG, FEED);
+    expect(schedule(feedRow(t))).toEqual(kept);
+    await t.service.restoreSource(ORG, FEED);
+    expect(schedule(feedRow(t))).toEqual(kept);
     expect(await due(t)).toEqual([]);
   });
 });

@@ -159,6 +159,8 @@ const NINE_ROUTES = [
   'PATCH /sources/:id',
   'POST /sources',
   'POST /sources/:id/archive',
+  // a feed's interval (P8-C4), no capture
+  'POST /sources/:id/interval',
   // a feed's scheduled captures (P8-C3), no capture
   'POST /sources/:id/pause',
   'POST /sources/:id/refresh',
@@ -167,7 +169,7 @@ const NINE_ROUTES = [
 ];
 
 describe('Phase 3 source authorization', () => {
-  it('P3TRUST1 there are exactly the thirteen source routes', () => {
+  it('P3TRUST1 there are exactly the fourteen source routes', () => {
     expect(sourceHandlers.map(routeOf).sort()).toEqual(NINE_ROUTES);
   });
 
@@ -285,6 +287,8 @@ describe('Phase 3 immutable versions', () => {
       names.filter((n) => /delete|remove|upsert|replace/i.test(n))
     ).toEqual([]);
     expect(names.filter((n) => /update|set/i.test(n)).sort()).toEqual([
+      // P8-C4: a feed's interval and its next capture only
+      'setFeedInterval',
       // P8-04B1: the backfill writes the derived last page change only
       'setPageChangeWithCompareAndSwap',
       'updateSourceName',
@@ -491,7 +495,7 @@ describe('Phase 3 AI operations and source material', () => {
 describe('Phase 3 Source Library trust surface', () => {
   const api = SOURCE.frontendApi;
 
-  it('P3UI1 the browser calls only the thirteen source routes', () => {
+  it('P3UI1 the browser calls only the fourteen source routes', () => {
     expect(
       Array.from(api.matchAll(/['`](\/content-studio[^'`]*)['`]/g)).map(
         (m) => m[1]
@@ -504,6 +508,8 @@ describe('Phase 3 Source Library trust surface', () => {
       '/archive',
       // a feed's pages (P8-01), read only
       '/discoveries',
+      // a feed's interval (P8-C4)
+      '/interval',
       // a feed's scheduled captures (P8-C3)
       '/pause',
       '/refresh',
@@ -519,14 +525,24 @@ describe('Phase 3 Source Library trust surface', () => {
     ).toEqual(['/changes']);
     expect(
       Array.from(api.matchAll(/method: '([A-Z]+)'/g)).map((m) => m[1])
-    ).toEqual(['POST', 'PATCH', 'POST', 'POST', 'POST', 'POST', 'POST']);
+    ).toEqual([
+      'POST',
+      'PATCH',
+      'POST',
+      'POST',
+      'POST',
+      'POST',
+      'POST',
+      'POST',
+    ]);
     expect(api).not.toMatch(/'DELETE'|'PUT'|\/fetch|\/preview|\/ingest/);
   });
 
   it('P3UI1/34/92 it cannot forge a version: create sends kind, name and url; rename its name; capture nothing', () => {
     expect(
       Array.from(api.matchAll(/JSON\.stringify\(([^)]*)\)/g)).map((m) => m[1])
-    ).toEqual(['{ kind, name, url }', '{ name }']);
+      // P8-C4: a feed's interval, the value only
+    ).toEqual(['{ kind, name, url }', '{ name }', '{ intervalMinutes }']);
     expect(api).toMatch(
       /`\$\{sourcePath\(id\)\}\/refresh`,\s*\{ method: 'POST' \}/
     );

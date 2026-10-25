@@ -457,6 +457,7 @@ describe('ContentStudioController wiring', () => {
       'POST /reviews/:id/start',
       'POST /sources',
       'POST /sources/:id/archive',
+      'POST /sources/:id/interval',
       'POST /sources/:id/pause',
       'POST /sources/:id/refresh',
       'POST /sources/:id/restore',

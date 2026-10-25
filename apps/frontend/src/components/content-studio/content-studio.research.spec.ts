@@ -564,12 +564,14 @@ describe('News Radar: empty, loading and error', () => {
     expect(screen.queryByRole('button', { name: 'Show all time' })).toBeNull();
   });
 
-  it('ES2/ES3 feeds but nothing in the window: say so, offer all time, and that feeds are captured hourly', async () => {
+  it('ES2/ES3 feeds but nothing in the window: say so, offer all time, and that feeds are captured hourly by default', async () => {
     rows = [];
     await renderRadar();
     expect(screen.getByText('Nothing found in the last 7 days.')).toBeTruthy();
     expect(
-      screen.getByText('Feeds are captured automatically about every hour.')
+      screen.getByText(
+        'Feeds are captured automatically, every hour unless a feed is set to another interval.'
+      )
     ).toBeTruthy();
     await click(screen.getByRole('button', { name: 'Show all time' }));
     expect(location()).toEqual({ since: 'all' });

@@ -18,6 +18,9 @@ const SOURCE_SUMMARY = {
   updatedAt: true,
   lastCapturedAt: true,
   scanPausedAt: true,
+  captureIntervalMinutes: true,
+  nextCaptureAt: true,
+  consecutiveCaptureFailures: true,
 } as const;
 
 // Version lists, the current version and the compare-and-swap never load the
@@ -346,7 +349,8 @@ export class ContentStudioSourceRepository {
   }
 
   // A paused live feed is scheduled again (P8-C3): its next capture is due
-  // by its last one, like any feed's. Nothing is captured here
+  // when it was (P8-C4), at once if that time has passed, never twice to
+  // catch up. Nothing is captured here
   resumeFeed(organizationId: string, id: string) {
     return this._source.model.contentStudioSource.updateMany({
       where: {
@@ -430,29 +434,107 @@ export class ContentStudioSourceRepository {
     return { status: 'conflict' as const };
   }
 
-  // A feed that was just read (P8-01). Only a live feed: one archived during
-  // the capture keeps what it had. A paused one too (P8-C3): a member's
-  // refresh, or a capture that was already running when it was paused
-  markFeedCaptured(organizationId: string, id: string, capturedAt: Date) {
+  // A feed that was just read (P8-01), with its next automatic capture
+  // (P8-C4) and no failure left: a member's refresh and a scheduled capture
+  // alike. Only a live feed: one archived during the capture keeps what it
+  // had. A paused one too (P8-C3): a member's refresh, or a capture that was
+  // already running when it was paused. Only a later read than the last one:
+  // a refresh and a scheduled capture can overlap, and the one that read the
+  // feed first may end last, which then changes nothing
+  markFeedCaptured(
+    organizationId: string,
+    id: string,
+    capturedAt: Date,
+    nextCaptureAt: Date
+  ) {
     return this._source.model.contentStudioSource.updateMany({
       where: {
         id,
         organizationId,
         kind: 'feed',
         archivedAt: null,
+        OR: [{ lastCapturedAt: null }, { lastCapturedAt: { lt: capturedAt } }],
       },
       data: {
         lastCapturedAt: capturedAt,
+        nextCaptureAt,
+        consecutiveCaptureFailures: 0,
+      },
+    });
+  }
+
+  // A scheduled capture of a live feed failed for a reason of the feed
+  // (P8-C4), after its own attempts: one more failure, and its next
+  // automatic capture later. Only from the state it was decided on (the
+  // failures read) and while the feed is due: a retry of the same write, a
+  // concurrent one or a member's successful refresh in between (which
+  // schedules the feed ahead) leave the feed as it is. A paused feed too: the
+  // pause still keeps it out of the scan. The last capture stays as it was
+  recordFeedCaptureFailure(input: {
+    organizationId: string;
+    id: string;
+    expectedFailures: number;
+    failedAt: Date;
+    nextCaptureAt: Date;
+  }) {
+    return this._source.model.contentStudioSource.updateMany({
+      where: {
+        id: input.id,
+        organizationId: input.organizationId,
+        kind: 'feed',
+        archivedAt: null,
+        consecutiveCaptureFailures: input.expectedFailures,
+        OR: [
+          { nextCaptureAt: null },
+          { nextCaptureAt: { lte: input.failedAt } },
+        ],
+      },
+      data: {
+        consecutiveCaptureFailures: input.expectedFailures + 1,
+        nextCaptureAt: input.nextCaptureAt,
+      },
+    });
+  }
+
+  // A live feed's interval (P8-C4), paused or not, with its next automatic
+  // capture when one is given (kept otherwise). Only from the state it was
+  // decided on: a capture that ended meanwhile (its time or its failures)
+  // leaves the feed as it is, for the service to read again
+  setFeedInterval(input: {
+    organizationId: string;
+    id: string;
+    captureIntervalMinutes: number | null;
+    expected: {
+      lastCapturedAt: Date | null;
+      consecutiveCaptureFailures: number;
+    };
+    nextCaptureAt?: Date | null;
+  }) {
+    return this._source.model.contentStudioSource.updateMany({
+      where: {
+        id: input.id,
+        organizationId: input.organizationId,
+        kind: 'feed',
+        archivedAt: null,
+        lastCapturedAt: input.expected.lastCapturedAt,
+        consecutiveCaptureFailures: input.expected.consecutiveCaptureFailures,
+      },
+      data: {
+        captureIntervalMinutes: input.captureIntervalMinutes,
+        ...(input.nextCaptureAt !== undefined
+          ? { nextCaptureAt: input.nextCaptureAt }
+          : {}),
       },
     });
   }
 
   // For the feed capture schedule only (no route reaches it): live feeds of
-  // every live organization not read since `capturedBefore`, one page after
-  // `afterId` in id order, so a scan walks every feed once. Never a paused
-  // feed (P8-C3). Ids only
+  // every live organization due at `dueAt` (P8-C4: their next automatic
+  // capture is then or earlier, or not set yet), one page after `afterId` in
+  // id order, so a scan walks every due feed once. Never a paused feed
+  // (P8-C3). Ids only
   listFeedsDueForCapture(input: {
-    capturedBefore: Date;
+    dueAt: Date;
     afterId: string | null;
     take: number;
   }) {
@@ -462,10 +544,7 @@ export class ContentStudioSourceRepository {
         archivedAt: null,
         scanPausedAt: null,
         ...(input.afterId ? { id: { gt: input.afterId } } : {}),
-        OR: [
-          { lastCapturedAt: null },
-          { lastCapturedAt: { lt: input.capturedBefore } },
-        ],
+        OR: [{ nextCaptureAt: null }, { nextCaptureAt: { lte: input.dueAt } }],
         organization: {
           deletedAt: null,
         },

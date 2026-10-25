@@ -99,6 +99,7 @@ import {
   ListContentStudioSourceDiscoveriesDto,
   ListContentStudioDiscoveriesDto,
   ListContentStudioSourceChangesDto,
+  SetContentStudioFeedIntervalDto,
   UpdateContentStudioSourceDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.source.dto';
 import {
@@ -793,6 +794,22 @@ export class ContentStudioController {
       userId: user.id,
       sourceId: id,
     });
+  }
+
+  // How often a feed is captured automatically (P8-C4): a preset or the
+  // default, nothing else. Nothing is captured here
+  @Post('/sources/:id/interval')
+  @HttpCode(200)
+  setSourceInterval(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Body() body: SetContentStudioFeedIntervalDto
+  ) {
+    return this._contentStudioSourceService.setFeedInterval(
+      org.id,
+      id,
+      body.intervalMinutes
+    );
   }
 
   // News Radar (P8-02): what the organization's live feeds found, across

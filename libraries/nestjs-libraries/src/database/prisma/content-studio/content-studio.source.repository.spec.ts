@@ -21,6 +21,8 @@ const SOURCE = '33333333-3333-4333-8333-333333333333';
 const OTHER_SOURCE = '44444444-4444-4444-8444-444444444444';
 const USER = '55555555-5555-4555-8555-555555555555';
 const NOW = new Date('2026-10-15T10:00:00.000Z');
+// a feed's next capture (P8-C4)
+const NEXT = new Date('2026-10-15T11:00:00.000Z');
 const FETCHED = new Date('2026-10-15T09:00:00.000Z');
 const URL_A = 'https://example.com/news/a';
 const REPO_ROOT = path.resolve(__dirname, '../../../../../..');
@@ -223,6 +225,9 @@ const SOURCE_FIELDS = {
   updatedAt: true,
   lastCapturedAt: true,
   scanPausedAt: true,
+  captureIntervalMinutes: true,
+  nextCaptureAt: true,
+  consecutiveCaptureFailures: true,
 };
 const VERSION_FIELDS = {
   id: true,
@@ -565,19 +570,24 @@ describe('ContentStudioSourceRepository: sources', () => {
     }
   });
 
-  it('M9 the scan lists live feeds that are not paused; the capture reads the pause with the feed', async () => {
+  it('M9/P8C4-3 the scan lists live feeds that are not paused and are due by their next capture; the capture reads the pause with the feed', async () => {
     const { repository, source } = setup();
     await repository.listFeedsDueForCapture({
-      capturedBefore: NOW,
+      dueAt: NOW,
       afterId: null,
       take: 200,
     });
-    expect(source.findMany.mock.calls[0][0].where).toEqual({
-      kind: 'feed',
-      archivedAt: null,
-      scanPausedAt: null,
-      OR: [{ lastCapturedAt: null }, { lastCapturedAt: { lt: NOW } }],
-      organization: { deletedAt: null },
+    expect(source.findMany.mock.calls[0][0]).toEqual({
+      where: {
+        kind: 'feed',
+        archivedAt: null,
+        scanPausedAt: null,
+        OR: [{ nextCaptureAt: null }, { nextCaptureAt: { lte: NOW } }],
+        organization: { deletedAt: null },
+      },
+      orderBy: { id: 'asc' },
+      select: { id: true, organizationId: true },
+      take: 200,
     });
     await repository.getSourceForCapture(ORG, SOURCE);
     expect(source.findFirst.mock.calls[0][0]).toEqual({
@@ -588,6 +598,82 @@ describe('ContentStudioSourceRepository: sources', () => {
       },
       select: { ...SOURCE_FIELDS, createdById: true },
     });
+  });
+
+  it('P8C4 a capture marks a live feed with its next capture and no failure, only when it read the feed later than the last one', async () => {
+    const { repository, source } = setup();
+    await repository.markFeedCaptured(ORG, SOURCE, NOW, NEXT);
+    expect(source.updateMany.mock.calls[0][0]).toEqual({
+      where: {
+        id: SOURCE,
+        organizationId: ORG,
+        kind: 'feed',
+        archivedAt: null,
+        OR: [{ lastCapturedAt: null }, { lastCapturedAt: { lt: NOW } }],
+      },
+      data: {
+        lastCapturedAt: NOW,
+        nextCaptureAt: NEXT,
+        consecutiveCaptureFailures: 0,
+      },
+    });
+  });
+
+  it('P8C4 a failure is one more from the failures read, while the feed is due; the last capture is not touched', async () => {
+    const { repository, source } = setup();
+    await repository.recordFeedCaptureFailure({
+      organizationId: ORG,
+      id: SOURCE,
+      expectedFailures: 2,
+      failedAt: NOW,
+      nextCaptureAt: NEXT,
+    });
+    expect(source.updateMany.mock.calls[0][0]).toEqual({
+      where: {
+        id: SOURCE,
+        organizationId: ORG,
+        kind: 'feed',
+        archivedAt: null,
+        consecutiveCaptureFailures: 2,
+        OR: [{ nextCaptureAt: null }, { nextCaptureAt: { lte: NOW } }],
+      },
+      data: { consecutiveCaptureFailures: 3, nextCaptureAt: NEXT },
+    });
+  });
+
+  it('P8C4 an interval is written from the state read, with the next capture only when one is given', async () => {
+    const { repository, source } = setup();
+    const expected = { lastCapturedAt: NOW, consecutiveCaptureFailures: 0 };
+    await repository.setFeedInterval({
+      organizationId: ORG,
+      id: SOURCE,
+      captureIntervalMinutes: 180,
+      expected,
+      nextCaptureAt: NEXT,
+    });
+    await repository.setFeedInterval({
+      organizationId: ORG,
+      id: SOURCE,
+      captureIntervalMinutes: null,
+      expected: { lastCapturedAt: null, consecutiveCaptureFailures: 1 },
+    });
+    const where = (state: Record<string, unknown>) => ({
+      id: SOURCE,
+      organizationId: ORG,
+      kind: 'feed',
+      archivedAt: null,
+      ...state,
+    });
+    expect(source.updateMany.mock.calls.map(([args]) => args)).toEqual([
+      {
+        where: where(expected),
+        data: { captureIntervalMinutes: 180, nextCaptureAt: NEXT },
+      },
+      {
+        where: where({ lastCapturedAt: null, consecutiveCaptureFailures: 1 }),
+        data: { captureIntervalMinutes: null },
+      },
+    ]);
   });
 
   it('SR13-SR15 has no delete, URL change or version-changing method', () => {
@@ -624,8 +710,11 @@ describe('ContentStudioSourceRepository: sources', () => {
       'markFeedCaptured',
       // a feed's scheduled captures (P8-C3): that field only
       'pauseFeed',
+      // a feed's schedule (P8-C4): a failure, and its interval
+      'recordFeedCaptureFailure',
       'restoreSourceWithinLimit',
       'resumeFeed',
+      'setFeedInterval',
       // the page-change backfill (P8-04B1): the derived fields only
       'setPageChangeWithCompareAndSwap',
       'updateSourceName',
@@ -1218,6 +1307,11 @@ describe('ContentStudioSource schema', () => {
       lastCapturedAt: 'DateTime?',
       // when a feed's scheduled captures were paused (P8-C3)
       scanPausedAt: 'DateTime?',
+      // a feed's schedule (P8-C4): its preset, its next automatic capture
+      // and its scheduled failures in a row
+      captureIntervalMinutes: 'Int?',
+      nextCaptureAt: 'DateTime?',
+      consecutiveCaptureFailures: 'Int',
       // a page's last page change, derived from its versions (P8-04B1)
       lastPageChangeAt: 'DateTime?',
       lastPageChangeVersionNumber: 'Int?',
@@ -1231,6 +1325,9 @@ describe('ContentStudioSource schema', () => {
     });
     expect(block('ContentStudioSource')).toMatch(
       /latestVersionNumber\s+Int\s+@default\(0\)/
+    );
+    expect(block('ContentStudioSource')).toMatch(
+      /consecutiveCaptureFailures\s+Int\s+@default\(0\)\n/
     );
     expect(fields('ContentStudioSourceVersion')).toEqual({
       id: 'String',

@@ -9,8 +9,11 @@ import {
   CONTENT_STUDIO_SOURCE_SEARCH_MAX,
   ContentStudioDiscoveryCaptureState,
   ContentStudioDiscoveryWindow,
+  contentStudioFeedIntervals,
   contentStudioSourceLimits,
+  effectiveFeedIntervalMinutes,
   isContentStudioSourceKind,
+  nextCaptureAfterSuccess,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
 import {
   canonicalContentStudioSourceUrl,
@@ -119,6 +122,16 @@ const kindNotScheduled = () =>
     400
   );
 
+// a preset the organization may not choose, or no preset at all (P8-C4)
+const intervalInvalid = () =>
+  new HttpException(
+    {
+      msg: 'This capture interval is not available.',
+      code: 'CS_SOURCE_INTERVAL_INVALID',
+    },
+    400
+  );
+
 // Source and version ids are Prisma uuid() values; anything else cannot exist
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // the page size of every Content Studio list
@@ -139,6 +152,9 @@ const DISCOVERY_WINDOW_MS: Record<ContentStudioDiscoveryWindow, number | null> =
 const BACKFILL_PAGE_SIZE = 100;
 const BACKFILL_VERSIONS_PAGE_SIZE = 1000;
 const BACKFILL_ATTEMPTS = 3;
+// How often a feed's interval is decided again when a capture ended between
+// its read and its write (P8-C4)
+const FEED_INTERVAL_ATTEMPTS = 3;
 const UNPAIRED_SURROGATE =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
@@ -160,6 +176,10 @@ interface SourceRow {
   lastCapturedAt?: Date | null;
   // feeds only (P8-C3)
   scanPausedAt?: Date | null;
+  // feeds only (P8-C4)
+  captureIntervalMinutes?: number | null;
+  nextCaptureAt?: Date | null;
+  consecutiveCaptureFailures?: number;
 }
 
 // A source's stored last page change (P8-04B1)
@@ -265,6 +285,13 @@ export const toPublicContentStudioSource = (row: SourceRow) => ({
   // when a feed's scheduled captures were paused (P8-C3); null while they
   // run, and always for a page source
   scanPausedAt: row.scanPausedAt ?? null,
+  // a feed's schedule (P8-C4): its preset (null for the default), the
+  // earliest time of its next automatic capture (null: due now), and how
+  // many scheduled captures failed in a row (0: none). null, null and 0 for
+  // a page source
+  captureIntervalMinutes: row.captureIntervalMinutes ?? null,
+  nextCaptureAt: row.nextCaptureAt ?? null,
+  consecutiveCaptureFailures: row.consecutiveCaptureFailures ?? 0,
 });
 
 export const toPublicContentStudioSourceVersion = (row: VersionRow) => ({
@@ -288,7 +315,8 @@ export const toPublicContentStudioSourceVersion = (row: VersionRow) => ({
 // Sources of an organization: pages it tracks, with their captured versions.
 // A source is provenance, never a statement that its text is true. Every
 // member may create, rename, archive and restore sources, pause and resume
-// feeds, and read their versions: no role, plan or billing check. Nothing here fetches anything;
+// feeds, choose their interval, and read their versions: no role, plan or
+// billing check. Nothing here fetches anything;
 // versions are appended by server-side ingestion only, never from a request
 @Injectable()
 export class ContentStudioSourceService {
@@ -461,8 +489,9 @@ export class ContentStudioSourceService {
   // listed and counted against the live feed limit, keeps what it found, and
   // a member may still refresh it. Pausing a paused feed (or resuming a
   // running one) changes nothing and returns it as it is. An archived feed
-  // is read-only, and a page has no schedule. Neither captures anything: a
-  // resumed feed is due by its last capture, at the next scan
+  // is read-only, and a page has no schedule. Neither captures anything nor
+  // touches the schedule (P8-C4): a resumed feed is due at its next capture
+  // time, at the first scan after it when that time has passed
   async pauseFeed(organizationId: string, id: string) {
     const feed = await this.liveFeed(organizationId, id);
     if (!feed.scanPausedAt) {
@@ -481,6 +510,56 @@ export class ContentStudioSourceService {
       await this._contentStudioSourceRepository.resumeFeed(organizationId, id);
     }
     return toPublicContentStudioSource(await this.liveFeed(organizationId, id));
+  }
+
+  // How often a live feed is captured automatically (P8-C4): a preset the
+  // organization may choose, or null for the default. Paused or not; an
+  // archived feed is read-only and a page has no schedule. The same value
+  // again changes nothing. A healthy feed's next automatic capture follows
+  // from its last capture and the new interval (at once when that time has
+  // passed, or when it was never captured); after failures the failure delay
+  // stays, and the next success uses the new interval. Nothing is captured
+  // here. A capture that read the old interval and ends after this change
+  // schedules its next capture with that interval once
+  async setFeedInterval(
+    organizationId: string,
+    id: string,
+    intervalMinutes: unknown
+  ) {
+    for (let attempt = 1; attempt <= FEED_INTERVAL_ATTEMPTS; attempt++) {
+      const feed = await this.liveFeed(organizationId, id);
+      const captureIntervalMinutes = this.feedInterval(
+        organizationId,
+        intervalMinutes
+      );
+      if ((feed.captureIntervalMinutes ?? null) === captureIntervalMinutes) {
+        return toPublicContentStudioSource(feed);
+      }
+      const lastCapturedAt = feed.lastCapturedAt ?? null;
+      const consecutiveCaptureFailures = feed.consecutiveCaptureFailures ?? 0;
+      const { count } =
+        await this._contentStudioSourceRepository.setFeedInterval({
+          organizationId,
+          id,
+          captureIntervalMinutes,
+          expected: { lastCapturedAt, consecutiveCaptureFailures },
+          nextCaptureAt:
+            consecutiveCaptureFailures > 0
+              ? undefined
+              : lastCapturedAt
+              ? nextCaptureAfterSuccess(
+                  lastCapturedAt,
+                  effectiveFeedIntervalMinutes(captureIntervalMinutes)!
+                )
+              : null,
+        });
+      if (count === 1) {
+        return toPublicContentStudioSource(
+          await this.liveFeed(organizationId, id)
+        );
+      }
+    }
+    throw sourcesConflict();
   }
 
   // History stays readable when the source is archived. Metadata only
@@ -1118,6 +1197,22 @@ export class ContentStudioSourceService {
         };
       }
     }
+  }
+
+  // null (the default) or a preset of the organization, nothing else
+  private feedInterval(organizationId: string, value: unknown) {
+    if (value === null) {
+      return null;
+    }
+    if (
+      typeof value === 'number' &&
+      (
+        contentStudioFeedIntervals(organizationId) as readonly number[]
+      ).includes(value)
+    ) {
+      return value;
+    }
+    throw intervalInvalid();
   }
 
   // A feed of the organization that is not archived: a feed archived

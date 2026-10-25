@@ -8,11 +8,13 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import { Transform, TransformFnParams } from 'class-transformer';
 import {
   CONTENT_STUDIO_DISCOVERY_CAPTURE_STATES,
   CONTENT_STUDIO_DISCOVERY_WINDOWS,
+  CONTENT_STUDIO_FEED_INTERVALS,
   CONTENT_STUDIO_SOURCE_KINDS,
   CONTENT_STUDIO_SOURCE_NAME_MAX,
   CONTENT_STUDIO_SOURCE_SEARCH_MAX,
@@ -76,6 +78,15 @@ export class UpdateContentStudioSourceDto {
   @IsString()
   @MaxLength(CONTENT_STUDIO_SOURCE_NAME_MAX)
   name: string;
+}
+
+// A feed's interval (P8-C4): a preset of minutes, or null for the default.
+// Always sent: there is no field for an organization, a next capture, a
+// failure or a time. The service checks the preset again for the organization
+export class SetContentStudioFeedIntervalDto {
+  @ValidateIf((o) => o.intervalMinutes !== null)
+  @IsIn(CONTENT_STUDIO_FEED_INTERVALS)
+  intervalMinutes: number | null;
 }
 
 export class ListContentStudioSourceVersionsDto {

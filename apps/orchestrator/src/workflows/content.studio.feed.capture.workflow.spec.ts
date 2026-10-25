@@ -1,6 +1,14 @@
 import fs from 'fs';
 import path from 'path';
-import { WorkflowExecutionAlreadyStartedError } from '@temporalio/common';
+import {
+  ActivityFailure,
+  ApplicationFailure,
+  CancelledFailure,
+  RetryState,
+  TimeoutFailure,
+  TimeoutType,
+  WorkflowExecutionAlreadyStartedError,
+} from '@temporalio/common';
 
 // The feed capture workflows (P8-01) as plain functions: the Temporal
 // workflow API is replaced by mocks, so this checks what the workflows ask
@@ -9,6 +17,7 @@ import { WorkflowExecutionAlreadyStartedError } from '@temporalio/common';
 const mockActivities = {
   listContentStudioFeedsForCapture: jest.fn(),
   captureContentStudioFeed: jest.fn(),
+  recordContentStudioFeedCaptureFailure: jest.fn(),
 };
 const mockProxyOptions: unknown[] = [];
 const mockStartChild = jest.fn();
@@ -22,6 +31,10 @@ const mockContinueAsNew = jest.fn((...args: unknown[]) => {
   throw new MockContinueAsNew(args);
 });
 jest.mock('@temporalio/workflow', () => ({
+  // the real failure classes: the workflow tells failures apart by them
+  ActivityFailure: jest.requireActual('@temporalio/common').ActivityFailure,
+  ApplicationFailure:
+    jest.requireActual('@temporalio/common').ApplicationFailure,
   proxyActivities: (options: unknown) => {
     mockProxyOptions.push(options);
     return mockActivities;
@@ -51,9 +64,22 @@ const scan = async (input?: unknown) => {
   throw new Error('the scan never ends: it continues as new');
 };
 
+// What a workflow sees when an activity failed for good: its last failure as
+// the cause
+const activityFailure = (cause: Error) =>
+  new ActivityFailure(
+    'Activity task failed',
+    'captureContentStudioFeed',
+    '1',
+    RetryState.MAXIMUM_ATTEMPTS_REACHED,
+    'worker',
+    cause
+  );
+
 beforeEach(() => {
   mockActivities.listContentStudioFeedsForCapture.mockReset();
   mockActivities.captureContentStudioFeed.mockReset();
+  mockActivities.recordContentStudioFeedCaptureFailure.mockReset();
   mockStartChild.mockReset();
   mockSleep.mockReset();
   mockContinueAsNew.mockClear();
@@ -80,7 +106,7 @@ describe('contentStudioFeedCaptureWorkflowV1', () => {
   // P8-C2: the capture runs on its own queue, the list stays on `main`; the
   // same deadlines and attempts, and no deadline to start (a capture waits
   // in its queue for a free slot)
-  it('TM6/TM7/WR1-WR4 a capture is tried at most three times, a list at most three times, each within a deadline', () => {
+  it('TM6/TM7/WR1-WR4/P8C4-8 a capture is tried at most three times, a list and a failure record at most three times, each within a deadline', () => {
     expect(mockProxyOptions).toEqual([
       {
         startToCloseTimeout: '2 minute',
@@ -100,7 +126,125 @@ describe('contentStudioFeedCaptureWorkflowV1', () => {
           initialInterval: '2 minutes',
         },
       },
+      // P8-C4: the failure record, a small write on `main`
+      {
+        startToCloseTimeout: '1 minute',
+        taskQueue: 'main',
+        retry: {
+          maximumAttempts: 3,
+          backoffCoefficient: 1,
+          initialInterval: '1 minute',
+        },
+      },
     ]);
+  });
+
+  // P8-C4: a capture that failed for a reason of the feed delays its next
+  // automatic one, once, and still fails; any other failure changes nothing
+  const run = (organizationId = ORG) =>
+    contentStudioFeedCaptureWorkflowV1({
+      organizationId,
+      sourceId: FEED(1),
+    }).then(
+      () => {
+        throw new Error('expected a failure');
+      },
+      (err: unknown) => err
+    );
+
+  it('WF1 a capture that succeeds records no failure', async () => {
+    mockActivities.captureContentStudioFeed.mockResolvedValue({
+      status: 'captured',
+    });
+    await contentStudioFeedCaptureWorkflowV1({
+      organizationId: ORG,
+      sourceId: FEED(1),
+    });
+    expect(
+      mockActivities.recordContentStudioFeedCaptureFailure
+    ).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['CS_SOURCE_FETCH_FAILED', false],
+    ['CS_SOURCE_FETCH_TIMEOUT', false],
+    ['CS_SOURCE_FEED_INVALID', true],
+    ['CS_SOURCE_INTEGRITY_ERROR', true],
+  ])(
+    'WF2/P8C4-6/P8C4-7/M28/M29 %s, its attempts used up: recorded once with the ids and the code, then the workflow fails with it',
+    async (type, nonRetryable) => {
+      const failure = activityFailure(
+        ApplicationFailure.create({
+          message: 'The Content Studio feed could not be captured.',
+          type,
+          nonRetryable,
+        })
+      );
+      mockActivities.captureContentStudioFeed.mockRejectedValue(failure);
+      mockActivities.recordContentStudioFeedCaptureFailure.mockResolvedValue({
+        status: 'recorded',
+      });
+      expect(await run()).toBe(failure);
+      expect(
+        mockActivities.recordContentStudioFeedCaptureFailure.mock.calls
+      ).toEqual([[{ organizationId: ORG, sourceId: FEED(1), code: type }]]);
+    }
+  );
+
+  it.each([
+    [
+      'WF3 an application failure without a CS_ code (the database)',
+      activityFailure(
+        ApplicationFailure.create({
+          message: 'connection reset',
+          type: 'PrismaClientKnownRequestError',
+        })
+      ),
+    ],
+    [
+      'an application failure without a type',
+      activityFailure(ApplicationFailure.create({ message: 'x' })),
+    ],
+    [
+      'WF4 a timeout (a capture over its deadline, a lost worker)',
+      activityFailure(
+        new TimeoutFailure('timed out', undefined, TimeoutType.START_TO_CLOSE)
+      ),
+    ],
+    ['a cancellation', activityFailure(new CancelledFailure('cancelled'))],
+    ['WF5 a plain error', new Error('raw')],
+    [
+      'a CS_ code that is not the activity failure itself',
+      ApplicationFailure.create({
+        message: 'x',
+        type: 'CS_SOURCE_FEED_INVALID',
+      }),
+    ],
+  ])(
+    'M27 %s records nothing; the workflow fails with it',
+    async (_, failure) => {
+      mockActivities.captureContentStudioFeed.mockRejectedValue(failure);
+      expect(await run()).toBe(failure);
+      expect(
+        mockActivities.recordContentStudioFeedCaptureFailure
+      ).not.toHaveBeenCalled();
+    }
+  );
+
+  it('WF6 a record that failed every attempt fails the workflow with that failure, never quietly', async () => {
+    mockActivities.captureContentStudioFeed.mockRejectedValue(
+      activityFailure(
+        ApplicationFailure.create({ type: 'CS_SOURCE_FETCH_FAILED' })
+      )
+    );
+    const recordFailure = activityFailure(new Error('database down'));
+    mockActivities.recordContentStudioFeedCaptureFailure.mockRejectedValue(
+      recordFailure
+    );
+    expect(await run()).toBe(recordFailure);
+    expect(
+      mockActivities.recordContentStudioFeedCaptureFailure
+    ).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -128,12 +272,13 @@ describe('contentStudioFeedScanWorkflowV1', () => {
         },
       ])
     );
-    // the last page: an hour of sleep, then a fresh scan from the start
-    expect(mockSleep).toHaveBeenCalledWith('1 hour');
+    // WS1/P8C4-4/M39 the last page: the scan cadence (P8-C4), then a fresh
+    // scan from the start
+    expect(mockSleep.mock.calls).toEqual([['10 minutes']]);
     expect(next).toEqual([{}]);
   });
 
-  it('a full page continues at once from where it ended, without sleeping', async () => {
+  it('WS2 a full page continues at once from where it ended, without sleeping', async () => {
     mockActivities.listContentStudioFeedsForCapture.mockResolvedValue({
       feeds: [{ organizationId: ORG, sourceId: FEED(1) }],
       next: FEED(1),
@@ -145,7 +290,7 @@ describe('contentStudioFeedScanWorkflowV1', () => {
     expect(mockSleep).not.toHaveBeenCalled();
   });
 
-  it('51/52 a feed whose capture still runs keeps it: no second capture, the others start', async () => {
+  it('51/52/WS7 a feed whose capture still runs keeps it: no second capture, the others start', async () => {
     mockActivities.listContentStudioFeedsForCapture.mockResolvedValue({
       feeds: [
         { organizationId: ORG, sourceId: FEED(1) },
@@ -179,7 +324,55 @@ describe('contentStudioFeedScanWorkflowV1', () => {
       next: null,
     });
     expect(await scan()).toEqual([{}]);
+    expect(mockSleep.mock.calls).toEqual([['10 minutes']]);
     expect(mockStartChild).not.toHaveBeenCalled();
+  });
+
+  // P8-C4 (P8-DEFERRED-29): a list that failed every attempt never ends the
+  // scan: the same page again after the cadence
+  it.each([
+    [{ afterId: FEED(4) }, { afterId: FEED(4) }],
+    [{}, { afterId: null }],
+    [undefined, { afterId: null }],
+  ])(
+    'WS3/WS4/P8C4-5/M40/M41 a list that failed for good: sleeps the cadence, then the same page (%j)',
+    async (input, again) => {
+      mockActivities.listContentStudioFeedsForCapture.mockRejectedValue(
+        activityFailure(new Error('database down'))
+      );
+      expect(await scan(input)).toEqual([again]);
+      expect(mockSleep.mock.calls).toEqual([['10 minutes']]);
+      expect(mockStartChild).not.toHaveBeenCalled();
+    }
+  );
+
+  it('WS5/M42 any other failure of the list still fails the scan run', async () => {
+    mockActivities.listContentStudioFeedsForCapture.mockRejectedValue(
+      new TypeError('a bug')
+    );
+    await expect(scan()).rejects.toThrow('a bug');
+    expect(mockSleep).not.toHaveBeenCalled();
+    expect(mockContinueAsNew).not.toHaveBeenCalled();
+  });
+
+  it('WS6 after a list failure the next run starts the due feeds with their own workflow ids', async () => {
+    mockActivities.listContentStudioFeedsForCapture
+      .mockRejectedValueOnce(activityFailure(new Error('database down')))
+      .mockResolvedValueOnce({
+        feeds: [{ organizationId: ORG, sourceId: FEED(5) }],
+        next: null,
+      });
+    const again = await scan({ afterId: FEED(4) });
+    await scan(again[0]);
+    expect(mockActivities.listContentStudioFeedsForCapture.mock.calls).toEqual([
+      [{ afterId: FEED(4) }],
+      [{ afterId: FEED(4) }],
+    ]);
+    expect(mockStartChild.mock.calls.map(([, options]) => options)).toEqual([
+      expect.objectContaining({
+        workflowId: `content-studio-feed-capture-${FEED(5)}`,
+      }),
+    ]);
   });
 });
 
@@ -228,13 +421,20 @@ describe('TM1 registration', () => {
       "import { CONTENT_STUDIO_CAPTURE_TASK_QUEUE } from '@gitroom/nestjs-libraries/temporal/content.studio.capture.queue';"
     );
     expect(workflow).not.toContain("'content-studio-capture'");
-    expect(workflow.match(/taskQueue: /g)).toHaveLength(3);
+    // the list, the capture, the failure record (P8-C4) and the child start
+    expect(workflow.match(/taskQueue: /g)).toHaveLength(4);
     expect(workflow).toMatch(
       /const \{ captureContentStudioFeed \} =\s*proxyActivities<ContentStudioSourceActivity>\(\{\s*startToCloseTimeout: '10 minute',\s*taskQueue: CONTENT_STUDIO_CAPTURE_TASK_QUEUE,/
     );
     // no deadline to wait in the queue, and none on the capture workflow
     expect(workflow).not.toMatch(
       /scheduleToStartTimeout|scheduleToCloseTimeout|workflowExecutionTimeout|workflowRunTimeout/
+    );
+    // P8C4-4 one cadence, written once; P8C4-14 no Temporal schedule of its own
+    expect(workflow).toContain("const SCAN_CADENCE = '10 minutes';");
+    expect(workflow.match(/sleep\(SCAN_CADENCE\)/g)).toHaveLength(2);
+    expect(workflow).not.toMatch(
+      /sleep\('|1 hour|schedule\.create|cronSchedule/
     );
     expect(
       Array.from(workflow.matchAll(/export async function (\w+)/g), (m) => m[1])

@@ -2148,6 +2148,11 @@ describe('H. What PostgreSQL does not enforce: the application does', () => {
     );
     expect(
       methods.filter((name) => /update|delete|set|upsert/i.test(name)).sort()
-    ).toEqual(['setPageChangeWithCompareAndSwap', 'updateSourceName']);
+      // P8-C4: a feed's interval and its next capture, nothing of a version
+    ).toEqual([
+      'setFeedInterval',
+      'setPageChangeWithCompareAndSwap',
+      'updateSourceName',
+    ]);
   });
 });

@@ -13,6 +13,7 @@ import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
 import { ContentStudioPager } from '@gitroom/frontend/components/content-studio/content-studio.package.list';
 import { useSingleFlight } from '@gitroom/frontend/components/content-studio/content-studio.projects.modal';
 import { formatDate } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
+import { CONTENT_STUDIO_FEED_INTERVALS } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
 import {
   ContentStudioFeedCaptureCounts,
   ContentStudioSourceKind,
@@ -50,6 +51,33 @@ export const useSourceKindLabel = () => {
       : kind === 'feed'
       ? t('content_studio_source_kind_feed', 'Feed')
       : kind;
+};
+
+// A feed's interval (P8-C4) in words. The default and an explicit hourly
+// read alike today, but only the default follows a later change of it
+export const useFeedIntervalLabel = () => {
+  const t = useT();
+  return (minutes: number | null) => {
+    switch (minutes) {
+      case null:
+        return t(
+          'content_studio_feed_interval_default',
+          'Every hour (default)'
+        );
+      case 60:
+        return t('content_studio_feed_interval_60', 'Every hour');
+      case 180:
+        return t('content_studio_feed_interval_180', 'Every 3 hours');
+      case 360:
+        return t('content_studio_feed_interval_360', 'Every 6 hours');
+      case 720:
+        return t('content_studio_feed_interval_720', 'Every 12 hours');
+      case 1440:
+        return t('content_studio_feed_interval_1440', 'Daily');
+      default:
+        return String(minutes);
+    }
+  };
 };
 
 // What a feed capture did, in fixed words and counts only: never a page
@@ -325,7 +353,13 @@ const RenameSourceForm: FC<{
   );
 };
 
-export type SourceTask = 'capture' | 'archive' | 'restore' | 'pause' | 'resume';
+export type SourceTask =
+  | 'capture'
+  | 'archive'
+  | 'restore'
+  | 'pause'
+  | 'resume'
+  | 'interval';
 
 // The source actions of the library and of one source. One action at a time
 // per source, so a double click sends one request; other sources stay usable.
@@ -468,6 +502,23 @@ export const useSourceCommands = (onCaptured?: () => void) => {
     [run, actions, toaster, t]
   );
 
+  // how often a feed is captured automatically (P8-C4)
+  const changeInterval = useCallback(
+    (source: ContentStudioSourceSummary, intervalMinutes: number | null) =>
+      run(source.id, 'interval', async () => {
+        try {
+          await actions.setFeedInterval(source.id, intervalMinutes);
+          toaster.show(
+            t('content_studio_feed_interval_saved', 'Capture interval saved.'),
+            'success'
+          );
+        } catch (err) {
+          toaster.show(sourceErrorMessage(t, err), 'warning');
+        }
+      }),
+    [run, actions, toaster, t]
+  );
+
   const rename = useCallback(
     (source: ContentStudioSourceSummary) =>
       modals.openModal({
@@ -479,7 +530,16 @@ export const useSourceCommands = (onCaptured?: () => void) => {
     [modals, t]
   );
 
-  return { busy, capture, archive, restore, pause, resume, rename };
+  return {
+    busy,
+    capture,
+    archive,
+    restore,
+    pause,
+    resume,
+    changeInterval,
+    rename,
+  };
 };
 
 // Pause feed while a live feed is captured on the schedule, Resume feed while
@@ -525,6 +585,66 @@ export const FeedPausedBadge: FC<{ source: ContentStudioSourceSummary }> = ({
     <span className="px-[8px] rounded-full border border-newTableBorder">
       {t('content_studio_feed_paused_status', 'Paused')}
     </span>
+  );
+};
+
+// A live feed whose last scheduled capture failed (P8-C4), while it runs:
+// its next try is later than its interval. A plain label like Paused, which
+// says more and is shown instead; never the error or how often it failed
+export const FeedDelayedBadge: FC<{ source: ContentStudioSourceSummary }> = ({
+  source,
+}) => {
+  const t = useT();
+  if (
+    source.kind !== 'feed' ||
+    source.archivedAt ||
+    source.scanPausedAt ||
+    !(source.consecutiveCaptureFailures > 0)
+  ) {
+    return null;
+  }
+  return (
+    <span className="px-[8px] rounded-full border border-newTableBorder">
+      {t('content_studio_feed_delayed', 'Capture delayed')}
+    </span>
+  );
+};
+
+// How often a live feed is captured automatically (P8-C4), paused or not:
+// the default first, then each preset. Never for a page or an archived feed
+export const FeedIntervalSelect: FC<{
+  source: ContentStudioSourceSummary;
+  busy?: SourceTask;
+  commands: ReturnType<typeof useSourceCommands>;
+}> = ({ source, busy, commands }) => {
+  const t = useT();
+  const intervalLabel = useFeedIntervalLabel();
+  if (source.kind !== 'feed' || source.archivedAt) {
+    return null;
+  }
+  return (
+    <label className="flex flex-col gap-[4px] text-[12px]">
+      {t('content_studio_feed_interval', 'Capture interval')}
+      <select
+        className="bg-newBgColorInner h-[32px] px-[8px] border-newTableBorder border rounded-[8px] text-textColor text-[13px] max-w-[280px]"
+        value={source.captureIntervalMinutes ?? ''}
+        disabled={!!busy}
+        aria-busy={busy === 'interval'}
+        onChange={(e) =>
+          commands.changeInterval(
+            source,
+            e.target.value ? Number(e.target.value) : null
+          )
+        }
+      >
+        <option value="">{intervalLabel(null)}</option>
+        {CONTENT_STUDIO_FEED_INTERVALS.map((minutes) => (
+          <option key={minutes} value={minutes}>
+            {intervalLabel(minutes)}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 };
 
@@ -627,6 +747,7 @@ const SourceRow: FC<{
         <div className="flex flex-wrap gap-x-[16px] gap-y-[4px] text-[12px] text-textItemBlur">
           <span>{kindLabel(source.kind)}</span>
           <FeedPausedBadge source={source} />
+          <FeedDelayedBadge source={source} />
           <SourceStatus source={source} />
           <span>
             {t('content_studio_updated', 'Updated')}:{' '}

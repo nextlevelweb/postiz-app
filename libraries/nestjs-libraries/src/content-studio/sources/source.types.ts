@@ -71,8 +71,9 @@ export const CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION_PATTERN =
 // configuration, and not a plan. They stop runaway growth; nothing is hidden,
 // archived or deleted when a limit is reached, only what would grow past it
 // is refused:
-// - live feeds: each one is read about hourly, with up to 25 pages. An
-//   archived feed is not read, so archiving one frees its place
+// - live feeds: each one is read on its schedule (hourly by default), with
+//   up to 25 pages. An archived feed is not read, so archiving one frees its
+//   place; a paused or a daily feed still takes one
 // - page sources, archived ones included: an archived page keeps its
 //   versions and its URL, and sources are never deleted. The scale Source
 //   lists and search were measured at (P8-03)
@@ -98,3 +99,50 @@ export const contentStudioSourceLimits = (
   urlSourcesMax: CONTENT_STUDIO_URL_SOURCES_MAX,
   manualRefreshCooldownMs: CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS,
 });
+
+// How often a live, running feed is captured automatically (P8-C4): one of
+// these presets, in minutes, never another number. Hourly is the shortest:
+// the scan looks for due feeds every 10 minutes, so an hourly feed starts 60
+// to 70 minutes after its last capture (more while the capture queue is
+// full), and anything shorter could not be kept. Daily is the longest. A
+// feed's own value is null for the default, which follows the default when
+// it changes; an explicit 60 stays hourly
+export const CONTENT_STUDIO_FEED_INTERVALS = [60, 180, 360, 720, 1440] as const;
+
+export type ContentStudioFeedInterval =
+  (typeof CONTENT_STUDIO_FEED_INTERVALS)[number];
+
+export const CONTENT_STUDIO_FEED_INTERVAL_DEFAULT_MINUTES: ContentStudioFeedInterval = 60;
+
+export const isContentStudioFeedInterval = (
+  value: unknown
+): value is ContentStudioFeedInterval =>
+  typeof value === 'number' &&
+  (CONTENT_STUDIO_FEED_INTERVALS as readonly number[]).includes(value);
+
+// The presets one organization may choose: all of them, for every
+// organization. The one place a later policy may offer fewer; never from a
+// request
+export const contentStudioFeedIntervals = (
+  organizationId: string
+): readonly ContentStudioFeedInterval[] => CONTENT_STUDIO_FEED_INTERVALS;
+
+// The minutes between a feed's automatic captures: the default for null, the
+// preset itself, and undefined for a stored value that is no preset (never
+// used as it is)
+export const effectiveFeedIntervalMinutes = (
+  captureIntervalMinutes: number | null
+): ContentStudioFeedInterval | undefined =>
+  captureIntervalMinutes === null
+    ? CONTENT_STUDIO_FEED_INTERVAL_DEFAULT_MINUTES
+    : isContentStudioFeedInterval(captureIntervalMinutes)
+    ? captureIntervalMinutes
+    : undefined;
+
+// The earliest automatic capture after a successful one: its own time plus
+// the interval, never a time on the clock, so a late capture is not followed
+// by another to catch up
+export const nextCaptureAfterSuccess = (
+  capturedAt: Date,
+  intervalMinutes: number
+) => new Date(capturedAt.getTime() + intervalMinutes * 60 * 1000);

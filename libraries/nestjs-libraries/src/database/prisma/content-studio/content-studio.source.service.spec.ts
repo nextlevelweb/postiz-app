@@ -66,6 +66,10 @@ const sourceRow = (overrides: Record<string, unknown> = {}) => ({
   updatedAt: T0,
   lastCapturedAt: null as Date | null,
   scanPausedAt: null as Date | null,
+  // a feed's schedule (P8-C4); null, null and 0 for a page
+  captureIntervalMinutes: null as number | null,
+  nextCaptureAt: null as Date | null,
+  consecutiveCaptureFailures: 0,
   ...overrides,
 });
 const versionSummaryRow = (overrides: Record<string, unknown> = {}) => {
@@ -209,12 +213,15 @@ const INTEGRITY = {
 const SUMMARY_KEYS = [
   'archivedAt',
   'canonicalUrl',
+  'captureIntervalMinutes',
+  'consecutiveCaptureFailures',
   'createdAt',
   'id',
   'kind',
   'lastCapturedAt',
   'latestVersionNumber',
   'name',
+  'nextCaptureAt',
   'scanPausedAt',
   'updatedAt',
 ];
@@ -278,6 +285,9 @@ describe('ContentStudioSourceService: create', () => {
       updatedAt: T0,
       lastCapturedAt: null,
       scanPausedAt: null,
+      captureIntervalMinutes: null,
+      nextCaptureAt: null,
+      consecutiveCaptureFailures: 0,
     });
     expect(repository.appendVersionWithCompareAndSwap).not.toHaveBeenCalled();
   });
@@ -823,6 +833,8 @@ describe('ContentStudioSourceService source', () => {
       'backfillPageChanges',
       'canonicalUrl',
       'createSource',
+      // a feed's interval (P8-C4): no version, no capture
+      'feedInterval',
       'getRow',
       'getSource',
       'getVersion',
@@ -843,6 +855,7 @@ describe('ContentStudioSourceService source', () => {
       'restoreSource',
       'resumeFeed',
       'search',
+      'setFeedInterval',
       'sourceName',
       'toPublicDiscovery',
     ]);
@@ -1005,7 +1018,13 @@ describe('ContentStudioSourceService: feed pause (P8-C3)', () => {
     // a page read without the field (as before P8-C3) answers null
     const page = await service.getSource(ORG, SOURCE);
     expect(page.scanPausedAt).toBeNull();
-    const { scanPausedAt: _omitted, ...withoutField } = sourceRow();
+    const {
+      scanPausedAt: _omitted,
+      captureIntervalMinutes: _interval,
+      nextCaptureAt: _next,
+      consecutiveCaptureFailures: _failures,
+      ...withoutField
+    } = sourceRow();
     repository.listSourcesForOrganization.mockResolvedValueOnce([
       { ...withoutField, organizationId: ORG, createdById: USER } as never,
     ]);
@@ -1015,6 +1034,12 @@ describe('ContentStudioSourceService: feed pause (P8-C3)', () => {
       page: 1,
     });
     expect(list.results[0].scanPausedAt).toBeNull();
+    // P8-C4: and the schedule as for a page: null, null and 0
+    expect(list.results[0]).toMatchObject({
+      captureIntervalMinutes: null,
+      nextCaptureAt: null,
+      consecutiveCaptureFailures: 0,
+    });
   });
 
   it('EP4/M2 pausing a paused feed changes nothing: its first pause time stays', async () => {

@@ -45,6 +45,7 @@ import {
   ListContentStudioSourceDiscoveriesDto,
   ListContentStudioDiscoveriesDto,
   ListContentStudioSourceChangesDto,
+  SetContentStudioFeedIntervalDto,
   UpdateContentStudioSourceDto,
 } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.source.dto';
 import { ContentStudioDesignAIService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-ai.service';
@@ -85,6 +86,7 @@ const setup = () => {
     restoreSource: jest.fn().mockResolvedValue(result),
     pauseFeed: jest.fn().mockResolvedValue(result),
     resumeFeed: jest.fn().mockResolvedValue(result),
+    setFeedInterval: jest.fn().mockResolvedValue(result),
     listDiscoveries: jest.fn().mockResolvedValue(result),
     listOrganizationDiscoveries: jest.fn().mockResolvedValue(result),
     listPageChanges: jest.fn().mockResolvedValue(result),
@@ -158,7 +160,7 @@ const allRoutes = () =>
     .map(route);
 
 describe('ContentStudioController source routes', () => {
-  it('SRC1-SRC8/CR1 declares exactly these thirteen routes, with 200 for archive, restore, pause, resume and refresh', () => {
+  it('SRC1-SRC8/CR1 declares exactly these fourteen routes, with 200 for archive, restore, pause, resume, refresh and interval', () => {
     expect(
       allRoutes()
         .filter((r) => / \/sources/.test(r))
@@ -175,6 +177,8 @@ describe('ContentStudioController source routes', () => {
       'PATCH /sources/:id',
       'POST /sources',
       'POST /sources/:id/archive',
+      // a feed's interval (P8-C4)
+      'POST /sources/:id/interval',
       // a feed's scheduled captures (P8-C3)
       'POST /sources/:id/pause',
       'POST /sources/:id/refresh',
@@ -187,6 +191,7 @@ describe('ContentStudioController source routes', () => {
       'pauseSource',
       'resumeSource',
       'refreshSource',
+      'setSourceInterval',
     ]) {
       expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler(name))).toBe(200);
     }
@@ -378,6 +383,7 @@ describe('ContentStudioController source routes', () => {
     expect(types('listSourceChanges')[1]).toBe(
       ListContentStudioSourceChangesDto
     );
+    expect(types('setSourceInterval')[2]).toBe(SetContentStudioFeedIntervalDto);
     const text = fs
       .readFileSync(
         path.join(__dirname, 'content-studio.controller.ts'),
@@ -389,8 +395,8 @@ describe('ContentStudioController source routes', () => {
       text.indexOf("@Get('/sources')"),
       text.indexOf("@Get('/writing-profiles')")
     );
-    // the thirteen source routes, News Radar (P8-02) and Changes (P8-04B1)
-    expect(block.match(/@(Get|Post|Patch|Put|Delete)\(/g)).toHaveLength(15);
+    // the fourteen source routes, News Radar (P8-02) and Changes (P8-04B1)
+    expect(block.match(/@(Get|Post|Patch|Put|Delete)\(/g)).toHaveLength(16);
     expect(block).not.toMatch(
       /AIConnection|AIExecution|Role\.|assertManager|actor|users|appendVersion|safeFetch|fetch\(/
     );
@@ -630,6 +636,8 @@ describe('Source trusted-provenance boundary', () => {
       'PATCH /sources/:id',
       'POST /sources',
       'POST /sources/:id/archive',
+      // a feed's interval only (P8-C4)
+      'POST /sources/:id/interval',
       // a feed's schedule only (P8-C3)
       'POST /sources/:id/pause',
       'POST /sources/:id/refresh',
@@ -658,6 +666,8 @@ describe('Source trusted-provenance boundary', () => {
       'export class ListContentStudioSourcesDto',
       'export class CreateContentStudioSourceDto',
       'export class UpdateContentStudioSourceDto',
+      // a preset of minutes or null only (P8-C4)
+      'export class SetContentStudioFeedIntervalDto',
       'export class ListContentStudioSourceVersionsDto',
       'export class ListContentStudioSourceDiscoveriesDto',
       'export class ListContentStudioDiscoveriesDto',
@@ -818,15 +828,15 @@ describe('ContentStudioController source version changes', () => {
     );
   });
 
-  it('R5 is the 144th route (145 with P8-04B1, 147 with P8-C3)', () => {
-    expect(allRoutes()).toHaveLength(147);
+  it('R5 is the 144th route (145 with P8-04B1, 147 with P8-C3, 148 with P8-C4)', () => {
+    expect(allRoutes()).toHaveLength(148);
   });
 });
 
 // Organization Changes (P8-04B1): the request organization, a page and a
 // window only. Nothing is fetched or captured
 describe('ContentStudioController organization page changes', () => {
-  it('OC1 is GET /source-changes, the 145th route (147 with P8-C3), with the default 200', () => {
+  it('OC1 is GET /source-changes, the 145th route (147 with P8-C3, 148 with P8-C4), with the default 200', () => {
     expect(route('listSourceChanges')).toBe('GET /source-changes');
     expect(
       allRoutes()
@@ -840,7 +850,7 @@ describe('ContentStudioController organization page changes', () => {
     expect(
       Reflect.getMetadata(HTTP_CODE_METADATA, handler('listSourceChanges'))
     ).toBeUndefined();
-    expect(allRoutes()).toHaveLength(147);
+    expect(allRoutes()).toHaveLength(148);
   });
 
   it('OC2 reads for the request organization with the page and window only', async () => {
@@ -1024,10 +1034,15 @@ describe('ContentStudioController feed pause', () => {
     for (const name of ['pauseSource', 'resumeSource']) {
       expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler(name))).toBe(200);
     }
-    expect(allRoutes()).toHaveLength(147);
+    // P8-C4: one more, a feed's interval
+    expect(allRoutes()).toHaveLength(148);
     expect(
       allRoutes().filter((r) => /pause|resume|schedul|interval/i.test(r))
-    ).toEqual(['POST /sources/:id/pause', 'POST /sources/:id/resume']);
+    ).toEqual([
+      'POST /sources/:id/pause',
+      'POST /sources/:id/resume',
+      'POST /sources/:id/interval',
+    ]);
   });
 
   it('P8C3-11 pauses and resumes for the request organization with the path id only', async () => {
@@ -1078,5 +1093,117 @@ describe('ContentStudioController feed pause', () => {
     expect(block).not.toMatch(
       /@Body|@Query|@Headers|@Req|Dto|refresh|ingest|capture\(|organizationId/
     );
+  });
+});
+
+describe('ContentStudioController feed interval (P8-C4)', () => {
+  const ARGS = (name: string) =>
+    Reflect.getMetadata(ROUTE_ARGS_METADATA, ContentStudioController, name) as
+      | Record<string, { index: number; data?: string }>
+      | undefined;
+
+  it('P8C4-17 is POST /sources/:id/interval, 200, the 148th route', () => {
+    expect(route('setSourceInterval')).toBe('POST /sources/:id/interval');
+    expect(
+      Reflect.getMetadata(HTTP_CODE_METADATA, handler('setSourceInterval'))
+    ).toBe(200);
+    expect(allRoutes()).toHaveLength(148);
+  });
+
+  it('sets the interval for the request organization with the path id and the value only, for any member', async () => {
+    const { sources, ingestion, controller, result } = setup();
+    for (const intervalMinutes of [180, null]) {
+      const body = Object.assign(new SetContentStudioFeedIntervalDto(), {
+        intervalMinutes,
+      });
+      await expect(
+        controller.setSourceInterval(ORG, ID, withExtras(body))
+      ).resolves.toBe(result);
+    }
+    expect(sources.setFeedInterval.mock.calls).toEqual([
+      ['org-a', ID, 180],
+      ['org-a', ID, null],
+    ]);
+    // nothing is captured, paused or archived here
+    expect(ingestion.refreshSource).not.toHaveBeenCalled();
+    expect(sources.pauseFeed).not.toHaveBeenCalled();
+    expect(sources.archiveSource).not.toHaveBeenCalled();
+  });
+
+  it('takes the organization from the request, the id from the path and the body DTO only: no user, query or header', () => {
+    const args = ARGS('setSourceInterval')!;
+    const keys = Object.keys(args);
+    expect(keys).toHaveLength(3);
+    expect(
+      keys
+        .filter((key) => key.startsWith(`${RouteParamtypes.PARAM}:`))
+        .map((key) => args[key].data)
+    ).toEqual(['id']);
+    expect(
+      keys.filter((key) => key.startsWith(`${RouteParamtypes.BODY}:`))
+    ).toHaveLength(1);
+    expect(
+      keys.filter(
+        (key) =>
+          key.startsWith(`${RouteParamtypes.QUERY}:`) ||
+          key.startsWith(`${RouteParamtypes.HEADERS}:`) ||
+          key.startsWith(`${RouteParamtypes.REQUEST}:`)
+      )
+    ).toEqual([]);
+    const text = fs
+      .readFileSync(
+        path.join(__dirname, 'content-studio.controller.ts'),
+        'utf8'
+      )
+      .replace(/^\s*\/\/.*$/gm, '');
+    const start = text.indexOf("@Post('/sources/:id/interval')");
+    const block = text.slice(start, text.indexOf('\n  }\n', start));
+    expect(block).toContain(
+      'this._contentStudioSourceService.setFeedInterval(\n      org.id,\n      id,\n      body.intervalMinutes\n    );'
+    );
+    expect(block).not.toMatch(
+      /GetUserFromRequest|@Query|@Req|Role|Polic|ingestion|refresh|organizationId|nextCaptureAt|Failures/
+    );
+  });
+
+  it.each([null, 60, 180, 360, 720, 1440])(
+    'DTO accepts %p as sent',
+    async (intervalMinutes) => {
+      const body = await run(SetContentStudioFeedIntervalDto, {
+        intervalMinutes,
+      });
+      expect(body).toBeInstanceOf(SetContentStudioFeedIntervalDto);
+      expect({ ...body }).toEqual({ intervalMinutes });
+    }
+  );
+
+  it.each([
+    ['missing', {}],
+    ['a string', { intervalMinutes: '60' }],
+    ['0', { intervalMinutes: 0 }],
+    ['-1', { intervalMinutes: -1 }],
+    ['59', { intervalMinutes: 59 }],
+    ['61', { intervalMinutes: 61 }],
+    ['60.5', { intervalMinutes: 60.5 }],
+    ['1000000', { intervalMinutes: 1_000_000 }],
+    ['a list', { intervalMinutes: [60] }],
+    ['true', { intervalMinutes: true }],
+  ])('M30 DTO refuses %s', async (_name, body) => {
+    await rejected(SetContentStudioFeedIntervalDto, body);
+  });
+
+  it.each([
+    'organizationId',
+    'nextCaptureAt',
+    'consecutiveCaptureFailures',
+    'captureIntervalMinutes',
+    'code',
+    'scanPausedAt',
+  ])('DTO refuses a body with %s', async (field) => {
+    const message = await rejected(SetContentStudioFeedIntervalDto, {
+      intervalMinutes: 60,
+      [field]: field === 'organizationId' ? 'org-b' : 1,
+    });
+    expect(message).toContain(`property ${field} should not exist`);
   });
 });

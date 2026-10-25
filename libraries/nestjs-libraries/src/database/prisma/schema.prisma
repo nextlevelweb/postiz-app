@@ -2300,7 +2300,13 @@ model ContentStudioExpertiseProfileRevision {
 // command rebuilds them from the versions. scanPausedAt (P8-C3) is when a
 // live feed's scheduled captures were paused, null while they run (and for
 // every source before P8-C3): a paused feed stays live, is listed, keeps what
-// it found and can be refreshed by a member. Archiving and restoring keep it
+// it found and can be refreshed by a member. Archiving and restoring keep it.
+// The schedule of a feed (P8-C4): captureIntervalMinutes is the member's
+// preset, null for the default; nextCaptureAt is the earliest time the scan
+// may start its next capture, null for due now (a new feed, and every feed
+// before P8-C4); consecutiveCaptureFailures counts the scheduled captures
+// that failed since the last one that succeeded, 0 when healthy. All three
+// stay null, null and 0 for a `url` source
 model ContentStudioSource {
   id                              String                         @id @default(uuid())
   organizationId                  String
@@ -2318,6 +2324,9 @@ model ContentStudioSource {
   lastPageChangeKind              String?
   lastPageChangePreviousCaptureAt DateTime?
   scanPausedAt                    DateTime?
+  captureIntervalMinutes          Int?
+  nextCaptureAt                   DateTime?
+  consecutiveCaptureFailures      Int                            @default(0)
   organization                    Organization                   @relation(fields: [organizationId], references: [id])
   createdBy                       User                           @relation("ContentStudioSourceCreatedBy", fields: [createdById], references: [id])
   versions                        ContentStudioSourceVersion[]

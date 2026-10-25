@@ -634,6 +634,9 @@ describe('ContentStudioSourceIngestionService: provenance', () => {
       updatedAt: expect.any(Date),
       lastCapturedAt: null,
       scanPausedAt: null,
+      captureIntervalMinutes: null,
+      nextCaptureAt: null,
+      consecutiveCaptureFailures: 0,
     });
     expect(Object.keys(result.version).sort()).toEqual([
       'contentHash',

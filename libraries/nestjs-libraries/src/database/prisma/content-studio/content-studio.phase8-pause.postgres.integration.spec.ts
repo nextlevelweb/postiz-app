@@ -9,10 +9,7 @@ import {
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
-import {
-  ContentStudioSourceIngestionService,
-  FEED_CAPTURE_INTERVAL_MS,
-} from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
+import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 import { CONTENT_STUDIO_MANUAL_REFRESH_COOLDOWN_MS } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
 import type { SafeFetchResult } from '@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch';
 import { createContentStudioPostgresClient } from '../../../../../../jest.content-studio.postgres.guard';
@@ -119,7 +116,8 @@ const rss = (links: string[]) =>
         `<item><title>Story ${i}</title><link>${link}</link><guid>g-${i}</guid></item>`
     )
     .join('')}</channel></rss>`;
-const old = () => new Date(Date.now() - FEED_CAPTURE_INTERVAL_MS - 60_000);
+// an hour ago: a time that has passed
+const old = () => new Date(Date.now() - 60 * 60 * 1000);
 
 // fixture rows, written directly: never through the limited create
 const fixtureFeed = async (
@@ -512,7 +510,7 @@ describe('P8-C3 on PostgreSQL: the live feed limit (P8-C1)', () => {
 });
 
 describe('P8-C3 on PostgreSQL: the scan and the scheduled capture', () => {
-  it('P8C3PG7/P8C3PG8/P8C3PG9 the scan lists a due running feed, never a paused one, and a resumed one by its old capture', async () => {
+  it('P8C3PG7/P8C3PG8/P8C3PG9 the scan lists a due running feed, never a paused one, and a resumed one by its next capture time', async () => {
     const running = await fixtureFeed(ORG_A, 'due-running', {
       lastCapturedAt: old(),
     });
@@ -524,15 +522,17 @@ describe('P8-C3 on PostgreSQL: the scan and the scheduled capture', () => {
     const pausedNever = await fixtureFeed(ORG_B, 'due-paused-never', {
       scanPausedAt: new Date(),
     });
+    // P8-C4: its next capture not due yet
     const pausedRecent = await fixtureFeed(ORG_A, 'due-paused-recent', {
       lastCapturedAt: new Date(Date.now() - 60_000),
+      nextCaptureAt: new Date(Date.now() + 60 * 60 * 1000),
       scanPausedAt: new Date(),
     });
     expect(await due()).toEqual([running, never].sort());
     await service.resumeFeed(ORG_A, paused);
     await service.resumeFeed(ORG_B, pausedNever);
     await service.resumeFeed(ORG_A, pausedRecent);
-    // due again by its last capture: the interval rule is unchanged
+    // due again by its next capture time (P8-C4), kept through the pause
     expect(await due()).toEqual([running, never, paused, pausedNever].sort());
     expect(mockSafeFetch).not.toHaveBeenCalled();
   });
@@ -651,7 +651,7 @@ describe('P8-C3 on PostgreSQL: a member refresh of a paused feed', () => {
     // the schedule still leaves it out, even once it is due
     await client.contentStudioSource.update({
       where: { id: feed },
-      data: { lastCapturedAt: old() },
+      data: { nextCaptureAt: old() },
     });
     expect(await due()).toEqual([]);
   });

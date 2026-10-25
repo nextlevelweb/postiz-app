@@ -16,6 +16,7 @@ const setup = () => {
   const ingestion = {
     listFeedsDueForCapture: jest.fn(),
     captureScheduledFeed: jest.fn(),
+    recordScheduledFeedFailure: jest.fn(),
   };
   const activity = new ContentStudioSourceActivity(
     ingestion as unknown as ContentStudioSourceIngestionService
@@ -71,6 +72,8 @@ describe('ContentStudioSourceActivity', () => {
     expect(err.nonRetryable).toBe(false);
     expect(err.type).toBe(code);
     expect(err.message).toBe('The Content Studio feed could not be captured.');
+    // M21 an attempt never records a failure itself: the workflow does, once
+    expect(ingestion.recordScheduledFeedFailure).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -122,6 +125,37 @@ describe('ContentStudioSourceActivity', () => {
       'CS_SOURCE_CAPTURE_FAILED',
       true,
     ]);
+  });
+
+  // P8-C4: the failure record hands its ids and the code on as they are
+  it('P8C4-7 records a failure through the same ingestion service, with the ids and the code', async () => {
+    const { ingestion, activity } = setup();
+    ingestion.recordScheduledFeedFailure.mockResolvedValue({
+      status: 'recorded',
+    });
+    const input = {
+      organizationId: ORG,
+      sourceId: FEED,
+      code: 'CS_SOURCE_FETCH_FAILED',
+    };
+    await expect(
+      activity.recordContentStudioFeedCaptureFailure(input)
+    ).resolves.toEqual({ status: 'recorded' });
+    expect(ingestion.recordScheduledFeedFailure.mock.calls).toEqual([[input]]);
+    expect(ingestion.captureScheduledFeed).not.toHaveBeenCalled();
+  });
+
+  it('a database error of the failure record is left to its retry policy', async () => {
+    const { ingestion, activity } = setup();
+    const db = new Error('connection reset');
+    ingestion.recordScheduledFeedFailure.mockRejectedValue(db);
+    await expect(
+      activity.recordContentStudioFeedCaptureFailure({
+        organizationId: ORG,
+        sourceId: FEED,
+        code: 'CS_SOURCE_FEED_INVALID',
+      })
+    ).rejects.toBe(db);
   });
 
   it('P801-1/P801-5 fetches nothing and uses no AI itself', () => {

@@ -1626,7 +1626,8 @@ describe('Editor ergonomics: static boundaries', () => {
       // P8-04A: one more, what changed in a source version
       // P8-04B1: one more, the organization's page changes
       // P8-C3: two more, pause and resume a feed
-    ).toHaveLength(147);
+      // P8-C4: one more, a feed's interval
+    ).toHaveLength(148);
     const api = source('content-studio.designs.api.ts');
     expect(api).not.toMatch(
       // (thumbnail is the Media list's own field, from P4-08)

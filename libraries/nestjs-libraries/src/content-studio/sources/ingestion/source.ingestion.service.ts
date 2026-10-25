@@ -30,6 +30,8 @@ import {
   CONTENT_STUDIO_SOURCE_EXTRACTION_VERSION,
   CONTENT_STUDIO_SOURCE_NAME_MAX,
   contentStudioSourceLimits,
+  effectiveFeedIntervalMinutes,
+  nextCaptureAfterSuccess,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
 import {
   ContentStudioSourceFeed,
@@ -62,11 +64,34 @@ export const FEED_FETCH_TIMEOUT_MS = 15_000;
 export const FEED_FETCH_ALLOWED_CONTENT_TYPES = [...SOURCE_FEED_MEDIA_TYPES];
 // The pages of one feed capture are captured this many at a time
 export const FEED_CAPTURE_CONCURRENCY = 5;
-// A scheduled scan reads a feed again once it was not read for this long
-// (an hourly scan, so a feed read by hand in between is not read twice)
-export const FEED_CAPTURE_INTERVAL_MS = 50 * 60 * 1000;
-// Feeds handed to the schedule per scan page
+// Feeds handed to the schedule per scan page. A feed is due by its
+// nextCaptureAt alone (P8-C4): its interval after a capture, a failure delay
+// after a failed one
 export const FEED_SCAN_PAGE_SIZE = 200;
+// A scheduled capture that failed for a reason of the feed (P8-C4), after its
+// own attempts, is next tried this long after the failure: an hour, doubled
+// by each failure in a row, a day at most (the longest interval), whatever
+// the feed's interval. A success ends it
+export const FEED_CAPTURE_FAILURE_DELAY_BASE_MINUTES = 60;
+export const FEED_CAPTURE_FAILURE_DELAY_MAX_MINUTES = 1440;
+
+// The delay after the `failures`-th failure in a row (1 or more): 60, 120,
+// 240, 480, 960, then 1440 minutes
+export const captureFailureDelayMinutes = (failures: number) => {
+  if (!Number.isInteger(failures) || failures < 1) {
+    throw new RangeError('A failure delay needs one failure or more.');
+  }
+  return Math.min(
+    FEED_CAPTURE_FAILURE_DELAY_BASE_MINUTES * 2 ** (failures - 1),
+    FEED_CAPTURE_FAILURE_DELAY_MAX_MINUTES
+  );
+};
+
+// The earliest automatic capture after the `failures`-th failure in a row
+export const nextCaptureAfterFailure = (failedAt: Date, failures: number) =>
+  new Date(
+    failedAt.getTime() + captureFailureDelayMinutes(failures) * 60 * 1000
+  );
 
 // Fixed messages only: never the URL, a host, an address, the page or the
 // SafeFetch error itself
@@ -185,6 +210,11 @@ interface SourceRow {
   canonicalUrl: string | null;
   latestVersionNumber: number;
   archivedAt: Date | null;
+}
+
+// A feed's own schedule setting (P8-C4), null for the default
+interface FeedRow extends SourceRow {
+  captureIntervalMinutes: number | null;
 }
 
 // What one feed capture did, in counts only: never a URL, a title or a
@@ -370,7 +400,7 @@ export class ContentStudioSourceIngestionService {
   async listFeedsDueForCapture(input: { afterId: string | null }) {
     const rows =
       await this._contentStudioSourceRepository.listFeedsDueForCapture({
-        capturedBefore: new Date(Date.now() - FEED_CAPTURE_INTERVAL_MS),
+        dueAt: new Date(),
         afterId:
           typeof input.afterId === 'string' && UUID.test(input.afterId)
             ? input.afterId
@@ -423,6 +453,54 @@ export class ContentStudioSourceIngestionService {
       source.createdById
     );
     return { status: 'captured' as const, capture };
+  }
+
+  // For the feed capture schedule only: a scheduled capture of a live feed
+  // that failed for a reason of the feed, after its own attempts (P8-C4).
+  // Ids from the workflow; the feed is read here, once, and the write is
+  // decided on that read: a feed gone, archived or of another kind is
+  // skipped, and a write that finds the feed changed meanwhile (a retry of
+  // this one, a concurrent one, a member's successful refresh) changes
+  // nothing and is not tried again. A paused feed is recorded: the pause
+  // keeps it out of the scan either way. `code` is the failure's fixed code
+  // (CS_...), kept in the contract for its later record; nothing stores it yet
+  async recordScheduledFeedFailure(input: {
+    organizationId: string;
+    sourceId: string;
+    code: string;
+  }) {
+    if (
+      typeof input.organizationId !== 'string' ||
+      typeof input.sourceId !== 'string' ||
+      !UUID.test(input.sourceId)
+    ) {
+      return { status: 'skipped' as const };
+    }
+    const source =
+      await this._contentStudioSourceRepository.getSourceForCapture(
+        input.organizationId,
+        input.sourceId
+      );
+    if (!source || source.archivedAt || source.kind !== 'feed') {
+      return { status: 'skipped' as const };
+    }
+    // one time for the failure and its delay
+    const failedAt = new Date();
+    const nextCaptureAt = nextCaptureAfterFailure(
+      failedAt,
+      source.consecutiveCaptureFailures + 1
+    );
+    const { count } =
+      await this._contentStudioSourceRepository.recordFeedCaptureFailure({
+        organizationId: input.organizationId,
+        id: source.id,
+        expectedFailures: source.consecutiveCaptureFailures,
+        failedAt,
+        nextCaptureAt,
+      });
+    return {
+      status: count === 1 ? ('recorded' as const) : ('unchanged' as const),
+    };
   }
 
   // One capture of a page source. `always` appends every capture, as a
@@ -615,13 +693,20 @@ export class ContentStudioSourceIngestionService {
     }
   }
 
-  // One capture of a live feed source of the organization (see the class)
+  // One capture of a live feed source of the organization (see the class).
+  // A success, by a member or the schedule, schedules the feed's next
+  // automatic capture from this capture's own time and ends its failures
+  // (P8-C4); a failure changes nothing here
   private async captureFeed(
     organizationId: string,
-    feed: SourceRow,
+    feed: FeedRow,
     userId: string
   ) {
-    if (!feed.canonicalUrl) {
+    // a stored interval that is no preset is never used as it is
+    const intervalMinutes = effectiveFeedIntervalMinutes(
+      feed.captureIntervalMinutes
+    );
+    if (!feed.canonicalUrl || intervalMinutes === undefined) {
       throw integrityError();
     }
     let fetched;
@@ -694,10 +779,12 @@ export class ContentStudioSourceIngestionService {
       entriesLimited: count('limited'),
     };
 
+    // pages that failed or were limited are counted: the feed was read
     await this._contentStudioSourceRepository.markFeedCaptured(
       organizationId,
       feed.id,
-      capturedAt
+      capturedAt,
+      nextCaptureAfterSuccess(capturedAt, intervalMinutes)
     );
     const current =
       await this._contentStudioSourceRepository.getSourceForOrganization(

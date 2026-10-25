@@ -55,4 +55,18 @@ export class ContentStudioSourceActivity {
       );
     }
   }
+
+  // A capture that failed with one of the codes above, after its attempts
+  // (P8-C4): the feed's next automatic capture is delayed. Ids and the code
+  // only; a feed gone or changed meanwhile is an answer, not an error
+  @ActivityMethod()
+  async recordContentStudioFeedCaptureFailure(input: {
+    organizationId: string;
+    sourceId: string;
+    code: string;
+  }) {
+    return this._contentStudioSourceIngestionService.recordScheduledFeedFailure(
+      input
+    );
+  }
 }

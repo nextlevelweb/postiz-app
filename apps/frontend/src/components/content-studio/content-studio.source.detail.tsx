@@ -25,11 +25,14 @@ import {
 } from '@gitroom/frontend/components/content-studio/content-studio.sources.api';
 import {
   CaptureButton,
+  FeedIntervalSelect,
   FeedScheduleButton,
   formatSourceBytes,
   SOURCE_LIBRARY_PATH,
   SourceStatus,
+  SourceTask,
   SourceUrl,
+  useFeedIntervalLabel,
   useSourceCommands,
   useSourceKindLabel,
 } from '@gitroom/frontend/components/content-studio/content-studio.sources';
@@ -624,11 +627,52 @@ const FeedDiscoveries: FC<{ feed: SourceDetailData }> = ({ feed }) => {
   );
 };
 
-// A feed's own state: when it was last read, and that it is read again on a
-// schedule while it is active and not paused (P8-C3). It has no versions of
-// its own
-const FeedCapture: FC<{ feed: SourceDetailData }> = ({ feed }) => {
+// When a running feed is captured next (P8-C4): never an exact time, since
+// the scan looks every 10 minutes and captures may wait in their queue.
+// After failed scheduled captures, that it failed and when it is tried
+// again, never the error or how often it failed
+const feedScheduleMessage = (
+  t: (key: string, fallback: string) => string,
+  feed: SourceDetailData
+) => {
+  const due =
+    !feed.nextCaptureAt || new Date(feed.nextCaptureAt).getTime() <= Date.now();
+  if (feed.consecutiveCaptureFailures > 0) {
+    return [
+      t('content_studio_feed_capture_failed', 'Capture failed.'),
+      due
+        ? t(
+            'content_studio_feed_next_try_soon',
+            'Next try within a few minutes.'
+          )
+        : `${t(
+            'content_studio_feed_next_try_after',
+            'Next try after'
+          )} ${formatDate(feed.nextCaptureAt!)}.`,
+      t('content_studio_feed_refresh_to_try', 'Refresh the feed to try now.'),
+    ].join(' ');
+  }
+  return due
+    ? t(
+        'content_studio_feed_next_capture_soon',
+        'Next capture within a few minutes.'
+      )
+    : `${t(
+        'content_studio_feed_next_capture_after',
+        'Next capture after'
+      )} ${formatDate(feed.nextCaptureAt!)}.`;
+};
+
+// A feed's own state: when it was last read, how often it is read again on
+// its schedule (P8-C4) while it is active and not paused (P8-C3), and when
+// next. It has no versions of its own
+const FeedCapture: FC<{
+  feed: SourceDetailData;
+  busy?: SourceTask;
+  commands: ReturnType<typeof useSourceCommands>;
+}> = ({ feed, busy, commands }) => {
   const t = useT();
+  const intervalLabel = useFeedIntervalLabel();
   return (
     <section className="flex flex-col gap-[12px] min-w-0">
       <h2 className="text-[16px] font-[600]">
@@ -650,9 +694,15 @@ const FeedCapture: FC<{ feed: SourceDetailData }> = ({ feed }) => {
             ? t('content_studio_feed_automatic_paused', 'Paused while archived')
             : feed.scanPausedAt
             ? t('content_studio_feed_paused_status', 'Paused')
-            : t('content_studio_feed_automatic_hourly', 'About every hour')}
+            : intervalLabel(feed.captureIntervalMinutes)}
         </Fact>
       </dl>
+      <FeedIntervalSelect source={feed} busy={busy} commands={commands} />
+      {!feed.archivedAt && !feed.scanPausedAt && (
+        <div className="text-[13px] text-textItemBlur">
+          {feedScheduleMessage(t, feed)}
+        </div>
+      )}
       {!feed.archivedAt && feed.scanPausedAt && (
         <div className="text-[13px] text-textItemBlur">
           {t(
@@ -863,7 +913,7 @@ export const ContentStudioSourceDetail: FC<{ sourceId: string }> = ({
 
       {source.kind === 'feed' ? (
         <>
-          <FeedCapture feed={source} />
+          <FeedCapture feed={source} busy={busy} commands={commands} />
           <section className="flex flex-col gap-[12px] min-w-0">
             <h2 className="text-[16px] font-[600]">
               {t('content_studio_feed_discoveries', 'Pages found in this feed')}

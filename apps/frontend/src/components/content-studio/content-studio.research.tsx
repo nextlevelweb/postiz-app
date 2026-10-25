@@ -162,7 +162,7 @@ export const ContentStudioResearch: FC = () => {
         <div className="text-textItemBlur">
           {t(
             'content_studio_radar_automatic',
-            'Feeds are captured automatically about every hour.'
+            'Feeds are captured automatically, every hour unless a feed is set to another interval.'
           )}
         </div>
         <Link href={SOURCE_LIBRARY_PATH} className={linkClass}>

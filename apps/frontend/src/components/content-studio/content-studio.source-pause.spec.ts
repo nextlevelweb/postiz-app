@@ -16,8 +16,9 @@ import { SWRConfig } from 'swr';
 
 // Feed pause in the Source Library (P8-C3): pause and resume a live feed,
 // its Paused label, and that a paused feed stays an active feed that can be
-// refreshed. A .spec.ts without JSX like the other Content Studio frontend
-// specs; the server is an in-memory fake of the source routes
+// refreshed. A feed's interval and its next capture (P8-C4), and the note of
+// a delayed one. A .spec.ts without JSX like the other Content Studio
+// frontend specs; the server is an in-memory fake of the source routes
 
 // a source page reads ?change= (P8-04B1); none here
 jest.mock('next/navigation', () => ({
@@ -123,6 +124,9 @@ type Summary = {
   updatedAt: string;
   lastCapturedAt: string | null;
   scanPausedAt: string | null;
+  captureIntervalMinutes: number | null;
+  nextCaptureAt: string | null;
+  consecutiveCaptureFailures: number;
 };
 let feed: Summary;
 let pageSource: Summary;
@@ -142,6 +146,9 @@ const summary = (over: Partial<Summary>): Summary => ({
   updatedAt: T0,
   lastCapturedAt: T1,
   scanPausedAt: null,
+  captureIntervalMinutes: null,
+  nextCaptureAt: null,
+  consecutiveCaptureFailures: 0,
   ...over,
 });
 
@@ -179,6 +186,14 @@ const server = (method: string, url: string): Reply => {
     feed = { ...feed, scanPausedAt: null, updatedAt: T2 };
     return reply(200, feed);
   }
+  // the interval and, while healthy, the next capture from the last one
+  if (
+    method === 'POST' &&
+    pathname === `/content-studio/sources/${FEED_ID}/interval`
+  ) {
+    feed = { ...feed, captureIntervalMinutes: intervalSent, updatedAt: T2 };
+    return reply(200, feed);
+  }
   if (
     method === 'POST' &&
     pathname === `/content-studio/sources/${FEED_ID}/refresh`
@@ -210,6 +225,11 @@ const calls = () =>
     body: init?.body,
   }));
 const writes = () => calls().filter((c) => c.method !== 'GET');
+// the body of the last interval write, read by the fake server
+let intervalSent: number | null = null;
+// the text of one fact of the feed, e.g. Automatic capture
+const fact = (label: string) =>
+  screen.getByText(label, { selector: 'dt' }).nextElementSibling!.textContent;
 const flush = () =>
   act(async () => {
     for (let i = 0; i < 6; i++) {
@@ -252,6 +272,9 @@ beforeEach(() => {
   mockFetch.mockReset();
   mockFetch.mockImplementation(async (url: string, init: RequestInit = {}) => {
     const method = init.method || 'GET';
+    if (url.endsWith('/interval')) {
+      intervalSent = JSON.parse(init.body as string).intervalMinutes;
+    }
     const custom = await override(method, url);
     if (custom) {
       return custom;
@@ -269,11 +292,11 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('Source Library: pausing a feed (P8-C3)', () => {
-  it('UI1/M25 a running feed offers Pause feed and says it is captured about every hour', async () => {
+  it('UI1/M25 a running feed offers Pause feed and says it is captured every hour by default', async () => {
     await renderFeed();
     expect(button('Pause feed Company newsroom')).toBeTruthy();
     expect(button('Resume feed Company newsroom')).toBeNull();
-    expect(screen.getByText('About every hour')).toBeTruthy();
+    expect(fact('Automatic capture')).toBe('Every hour (default)');
     expect(screen.getByText('Active')).toBeTruthy();
     expect(screen.queryByText('Paused')).toBeNull();
     expect(
@@ -305,7 +328,7 @@ describe('Source Library: pausing a feed (P8-C3)', () => {
     expect(screen.getAllByText('Paused').length).toBeGreaterThanOrEqual(2);
     expect(screen.queryByText('Active')).toBeNull();
     expect(screen.queryByText('Archived')).toBeNull();
-    expect(screen.queryByText('About every hour')).toBeNull();
+    expect(fact('Automatic capture')).toBe('Paused');
     expect(
       screen.getByText(
         'Automatic scans are paused. You can still refresh this feed manually.'
@@ -356,7 +379,7 @@ describe('Source Library: pausing a feed (P8-C3)', () => {
     ]);
     expect(mockToast).toHaveBeenCalledWith('Feed resumed.', 'success');
     expect(button('Pause feed Company newsroom')).toBeTruthy();
-    expect(screen.getByText('About every hour')).toBeTruthy();
+    expect(fact('Automatic capture')).toBe('Every hour (default)');
   });
 
   it('UI8 a refused pause is shown with the fixed message of its code, never the server text', async () => {
@@ -452,5 +475,216 @@ describe('Source Library: a paused feed in the list (P8-C3)', () => {
     wrap(h(ContentStudioSources));
     await flush();
     expect(within(row('Company newsroom')).queryByText('Paused')).toBeNull();
+  });
+});
+
+describe("Source Library: a feed's interval and next capture (P8-C4)", () => {
+  const NOW = Date.now();
+  const at = (ms: number) => new Date(NOW + ms).toISOString();
+  const HOUR = 60 * 60 * 1000;
+  const select = () =>
+    screen.queryByRole('combobox', {
+      name: 'Capture interval',
+    }) as HTMLSelectElement | null;
+  const choose = async (value: string) => {
+    fireEvent.change(select()!, { target: { value } });
+    await flush();
+  };
+  const DELAYED = /^Capture failed\. /;
+
+  it('UI1/UI7 a feed offers its interval: the default first, then every preset', async () => {
+    await renderFeed();
+    expect(
+      Array.from(select()!.options).map((o) => [o.value, o.textContent])
+    ).toEqual([
+      ['', 'Every hour (default)'],
+      ['60', 'Every hour'],
+      ['180', 'Every 3 hours'],
+      ['360', 'Every 6 hours'],
+      ['720', 'Every 12 hours'],
+      ['1440', 'Daily'],
+    ]);
+    expect(select()!.value).toBe('');
+    for (const [minutes, label] of [
+      [60, 'Every hour'],
+      [180, 'Every 3 hours'],
+      [360, 'Every 6 hours'],
+      [720, 'Every 12 hours'],
+      [1440, 'Daily'],
+    ] as const) {
+      cleanup();
+      feed = summary({ captureIntervalMinutes: minutes });
+      await renderFeed();
+      expect(fact('Automatic capture')).toBe(label);
+      expect(select()!.value).toBe(String(minutes));
+    }
+  });
+
+  it('UI6/UI8 an explicit hour sends 60, says so, and shows it', async () => {
+    await renderFeed();
+    await choose('60');
+    expect(writes()).toEqual([
+      {
+        method: 'POST',
+        url: `/content-studio/sources/${FEED_ID}/interval`,
+        body: JSON.stringify({ intervalMinutes: 60 }),
+      },
+    ]);
+    expect(mockToast).toHaveBeenCalledWith(
+      'Capture interval saved.',
+      'success'
+    );
+    expect(fact('Automatic capture')).toBe('Every hour');
+    expect(select()!.value).toBe('60');
+  });
+
+  it('UI5/M38 the default option sends null, never 60', async () => {
+    feed = summary({ captureIntervalMinutes: 1440 });
+    await renderFeed();
+    await choose('');
+    expect(writes().map((w) => w.body)).toEqual([
+      JSON.stringify({ intervalMinutes: null }),
+    ]);
+    expect(fact('Automatic capture')).toBe('Every hour (default)');
+  });
+
+  it('a refused interval is shown with the fixed message of its code', async () => {
+    override = (method, url) =>
+      method === 'POST' && url.endsWith('/interval')
+        ? reply(400, { msg: 'server text', code: 'CS_SOURCE_INTERVAL_INVALID' })
+        : undefined;
+    await renderFeed();
+    await choose('180');
+    expect(mockToast).toHaveBeenCalledWith(
+      'This capture interval is not available.',
+      'warning'
+    );
+    expect(JSON.stringify(mockToast.mock.calls)).not.toContain('server text');
+  });
+
+  it('UI4 a paused feed keeps its interval control and says Paused', async () => {
+    feed = summary({ scanPausedAt: T2, captureIntervalMinutes: 360 });
+    await renderFeed();
+    expect(select()!.disabled).toBe(false);
+    expect(select()!.value).toBe('360');
+    expect(fact('Automatic capture')).toBe('Paused');
+    await choose('720');
+    expect(writes().map((w) => w.url)).toEqual([
+      `/content-studio/sources/${FEED_ID}/interval`,
+    ]);
+    expect(
+      screen.getByText(
+        'Automatic scans are paused. You can still refresh this feed manually.'
+      )
+    ).toBeTruthy();
+  });
+
+  it('UI2/UI3 a web page and an archived feed have no interval control', async () => {
+    await renderFeed(PAGE_ID);
+    expect(select()).toBeNull();
+    cleanup();
+    feed = summary({ archivedAt: T1, captureIntervalMinutes: 360 });
+    await renderFeed();
+    expect(select()).toBeNull();
+    expect(screen.queryByText(/^Next capture/)).toBeNull();
+  });
+
+  it('UI9/M43 a next capture ahead: "after" that time, never an exact promise', async () => {
+    feed = summary({ nextCaptureAt: at(2 * HOUR) });
+    await renderFeed();
+    expect(
+      screen.getByText(
+        /^Next capture after [A-Z][a-z]{2} \d+, \d{4} \d{2}:\d{2}\.$/
+      )
+    ).toBeTruthy();
+    expect(screen.queryByText(DELAYED)).toBeNull();
+  });
+
+  it('UI10 no next capture, or one that has passed: within a few minutes', async () => {
+    for (const nextCaptureAt of [null, at(-HOUR)]) {
+      cleanup();
+      feed = summary({ nextCaptureAt });
+      await renderFeed();
+      expect(
+        screen.getByText('Next capture within a few minutes.')
+      ).toBeTruthy();
+    }
+  });
+
+  it('UI11/UI14/M44/M45 after failed scheduled captures: that it failed, when it is tried again, and to refresh; never the count', async () => {
+    // a count and a time that cannot be confused
+    feed = summary({
+      consecutiveCaptureFailures: 37,
+      nextCaptureAt: '2099-01-01T10:00:00.000Z',
+    });
+    await renderFeed();
+    const note = screen.getByText(DELAYED);
+    expect(note.textContent).toMatch(
+      /^Capture failed\. Next try after [A-Z][a-z]{2} \d+, \d{4} \d{2}:\d{2}\. Refresh the feed to try now\.$/
+    );
+    expect(document.body.textContent).not.toMatch(
+      /37|failures|attempt|times|backoff/i
+    );
+    expect(screen.queryByText(/^Next capture/)).toBeNull();
+    expect(button('Refresh feed Company newsroom')).toBeTruthy();
+    cleanup();
+    feed = summary({ consecutiveCaptureFailures: 1, nextCaptureAt: at(-1000) });
+    await renderFeed();
+    expect(screen.getByText(DELAYED).textContent).toBe(
+      'Capture failed. Next try within a few minutes. Refresh the feed to try now.'
+    );
+  });
+
+  it('UI13/M46 a paused or archived feed with failures says Paused, never delayed', async () => {
+    feed = summary({
+      scanPausedAt: T2,
+      consecutiveCaptureFailures: 2,
+      nextCaptureAt: at(HOUR),
+    });
+    await renderFeed();
+    expect(screen.queryByText(DELAYED)).toBeNull();
+    expect(screen.queryByText('Capture delayed')).toBeNull();
+    expect(fact('Automatic capture')).toBe('Paused');
+    cleanup();
+    feed = summary({
+      archivedAt: T1,
+      consecutiveCaptureFailures: 2,
+      nextCaptureAt: at(HOUR),
+    });
+    await renderFeed();
+    expect(screen.queryByText(DELAYED)).toBeNull();
+  });
+
+  it('UI12/UI13 the list labels a running feed with failures Capture delayed, a paused one Paused only', async () => {
+    feed = summary({ consecutiveCaptureFailures: 2, nextCaptureAt: at(HOUR) });
+    wrap(h(ContentStudioSources));
+    await flush();
+    const item = row('Company newsroom');
+    const badge = within(item).getByText('Capture delayed');
+    expect(badge.className).not.toMatch(/red|error|danger|warning|yellow/);
+    expect(within(item).queryByText('Paused')).toBeNull();
+    expect(
+      within(row('Launch post')).queryByText('Capture delayed')
+    ).toBeNull();
+    cleanup();
+    feed = summary({
+      scanPausedAt: T2,
+      consecutiveCaptureFailures: 2,
+      nextCaptureAt: at(HOUR),
+    });
+    wrap(h(ContentStudioSources));
+    await flush();
+    expect(within(row('Company newsroom')).getByText('Paused')).toBeTruthy();
+    expect(
+      within(row('Company newsroom')).queryByText('Capture delayed')
+    ).toBeNull();
+  });
+
+  it('a healthy running feed in the list has no delayed label', async () => {
+    wrap(h(ContentStudioSources));
+    await flush();
+    expect(
+      within(row('Company newsroom')).queryByText('Capture delayed')
+    ).toBeNull();
   });
 });

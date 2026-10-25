@@ -36,6 +36,13 @@ export interface ContentStudioSourceSummary {
   // when a feed's scheduled captures were paused (P8-C3); null while they
   // run, and always for a page. A paused feed is still active
   scanPausedAt: string | null;
+  // a feed's schedule (P8-C4): its preset in minutes (null for the
+  // default), the earliest time of its next automatic capture (null: due
+  // now), and how many scheduled captures failed in a row. null, null and 0
+  // for a page
+  captureIntervalMinutes: number | null;
+  nextCaptureAt: string | null;
+  consecutiveCaptureFailures: number;
 }
 
 export interface ContentStudioSourceList {
@@ -395,6 +402,14 @@ export const useContentStudioSourceActions = () => {
         await request(fetch, `${sourcePath(id)}/resume`, { method: 'POST' });
         await refresh(id);
       },
+      // a feed's interval (P8-C4): a preset, or null for the default
+      setFeedInterval: async (id: string, intervalMinutes: number | null) => {
+        await request(fetch, `${sourcePath(id)}/interval`, {
+          method: 'POST',
+          body: JSON.stringify({ intervalMinutes }),
+        });
+        await refresh(id);
+      },
       // No body: the server fetches the source's own stored URL. A page
       // answers with its new version, a feed with what its capture did
       captureSource: async (id: string) => {
@@ -497,6 +512,11 @@ export const sourceErrorMessage = (t: Translate, error: unknown) => {
       return t(
         'content_studio_source_error_source_limit',
         'This organization has reached its limit of sources.'
+      );
+    case 'CS_SOURCE_INTERVAL_INVALID':
+      return t(
+        'content_studio_source_error_interval',
+        'This capture interval is not available.'
       );
     case 'CS_SOURCE_REFRESH_TOO_SOON':
       return t(

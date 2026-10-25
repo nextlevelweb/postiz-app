@@ -2082,13 +2082,25 @@ describe('Source Library: source surface', () => {
     expect(all).not.toMatch(/'DELETE'|"DELETE"|method: 'PUT'/);
     expect(
       Array.from(sources.api.matchAll(/method: '([A-Z]+)'/g)).map((m) => m[1])
-      // create, rename, archive, restore, pause and resume (P8-C3), refresh
-    ).toEqual(['POST', 'PATCH', 'POST', 'POST', 'POST', 'POST', 'POST']);
+      // create, rename, archive, restore, pause and resume (P8-C3), the
+      // interval (P8-C4), refresh
+    ).toEqual([
+      'POST',
+      'PATCH',
+      'POST',
+      'POST',
+      'POST',
+      'POST',
+      'POST',
+      'POST',
+    ]);
     // the only body of a rename is its name
     expect(sources.api).toContain('body: JSON.stringify({ name })');
     // the kind the member chose: a page or (P8-01) a feed
     expect(sources.api).toContain('body: JSON.stringify({ kind, name, url })');
-    expect(all.match(/JSON\.stringify\(/g)).toHaveLength(2);
+    // a feed's interval (P8-C4): the value only
+    expect(sources.api).toContain('body: JSON.stringify({ intervalMinutes })');
+    expect(all.match(/JSON\.stringify\(/g)).toHaveLength(3);
     expect(all).not.toMatch(/<textarea|contentEditable|contenteditable/);
     expect(copy.join(' ')).not.toMatch(
       /delete|trash|permanently|make current|edit version|restore version|re-?extract|upgrade/i

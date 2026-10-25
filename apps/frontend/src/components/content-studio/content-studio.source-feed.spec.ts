@@ -125,6 +125,10 @@ type Summary = {
   createdAt: string;
   updatedAt: string;
   lastCapturedAt: string | null;
+  scanPausedAt: string | null;
+  captureIntervalMinutes: number | null;
+  nextCaptureAt: string | null;
+  consecutiveCaptureFailures: number;
 };
 let feed: Summary;
 let pageSource: Summary;
@@ -144,6 +148,10 @@ const summary = (over: Partial<Summary>): Summary => ({
   createdAt: T0,
   updatedAt: T0,
   lastCapturedAt: null,
+  scanPausedAt: null,
+  captureIntervalMinutes: null,
+  nextCaptureAt: null,
+  consecutiveCaptureFailures: 0,
   ...over,
 });
 
@@ -450,7 +458,11 @@ describe('Source Library: a feed', () => {
     expect(
       screen.queryByRole('heading', { name: 'Current capture' })
     ).toBeNull();
-    expect(screen.getByText('About every hour')).toBeTruthy();
+    // its interval (P8-C4): the default
+    expect(
+      screen.getByText('Automatic capture', { selector: 'dt' })
+        .nextElementSibling!.textContent
+    ).toBe('Every hour (default)');
     await click(
       screen.getByRole('button', { name: 'Capture feed Company newsroom' })
     );

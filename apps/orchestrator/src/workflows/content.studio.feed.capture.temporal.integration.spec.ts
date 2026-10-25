@@ -11,6 +11,7 @@ import {
   WorkflowFailedError,
   WorkflowHandle,
 } from '@temporalio/client';
+import { ApplicationFailure } from '@temporalio/activity';
 import { DefaultLogger, Runtime } from '@temporalio/worker';
 import {
   TEMPORAL_MODULE_OPTIONS,
@@ -72,11 +73,19 @@ const fetchHolds = new Map<
   string,
   { reached: () => void; released: Promise<void> }
 >();
+// feeds a test makes unreachable (P8-C4): the answer of a server error
+const unreachable = new Set<string>();
 const mockSafeFetch = jest.fn(async (url: string): Promise<SafeFetchResult> => {
   const hold = fetchHolds.get(url);
   if (hold) {
     hold.reached();
     await hold.released;
+  }
+  if (unreachable.has(url)) {
+    const { SafeFetchError } = jest.requireActual(
+      '@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch'
+    );
+    throw new SafeFetchError('HTTP_STATUS', { statusCode: 503 });
   }
   const answer = (body: string, contentType: string): SafeFetchResult => {
     const bytes = new TextEncoder().encode(body);
@@ -198,6 +207,14 @@ const activities = {
 };
 // sources whose capture is the real one, on PostgreSQL
 const real = new Set<string>();
+// sources whose capture fails as the database would (P8-C4): not a refusal
+const broken = new Map<string, () => Error>();
+// the failure records the workflows asked for (P8-C4), in order
+const recorded: Array<{
+  organizationId: string;
+  sourceId: string;
+  code: string;
+}> = [];
 let listFeeds: (input: { afterId: string | null }) => Promise<unknown>;
 const handles: WorkflowHandle[] = [];
 
@@ -233,6 +250,9 @@ const router = {
       (activities.byOrganization.get(input.organizationId) ?? 0) + 1
     );
     try {
+      if (broken.has(input.sourceId)) {
+        throw broken.get(input.sourceId)!();
+      }
       return real.has(input.sourceId)
         ? await ingestion.captureScheduledFeed(input)
         : await heldCapture(input);
@@ -246,6 +266,16 @@ const router = {
   },
   listFeedsDueForCapture(input: { afterId: string | null }) {
     return listFeeds(input);
+  },
+  // always the real one, on PostgreSQL: a held capture's feed has no row,
+  // and is skipped
+  recordScheduledFeedFailure(input: {
+    organizationId: string;
+    sourceId: string;
+    code: string;
+  }) {
+    recorded.push(input);
+    return ingestion.recordScheduledFeedFailure(input);
   },
 };
 
@@ -442,6 +472,9 @@ beforeEach(async () => {
   web.feeds.clear();
   web.pages.clear();
   real.clear();
+  broken.clear();
+  unreachable.clear();
+  recorded.length = 0;
   started.length = 0;
   startedAt.clear();
   calls.clear();
@@ -682,6 +715,14 @@ describe('P8-C2 on Temporal: the capture queue is bounded', () => {
       type: 'CS_SOURCE_FEED_INVALID',
       nonRetryable: true,
     });
+    // P8-C4: its failure is recorded once, on main (the feed has no row here)
+    expect(recorded).toEqual([
+      {
+        organizationId: ORG_A,
+        sourceId: refused,
+        code: 'CS_SOURCE_FEED_INVALID',
+      },
+    ]);
     await until(() => held.size === LIMIT, 'a queued capture in the slot');
     // a feed that could not be reached is tried again after the policy's
     // interval; while it waits, it holds no slot
@@ -1008,6 +1049,8 @@ describe('P8-C3 on Temporal and PostgreSQL: a paused feed', () => {
     const first = await scanOnce();
     expect(await childrenOf(first)).toEqual([workflowId(running)]);
     await until(() => calls.get(running) === 1, 'the running feed captured');
+    // its capture ended: its next capture is ahead (P8-C4)
+    await temporal.workflow.getHandle(workflowId(running)).result();
     expect(calls.get(feed)).toBeUndefined();
     await expect(
       temporal.workflow.getHandle(workflowId(feed)).describe()
@@ -1065,16 +1108,250 @@ describe('P8-C3 on Temporal and PostgreSQL: a paused feed', () => {
     });
     expect(row.scanPausedAt).toBeInstanceOf(Date);
     expect(row.lastCapturedAt).toBeInstanceOf(Date);
-    // due again by its time: still paused, so the scan leaves it out
+    // due again by its next capture time (P8-C4): still paused, so the scan
+    // leaves it out
     await client.contentStudioSource.update({
       where: { id: feed },
-      data: { lastCapturedAt: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+      data: { nextCaptureAt: new Date(Date.now() - 2 * 60 * 60 * 1000) },
     });
     const scan = await scanOnce();
     expect(await childrenOf(scan)).toEqual([]);
     await sleep(500);
     expect(calls.get(feed)).toBe(1);
     expect(mockSafeFetch).toHaveBeenCalledTimes(1 + 2);
+  });
+});
+
+// A feed's schedule (P8-C4) on Temporal and PostgreSQL: the scan starts a
+// feed by its next capture time only and sleeps 10 minutes; a capture that
+// failed for a reason of the feed, after its own attempts, records the
+// failure once and still fails; any other failure records nothing; a list
+// that failed every attempt leaves the scan running. Time is never skipped:
+// the tests move the feed's next capture in the database instead
+describe('P8-C4 on Temporal and PostgreSQL: the schedule', () => {
+  const HOUR = 60 * 60 * 1000;
+  const realDueList = () => {
+    listFeeds = async (input) => {
+      const due = await ingestion.listFeedsDueForCapture(input);
+      return {
+        ...due,
+        feeds: due.feeds.filter((f) => ORGS.includes(f.organizationId)),
+      };
+    };
+  };
+  const sleeping = async (scan: WorkflowHandle) =>
+    (await scan.fetchHistory()).events!.filter(
+      (e) => e.timerStartedEventAttributes
+    );
+  const startScan = async (input: Record<string, unknown> = {}) => {
+    const scan = await temporal.workflow.start(
+      'contentStudioFeedScanWorkflowV1',
+      {
+        taskQueue: 'main',
+        workflowId: `p8c4-scan-${randomUUID()}`,
+        args: [input],
+      }
+    );
+    handles.push(scan);
+    await until(
+      async () => (await sleeping(scan)).length > 0,
+      'the scan to sleep'
+    );
+    return scan;
+  };
+  const childrenOf = async (scan: WorkflowHandle) =>
+    (await scan.fetchHistory())
+      .events!.filter(
+        (e) => e.startChildWorkflowExecutionInitiatedEventAttributes
+      )
+      .map(
+        (e) =>
+          e.startChildWorkflowExecutionInitiatedEventAttributes!.workflowId!
+      );
+  const schedule = async (id: string) => {
+    const row = await client.contentStudioSource.findUniqueOrThrow({
+      where: { id },
+    });
+    return {
+      lastCapturedAt: row.lastCapturedAt,
+      nextCaptureAt: row.nextCaptureAt,
+      consecutiveCaptureFailures: row.consecutiveCaptureFailures,
+      scanPausedAt: row.scanPausedAt,
+    };
+  };
+  const setSchedule = (id: string, data: Record<string, unknown>) =>
+    client.contentStudioSource.update({ where: { id }, data });
+  const activityEvents = async (handle: WorkflowHandle, type: string) => {
+    const { events } = await handle.fetchHistory();
+    return events!
+      .filter(
+        (e) =>
+          e.activityTaskScheduledEventAttributes?.activityType?.name === type
+      )
+      .map((e) => e.activityTaskScheduledEventAttributes!.taskQueue!.name);
+  };
+  const failureOf = async (handle: WorkflowHandle) => {
+    const error = await handle.result().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(WorkflowFailedError);
+    return (error as WorkflowFailedError).cause as ActivityFailure;
+  };
+
+  it('P8C4T1/M1/M39 the scan starts a feed whose next capture has passed, never one ahead, then sleeps 10 minutes', async () => {
+    realDueList();
+    const ahead = await realFeed(ORG_A, 'ahead');
+    const passed = await realFeed(ORG_B, 'passed');
+    await setSchedule(ahead, { nextCaptureAt: new Date(Date.now() + HOUR) });
+    await setSchedule(passed, { nextCaptureAt: new Date(Date.now() - HOUR) });
+    const scan = await startScan();
+    expect(await childrenOf(scan)).toEqual([workflowId(passed)]);
+    const [timer] = await sleeping(scan);
+    expect(
+      Number(timer.timerStartedEventAttributes!.startToFireTimeout!.seconds)
+    ).toBe(600);
+    await temporal.workflow.getHandle(workflowId(passed)).result();
+    expect(calls.get(ahead)).toBeUndefined();
+    const after = await schedule(passed);
+    expect(
+      after.nextCaptureAt!.getTime() - after.lastCapturedAt!.getTime()
+    ).toBe(HOUR);
+  });
+
+  it('P8C4T2/P8C4T3/P8C4T8/M21/M27/M28 three failed attempts record one failure and the workflow fails; a database failure records nothing; neither starts again before its time', async () => {
+    realDueList();
+    const down = await realFeed(ORG_A, 'down');
+    unreachable.add(feedUrl('down'));
+    const infra = await realFeed(ORG_B, 'infra');
+    broken.set(infra, () => new Error('connection reset'));
+    const downHandle = await startCapture(ORG_A, down);
+    const infraHandle = await startCapture(ORG_B, infra);
+    const from = Date.now();
+    // the capture's own policy: 3 attempts, 2 minutes apart
+    const downFailure = await failureOf(downHandle);
+    const to = Date.now();
+    expect((downFailure as { cause?: unknown }).cause).toMatchObject({
+      type: 'CS_SOURCE_FETCH_FAILED',
+      nonRetryable: false,
+    });
+    // the history keeps the last attempt of each activity: the third of the
+    // capture, the first of the record; the activity ran three times
+    expect((await captureEvents(downHandle)).attempts).toEqual([3, 1]);
+    expect(calls.get(down)).toBe(3);
+    expect(
+      await activityEvents(downHandle, 'recordContentStudioFeedCaptureFailure')
+    ).toEqual(['main']);
+    expect(recorded.filter((r) => r.sourceId === down)).toEqual([
+      { organizationId: ORG_A, sourceId: down, code: 'CS_SOURCE_FETCH_FAILED' },
+    ]);
+    const failed = await schedule(down);
+    expect(failed.consecutiveCaptureFailures).toBe(1);
+    expect(failed.lastCapturedAt).toBeNull();
+    expect(failed.nextCaptureAt!.getTime()).toBeGreaterThanOrEqual(from + HOUR);
+    expect(failed.nextCaptureAt!.getTime()).toBeLessThanOrEqual(to + HOUR);
+    // the database failure: as many attempts, no record, the feed due
+    const infraFailure = await failureOf(infraHandle);
+    expect((infraFailure as { cause?: unknown }).cause).toMatchObject({
+      type: 'Error',
+    });
+    expect((await captureEvents(infraHandle)).attempts).toEqual([3]);
+    expect(calls.get(infra)).toBe(3);
+    expect(
+      await activityEvents(infraHandle, 'recordContentStudioFeedCaptureFailure')
+    ).toEqual([]);
+    expect(await schedule(infra)).toEqual({
+      lastCapturedAt: null,
+      nextCaptureAt: null,
+      consecutiveCaptureFailures: 0,
+      scanPausedAt: null,
+    });
+    // P8C4T3: the next scan starts the due one only
+    broken.clear();
+    const scan = await startScan();
+    expect(await childrenOf(scan)).toEqual([workflowId(infra)]);
+    await sleep(500);
+    expect(calls.get(down)).toBe(3);
+  }, 600_000);
+
+  it('a refused capture is recorded after its one attempt, with its code', async () => {
+    const refused = await realFeed(ORG_A, 'refused');
+    web.feeds.set(feedUrl('refused'), '<nope');
+    const handle = await startCapture(ORG_A, refused);
+    expect(
+      ((await failureOf(handle)) as { cause?: unknown }).cause
+    ).toMatchObject({ type: 'CS_SOURCE_FEED_INVALID', nonRetryable: true });
+    expect(recorded.map((r) => r.code)).toEqual(['CS_SOURCE_FEED_INVALID']);
+    expect((await schedule(refused)).consecutiveCaptureFailures).toBe(1);
+    // P8C4-8 the record runs on main, never behind captures in their queue
+    expect(
+      await activityEvents(handle, 'recordContentStudioFeedCaptureFailure')
+    ).toEqual(['main']);
+    expect((await captureEvents(handle)).queues).toEqual([
+      CONTENT_STUDIO_CAPTURE_TASK_QUEUE,
+    ]);
+  });
+
+  it('P8C4T4/M11 a feed that fails no more: its capture succeeds, its failures end, its next capture an interval later', async () => {
+    realDueList();
+    const feed = await realFeed(ORG_C, 'recovered');
+    await setSchedule(feed, {
+      consecutiveCaptureFailures: 3,
+      nextCaptureAt: new Date(Date.now() - 1000),
+      captureIntervalMinutes: 180,
+    });
+    const scan = await startScan();
+    expect(await childrenOf(scan)).toEqual([workflowId(feed)]);
+    await temporal.workflow.getHandle(workflowId(feed)).result();
+    const after = await schedule(feed);
+    expect(after.consecutiveCaptureFailures).toBe(0);
+    expect(
+      after.nextCaptureAt!.getTime() - after.lastCapturedAt!.getTime()
+    ).toBe(3 * HOUR);
+    expect(recorded).toEqual([]);
+  });
+
+  it('P8C4T5/P8C4T6 a paused feed keeps its schedule and is not started; resumed overdue, it is captured once', async () => {
+    realDueList();
+    const feed = await realFeed(ORG_A, 'paused-due');
+    await setSchedule(feed, {
+      consecutiveCaptureFailures: 2,
+      nextCaptureAt: new Date(Date.now() - HOUR),
+    });
+    await sourceService.pauseFeed(ORG_A, feed);
+    const before = await schedule(feed);
+    const first = await startScan();
+    expect(await childrenOf(first)).toEqual([]);
+    expect(await schedule(feed)).toEqual(before);
+    await sourceService.resumeFeed(ORG_A, feed);
+    const second = await startScan();
+    expect(await childrenOf(second)).toEqual([workflowId(feed)]);
+    await temporal.workflow.getHandle(workflowId(feed)).result();
+    const third = await startScan();
+    expect(await childrenOf(third)).toEqual([]);
+    expect(calls.get(feed)).toBe(1);
+    expect((await schedule(feed)).consecutiveCaptureFailures).toBe(0);
+  });
+
+  it('P8C4T7/M40/M41 a list that failed for good leaves the scan running: no child, no failure, 10 minutes, then the same page', async () => {
+    const after = randomUUID();
+    let asked: unknown;
+    listFeeds = async (input) => {
+      asked = input;
+      throw ApplicationFailure.nonRetryable('The database is down.', 'Error');
+    };
+    const scan = await startScan({ afterId: after });
+    expect(asked).toEqual({ afterId: after });
+    expect((await scan.describe()).status.name).toBe('RUNNING');
+    const { events } = await scan.fetchHistory();
+    expect(events!.some((e) => e.activityTaskFailedEventAttributes)).toBe(true);
+    expect(
+      events!.some((e) => e.startChildWorkflowExecutionInitiatedEventAttributes)
+    ).toBe(false);
+    expect(events!.some((e) => e.workflowExecutionFailedEventAttributes)).toBe(
+      false
+    );
+    const [timer] = await sleeping(scan);
+    expect(
+      Number(timer.timerStartedEventAttributes!.startToFireTimeout!.seconds)
+    ).toBe(600);
   });
 });
 
