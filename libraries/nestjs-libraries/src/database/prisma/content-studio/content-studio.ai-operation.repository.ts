@@ -116,31 +116,6 @@ export class ContentStudioAIOperationRepository {
     });
   }
 
-  // For source version protection (P8-R1A) only: one page of the
-  // organization's operations, in any status, after `afterId` in id order,
-  // with the context that names what they used
-  listOperationContextsForVersionProtection(input: {
-    organizationId: string;
-    afterId: string | null;
-    take: number;
-  }) {
-    return this._operation.model.contentStudioAIOperation.findMany({
-      where: {
-        organizationId: input.organizationId,
-        ...(input.afterId ? { id: { gt: input.afterId } } : {}),
-      },
-      orderBy: {
-        id: 'asc',
-      },
-      select: {
-        id: true,
-        organizationId: true,
-        context: true,
-      },
-      take: input.take,
-    });
-  }
-
   completeSucceededWithUsage(
     input: OperationCompletion & { resultHash: string }
   ) {

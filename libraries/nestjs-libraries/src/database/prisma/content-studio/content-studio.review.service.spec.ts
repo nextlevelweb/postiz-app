@@ -1805,9 +1805,10 @@ describe('ContentStudioReviewService boundaries', () => {
     // the history read inside it and the append; P5-05: the batch reads of
     // package and design revisions, reviews, claims and approvals; P5-06:
     // the queue's decision scan, its page by ids, the packages and designs
-    // of a page and its revision requests; P8-R1A: the package reviews
-    // source version protection reads
-    expect(queries.length).toBe(38);
+    // of a page and its revision requests. (P8-R1A's read of the package
+    // reviews for source version protection moved to
+    // content-studio.source-retention.repository.ts in P8-R1B)
+    expect(queries.length).toBe(37);
     for (const query of queries) {
       expect(query.slice(0, 400)).toMatch(/organizationId/);
     }

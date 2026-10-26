@@ -11,9 +11,22 @@ import {
   isContentStudioSourceKind,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
 import {
+  assertContentStudioSourceVersionRetentionPolicy,
   CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
   CONTENT_STUDIO_SOURCE_VERSION_PICKER_WINDOW,
   CONTENT_STUDIO_SOURCE_VERSION_PROTECTION_REASONS,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_BLOCKERS,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_CANDIDATE_REASON,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_FORMAT_VERSION,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_MAX_VERSIONS,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_VALIDITY_MS,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_ERRORS,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_MIN_AGE_MS,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_MODES,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_POLICY_RETAINED,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_POLICY_VERSION,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PROTECTION_VERSION,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_SOURCE_BATCH_SIZE,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
 
 // Research feed ingestion (P8-01) in one place, pinned on the source: a feed
@@ -1422,8 +1435,9 @@ describe('P8-04B1 organization page changes', () => {
         ),
       ]).toEqual([key, null]);
     }
+    // P8-R1B: the read-only retention dry run is the one command after it
     expect(pageChange('commandModule')).toMatch(
-      /providers: \[\s*RefreshTokens,\s*ConfigurationTask,\s*ContentStudioPageChangesBackfill,\s*\]/
+      /providers: \[\s*RefreshTokens,\s*ConfigurationTask,\s*ContentStudioPageChangesBackfill,\s*ContentStudioRetentionDryRun,\s*\]/
     );
     const packageJson = raw('package.json');
     expect(packageJson).not.toMatch(/backfill/i);
@@ -1802,13 +1816,16 @@ describe('P8-C1 organization safety caps', () => {
       /content-studio|content\.studio/.test(file)
     );
     // P8-R1A: the source version protection map, which only reads and
-    // removes nothing (pinned in its own block below), is the one exception
+    // removes nothing (pinned in its own block below), is the one exception;
+    // P8-R1B: with the retention dry run and its read model, which only
+    // read too (pinned in the P8-R1B block)
     expect(
       contentStudio.filter((file) =>
         /retention|purge|keepLast|prune|cleanup/i.test(CODE.get(file)!)
       )
     ).toEqual([
       'libraries/nestjs-libraries/src/content-studio/sources/source.retention.ts',
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.repository.ts',
       'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.service.ts',
     ]);
     expect(
@@ -1944,11 +1961,16 @@ describe('P8-C1 organization safety caps', () => {
         ),
       ]).toEqual([file, null]);
     }
+    // P8-R1B: and the retention snapshot, RepeatableRead and read only
+    // (pinned in R1B-2)
     expect(
       users(/isolationLevel|TransactionIsolationLevel/).filter((file) =>
         /content-studio/.test(file)
       )
-    ).toEqual([CAPS.repository]);
+    ).toEqual([
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.repository.ts',
+      CAPS.repository,
+    ]);
   });
 
   // P8-C2 changed the workflow and the worker on purpose (the capture queue,
@@ -3624,31 +3646,23 @@ describe('P8-R1A source version protection', () => {
       'apps/frontend/src/components/content-studio/content-studio.grounding.tsx',
     module: 'libraries/nestjs-libraries/src/database/prisma/database.module.ts',
     controller: 'apps/backend/src/api/routes/content-studio.controller.ts',
+    // P8-R1B: the reads moved from the four repositories into one read
+    // model, all in one snapshot
+    retention:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.repository.ts',
   };
   const r1 = (key: keyof typeof R1) => CODE.get(R1[key])!;
-  // the repository reads protection makes, by file, and nothing else
+  // the paged reads protection makes, and nothing else (P8-R1B: in the
+  // retention read model; the versions are read by source batch, R1B-2)
   const READS: Array<[keyof typeof R1, string, string]> = [
-    ['sources', 'listSourcesForVersionProtection', 'contentStudioSource'],
-    ['sources', 'listVersionsForProtection', 'contentStudioSourceVersion'],
-    ['packages', 'listPackageDraftsForVersionProtection', 'contentPackage'],
-    [
-      'reviews',
-      'listPackageReviewsForVersionProtection',
-      'contentStudioReview',
-    ],
-    [
-      'packages',
-      'listPackageRevisionsForVersionProtection',
-      'contentPackageRevision',
-    ],
-    [
-      'operations',
-      'listOperationContextsForVersionProtection',
-      'contentStudioAIOperation',
-    ],
+    ['retention', 'listSources', 'contentStudioSource'],
+    ['retention', 'listPackageDrafts', 'contentPackage'],
+    ['retention', 'listPackageReviews', 'contentStudioReview'],
+    ['retention', 'listPackageRevisions', 'contentPackageRevision'],
+    ['retention', 'listOperationContexts', 'contentStudioAIOperation'],
   ];
   const read = (file: keyof typeof R1, name: string) =>
-    between(r1(file), `\n  ${name}(`, '\n  }\n');
+    between(r1(file), `\n  ${name}(`, '\n  },\n');
   const WRITES =
     /\.(create|createMany|update|updateMany|upsert|delete|deleteMany)\(|\$executeRaw|\$queryRaw|\$transaction/;
 
@@ -3666,7 +3680,8 @@ describe('P8-R1A source version protection', () => {
         ),
       ]).toEqual([key, null]);
     }
-    // the reads are reads: findMany, nothing else
+    // the reads are reads: findMany, nothing else (P8-R1B: and the count
+    // and the one version not reached by source, R1B-1)
     for (const [file, name] of READS) {
       const body = read(file, name);
       expect([name, body.match(WRITES)]).toEqual([name, null]);
@@ -3757,15 +3772,11 @@ describe('P8-R1A source version protection', () => {
     ]);
     expect(schema).not.toMatch(/sourceVersionId|\bversionId\b/);
     // each enumerated document is read by its protection read
-    expect(read('packages', 'listPackageDraftsForVersionProtection')).toMatch(
-      /draft: true/
+    expect(read('retention', 'listPackageDrafts')).toMatch(/draft: true/);
+    expect(read('retention', 'listPackageRevisions')).toMatch(
+      /content: true,\s*contentHash: true/
     );
-    expect(
-      read('packages', 'listPackageRevisionsForVersionProtection')
-    ).toMatch(/content: true,\s*contentHash: true/);
-    expect(
-      read('operations', 'listOperationContextsForVersionProtection')
-    ).toMatch(/context: true/);
+    expect(read('retention', 'listOperationContexts')).toMatch(/context: true/);
     // the code that names a version id: the two stored schemas protection
     // parses, the grounding and AI writing that write them, the source
     // routes and capture, protection itself and the frontend's requests.
@@ -3797,8 +3808,9 @@ describe('P8-R1A source version protection', () => {
       expect([name, body]).toEqual([
         name,
         expect.stringMatching(
+          // P8-R1B: through the snapshot's transaction client
           new RegExp(
-            `^\\n  ${name}\\(input: \\{\\n    organizationId: string;\\n    afterId: string \\| null;\\n    take: number;\\n  \\}\\) \\{\\n    return this\\._\\w+\\.model\\.${model}\\.findMany\\(\\{\\n      where: \\{\\n        organizationId: input\\.organizationId,`
+            `^\\n  ${name}\\(input: \\{\\n    organizationId: string;\\n    afterId: string \\| null;\\n    take: number;\\n  \\}\\) \\{\\n    return tx\\.${model}\\.findMany\\(\\{\\n      where: \\{\\n        organizationId: input\\.organizationId,`
           )
         ),
       ]);
@@ -3821,14 +3833,26 @@ describe('P8-R1A source version protection', () => {
       "scoped('ContentPackageRevision')",
       "scoped('ContentStudioAIOperation')",
     ]);
+    // P8-R1B: every read is of the snapshot (in the order of the code:
+    // the count, sources and versions, then the stored records)
     expect(
       [...service.matchAll(/this\._\w+Repository\.(\w+)\(/g)].map((m) => m[1])
-    ).toEqual(READS.map(([, name]) => name));
+    ).toEqual(['listVersionContents', 'readSnapshot']);
+    expect([...service.matchAll(/reads\.(\w+)\(/g)].map((m) => m[1])).toEqual([
+      'countVersions',
+      'listSources',
+      'listVersionsOfSources',
+      'findVersionOfOtherOrganizationSource',
+      'listPackageDrafts',
+      'listPackageReviews',
+      'listPackageRevisions',
+      'listOperationContexts',
+    ]);
     expect(
       service.match(/organizationId,\n\s+afterId,\n\s+take,/g)
-    ).toHaveLength(4);
+    ).toHaveLength(2);
     expect(service.match(/\{ organizationId, afterId, take \}/g)).toHaveLength(
-      2
+      3
     );
     // and the pure rules check the sources and versions themselves
     expect(
@@ -3938,7 +3962,7 @@ describe('P8-R1A source version protection', () => {
     expect(model('ContentStudioSourceCaptureAttempt')).not.toMatch(
       /ContentStudioSourceVersion|versionId/
     );
-    for (const key of ['pure', 'service'] as const) {
+    for (const key of ['pure', 'service', 'retention'] as const) {
       expect([
         key,
         r1(key).match(
@@ -3946,14 +3970,22 @@ describe('P8-R1A source version protection', () => {
         ),
       ]).toEqual([key, null]);
     }
-    expect(read('sources', 'listSourcesForVersionProtection')).not.toMatch(
+    expect(read('retention', 'listSources')).not.toMatch(
       /http|scanPausedAt|nextCaptureAt|lastCapturedAt|captureAttempts|discover|feedDiscoveries/
     );
   });
 
   it('R1-11 the rules are pure: the caller passes the time', () => {
     const pure = r1('pure');
-    expect(pure).not.toMatch(
+    // P8-R1B: one Date is made, never from the clock: the dry run's
+    // validUntil, from the time the caller passed
+    expect(pure.match(/new Date\(/g)).toEqual(['new Date(']);
+    expect(
+      pure.replace(
+        /new Date\(\n    input\.evaluationNow\.getTime\(\) \+\n      CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_VALIDITY_MS\n  \)/,
+        ''
+      )
+    ).not.toMatch(
       /Date\.now|new Date\(|Math\.random|randomUUID|process\.env|@prisma|@nestjs|fetch\(/
     );
     expect(r1('service')).not.toMatch(/Date\.now|new Date\(/);
@@ -3982,25 +4014,32 @@ describe('P8-R1A source version protection', () => {
   });
 
   it('R1-13 internal only: a provider, and no route, command, activity, workflow or frontend reaches it', () => {
+    // P8-R1B: and its read model; the dry run's read-only command is the
+    // one command (R1B-12)
     expect(
       users(
         /ContentStudioSourceRetentionService|explainRetentionEligibility|computeProtectionMap|source\.retention'/
       )
-    ).toEqual([R1.service, R1.module].sort());
+    ).toEqual([R1.service, R1.module, R1.retention].sort());
     expect(r1('module')).toMatch(
-      /ContentStudioSourceService,\n\s*ContentStudioSourceRetentionService,\n/
+      /ContentStudioSourceService,\n\s*ContentStudioSourceRetentionRepository,\n\s*ContentStudioSourceRetentionService,\n/
     );
     const commands = walk(path.join(REPO_ROOT, 'apps/commands/src'));
     expect(
-      commands.filter((file) =>
-        /retention|Retention|ForVersionProtection|ForProtection/.test(
-          fs.readFileSync(file, 'utf8')
+      commands
+        .filter((file) =>
+          /retention|Retention|ForVersionProtection|ForProtection/.test(
+            fs.readFileSync(file, 'utf8')
+          )
         )
-      )
-    ).toEqual([]);
-    expect(users(/ForVersionProtection|ForProtection\(/)).toEqual(
-      [R1.service, R1.sources, R1.packages, R1.reviews, R1.operations].sort()
-    );
+        .map((file) => path.relative(REPO_ROOT, file).split(path.sep).join('/'))
+        .sort()
+    ).toEqual([
+      'apps/commands/src/command.module.ts',
+      'apps/commands/src/tasks/content.studio.retention.ts',
+    ]);
+    // P8-R1B: the reads of the four repositories moved to the read model
+    expect(users(/ForVersionProtection|ForProtection\(/)).toEqual([]);
     expect(r1('controller')).not.toMatch(/retention|eligib|protection/i);
     expect(
       r1('controller').match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
@@ -4075,5 +4114,544 @@ describe('P8-R1A source version protection', () => {
     ).toMatch(
       /sourceId: entry\.sourceId,\s*versionId: entry\.versionId,\s*versionNumber: entry\.versionNumber,\s*contentHash: entry\.contentHash,/
     );
+  });
+});
+
+// The retention dry run (P8-R1B), pinned: one read-only snapshot, one
+// policy (compact_repeats), the one protection engine, the retained-set
+// simulation always, a deterministic hash, and a read-only operator command
+// as its only way in. Its behavior is covered by source.retention.spec.ts,
+// the service and repository specs and the PostgreSQL dry-run suite
+describe('P8-R1B retention dry run', () => {
+  const R1B = {
+    pure: `${SOURCES}/source.retention.ts`,
+    service:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.service.ts',
+    repository:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.repository.ts',
+    module: 'libraries/nestjs-libraries/src/database/prisma/database.module.ts',
+    controller: 'apps/backend/src/api/routes/content-studio.controller.ts',
+  };
+  const r1b = (key: keyof typeof R1B) => CODE.get(R1B[key])!;
+  // apps/commands is not among the production bases: read it here
+  const COMMAND = 'apps/commands/src/tasks/content.studio.retention.ts';
+  const command = code(COMMAND);
+  const commandModule = code('apps/commands/src/command.module.ts');
+  const WRITES =
+    /\.(create|createMany|update|updateMany|upsert|delete|deleteMany)\(|\$executeRaw|\$queryRaw|Prisma\.sql|SET TRANSACTION/;
+  const fingerprint = (...parts: string[]) =>
+    createHash('sha256').update(parts.join('')).digest('hex');
+
+  it('R1B-1 the dry run only reads: no write, raw SQL or removal in its engine, service, read model or command', () => {
+    for (const [key, text] of [
+      ['pure', r1b('pure')],
+      ['service', r1b('service')],
+      ['repository', r1b('repository')],
+      ['command', command],
+    ] as const) {
+      expect([key, text.match(WRITES)]).toEqual([key, null]);
+      expect([
+        key,
+        text.match(
+          /deletable|safeToDelete|deleteReady|deleteCandidate|purge|prune|cleanup|quarantine|retentionPendingAt/i
+        ),
+      ]).toEqual([key, null]);
+    }
+    // its one transaction is the snapshot
+    expect(r1b('repository').match(/\$transaction\(/g)).toHaveLength(1);
+    expect(users(/\$transaction\(/)).not.toContain(R1B.service);
+    // the snapshot's reads: counts and finds only
+    const reads = between(
+      r1b('repository'),
+      'const snapshotReads = (tx: Prisma.TransactionClient) => ({',
+      '\n});\n'
+    );
+    expect(reads.match(/\.(\w+)\(\{/g)).toEqual([
+      '.count({',
+      '.findMany({',
+      '.findMany({',
+      '.findMany({',
+      '.findMany({',
+      '.findMany({',
+      '.findMany({',
+      '.findFirst({',
+    ]);
+    // nothing in production removes a version
+    expect(users(/contentStudioSourceVersion\.(delete|deleteMany)\(/)).toEqual(
+      []
+    );
+  });
+
+  it('R1B-2 one RepeatableRead snapshot, 5 seconds to start and 2 minutes at most; every read in it is through its client', () => {
+    const repository = r1b('repository');
+    const snapshot = between(repository, 'async readSnapshot<T>(', '\n  }\n');
+    expect(snapshot).toMatch(
+      /this\._transaction\.model\.\$transaction\(\s*\(tx\) => work\(snapshotReads\(tx\)\),\s*\{\s*isolationLevel: Prisma\.TransactionIsolationLevel\.RepeatableRead,\s*maxWait: 5_000,\s*timeout: 120_000,\s*\}\s*\)/
+    );
+    expect(repository.match(/isolationLevel:/g)).toHaveLength(1);
+    expect(repository).not.toMatch(/ReadCommitted|Serializable/);
+    const reads = between(
+      repository,
+      'const snapshotReads = (tx: Prisma.TransactionClient) => ({',
+      '\n});\n'
+    );
+    // every read goes through tx, none through the repository's own client
+    expect(reads).not.toMatch(/this\.|\._\w+\.model|\bprisma\b/);
+    expect(reads.match(/return tx\.\w+\.\w+\(/g)).toHaveLength(8);
+    // only the measuring read is outside the snapshot
+    expect(repository.match(/this\._version\.model\./g)).toEqual([
+      'this._version.model.',
+    ]);
+    expect(
+      between(repository, 'async listVersionContents(', '\n  }\n')
+    ).toMatch(/select: \{\s*id: true,\s*content: true,\s*\}/);
+    // the service reads the organization in the snapshot callback only
+    const service = r1b('service');
+    const evaluate = between(service, '  private evaluate(', '\n  }\n\n');
+    expect(evaluate).toMatch(
+      /return this\._contentStudioSourceRetentionRepository\.readSnapshot\(\s*async \(reads\) => \{/
+    );
+    expect(evaluate).not.toMatch(/listVersionContents|this\._\w+\.model/);
+    expect(service).not.toMatch(/\.model\.|PrismaRepository|TransactionClient/);
+    // a failed snapshot is reported as one, never as data
+    expect(repository).toMatch(
+      /const isSnapshotFailure = \(err: unknown\) =>\s*err instanceof Prisma\.PrismaClientKnownRequestError \|\|\s*err instanceof Prisma\.PrismaClientUnknownRequestError \|\|\s*err instanceof Prisma\.PrismaClientInitializationError \|\|\s*err instanceof Prisma\.PrismaClientRustPanicError;/
+    );
+    expect(repository.match(/throw snapshotFailed\(err\);/g)).toHaveLength(2);
+  });
+
+  it('R1B-3 a candidate is the interior of a run of the same capture: never its first or last, never by the blocks hash alone', () => {
+    const pure = r1b('pure');
+    const group = between(
+      pure,
+      'export function groupContentStudioSourceVersionRuns(',
+      '\n}\n'
+    );
+    expect(group).toMatch(
+      /if \(run && isSameContentStudioSourceCapture\(run\.last, version\)\) \{/
+    );
+    expect(group).toMatch(
+      /\.sort\(\(a, b\) => a\.versionNumber - b\.versionNumber\)/
+    );
+    expect(group).not.toMatch(/contentHash|title|extractionVersion/);
+    const classify = between(
+      pure,
+      'export function classifyContentStudioSourceVersionRetentionCandidates(',
+      '\n}\n'
+    );
+    expect(classify).toMatch(
+      /if \(\(input\.protections\.get\(id\) \?\? \[\]\)\.length > 0\) \{\s*protectedVersionIds\.push\(id\);\s*\} else if \(index === 0 \|\| index === run\.versionIds\.length - 1\) \{\s*policyRetained\.RUN_BOUNDARY\.push\(id\);/
+    );
+    expect(classify).toMatch(
+      /for \(const run of groupContentStudioSourceVersionRuns\(input\.versions\)\)/
+    );
+    expect(classify).not.toMatch(/contentHash ===|contentHash !==|isSame/);
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_CANDIDATE_REASON).toBe(
+      'REPEAT_RUN_INTERIOR'
+    );
+    expect([
+      ...CONTENT_STUDIO_SOURCE_VERSION_RETENTION_POLICY_RETAINED,
+    ]).toEqual(['RUN_BOUNDARY', 'TOO_RECENT']);
+    // the run ends are kept by the policy, never a new protection reason
+    expect(CONTENT_STUDIO_SOURCE_VERSION_PROTECTION_REASONS).toHaveLength(7);
+    expect(
+      between(
+        pure,
+        'export const CONTENT_STUDIO_SOURCE_VERSION_PROTECTION_REASONS',
+        '] as const;'
+      )
+    ).not.toMatch(/RUN_|BOUNDARY|BASELINE|HISTORY/);
+  });
+
+  it('R1B-4 one protection engine: the dry run calls computeContentStudioSourceVersionProtectionMap and derives nothing itself', () => {
+    const pure = r1b('pure');
+    const evaluate = between(
+      pure,
+      'export function evaluateContentStudioSourceVersionRetention(',
+      '\n}\n'
+    );
+    expect(evaluate).toMatch(
+      /const protections = computeContentStudioSourceVersionProtectionMap\(input\);/
+    );
+    // LATEST and PAGE_CHANGE are protected in one place
+    expect(pure.match(/protect\(\s*latest,/g)).toHaveLength(1);
+    expect(pure.match(/'comparison_baseline'\s*\)/g)).toHaveLength(1);
+    expect(
+      pure.match(/function deriveContentStudioSourceVersionProtections\(/g)
+    ).toHaveLength(1);
+    // the service makes the map or the dry run from those two only
+    const service = r1b('service');
+    expect(
+      [
+        ...service.matchAll(
+          /(computeContentStudioSourceVersionProtectionMap|evaluateContentStudioSourceVersionRetention)\(/g
+        ),
+      ].map((m) => m[1])
+    ).toEqual([
+      'evaluateContentStudioSourceVersionRetention',
+      'computeContentStudioSourceVersionProtectionMap',
+    ]);
+    expect(service).not.toMatch(
+      /'LATEST'|'PAGE_CHANGE'|'IN_FLIGHT'|latestVersionNumber/
+    );
+  });
+
+  it('R1B-5 compact_repeats is the only mode; anything else, all_unprotected first, is not enabled', () => {
+    expect([...CONTENT_STUDIO_SOURCE_VERSION_RETENTION_MODES]).toEqual([
+      'compact_repeats',
+    ]);
+    for (const mode of ['all_unprotected', 'duplicate_only', 'unreferenced']) {
+      expect(() =>
+        assertContentStudioSourceVersionRetentionPolicy(
+          { mode, olderThan: new Date(0) },
+          new Date('2026-10-26T12:00:00.000Z')
+        )
+      ).toThrow('RETENTION_POLICY_NOT_ENABLED');
+    }
+    expect(
+      between(
+        r1b('pure'),
+        'export function assertContentStudioSourceVersionRetentionPolicy(',
+        '\n}\n'
+      )
+    ).toMatch(
+      /if \(policy\.mode !== 'compact_repeats'\) \{\s*throw new ContentStudioSourceRetentionDryRunError\(\s*'RETENTION_POLICY_NOT_ENABLED'\s*\);/
+    );
+    for (const text of [r1b('pure'), r1b('service'), command]) {
+      expect(text).not.toMatch(/all_unprotected|allUnprotected/);
+    }
+  });
+
+  it('R1B-6 the age: createdAt strictly before olderThan, at least 7 days; IN_FLIGHT stays 24 hours', () => {
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_MIN_AGE_MS).toBe(
+      7 * 24 * 60 * 60 * 1000
+    );
+    expect(CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS).toBe(
+      24 * 60 * 60 * 1000
+    );
+    const pure = r1b('pure');
+    const classify = between(
+      pure,
+      'export function classifyContentStudioSourceVersionRetentionCandidates(',
+      '\n}\n'
+    );
+    expect(classify).toMatch(
+      /!\(version\.createdAt\.getTime\(\) < policy\.olderThan\.getTime\(\)\)/
+    );
+    // fetchedAt is only copied into the candidate
+    expect(classify.match(/fetchedAt/g)).toEqual(['fetchedAt', 'fetchedAt']);
+    expect(classify).toMatch(/fetchedAt: version\.fetchedAt,/);
+    expect(
+      between(
+        pure,
+        'export function assertContentStudioSourceVersionRetentionPolicy(',
+        '\n}\n'
+      )
+    ).toMatch(
+      /policy\.olderThan\.getTime\(\) >\s*now\.getTime\(\) - CONTENT_STUDIO_SOURCE_VERSION_RETENTION_MIN_AGE_MS/
+    );
+    // the command's floor is the same constant
+    expect(command).toMatch(
+      /const MIN_DAYS = CONTENT_STUDIO_SOURCE_VERSION_RETENTION_MIN_AGE_MS \/ DAY_MS;/
+    );
+  });
+
+  it('R1B-7 the hash: canonical JSON and sha256 of exactly the plan, never its sizes, times, counts, titles or URLs', () => {
+    const hash = between(
+      r1b('pure'),
+      'export function contentStudioSourceVersionRetentionDryRunHash(',
+      '\n}\n'
+    );
+    expect(hash).toMatch(/return sha256Hex\(\s*canonicalJson\(\{/);
+    expect(
+      [
+        ...between(hash, 'canonicalJson({', '\n    })\n').matchAll(
+          /\n      (\w+):/g
+        ),
+      ].map((m) => m[1])
+    ).toEqual([
+      'format',
+      'dryRunFormatVersion',
+      'protectionVersion',
+      'policyVersion',
+      'organizationId',
+      'evaluationNow',
+      'validUntil',
+      'policy',
+      'candidates',
+      'blockedSources',
+    ]);
+    expect(hash).toMatch(
+      /\.map\(\(c\) => \[c\.sourceId, c\.versionNumber, c\.id, c\.contentHash\]\)/
+    );
+    expect(hash).toMatch(
+      /\.map\(\(b\) => \[b\.sourceId, b\.blocker, b\.suppressedCandidates\]\)/
+    );
+    expect(hash).not.toMatch(
+      /logicalContentBytes|createdAt|fetchedAt|title|url|Url|count|JSON\.stringify|localeCompare/i
+    );
+    expect(r1b('pure')).not.toMatch(/localeCompare/);
+    expect(between(r1b('pure'), 'const compareCandidates = (', ';\n')).toMatch(
+      /compareText\(a\.sourceId, b\.sourceId\) \|\|\s*a\.versionNumber - b\.versionNumber \|\|\s*compareText\(a\.id, b\.id\)/
+    );
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_VALIDITY_MS).toBe(
+      60 * 60 * 1000
+    );
+  });
+
+  it('R1B-8 the versions in every hash are pinned to the rules they describe: a change of the rules needs a new version', () => {
+    const pure = r1b('pure');
+    const service = r1b('service');
+    // protection: the reasons, shapes, windows, derivation, resolution and
+    // the stored records read for them
+    expect({
+      version: CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PROTECTION_VERSION,
+      rules: fingerprint(
+        between(
+          pure,
+          'export const CONTENT_STUDIO_SOURCE_VERSION_PROTECTION_REASONS',
+          'export function buildContentStudioSourceVersionProtectionMap'
+        ),
+        between(service, '  private async references(', '\n  }\n}\n')
+      ),
+    }).toEqual({
+      version: 1,
+      rules: '4041efc36718b4eebe2ab97f5819582a5acff8f945e23e9b596240d30242565e',
+    });
+    // policy: the mode, the minimum age, runs, candidates and the
+    // retained-set simulation
+    expect({
+      version: CONTENT_STUDIO_SOURCE_VERSION_RETENTION_POLICY_VERSION,
+      rules: fingerprint(
+        between(
+          pure,
+          'export const CONTENT_STUDIO_SOURCE_VERSION_RETENTION_MODES',
+          'export const CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_VALIDITY_MS'
+        ),
+        between(
+          pure,
+          'export function assertContentStudioSourceVersionRetentionPolicy(',
+          'export function assertContentStudioSourceVersionRetentionScale('
+        ),
+        between(
+          pure,
+          'type RunVersion',
+          'export function evaluateContentStudioSourceVersionRetention('
+        )
+      ),
+    }).toEqual({
+      version: 1,
+      rules: '51045a3270cd429b88584bffb9a1cd7b48c0c87202a05ca15ebf17e5a29c59cd',
+    });
+    // format: the order and the hashed payload
+    expect({
+      version: CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_FORMAT_VERSION,
+      rules: fingerprint(
+        between(
+          pure,
+          'const compareCandidates = (',
+          'export function buildContentStudioSourceVersionRetentionDryRun('
+        )
+      ),
+    }).toEqual({
+      version: 1,
+      rules: 'eb503250101a05ec59f7f88662179637428eb7fd80bf9879d17b393571ccb365',
+    });
+  });
+
+  it('R1B-9 the retained-set simulation always runs, with every candidate of the source; a blocked source keeps none', () => {
+    const evaluate = between(
+      r1b('pure'),
+      'export function evaluateContentStudioSourceVersionRetention(',
+      '\n}\n'
+    );
+    expect(evaluate).toMatch(
+      /const blocker = simulateContentStudioSourcePageChangeStateAfterRetention\(\{\s*source,\s*versions,\s*candidateIds: new Set\(classified\.candidates\.map\(\(c\) => c\.id\)\),/
+    );
+    expect(evaluate).toMatch(
+      /const blocked = blocker !== null && classified\.candidates\.length > 0;/
+    );
+    expect(evaluate).toMatch(
+      /candidates: blocked \? \[\] : classified\.candidates,/
+    );
+    expect(evaluate).toMatch(
+      /blockedCandidateVersions: blocked \? classified\.candidates\.length : 0,/
+    );
+    expect(
+      r1b('pure').match(
+        /simulateContentStudioSourcePageChangeStateAfterRetention\(/g
+      )
+    ).toHaveLength(2);
+    expect(r1b('pure')).not.toMatch(/skip|bypass|force|unsafe|subset/i);
+    const simulate = between(
+      r1b('pure'),
+      'export function simulateContentStudioSourcePageChangeStateAfterRetention(',
+      '\n}\n'
+    );
+    for (const check of [
+      "return 'PAGE_CHANGE_STATE_STALE';",
+      'storedContentStudioSourcePageChange(input.source)',
+      'derivedPageChange(ordered)',
+      'derivedPageChange(retained)',
+      'groupContentStudioSourceVersionRuns(ordered)',
+      'groupContentStudioSourceVersionRuns(retained)',
+      'run.firstVersionId !== after[index].firstVersionId',
+      'run.lastVersionId !== after[index].lastVersionId',
+    ]) {
+      expect([check, simulate.includes(check)]).toEqual([check, true]);
+    }
+    expect(
+      simulate.match(/return 'RETAINED_SET_INVARIANT_CHANGED';/g)
+    ).toHaveLength(3);
+    // the backfill's rule, from the same classifier
+    expect(
+      between(r1b('pure'), 'const derivedPageChange = (', '\n};\n')
+    ).toMatch(
+      /classifyContentStudioSourceCaptureTransition\(\s*previous,\s*version\s*\);\s*if \(previous && isContentStudioSourcePageChange\(transition\)\)/
+    );
+    expect([...CONTENT_STUDIO_SOURCE_VERSION_RETENTION_BLOCKERS]).toEqual([
+      'PAGE_CHANGE_STATE_STALE',
+      'RETAINED_SET_INVARIANT_CHANGED',
+    ]);
+  });
+
+  it('R1B-10 at most 1,000,000 versions, counted first in the same snapshot; sources batched by 200, every version reached', () => {
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_MAX_VERSIONS).toBe(
+      1_000_000
+    );
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_SOURCE_BATCH_SIZE).toBe(200);
+    expect(
+      between(
+        r1b('pure'),
+        'export function assertContentStudioSourceVersionRetentionScale(',
+        '\n}\n'
+      )
+    ).toMatch(/if \(versionCount > maxVersions\) \{/);
+    const evaluate = between(
+      r1b('service'),
+      '  private evaluate(',
+      '\n  }\n\n'
+    );
+    expect(evaluate).toMatch(
+      /async \(reads\) => \{\s*const versionCount = await reads\.countVersions\(organizationId\);\s*if \(limited\) \{\s*assertContentStudioSourceVersionRetentionScale\(versionCount\);\s*\}/
+    );
+    expect(evaluate.indexOf('countVersions')).toBeLessThan(
+      evaluate.indexOf('listSources')
+    );
+    expect(evaluate.indexOf('this.references(')).toBeLessThan(
+      evaluate.indexOf('listVersionsOfSources')
+    );
+    expect(evaluate).toMatch(
+      /i \+= CONTENT_STUDIO_SOURCE_VERSION_RETENTION_SOURCE_BATCH_SIZE/
+    );
+    expect(evaluate).toMatch(/if \(read !== versionCount\) \{/);
+    expect(evaluate).toMatch(
+      /references: batch\.flatMap\(\s*\(source\) => references\.get\(source\.id\) \?\? \[\]\s*\)/
+    );
+    // the dry run is limited, protection itself is not
+    expect(
+      r1b('service').match(/this\.evaluate\(input, (true|false),/g)
+    ).toEqual(['this.evaluate(input, true,', 'this.evaluate(input, false,']);
+    // never all versions of the organization in one read
+    expect(r1b('repository')).not.toMatch(
+      /listVersionsForProtection|afterId[^\n]*versionNumber/
+    );
+  });
+
+  it('R1B-11 the report names sources by id: no content, quote, AI context, title or URL', () => {
+    const build = between(
+      r1b('pure'),
+      'export function buildContentStudioSourceVersionRetentionDryRun(',
+      '\n}\n'
+    );
+    expect(build).not.toMatch(/\.content\b|quote|context|title|[uU]rl|draft/);
+    const service = r1b('service');
+    // the blocks are measured, never kept
+    expect(service).toMatch(
+      /logicalContentBytes\.set\(row\.id, Buffer\.byteLength\(row\.content, 'utf8'\)\);/
+    );
+    expect(service.match(/row\.content\b/g)).toEqual(['row.content']);
+    expect(command).not.toMatch(
+      /\.title|canonicalUrl|finalUrl|requestedUrl|\.name\b/
+    );
+    expect(command).not.toMatch(/disk[A-Z]|reclaimable|physicalBytes/);
+  });
+
+  it('R1B-12 the service and its read-only command only: no route, controller, workflow, activity or frontend', () => {
+    expect(users(/computeRetentionDryRun/)).toEqual([R1B.service]);
+    expect(command.match(/\.computeRetentionDryRun\(/g)).toHaveLength(1);
+    expect(command).toMatch(/command: 'content-studio:retention-dry-run',/);
+    expect(commandModule).toMatch(
+      /import \{ ContentStudioRetentionDryRun \} from '\.\/tasks\/content\.studio\.retention';/
+    );
+    expect(
+      users(/content-studio:retention-dry-run|ContentStudioRetentionDryRun\b/)
+    ).toEqual([]);
+    expect(r1b('controller')).not.toMatch(
+      /retention|eligib|protection|dryRun/i
+    );
+    expect(
+      r1b('controller').match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
+    ).toHaveLength(149);
+    expect(
+      PRODUCTION.filter(
+        (file) =>
+          /^apps\/(orchestrator|frontend|backend)\//.test(file) &&
+          /retention|Retention/.test(CODE.get(file)!)
+      )
+    ).toEqual([]);
+    expect(raw('package.json')).not.toMatch(/retention/i);
+    expect(r1b('module')).toMatch(
+      /ContentStudioSourceRetentionRepository,\n\s*ContentStudioSourceRetentionService,\n/
+    );
+  });
+
+  it('R1B-13 no schema for it: no retention, pending or quarantine model or field', () => {
+    expect(schema).not.toMatch(
+      /retention|Retention|quarantine|Quarantine|pendingAt|PendingAt|eligib/
+    );
+    expect(createHash('sha256').update(schema).digest('hex')).toBe(
+      'a7622590115d8b660e7783196d0577335f4afb70379d2ce1d386368776d69aed'
+    );
+  });
+
+  it('R1B-CMD the command: its options, exit code 1 on refusal, JSON alone on stdout, and nothing it could write with', () => {
+    expect(command).toMatch(
+      /constructor\(\s*private _contentStudioSourceRetentionService: ContentStudioSourceRetentionService\s*\) \{\}/
+    );
+    expect(command.match(/name: '([\w-]+)'/g)).toEqual([
+      "name: 'organization'",
+      "name: 'older-than-days'",
+      "name: 'mode'",
+      "name: 'json'",
+    ]);
+    expect(command).not.toMatch(/output|writeFile|fs\.|createWriteStream/);
+    expect(command).not.toMatch(
+      /process\.exit\(|setInterval|cron|onModuleInit|backfill/i
+    );
+    expect(command.match(/process\.exitCode = 1;/g)).toHaveLength(1);
+    expect(command).toMatch(
+      /if \(json\) \{\s*console\.log\(canonicalJson\(report\)\);\s*return true;\s*\}/
+    );
+    // stdout is the command's: what providers print while the commands
+    // start goes to stderr, and console.log is back before the command runs
+    expect(code(COMMANDS.main)).toMatch(
+      /const log = console\.log;\s*console\.log = console\.error;\s*let app;\s*try \{\s*app = await NestFactory\.createApplicationContext\(CommandModule, \{\s*logger: \['error'\],\s*\}\);\s*\} finally \{\s*console\.log = log;\s*\}/
+    );
+    // one clock, in whole seconds, at the command only
+    expect(command.match(/Date\.now\(\)/g)).toEqual(['Date.now()']);
+    expect(command).toMatch(
+      /const now = new Date\(Math\.floor\(Date\.now\(\) \/ 1000\) \* 1000\);/
+    );
+    expect(command).toMatch(
+      /olderThan: new Date\(now\.getTime\(\) - days \* DAY_MS\)/
+    );
+    expect([...CONTENT_STUDIO_SOURCE_VERSION_RETENTION_ERRORS]).toEqual([
+      'RETENTION_INTEGRITY_ERROR',
+      'RETENTION_POLICY_NOT_ENABLED',
+      'RETENTION_POLICY_INVALID',
+      'RETENTION_DRY_RUN_SCALE_LIMIT',
+      'RETENTION_DRY_RUN_SNAPSHOT_FAILED',
+    ]);
   });
 });

@@ -7,13 +7,14 @@ import {
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
-import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.repository';
-import { ContentStudioReviewRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.repository';
-import { ContentStudioAIOperationRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-operation.repository';
 import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { ContentStudioSourceRetentionService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.service';
+import {
+  ContentStudioSourceRetentionRepository,
+  ContentStudioSourceRetentionSnapshotReads,
+} from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.repository';
 import {
   ContentStudioSourceRetentionIntegrityError,
   ContentStudioSourceVersionProtectionMap,
@@ -28,7 +29,8 @@ import { createContentStudioPostgresClient } from '../../../../../../jest.conten
 
 // Source version protection (P8-R1A) on a real PostgreSQL: the protection
 // map and the explanation of one version from real rows of every kind,
-// read by the real repositories in organization-scoped pages: the exact set,
+// read by the real read model (P8-R1B: in one RepeatableRead snapshot, the
+// versions by batch of sources) in organization-scoped pages: the exact set,
 // another organization, corrupt references, archived and soft-deleted
 // records, gaps, repeats, the picker window and the age cutoff, and 10,000
 // and 100,000 versions. Evaluation only reads: every version is the same
@@ -54,10 +56,8 @@ const X2 = 'content-studio-source-v2';
 
 let client: PrismaClient;
 let sources: ContentStudioSourceRepository;
-let packages: ContentStudioRepository;
-let reviews: ContentStudioReviewRepository;
-let operations: ContentStudioAIOperationRepository;
 let retention: ContentStudioSourceRetentionService;
+let retentionRepository: ContentStudioSourceRetentionRepository;
 let sourceService: ContentStudioSourceService;
 
 type Capture = {
@@ -377,32 +377,11 @@ beforeAll(async () => {
     new PrismaRepository<'contentStudioSourceVersion'>(prisma),
     transaction
   );
-  packages = new ContentStudioRepository(
-    new PrismaRepository<'contentStudioProject'>(prisma),
-    new PrismaRepository<'contentPackage'>(prisma),
-    new PrismaRepository<'contentPackageRevision'>(prisma),
+  retentionRepository = new ContentStudioSourceRetentionRepository(
+    new PrismaRepository<'contentStudioSourceVersion'>(prisma),
     transaction
   );
-  reviews = new ContentStudioReviewRepository(
-    new PrismaRepository<'contentStudioReview'>(prisma),
-    new PrismaRepository<'contentPackageRevision'>(prisma),
-    new PrismaRepository<'contentStudioDesignRevision'>(prisma),
-    new PrismaRepository<'contentStudioReviewComment'>(prisma),
-    new PrismaRepository<'contentStudioReviewRevisionRequest'>(prisma),
-    new PrismaRepository<'contentStudioReviewClaim'>(prisma),
-    new PrismaRepository<'contentStudioApproval'>(prisma),
-    transaction
-  );
-  operations = new ContentStudioAIOperationRepository(
-    new PrismaRepository<'contentStudioAIOperation'>(prisma),
-    transaction
-  );
-  retention = new ContentStudioSourceRetentionService(
-    sources,
-    packages,
-    reviews,
-    operations
-  );
+  retention = new ContentStudioSourceRetentionService(retentionRepository);
   sourceService = new ContentStudioSourceService(
     sources,
     new ContentStudioSourceDiscoveryRepository(
@@ -1044,24 +1023,48 @@ const scale = async (
   };
 };
 
-// The reads the service makes, counted on the real repositories
+// The reads the service makes, counted on the real read model's snapshot
+// (P8-R1B): the count, sources, versions by batch of sources, drafts,
+// reviews, revisions and AI operations
+const READ_ORDER = [
+  'countVersions',
+  'listSources',
+  'listVersionsOfSources',
+  'listPackageDrafts',
+  'listPackageReviews',
+  'listPackageRevisions',
+  'listOperationContexts',
+] as const;
 const counted = async (organizationId: string) => {
-  const spies = [
-    jest.spyOn(sources, 'listSourcesForVersionProtection'),
-    jest.spyOn(sources, 'listVersionsForProtection'),
-    jest.spyOn(packages, 'listPackageDraftsForVersionProtection'),
-    jest.spyOn(reviews, 'listPackageReviewsForVersionProtection'),
-    jest.spyOn(packages, 'listPackageRevisionsForVersionProtection'),
-    jest.spyOn(operations, 'listOperationContextsForVersionProtection'),
-  ];
+  const calls: Array<[string, unknown]> = [];
+  const original = retentionRepository.readSnapshot.bind(retentionRepository);
+  const spy = jest
+    .spyOn(retentionRepository, 'readSnapshot')
+    .mockImplementation((work) =>
+      original((reads) =>
+        work(
+          Object.fromEntries(
+            Object.entries(reads).map(([name, read]) => [
+              name,
+              (input: unknown) => {
+                calls.push([name, input]);
+                return (read as (input: unknown) => unknown)(input);
+              },
+            ])
+          ) as unknown as ContentStudioSourceRetentionSnapshotReads
+        )
+      )
+    );
   const started = process.hrtime.bigint();
   const map = await compute(organizationId);
   const ms = Number(process.hrtime.bigint() - started) / 1e6;
-  const reads = spies.map((spy) => spy.mock.calls.length);
-  const takes = spies.flatMap((spy) =>
-    spy.mock.calls.map(([input]) => (input as { take: number }).take)
+  const reads = READ_ORDER.map(
+    (name) => calls.filter(([call]) => call === name).length
   );
-  spies.forEach((spy) => spy.mockRestore());
+  const takes = calls
+    .map(([, input]) => (input as { take?: number }).take)
+    .filter((take): take is number => take !== undefined);
+  spy.mockRestore();
   return {
     map,
     ms,
@@ -1084,7 +1087,9 @@ describe('P8-R1A scale on PostgreSQL', () => {
     const run = await counted(ORG_S);
     expect(expected).toEqual({ versions: 10_000, protected: 6300 });
     expect(run.map.size).toBe(6300);
-    expect(run.reads).toEqual([1, 2, 1, 1, 1, 1]);
+    // P8-R1B: the count, 250 sources, their versions in 2 batches of 200
+    // sources, then one page of each kind of record
+    expect(run.reads).toEqual([1, 1, 2, 1, 1, 1, 1]);
     expect(Math.max(...run.takes)).toBe(10_000);
     const edges = [...run.map.values()].flat().length;
     // eslint-disable-next-line no-console
@@ -1110,10 +1115,10 @@ describe('P8-R1A scale on PostgreSQL', () => {
     const run = await counted(ORG_S);
     expect(expected).toEqual({ versions: 100_000, protected: 63_000 });
     expect(run.map.size).toBe(63_000);
-    // 2,500 sources; 100,000 versions in 10 full pages and an empty one;
-    // 500 drafts (a full page, then none); 500 reviews; 2,000 revisions
-    // and 3,000 operations in pages of 500
-    expect(run.reads).toEqual([1, 11, 2, 1, 5, 7]);
+    // the count; 2,500 sources; P8-R1B: 100,000 versions in 13 batches of
+    // 200 sources; 501 drafts (a full page, then one); 500 reviews; 2,000
+    // revisions and 3,000 operations in pages of 500
+    expect(run.reads).toEqual([1, 1, 13, 2, 1, 5, 7]);
     const edges = [...run.map.values()].flat().length;
     // eslint-disable-next-line no-console
     console.log(

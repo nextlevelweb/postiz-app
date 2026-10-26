@@ -78,6 +78,7 @@ import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/databas
 import { ContentStudioSourceDiscoveryRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-discovery.repository';
 import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-capture-attempt.repository';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
+import { ContentStudioSourceRetentionRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.repository';
 import { ContentStudioSourceRetentionService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.service';
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 import { ContentStudioBrandKitRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.repository';
@@ -187,6 +188,7 @@ import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/p
     ContentStudioSourceDiscoveryRepository,
     ContentStudioSourceCaptureAttemptRepository,
     ContentStudioSourceService,
+    ContentStudioSourceRetentionRepository,
     ContentStudioSourceRetentionService,
     ContentStudioSourceIngestionService,
     ContentStudioBrandKitRepository,

@@ -56,6 +56,24 @@ describe('apps/commands main', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it('CMD3 what providers print while starting goes to stderr; what the command prints, to stdout (P8-R1B)', async () => {
+    const { NestFactory } = jest.requireMock('@nestjs/core');
+    NestFactory.createApplicationContext.mockImplementationOnce(async () => {
+      console.log('Email service provider: no provider');
+      return app;
+    });
+    const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    app.exec.mockImplementation(async () => {
+      calls.push('exec');
+      console.log('{"report":true}');
+    });
+    await runMain();
+    expect(error).toHaveBeenCalledWith('Email service provider: no provider');
+    expect(log.mock.calls).toEqual([['{"report":true}']]);
+    expect(calls).toEqual(['exec', 'close', 'exit()']);
+    log.mockRestore();
+  });
+
   it('CMD2 a command that throws closes Nest and exits 1', async () => {
     app.exec.mockImplementation(async () => {
       calls.push('exec');

@@ -3,10 +3,18 @@ import { CommandModule } from './command.module';
 import { CommandService } from 'nestjs-command';
 
 async function bootstrap() {
-  // some comment again
-  const app = await NestFactory.createApplicationContext(CommandModule, {
-    logger: ['error'],
-  });
+  // what providers print while they start goes to stderr: stdout is the
+  // command's own (P8-R1B: a report printed as JSON is the JSON alone)
+  const log = console.log;
+  console.log = console.error;
+  let app;
+  try {
+    app = await NestFactory.createApplicationContext(CommandModule, {
+      logger: ['error'],
+    });
+  } finally {
+    console.log = log;
+  }
 
   try {
     await app.select(CommandModule).get(CommandService).exec();

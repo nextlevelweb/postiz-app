@@ -5,6 +5,7 @@ import { getTemporalModule } from '@gitroom/nestjs-libraries/temporal/temporal.m
 import { RefreshTokens } from './tasks/refresh.tokens';
 import { ConfigurationTask } from './tasks/configuration';
 import { ContentStudioPageChangesBackfill } from './tasks/content.studio.page.changes';
+import { ContentStudioRetentionDryRun } from './tasks/content.studio.retention';
 
 @Module({
   imports: [ExternalCommandModule, DatabaseModule, getTemporalModule(false)],
@@ -13,6 +14,7 @@ import { ContentStudioPageChangesBackfill } from './tasks/content.studio.page.ch
     RefreshTokens,
     ConfigurationTask,
     ContentStudioPageChangesBackfill,
+    ContentStudioRetentionDryRun,
   ],
   get exports() {
     return [...this.imports, ...this.providers];

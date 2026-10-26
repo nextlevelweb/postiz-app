@@ -1,8 +1,8 @@
 import { HttpException, Injectable } from '@nestjs/common';
-import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
-import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.repository';
-import { ContentStudioReviewRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.repository';
-import { ContentStudioAIOperationRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-operation.repository';
+import {
+  ContentStudioSourceRetentionRepository,
+  ContentStudioSourceRetentionSnapshotReads,
+} from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.repository';
 import {
   ContentPackageClaimEvidenceV2,
   contentPackageClaims,
@@ -14,13 +14,24 @@ import {
   parseContentStudioAIOperationContext,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.operation.types';
 import {
+  assertContentStudioSourceVersionRetentionPolicy,
+  assertContentStudioSourceVersionRetentionScale,
+  buildContentStudioSourceVersionProtectionMap,
+  buildContentStudioSourceVersionRetentionDryRun,
   computeContentStudioSourceVersionProtectionMap,
   CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
   CONTENT_STUDIO_SOURCE_VERSION_PICKER_WINDOW,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_SOURCE_BATCH_SIZE,
+  ContentStudioSourceRetentionDryRunError,
   ContentStudioSourceRetentionIntegrityError,
+  ContentStudioSourceVersionProtection,
+  ContentStudioSourceVersionProtectionMap,
   ContentStudioSourceVersionProtectionReferenceType,
   ContentStudioSourceVersionReference,
+  ContentStudioSourceVersionRetentionSourceResult,
+  evaluateContentStudioSourceVersionRetention,
   explainContentStudioSourceVersionProtection,
+  summarizeContentStudioSourceVersionProtections,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
 
 // A fixed message only, like any source version of another organization
@@ -30,10 +41,13 @@ const notFound = () =>
     404
   );
 
-// Rows per read: small rows (sources, versions, reviews) and documents (a
-// draft or revision is at most 64 KiB, an AI context 8 KiB)
+// Rows per read: small rows (sources, reviews) and documents (a draft or
+// revision is at most 64 KiB, an AI context 8 KiB). Versions are read by
+// source batch (CONTENT_STUDIO_SOURCE_VERSION_RETENTION_SOURCE_BATCH_SIZE)
 const ROWS_PAGE_SIZE = 10_000;
 const DOCUMENTS_PAGE_SIZE = 500;
+// Candidates measured per read, after the snapshot
+const CONTENTS_PAGE_SIZE = 500;
 
 type Page<T> = (afterId: string | null, take: number) => Promise<T[]>;
 
@@ -94,28 +108,41 @@ const distinctEvidence = (
   return [...refs.values()];
 };
 
-// Source version protection (P8-R1A): which captured versions of one
-// organization stored data still needs, and why. Internal only: no route,
-// command, activity or schedule reaches it, and it never writes or removes
-// anything. Every protection is decided by source.retention.ts from the
-// organization's rows, read here in bounded pages by organization, one read
-// per kind of record and page, never per version: its sources, versions,
-// package drafts (archived too), reviews of package revisions, revisions and
-// AI operations. The JSON is read with the parsers that wrote it; anything
-// that does not parse, belongs to another organization or names a version
-// that is not exactly there throws ContentStudioSourceRetentionIntegrityError
-// for the whole organization. The reads are not one snapshot: a capture or
-// save that runs meanwhile can only make an evaluation fail, never leave a
-// version unprotected that the rows read protect. A version with no
-// protection is eligible in principle only: whether history may be shortened
-// at all is still a product decision (PD1)
+type Reads = ContentStudioSourceRetentionSnapshotReads;
+type Sources = Awaited<ReturnType<Reads['listSources']>>;
+type Versions = Awaited<ReturnType<Reads['listVersionsOfSources']>>;
+
+// Some sources of the organization with all their versions and every
+// reference naming one of them
+interface Batch {
+  sources: Sources;
+  versions: Versions;
+  references: ContentStudioSourceVersionReference[];
+}
+
+// Source version protection (P8-R1A) and the retention dry run (P8-R1B):
+// which captured versions of one organization stored data still needs, and
+// why, and which ones the one retention policy would select. Internal only:
+// no route, activity or schedule reaches it; the dry run has one read-only
+// operator command. It never writes or removes anything. Every protection
+// is decided by source.retention.ts from the organization's rows, all read
+// in one RepeatableRead snapshot (the organization as it was at one moment,
+// whatever is captured or saved meanwhile): first how many versions it has,
+// then its sources, package drafts (archived too), reviews of package
+// revisions, revisions and AI operations in bounded pages, and then the
+// versions of its sources a batch of sources at a time, each source's
+// versions whole, evaluated with the references naming them. One read per
+// kind of record and page, or per batch of sources: never per version. The
+// JSON is read with the parsers that wrote it; anything that does not parse,
+// belongs to another organization or names a version that is not exactly
+// there throws ContentStudioSourceRetentionIntegrityError for the whole
+// organization. A version with no protection is eligible in principle only,
+// and a dry-run candidate only a candidate: whether history may be shortened
+// is still a product decision (PD1)
 @Injectable()
 export class ContentStudioSourceRetentionService {
   constructor(
-    private _contentStudioSourceRepository: ContentStudioSourceRepository,
-    private _contentStudioRepository: ContentStudioRepository,
-    private _contentStudioReviewRepository: ContentStudioReviewRepository,
-    private _contentStudioAIOperationRepository: ContentStudioAIOperationRepository
+    private _contentStudioSourceRetentionRepository: ContentStudioSourceRetentionRepository
   ) {}
 
   // Every protected version of the organization at `now`, by version
@@ -131,8 +158,11 @@ export class ContentStudioSourceRetentionService {
     sourceVersionId: string;
     now: Date;
   }) {
-    const { protections, versionIds } = await this.protect(input);
-    if (!versionIds.has(input.sourceVersionId)) {
+    const { protections, found } = await this.protect(
+      input,
+      input.sourceVersionId
+    );
+    if (!found) {
       throw notFound();
     }
     return explainContentStudioSourceVersionProtection(
@@ -141,8 +171,182 @@ export class ContentStudioSourceRetentionService {
     );
   }
 
-  private async protect(input: { organizationId: string; now: Date }) {
+  // The retention dry run of one organization at `now` (P8-R1B): what the
+  // policy would select and hold back, with its hash. Reads only. More than
+  // CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_MAX_VERSIONS versions is
+  // refused before any is read. After the snapshot, the candidates' blocks
+  // are measured (their logical size, never what they would free on disk);
+  // versions are never changed, so one that is not there fails the run
+  async computeRetentionDryRun(input: {
+    organizationId: string;
+    now: Date;
+    policy: { mode: unknown; olderThan: unknown };
+  }) {
+    const policy = assertContentStudioSourceVersionRetentionPolicy(
+      input.policy,
+      input.now
+    );
+    const maps: ContentStudioSourceVersionProtectionMap[] = [];
+    const sources: ContentStudioSourceVersionRetentionSourceResult[] = [];
+    const snapshot = await this.evaluate(input, true, (batch) => {
+      const evaluated = evaluateContentStudioSourceVersionRetention({
+        organizationId: input.organizationId,
+        ...batch,
+        now: input.now,
+        inFlightMs: CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
+        pickerWindow: CONTENT_STUDIO_SOURCE_VERSION_PICKER_WINDOW,
+        policy,
+      });
+      maps.push(evaluated.protections);
+      sources.push(...evaluated.sources);
+    });
+
+    const ids = sources.flatMap((source) =>
+      source.candidates.map((candidate) => candidate.id)
+    );
+    const logicalContentBytes = new Map<string, number>();
+    for (let i = 0; i < ids.length; i += CONTENTS_PAGE_SIZE) {
+      const rows =
+        await this._contentStudioSourceRetentionRepository.listVersionContents({
+          organizationId: input.organizationId,
+          ids: ids.slice(i, i + CONTENTS_PAGE_SIZE),
+        });
+      for (const row of rows) {
+        logicalContentBytes.set(row.id, Buffer.byteLength(row.content, 'utf8'));
+      }
+    }
+    if (logicalContentBytes.size !== ids.length) {
+      throw new ContentStudioSourceRetentionDryRunError(
+        'RETENTION_DRY_RUN_SNAPSHOT_FAILED'
+      );
+    }
+
+    return buildContentStudioSourceVersionRetentionDryRun({
+      organizationId: input.organizationId,
+      evaluationNow: input.now,
+      policy,
+      snapshot,
+      protectionSummary: summarizeContentStudioSourceVersionProtections(maps),
+      sources,
+      logicalContentBytes,
+    });
+  }
+
+  // The protection map, batch by batch, merged: the same map as one of the
+  // whole organization, each version being in exactly one batch
+  private async protect(
+    input: { organizationId: string; now: Date },
+    sourceVersionId?: string
+  ) {
+    const protections: ContentStudioSourceVersionProtection[] = [];
+    let found = false;
+    await this.evaluate(input, false, (batch) => {
+      const map = computeContentStudioSourceVersionProtectionMap({
+        organizationId: input.organizationId,
+        ...batch,
+        now: input.now,
+        inFlightMs: CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
+        pickerWindow: CONTENT_STUDIO_SOURCE_VERSION_PICKER_WINDOW,
+      });
+      for (const list of map.values()) {
+        for (const protection of list) {
+          protections.push(protection);
+        }
+      }
+      if (batch.versions.some((version) => version.id === sourceVersionId)) {
+        found = true;
+      }
+    });
+    return {
+      protections: buildContentStudioSourceVersionProtectionMap(protections),
+      found,
+    };
+  }
+
+  // The organization in one snapshot, handed over a batch of sources at a
+  // time with all their versions and the references naming them. Every
+  // reference must name a source of the organization, and the batches must
+  // hold every version it has, or the whole organization fails
+  private evaluate(
+    input: { organizationId: string },
+    limited: boolean,
+    use: (batch: Batch) => void
+  ) {
     const organizationId = input.organizationId;
+    return this._contentStudioSourceRetentionRepository.readSnapshot(
+      async (reads) => {
+        const versionCount = await reads.countVersions(organizationId);
+        if (limited) {
+          assertContentStudioSourceVersionRetentionScale(versionCount);
+        }
+
+        const sources: Sources = [];
+        await eachPage(
+          (afterId, take) =>
+            reads.listSources({ organizationId, afterId, take }),
+          ROWS_PAGE_SIZE,
+          (rows) => {
+            for (const row of rows) {
+              sources.push(row);
+            }
+          }
+        );
+        const sourceIds = new Set(sources.map((source) => source.id));
+
+        const references = await this.references(
+          reads,
+          organizationId,
+          sourceIds
+        );
+
+        let read = 0;
+        for (
+          let i = 0;
+          i < sources.length;
+          i += CONTENT_STUDIO_SOURCE_VERSION_RETENTION_SOURCE_BATCH_SIZE
+        ) {
+          const batch = sources.slice(
+            i,
+            i + CONTENT_STUDIO_SOURCE_VERSION_RETENTION_SOURCE_BATCH_SIZE
+          );
+          const versions = await reads.listVersionsOfSources({
+            organizationId,
+            sourceIds: batch.map((source) => source.id),
+          });
+          read += versions.length;
+          use({
+            sources: batch,
+            versions,
+            references: batch.flatMap(
+              (source) => references.get(source.id) ?? []
+            ),
+          });
+        }
+
+        // a version not reached through a source of the organization: in
+        // one snapshot only one whose source is another organization's.
+        // Named by its id; were none found, by the organization's
+        if (read !== versionCount) {
+          const version = await reads.findVersionOfOtherOrganizationSource(
+            organizationId
+          );
+          throw integrity(
+            'ContentStudioSourceVersion',
+            version ? version.id : organizationId
+          );
+        }
+        return { sourceCount: sources.length, versionCount };
+      }
+    );
+  }
+
+  // Every reference of the organization's stored records, by the source it
+  // names
+  private async references(
+    reads: Reads,
+    organizationId: string,
+    sourceIds: ReadonlySet<string>
+  ) {
     const scoped =
       (type: ContentStudioSourceVersionProtectionReferenceType) =>
       (row: { id: string; organizationId: string }) => {
@@ -151,45 +355,7 @@ export class ContentStudioSourceRetentionService {
         }
       };
 
-    const sources: Awaited<
-      ReturnType<
-        ContentStudioSourceRepository['listSourcesForVersionProtection']
-      >
-    > = [];
-    await eachPage(
-      (afterId, take) =>
-        this._contentStudioSourceRepository.listSourcesForVersionProtection({
-          organizationId,
-          afterId,
-          take,
-        }),
-      ROWS_PAGE_SIZE,
-      (rows) => {
-        for (const row of rows) {
-          sources.push(row);
-        }
-      }
-    );
-
-    const versions: Awaited<
-      ReturnType<ContentStudioSourceRepository['listVersionsForProtection']>
-    > = [];
-    await eachPage(
-      (afterId, take) =>
-        this._contentStudioSourceRepository.listVersionsForProtection({
-          organizationId,
-          afterId,
-          take,
-        }),
-      ROWS_PAGE_SIZE,
-      (rows) => {
-        for (const row of rows) {
-          versions.push(row);
-        }
-      }
-    );
-
-    const references: ContentStudioSourceVersionReference[] = [];
+    const references = new Map<string, ContentStudioSourceVersionReference[]>();
     const refer = (
       reason: ContentStudioSourceVersionReference['reason'],
       referenceType: ContentStudioSourceVersionProtectionReferenceType,
@@ -197,7 +363,17 @@ export class ContentStudioSourceRetentionService {
       refs: ReturnType<typeof distinctEvidence>
     ) => {
       for (const ref of refs) {
-        references.push({ reason, referenceType, referenceId, ...ref });
+        // a source that is not the organization's: no version of it is
+        if (!sourceIds.has(ref.sourceId)) {
+          throw integrity(referenceType, referenceId);
+        }
+        const reference = { reason, referenceType, referenceId, ...ref };
+        const list = references.get(ref.sourceId);
+        if (list) {
+          list.push(reference);
+        } else {
+          references.set(ref.sourceId, [reference]);
+        }
       }
     };
 
@@ -205,7 +381,7 @@ export class ContentStudioSourceRetentionService {
     const draftScope = scoped('ContentPackage');
     await eachPage(
       (afterId, take) =>
-        this._contentStudioRepository.listPackageDraftsForVersionProtection({
+        reads.listPackageDrafts({
           organizationId,
           afterId,
           take,
@@ -238,9 +414,7 @@ export class ContentStudioSourceRetentionService {
     const reviewScope = scoped('ContentStudioReview');
     await eachPage(
       (afterId, take) =>
-        this._contentStudioReviewRepository.listPackageReviewsForVersionProtection(
-          { organizationId, afterId, take }
-        ),
+        reads.listPackageReviews({ organizationId, afterId, take }),
       ROWS_PAGE_SIZE,
       (rows) => {
         for (const row of rows) {
@@ -265,7 +439,7 @@ export class ContentStudioSourceRetentionService {
     const revisionScope = scoped('ContentPackageRevision');
     await eachPage(
       (afterId, take) =>
-        this._contentStudioRepository.listPackageRevisionsForVersionProtection({
+        reads.listPackageRevisions({
           organizationId,
           afterId,
           take,
@@ -301,9 +475,7 @@ export class ContentStudioSourceRetentionService {
     const operationScope = scoped('ContentStudioAIOperation');
     await eachPage(
       (afterId, take) =>
-        this._contentStudioAIOperationRepository.listOperationContextsForVersionProtection(
-          { organizationId, afterId, take }
-        ),
+        reads.listOperationContexts({ organizationId, afterId, take }),
       DOCUMENTS_PAGE_SIZE,
       (rows) => {
         for (const row of rows) {
@@ -321,18 +493,6 @@ export class ContentStudioSourceRetentionService {
         }
       }
     );
-
-    return {
-      protections: computeContentStudioSourceVersionProtectionMap({
-        organizationId,
-        sources,
-        versions,
-        references,
-        now: input.now,
-        inFlightMs: CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
-        pickerWindow: CONTENT_STUDIO_SOURCE_VERSION_PICKER_WINDOW,
-      }),
-      versionIds: new Set(versions.map((version) => version.id)),
-    };
+    return references;
   }
 }

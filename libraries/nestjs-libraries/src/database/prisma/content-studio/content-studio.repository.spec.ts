@@ -204,9 +204,6 @@ const PUBLIC_METHODS = [
   'getPackageWriteStateForOrganization',
   'getProjectForOrganization',
   'getRevisionForPackage',
-  // read only, for source version protection (P8-R1A)
-  'listPackageDraftsForVersionProtection',
-  'listPackageRevisionsForVersionProtection',
   'listPackagesForOrganization',
   'listProjectsForOrganization',
   'listRevisionsForPackage',
@@ -227,7 +224,7 @@ describe('ContentStudioRepository', () => {
         .sort();
 
       expect(methods).toEqual(PUBLIC_METHODS);
-      expect(PUBLIC_METHODS).toHaveLength(22);
+      expect(PUBLIC_METHODS).toHaveLength(20);
     });
 
     it('has no method that updates or deletes a revision', () => {

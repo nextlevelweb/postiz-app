@@ -865,10 +865,7 @@ describe('ContentStudioSourceRepository: sources', () => {
       'listPageChangesForOrganization',
       'listPageSourcesForBackfill',
       'listSourcesForOrganization',
-      // reads for source version protection (P8-R1A), never a write
-      'listSourcesForVersionProtection',
       'listVersionCapturesForBackfill',
-      'listVersionsForProtection',
       'listVersionsForSource',
       'markFeedCaptured',
       // a page found as its latest version: its HTTP validators only (P8-G1)

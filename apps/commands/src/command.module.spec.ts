@@ -76,7 +76,7 @@ describe('the commands application', () => {
     await moduleRef.close();
   });
 
-  it('CB2 offers refresh, config:check and the page-change backfill, and nothing else', async () => {
+  it('CB2 offers refresh, config:check, the page-change backfill and the read-only retention dry run (P8-R1B), and nothing else', async () => {
     const moduleRef = await compile();
     expect(
       moduleRef
@@ -87,6 +87,7 @@ describe('the commands application', () => {
       'refresh',
       'config:check',
       'content-studio:backfill-page-changes',
+      'content-studio:retention-dry-run',
     ]);
     await moduleRef.close();
   });

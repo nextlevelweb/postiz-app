@@ -1,10 +1,8 @@
 import { HttpException } from '@nestjs/common';
-import { ContentStudioSourceRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.repository';
-import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.repository';
-import { ContentStudioReviewRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.review.repository';
-import { ContentStudioAIOperationRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-operation.repository';
+import { ContentStudioSourceRetentionRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.repository';
 import { ContentStudioSourceRetentionService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.service';
 import {
+  ContentStudioSourceRetentionDryRunError,
   ContentStudioSourceRetentionIntegrityError,
   ContentStudioSourceVersionProtectionMap,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
@@ -17,9 +15,10 @@ import {
 // Source version protection (P8-R1A), as the service reads it: every kind
 // of stored record of one organization, in bounded pages, parsed with the
 // parsers that wrote it, checked and handed to source.retention.ts. No
-// database: the four repositories are in-memory fakes that read like
-// Prisma (organization, id order, after an id, a page size) and count their
-// reads. The PostgreSQL suite runs the same against real rows
+// database: the snapshot reads of the retention repository are in-memory
+// fakes that read like Prisma (organization, id order, after an id, a page
+// size; versions by a batch of sources) and count their reads. The
+// PostgreSQL suite runs the same against real rows
 
 const ORG = 'a0000000-0000-4000-8000-000000000001';
 const OTHER_ORG = 'b0000000-0000-4000-8000-000000000002';
@@ -218,12 +217,24 @@ const SELECTS = {
 } as const;
 
 // One fake read: this organization's rows (or, for a test, anything a broken
-// query would return), in id order, after an id, at most a page
-const service = (
-  w: World,
-  options: { leak?: keyof World; reads?: string[] } = {}
-) => {
+// query would return), in id order, after an id, at most a page; versions
+// by a batch of sources, by source and number
+type FakeOptions = {
+  leak?: keyof World;
+  reads?: string[];
+  // what the count says, whatever the rows are
+  count?: number;
+  // the snapshot itself fails
+  fail?: Error;
+  // versions gone before they are measured
+  missing?: string[];
+};
+const fakeRetentionRepository = (w: World, options: FakeOptions = {}) => {
   const reads = options.reads ?? [];
+  const ours = (kind: keyof World, organizationId: string) => (row: Row) =>
+    options.leak === kind || row.organizationId === organizationId;
+  const pick = (kind: keyof World) => (row: Row) =>
+    Object.fromEntries(SELECTS[kind].map((key) => [key, row[key]]));
   const read =
     (kind: keyof World, filter: (row: Row) => boolean = () => true) =>
     async (input: {
@@ -236,37 +247,102 @@ const service = (
       return w[kind]
         .filter(
           (row) =>
-            (options.leak === kind ||
-              row.organizationId === input.organizationId) &&
+            ours(kind, input.organizationId)(row) &&
             filter(row) &&
             (!input.afterId || row.id > input.afterId)
         )
         .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
         .slice(0, input.take)
-        .map((row) =>
-          Object.fromEntries(SELECTS[kind].map((key) => [key, row[key]]))
-        );
+        .map(pick(kind));
     };
-  return new ContentStudioSourceRetentionService(
-    {
-      listSourcesForVersionProtection: read('sources'),
-      listVersionsForProtection: read('versions'),
-    } as unknown as ContentStudioSourceRepository,
-    {
-      listPackageDraftsForVersionProtection: read('packages'),
-      listPackageRevisionsForVersionProtection: read('revisions'),
-    } as unknown as ContentStudioRepository,
-    {
-      listPackageReviewsForVersionProtection: read(
-        'reviews',
-        (row) => row.packageRevisionId !== null
-      ),
-    } as unknown as ContentStudioReviewRepository,
-    {
-      listOperationContextsForVersionProtection: read('operations'),
-    } as unknown as ContentStudioAIOperationRepository
-  );
+  return {
+    readSnapshot: async (work: (snapshot: unknown) => Promise<unknown>) => {
+      reads.push('snapshot');
+      if (options.fail) {
+        throw options.fail;
+      }
+      const result = await work({
+        countVersions: async (organizationId: string) => {
+          reads.push('count');
+          return (
+            options.count ??
+            w.versions.filter(ours('versions', organizationId)).length
+          );
+        },
+        listSources: read('sources'),
+        listPackageDrafts: read('packages'),
+        listPackageReviews: read(
+          'reviews',
+          (row) => row.packageRevisionId !== null
+        ),
+        listPackageRevisions: read('revisions'),
+        listOperationContexts: read('operations'),
+        listVersionsOfSources: async (input: {
+          organizationId: string;
+          sourceIds: string[];
+        }) => {
+          reads.push('versions');
+          expect(input.sourceIds.length).toBeGreaterThan(0);
+          expect(input.sourceIds.length).toBeLessThanOrEqual(200);
+          return w.versions
+            .filter(
+              (row) =>
+                ours('versions', input.organizationId)(row) &&
+                input.sourceIds.includes(row.sourceId as string)
+            )
+            .sort((a, b) =>
+              a.sourceId !== b.sourceId
+                ? (a.sourceId as string) < (b.sourceId as string)
+                  ? -1
+                  : 1
+                : (a.versionNumber as number) - (b.versionNumber as number)
+            )
+            .map(pick('versions'));
+        },
+        findVersionOfOtherOrganizationSource: async (
+          organizationId: string
+        ) => {
+          reads.push('orphan');
+          const found = w.versions
+            .filter(
+              (row) =>
+                row.organizationId === organizationId &&
+                w.sources.find((source) => source.id === row.sourceId)
+                  ?.organizationId !== organizationId
+            )
+            .sort((a, b) => (a.id < b.id ? -1 : 1))[0];
+          return found ? { id: found.id } : null;
+        },
+      });
+      reads.push('commit');
+      return result;
+    },
+    listVersionContents: async (input: {
+      organizationId: string;
+      ids: string[];
+    }) => {
+      reads.push('contents');
+      expect(input.ids.length).toBeGreaterThan(0);
+      expect(input.ids.length).toBeLessThanOrEqual(500);
+      return w.versions
+        .filter(
+          (row) =>
+            row.organizationId === input.organizationId &&
+            input.ids.includes(row.id) &&
+            !(options.missing ?? []).includes(row.id)
+        )
+        .map((row) => ({ id: row.id, content: row.content as string }));
+    },
+  };
 };
+
+const service = (w: World, options: FakeOptions = {}) =>
+  new ContentStudioSourceRetentionService(
+    fakeRetentionRepository(
+      w,
+      options
+    ) as unknown as ContentStudioSourceRetentionRepository
+  );
 
 const compute = (w: World, options?: Parameters<typeof service>[1]) =>
   service(w, options).computeProtectionMap({ organizationId: ORG, now: NOW });
@@ -627,6 +703,14 @@ describe('P8-R1A the organization', () => {
       const w = world();
       const mine = addPage(w, Array(3).fill('A'));
       const theirs = addPage(w, Array(3).fill('A'), OTHER_ORG);
+      // P8-R1B: versions are read by source, so a broken version read
+      // shows as another organization's version of one of ours
+      w.versions.push({
+        ...w.versions.find((row) => row.id === theirs[0].id)!,
+        id: uuid(0x7998, 1),
+        sourceId: mine[0].sourceId,
+        versionNumber: 99,
+      });
       addPackage(w, PACKAGE_2, grounded([[evidence(theirs[0])]]), OTHER_ORG);
       addRevision(
         w,
@@ -654,14 +738,50 @@ describe('P8-R1A the organization', () => {
   it('EMPTY an organization with nothing has an empty map', async () => {
     const reads: string[] = [];
     expect((await compute(world(), { reads })).size).toBe(0);
+    // P8-R1B: one snapshot, the version count first; no source, so no
+    // batch of versions
     expect(reads).toEqual([
+      'snapshot',
+      'count',
       'sources',
-      'versions',
       'packages',
       'reviews',
       'revisions',
       'operations',
+      'commit',
     ]);
+  });
+
+  it('ORPHAN P8-R1B a version of the organization whose source is not its own fails the organization', async () => {
+    const w = world();
+    addPage(w, Array(3).fill('A'));
+    const theirs = addPage(w, Array(3).fill('A'), OTHER_ORG);
+    w.versions.push({
+      ...w.versions.find((row) => row.id === theirs[0].id)!,
+      id: uuid(0x7998, 2),
+      organizationId: ORG,
+      versionNumber: 99,
+    });
+    expect(await failure(compute(w))).toEqual({
+      type: 'ContentStudioSourceVersion',
+      id: uuid(0x7998, 2),
+    });
+  });
+
+  it("REFSOURCE P8-R1B a reference naming a source that is not the organization's fails before any version is read", async () => {
+    const w = world();
+    const versions = addPage(w, Array(3).fill('A'));
+    addPackage(
+      w,
+      PACKAGE,
+      grounded([[{ ...evidence(versions[0]), sourceId: uuid(0x5999, 9) }]])
+    );
+    const reads: string[] = [];
+    expect(await failure(compute(w, { reads }))).toEqual({
+      type: 'ContentPackage',
+      id: PACKAGE,
+    });
+    expect(reads).not.toContain('versions');
   });
 
   it('QUERIES one read per kind of record and page, never per version, source or review', async () => {
@@ -671,7 +791,9 @@ describe('P8-R1A the organization', () => {
     addRevision(w, REVISION, PACKAGE, grounded([[evidence(versions[0])]]));
     addReview(w, REVIEW, REVISION);
     await compute(w, { reads: small });
-    expect(small).toHaveLength(6);
+    // P8-R1B: in one snapshot, the count, then one read per kind and one
+    // batch of versions
+    expect(small).toHaveLength(9);
 
     // 25,000 versions of 1,250 sources, 600 reviews, 1,200 revisions and AI
     // operations: pages of 10,000 rows and 500 documents
@@ -698,7 +820,9 @@ describe('P8-R1A the organization', () => {
     }
     const map = await compute(big, { reads: large });
     const count = (kind: string) => large.filter((k) => k === kind).length;
+    // P8-R1B: versions by batches of 200 sources (1,250 sources: 7 batches)
     expect({
+      count: count('count'),
       sources: count('sources'),
       versions: count('versions'),
       packages: count('packages'),
@@ -706,8 +830,9 @@ describe('P8-R1A the organization', () => {
       revisions: count('revisions'),
       operations: count('operations'),
     }).toEqual({
+      count: 1,
       sources: 1,
-      versions: 3,
+      versions: 7,
       packages: 1,
       reviews: 1,
       revisions: 3,
@@ -812,5 +937,215 @@ describe('P8-R1A explainRetentionEligibility', () => {
     expect((await explain(w, versions[2].id)).protections).toEqual([
       expect.objectContaining({ reason: 'IN_FLIGHT', role: 'age' }),
     ]);
+  });
+});
+
+describe('P8-R1B the retention dry run', () => {
+  const POLICY = {
+    mode: 'compact_repeats',
+    olderThan: new Date(NOW.getTime() - 7 * 24 * HOUR),
+  };
+  const dryRun = (w: World, options?: FakeOptions, policy: unknown = POLICY) =>
+    service(w, options).computeRetentionDryRun({
+      organizationId: ORG,
+      now: NOW,
+      policy: policy as typeof POLICY,
+    });
+  const code = async (call: Promise<unknown>) => {
+    const err = await call.then(
+      () => {
+        throw new Error('expected a dry-run error');
+      },
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(ContentStudioSourceRetentionDryRunError);
+    return (err as ContentStudioSourceRetentionDryRunError).code;
+  };
+  // 30 captures of one page (A1..A24, B25..B30), its change at v25: v1 is
+  // the change's baseline, v24 its predecessor, v4 a draft's evidence and
+  // v11..v30 the picker window; v2, v3 and v5..v10 are the candidates
+  const fixture = () => {
+    const w = world();
+    const versions = addPage(w, [
+      ...Array(24).fill('A'),
+      ...Array(6).fill('B'),
+    ]);
+    w.sources[0].lastPageChangeAt = versions[24].fetchedAt;
+    w.sources[0].lastPageChangeVersionNumber = 25;
+    w.sources[0].lastPageChangeKind = 'content_changed';
+    w.sources[0].lastPageChangePreviousCaptureAt = versions[23].fetchedAt;
+    // a draft naming v4; blocks of several bytes per character
+    addPackage(w, PACKAGE, grounded([[evidence(versions[3])]]));
+    for (const row of w.versions) {
+      row.content = `blöcks ${row.versionNumber} — €`;
+    }
+    return { w, versions };
+  };
+
+  it('DR1 the report: candidates in order, measured in bytes after the snapshot, and the same hash every time', async () => {
+    const { w, versions } = fixture();
+    const reads: string[] = [];
+    const report = await dryRun(w, { reads });
+    expect(report.candidates.map((c) => c.versionNumber)).toEqual([
+      2, 3, 5, 6, 7, 8, 9, 10,
+    ]);
+    expect(report.candidates[0]).toEqual({
+      id: versions[1].id,
+      sourceId: versions[1].sourceId,
+      versionNumber: 2,
+      contentHash: versions[1].contentHash,
+      createdAt: '2026-01-01T00:02:00.000Z',
+      fetchedAt: '2026-01-01T00:02:00.000Z',
+      candidateReason: 'REPEAT_RUN_INTERIOR',
+      logicalContentBytes: Buffer.byteLength('blöcks 2 — €', 'utf8'),
+    });
+    expect(Buffer.byteLength('blöcks 2 — €', 'utf8')).toBeGreaterThan(
+      'blöcks 2 — €'.length
+    );
+    expect(report.candidateSummary).toEqual(
+      expect.objectContaining({
+        totalVersions: 30,
+        protectedVersions: 22,
+        technicallyUnprotectedVersions: 8,
+        policyRetainedVersions: 0,
+        candidateVersions: 8,
+      })
+    );
+    expect(report.protectionSummary.edgesByReason.DRAFT_EVIDENCE).toBe(1);
+    // one snapshot: the count, the sources, the records, one batch of
+    // versions; then the candidates' blocks
+    expect(reads).toEqual([
+      'snapshot',
+      'count',
+      'sources',
+      'packages',
+      'reviews',
+      'revisions',
+      'operations',
+      'versions',
+      'commit',
+      'contents',
+    ]);
+    expect((await dryRun(w)).dryRunHash).toBe(report.dryRunHash);
+    // never the blocks themselves
+    expect(JSON.stringify(report)).not.toMatch(/blöcks|PRIVATE|secret/);
+  });
+
+  it('DR2 the scale guard counts in the snapshot first: 1,000,000 goes on, 1,000,001 reads nothing else', async () => {
+    const { w } = fixture();
+    const reads: string[] = [];
+    expect(await code(dryRun(w, { reads, count: 1_000_001 }))).toBe(
+      'RETENTION_DRY_RUN_SCALE_LIMIT'
+    );
+    expect(reads).toEqual(['snapshot', 'count']);
+    // at the limit the guard lets it through: these rows are then not
+    // the 1,000,000 counted, which fails the organization
+    const atLimit: string[] = [];
+    await expect(
+      dryRun(w, { reads: atLimit, count: 1_000_000 })
+    ).rejects.toBeInstanceOf(ContentStudioSourceRetentionIntegrityError);
+    expect(atLimit).toContain('versions');
+    // protection itself has no such limit (P8-R1A as it was)
+    await expect(
+      service(w, { count: 1_000_001 }).computeProtectionMap({
+        organizationId: ORG,
+        now: NOW,
+      })
+    ).rejects.toBeInstanceOf(ContentStudioSourceRetentionIntegrityError);
+  });
+
+  it('DR3 a policy that is not enabled or not valid is refused before anything is read', async () => {
+    const { w } = fixture();
+    const reads: string[] = [];
+    expect(
+      await code(
+        dryRun(w, { reads }, { mode: 'all_unprotected', olderThan: NOW })
+      )
+    ).toBe('RETENTION_POLICY_NOT_ENABLED');
+    expect(
+      await code(
+        dryRun(w, { reads }, { mode: 'compact_repeats', olderThan: NOW })
+      )
+    ).toBe('RETENTION_POLICY_INVALID');
+    expect(reads).toEqual([]);
+  });
+
+  it('DR4 a failed snapshot, or a candidate gone before it is measured, fails the run: no report', async () => {
+    const { w, versions } = fixture();
+    const failed = new ContentStudioSourceRetentionDryRunError(
+      'RETENTION_DRY_RUN_SNAPSHOT_FAILED'
+    );
+    const reads: string[] = [];
+    expect(await code(dryRun(w, { fail: failed, reads }))).toBe(
+      'RETENTION_DRY_RUN_SNAPSHOT_FAILED'
+    );
+    expect(reads).toEqual(['snapshot']);
+    expect(await code(dryRun(w, { missing: [versions[4].id] }))).toBe(
+      'RETENTION_DRY_RUN_SNAPSHOT_FAILED'
+    );
+  });
+
+  it('DR5 integrity anywhere fails the whole run; a stale source only blocks itself', async () => {
+    const { w, versions } = fixture();
+    addOperation(w, OPERATION, {
+      v: 1,
+      sources: [{ ...sourceRef(versions[2]), versionNumber: 9 }],
+    });
+    await expect(dryRun(w)).rejects.toBeInstanceOf(
+      ContentStudioSourceRetentionIntegrityError
+    );
+    const stale = fixture();
+    // the change stored is an older one than the versions show
+    // (A1..A28 B29 C30: v29 against v28, while v30 is the last change)
+    const other = addPage(stale.w, [...Array(28).fill('A'), 'B', 'C']);
+    const row = stale.w.sources[1];
+    row.lastPageChangeAt = other[28].fetchedAt;
+    row.lastPageChangeVersionNumber = 29;
+    row.lastPageChangeKind = 'content_changed';
+    row.lastPageChangePreviousCaptureAt = other[27].fetchedAt;
+    const report = await dryRun(stale.w);
+    expect(report.blockedSources).toEqual([
+      {
+        sourceId: other[0].sourceId,
+        blocker: 'PAGE_CHANGE_STATE_STALE',
+        // v2..v10: v1 its run's first, v11..v30 the picker window
+        suppressedCandidates: 9,
+      },
+    ]);
+    expect(report.candidateSummary.candidateVersions).toBe(8);
+    expect(report.candidateSummary.blockedCandidateVersions).toBe(9);
+  });
+
+  it('DR6 reads by batch and page, never per version or candidate', async () => {
+    const w = world();
+    // 450 sources of 30 captures (A1..A29, B30), the change at v30
+    for (let s = 0; s < 450; s++) {
+      const versions = addPage(w, [...Array(29).fill('A'), 'B']);
+      Object.assign(w.sources[s], {
+        lastPageChangeAt: versions[29].fetchedAt,
+        lastPageChangeVersionNumber: 30,
+        lastPageChangeKind: 'content_changed',
+        lastPageChangePreviousCaptureAt: versions[28].fetchedAt,
+      });
+    }
+    const reads: string[] = [];
+    const report = await dryRun(w, { reads });
+    // v2..v10 of each: v1 its run's first and the change's baseline,
+    // v11..v30 the picker window
+    expect(report.candidateSummary.candidateVersions).toBe(450 * 9);
+    const count = (kind: string) => reads.filter((k) => k === kind).length;
+    expect({
+      count: count('count'),
+      sources: count('sources'),
+      versions: count('versions'),
+      contents: count('contents'),
+    }).toEqual({
+      count: 1,
+      sources: 1,
+      // 450 sources in batches of 200
+      versions: 3,
+      // 4,050 candidates in pages of 500
+      contents: 9,
+    });
   });
 });

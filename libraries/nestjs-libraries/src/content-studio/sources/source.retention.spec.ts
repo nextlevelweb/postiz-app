@@ -1,7 +1,36 @@
 import fs from 'fs';
 import path from 'path';
-import { sha256Hex } from '@gitroom/nestjs-libraries/content-studio/canonical.json';
 import {
+  canonicalJson,
+  sha256Hex,
+} from '@gitroom/nestjs-libraries/content-studio/canonical.json';
+import {
+  classifyContentStudioSourceCaptureTransition,
+  isContentStudioSourcePageChange,
+  isSameContentStudioSourceCapture,
+} from '@gitroom/nestjs-libraries/content-studio/sources/source.change';
+import {
+  assertContentStudioSourceVersionRetentionPolicy,
+  assertContentStudioSourceVersionRetentionScale,
+  buildContentStudioSourceVersionRetentionDryRun,
+  classifyContentStudioSourceVersionRetentionCandidates,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_FORMAT,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_FORMAT_VERSION,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_MAX_VERSIONS,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_VALIDITY_MS,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_MIN_AGE_MS,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_MODES,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_POLICY_VERSION,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PROTECTION_VERSION,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_SOURCE_BATCH_SIZE,
+  ContentStudioSourceRetentionDryRunError,
+  ContentStudioSourceVersionRetentionPolicy,
+  contentStudioSourceVersionRetentionDryRunHash,
+  contentStudioSourceVersionRetentionErrorCode,
+  evaluateContentStudioSourceVersionRetention,
+  groupContentStudioSourceVersionRuns,
+  simulateContentStudioSourcePageChangeStateAfterRetention,
+  summarizeContentStudioSourceVersionProtections,
   buildContentStudioSourceVersionProtectionMap,
   computeContentStudioSourceVersionProtectionMap,
   CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
@@ -1138,15 +1167,1330 @@ describe('P8-R1A the module stays pure', () => {
       .readFileSync(path.join(__dirname, 'source.retention.ts'), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/^\s*\/\/.*$/gm, '');
-    expect(text).not.toMatch(
+    // P8-R1B: one Date is made, never from the clock: the dry run's
+    // validUntil, from the time the caller passed
+    expect(
+      text.replace(
+        /new Date\(\n    input\.evaluationNow\.getTime\(\) \+\n      CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_VALIDITY_MS\n  \)/,
+        ''
+      )
+    ).not.toMatch(
       /Date\.now|new Date\(|Math\.random|randomUUID|process\.env|@prisma|prisma|@nestjs|fetch\(|require\(/
     );
+    expect(text.match(/new Date\(/g)).toHaveLength(1);
+    // P8-R1B: the canonical JSON and sha256 of the dry-run hash
     expect(
       [...text.matchAll(/from '([^']+)'/g)].map((match) => match[1])
     ).toEqual([
       '@gitroom/nestjs-libraries/content-studio/sources/source.change',
       '@gitroom/nestjs-libraries/content-studio/sources/source.version',
+      '@gitroom/nestjs-libraries/content-studio/canonical.json',
     ]);
     expect(text).not.toMatch(/deletable|safeToDelete|deleteCandidate|delete/i);
+  });
+});
+
+// --- the retention dry run (P8-R1B) ---
+
+// Captures by letter: A, then one thing different each, N without a title,
+// F all three different
+const IDENTITY: Record<string, Capture> = {
+  A: {},
+  B: { text: 'B' },
+  C: { title: 'T2' },
+  D: { ex: X1 },
+  N: { title: null },
+  F: { text: 'B', title: 'T2', ex: X1 },
+};
+
+// The page-change backfill and the change view, written out here as the
+// oracle the dry run is checked against (content-studio.source.service.ts:
+// lastPageChange and getVersionChanges)
+const oracleState = (
+  versions: ContentStudioSourceVersionProtectionVersion[]
+) => {
+  let previous: ContentStudioSourceVersionProtectionVersion | null = null;
+  let state: [number, number, string, number] | null = null;
+  for (const v of versions) {
+    const transition = classifyContentStudioSourceCaptureTransition(
+      previous,
+      v
+    );
+    if (previous && isContentStudioSourcePageChange(transition)) {
+      state = [
+        v.fetchedAt.getTime(),
+        v.versionNumber,
+        transition,
+        previous.fetchedAt.getTime(),
+      ];
+    }
+    previous = v;
+  }
+  return state;
+};
+const oracleChanges = (
+  versions: ContentStudioSourceVersionProtectionVersion[]
+) => {
+  const firstOf = (i: number) => {
+    let first = i;
+    while (
+      first > 0 &&
+      isSameContentStudioSourceCapture(versions[first - 1], versions[i])
+    ) {
+      first--;
+    }
+    return first;
+  };
+  return new Map(
+    versions.map((v, i) => {
+      const first = firstOf(i);
+      const previous = first - 1;
+      const before = previous >= 0 ? versions[firstOf(previous)] : null;
+      return [
+        v.id,
+        JSON.stringify({
+          before: before?.id ?? null,
+          repeatOf: first < i ? versions[first].id : null,
+          change: before
+            ? classifyContentStudioSourceCaptureTransition(before, v)
+            : 'no_earlier_change',
+          titleChanged: before ? before.title !== v.title : false,
+        }),
+      ];
+    })
+  );
+};
+
+// One page from letters, at these numbers (1, 2, 3... unless given), its
+// last page change stored as the backfill finds it
+const lettered = (
+  id: string,
+  letters: string,
+  numbers?: number[],
+  over: (n: number) => Capture = () => ({})
+) => {
+  const versions = [...letters].map((letter, i) =>
+    version(id, numbers ? numbers[i] : i + 1, {
+      ...IDENTITY[letter],
+      ...over(numbers ? numbers[i] : i + 1),
+    })
+  );
+  const state = oracleState(versions);
+  return {
+    source: source(id, {
+      latestVersionNumber: versions[versions.length - 1]?.versionNumber ?? 0,
+      ...(state
+        ? {
+            lastPageChangeAt: new Date(state[0]),
+            lastPageChangeVersionNumber: state[1],
+            lastPageChangeKind: state[2],
+            lastPageChangePreviousCaptureAt: new Date(state[3]),
+          }
+        : {}),
+    }),
+    versions,
+    n: (k: number) => versions.find((v) => v.versionNumber === k)!,
+  };
+};
+
+const POLICY: ContentStudioSourceVersionRetentionPolicy = {
+  mode: 'compact_repeats',
+  olderThan: new Date(
+    NOW.getTime() - CONTENT_STUDIO_SOURCE_VERSION_RETENTION_MIN_AGE_MS
+  ),
+};
+const policyError = (run: () => unknown) => {
+  try {
+    run();
+  } catch (err) {
+    expect(err).toBeInstanceOf(ContentStudioSourceRetentionDryRunError);
+    return (err as ContentStudioSourceRetentionDryRunError).code;
+  }
+  throw new Error('expected a dry-run error');
+};
+
+// The dry run of these pages; picker window 1 unless given, so the policy
+// is seen on short histories
+const dryRun = (
+  pages: Array<{
+    source: ContentStudioSourceVersionProtectionSource;
+    versions: ContentStudioSourceVersionProtectionVersion[];
+  }>,
+  options: {
+    references?: ContentStudioSourceVersionReference[];
+    pickerWindow?: number;
+    policy?: ContentStudioSourceVersionRetentionPolicy;
+    now?: Date;
+  } = {}
+) =>
+  evaluateContentStudioSourceVersionRetention({
+    organizationId: ORG,
+    sources: pages.map((p) => p.source),
+    versions: pages.flatMap((p) => p.versions),
+    references: options.references ?? [],
+    now: options.now ?? NOW,
+    inFlightMs: CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
+    pickerWindow: options.pickerWindow ?? 1,
+    policy: options.policy ?? POLICY,
+  });
+const numbers = (
+  result: ReturnType<typeof dryRun>,
+  sourceId: string
+): number[] =>
+  result.sources
+    .find((s) => s.sourceId === sourceId)!
+    .candidates.map((c) => c.versionNumber);
+const report = (
+  result: ReturnType<typeof dryRun>,
+  over: { now?: Date; policy?: ContentStudioSourceVersionRetentionPolicy } = {}
+) =>
+  buildContentStudioSourceVersionRetentionDryRun({
+    organizationId: ORG,
+    evaluationNow: over.now ?? NOW,
+    policy: over.policy ?? POLICY,
+    snapshot: {
+      sourceCount: result.sources.length,
+      versionCount: result.sources.reduce((t, s) => t + s.totalVersions, 0),
+    },
+    protectionSummary: summarizeContentStudioSourceVersionProtections([
+      result.protections,
+    ]),
+    sources: result.sources,
+    logicalContentBytes: new Map(
+      result.sources.flatMap((s) =>
+        s.candidates.map((c) => [c.id, 100 + c.versionNumber] as const)
+      )
+    ),
+  });
+const simulate = (
+  p: ReturnType<typeof lettered>,
+  candidates: number[],
+  pickerWindow = 1
+) =>
+  simulateContentStudioSourcePageChangeStateAfterRetention({
+    source: p.source,
+    versions: p.versions,
+    candidateIds: new Set(candidates.map((k) => p.n(k).id)),
+    now: NOW,
+    inFlightMs: CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
+    pickerWindow,
+  });
+
+describe('P8-R1B capture runs', () => {
+  const runs = (p: ReturnType<typeof lettered>) =>
+    groupContentStudioSourceVersionRuns(p.versions).map((run) =>
+      run.versionIds.map(
+        (id) => p.versions.find((v) => v.id === id)!.versionNumber
+      )
+    );
+
+  it('D1/D2 one run, several runs: the first and last of each', () => {
+    expect(runs(lettered(SOURCE, 'AAAA'))).toEqual([[1, 2, 3, 4]]);
+    expect(runs(lettered(SOURCE, 'AABBBA'))).toEqual([[1, 2], [3, 4, 5], [6]]);
+    const p = lettered(SOURCE, 'AAB');
+    expect(groupContentStudioSourceVersionRuns(p.versions)).toEqual([
+      {
+        firstVersionId: p.n(1).id,
+        lastVersionId: p.n(2).id,
+        versionIds: [p.n(1).id, p.n(2).id],
+      },
+      {
+        firstVersionId: p.n(3).id,
+        lastVersionId: p.n(3).id,
+        versionIds: [p.n(3).id],
+      },
+    ]);
+  });
+
+  it('D3 gaps never split a run (v1 A, v2 A, v4 A, v9 B, v11 B); the input order does not matter', () => {
+    const p = lettered(SOURCE, 'AAABB', [1, 2, 4, 9, 11]);
+    expect(runs(p)).toEqual([
+      [1, 2, 4],
+      [9, 11],
+    ]);
+    expect(
+      groupContentStudioSourceVersionRuns(p.versions.slice().reverse())
+    ).toEqual(groupContentStudioSourceVersionRuns(p.versions));
+  });
+
+  it('D4 no title is a title like any other: N N is one run, A N two', () => {
+    expect(runs(lettered(SOURCE, 'NNN'))).toEqual([[1, 2, 3]]);
+    expect(runs(lettered(SOURCE, 'ANNA'))).toEqual([[1], [2, 3], [4]]);
+  });
+
+  it('D5/D6/D7 another extraction, title or content splits a run: never the content hash alone', () => {
+    expect(runs(lettered(SOURCE, 'AADAA'))).toEqual([[1, 2], [3], [4, 5]]);
+    expect(runs(lettered(SOURCE, 'AACAA'))).toEqual([[1, 2], [3], [4, 5]]);
+    expect(runs(lettered(SOURCE, 'AABAA'))).toEqual([[1, 2], [3], [4, 5]]);
+    // the same blocks with another title or extraction are other captures
+    expect(runs(lettered(SOURCE, 'ACDN'))).toEqual([[1], [2], [3], [4]]);
+  });
+});
+
+describe('P8-R1B compact_repeats candidates', () => {
+  it('I1 the interior of a run: 1 -> 0, 2 -> 0, 3 -> 1, 10 -> 8, 100 -> 98 (a B after each run)', () => {
+    for (const [length, expected] of [
+      [1, 0],
+      [2, 0],
+      [3, 1],
+      [10, 8],
+      [100, 98],
+    ]) {
+      const p = lettered(SOURCE, `${'A'.repeat(length)}B`);
+      const result = dryRun([p]);
+      expect([length, numbers(result, SOURCE)]).toEqual([
+        length,
+        Array.from({ length: expected }, (_, i) => i + 2),
+      ]);
+    }
+  });
+
+  it('I2 the first and last of a run are never candidates, even when nothing protects them', () => {
+    const p = lettered(SOURCE, 'AAAABBBBC');
+    const result = dryRun([p]);
+    expect(numbers(result, SOURCE)).toEqual([2, 3, 6, 7]);
+    const classified = classifyContentStudioSourceVersionRetentionCandidates({
+      source: p.source,
+      versions: p.versions,
+      protections: new Map(),
+      policy: POLICY,
+      now: NOW,
+    });
+    expect(
+      classified.policyRetained.RUN_BOUNDARY.map(
+        (id) => p.versions.find((v) => v.id === id)!.versionNumber
+      )
+    ).toEqual([1, 4, 5, 8, 9]);
+    expect(classified.candidates.map((c) => c.versionNumber)).toEqual([
+      2, 3, 6, 7,
+    ]);
+  });
+
+  it('I3 an interior with any protection is kept; the others of its run still go', () => {
+    // A1 A2 A3 A4 B5: A2 named by each kind of stored record in turn
+    const p = lettered(SOURCE, 'AAAAB');
+    for (const reference of [
+      ref(p.n(2)),
+      ref(p.n(2), {
+        reason: 'REVISION_EVIDENCE',
+        referenceType: 'ContentPackageRevision',
+      }),
+      ref(p.n(2), {
+        reason: 'REVIEW_EVIDENCE',
+        referenceType: 'ContentStudioReview',
+      }),
+      ref(p.n(2), {
+        reason: 'AI_OPERATION',
+        referenceType: 'ContentStudioAIOperation',
+      }),
+    ]) {
+      expect([
+        reference.reason,
+        numbers(dryRun([p], { references: [reference] }), SOURCE),
+      ]).toEqual([reference.reason, [3]]);
+    }
+    // IN_FLIGHT: made an hour ago, or in the picker window
+    const recent = lettered(SOURCE, 'AAAAB', undefined, (n) =>
+      n === 2 ? { createdAt: new Date(NOW.getTime() - HOUR) } : {}
+    );
+    expect(numbers(dryRun([recent]), SOURCE)).toEqual([3]);
+    expect(numbers(dryRun([p], { pickerWindow: 3 }), SOURCE)).toEqual([2]);
+    // LATEST and PAGE_CHANGE are always run boundaries in data that holds
+    // together: their override is shown on a map given directly
+    for (const reason of CONTENT_STUDIO_SOURCE_VERSION_PROTECTION_REASONS) {
+      const classified = classifyContentStudioSourceVersionRetentionCandidates({
+        source: p.source,
+        versions: p.versions,
+        protections: new Map([
+          [
+            p.n(2).id,
+            [
+              {
+                organizationId: ORG,
+                sourceVersionId: p.n(2).id,
+                reason,
+                referenceType: 'ContentStudioSource',
+                referenceId: SOURCE,
+              },
+            ],
+          ],
+        ]),
+        policy: POLICY,
+        now: NOW,
+      });
+      expect([
+        reason,
+        classified.candidates.map((c) => c.versionNumber),
+      ]).toEqual([reason, [3]]);
+      expect(classified.protectedVersionIds).toEqual([p.n(2).id]);
+    }
+  });
+
+  it('I4 the age: made a millisecond before olderThan is a candidate; at it exactly, or after, TOO_RECENT', () => {
+    const at = (offset: number) =>
+      lettered(SOURCE, 'AAAB', undefined, (n) =>
+        n === 2
+          ? { createdAt: new Date(POLICY.olderThan.getTime() + offset) }
+          : {}
+      );
+    for (const [offset, candidate] of [
+      [-1, true],
+      [0, false],
+      [1, false],
+      [DAY, false],
+    ] as const) {
+      const p = at(offset);
+      const classified = classifyContentStudioSourceVersionRetentionCandidates({
+        source: p.source,
+        versions: p.versions,
+        protections: new Map(),
+        policy: POLICY,
+        now: NOW,
+      });
+      expect([offset, classified.candidates.length]).toEqual([
+        offset,
+        candidate ? 1 : 0,
+      ]);
+      expect([offset, classified.policyRetained.TOO_RECENT]).toEqual([
+        offset,
+        candidate ? [] : [p.n(2).id],
+      ]);
+    }
+  });
+
+  it('I5 the age is when the version was made (createdAt), never when it was fetched', () => {
+    const p = lettered(SOURCE, 'AAAB', undefined, (n) =>
+      n === 2 ? { createdAt: new Date(POLICY.olderThan.getTime()) } : {}
+    );
+    // fetched long ago, made at olderThan: kept
+    expect(p.n(2).fetchedAt.getTime()).toBeLessThan(POLICY.olderThan.getTime());
+    expect(numbers(dryRun([p]), SOURCE)).toEqual([]);
+    const fetchedLate = lettered(SOURCE, 'AAAB');
+    fetchedLate.versions[1] = {
+      ...fetchedLate.versions[1],
+      fetchedAt: new Date(NOW.getTime()),
+    };
+    // made long ago, fetched now (a fetch time that cannot be, only to
+    // show which time counts): a candidate
+    expect(
+      classifyContentStudioSourceVersionRetentionCandidates({
+        source: fetchedLate.source,
+        versions: fetchedLate.versions,
+        protections: new Map(),
+        policy: POLICY,
+        now: NOW,
+      }).candidates.map((c) => c.versionNumber)
+    ).toEqual([2]);
+  });
+});
+
+describe('P8-R1B the policy', () => {
+  it('P1 olderThan at now - 7 days exactly is valid, a millisecond later is not; the minimum is 7 days', () => {
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_MIN_AGE_MS).toBe(
+      7 * 24 * 60 * 60 * 1000
+    );
+    expect(
+      assertContentStudioSourceVersionRetentionPolicy(
+        { mode: 'compact_repeats', olderThan: POLICY.olderThan },
+        NOW
+      )
+    ).toEqual(POLICY);
+    expect(
+      policyError(() =>
+        assertContentStudioSourceVersionRetentionPolicy(
+          {
+            mode: 'compact_repeats',
+            olderThan: new Date(POLICY.olderThan.getTime() + 1),
+          },
+          NOW
+        )
+      )
+    ).toBe('RETENTION_POLICY_INVALID');
+  });
+
+  it('P2 an olderThan or now that is not a valid Date is invalid', () => {
+    for (const olderThan of [
+      new Date('nope'),
+      POLICY.olderThan.toISOString(),
+      POLICY.olderThan.getTime(),
+      null,
+      undefined,
+    ]) {
+      expect(
+        policyError(() =>
+          assertContentStudioSourceVersionRetentionPolicy(
+            { mode: 'compact_repeats', olderThan },
+            NOW
+          )
+        )
+      ).toBe('RETENTION_POLICY_INVALID');
+    }
+    expect(
+      policyError(() =>
+        assertContentStudioSourceVersionRetentionPolicy(POLICY, new Date('x'))
+      )
+    ).toBe('RETENTION_POLICY_INVALID');
+  });
+
+  it('P3 compact_repeats is the only mode: all_unprotected and anything else is not enabled', () => {
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_MODES).toEqual([
+      'compact_repeats',
+    ]);
+    for (const mode of [
+      'all_unprotected',
+      'COMPACT_REPEATS',
+      'duplicate_only',
+      '',
+      undefined,
+      null,
+    ]) {
+      expect(
+        policyError(() =>
+          assertContentStudioSourceVersionRetentionPolicy(
+            { mode, olderThan: POLICY.olderThan },
+            NOW
+          )
+        )
+      ).toBe('RETENTION_POLICY_NOT_ENABLED');
+    }
+    // the classifier refuses a policy that is not valid too
+    const p = lettered(SOURCE, 'AAAB');
+    expect(
+      policyError(() =>
+        classifyContentStudioSourceVersionRetentionCandidates({
+          source: p.source,
+          versions: p.versions,
+          protections: new Map(),
+          policy: { ...POLICY, olderThan: NOW },
+          now: NOW,
+        })
+      )
+    ).toBe('RETENTION_POLICY_INVALID');
+  });
+
+  it('P4 the scale guard: 1,000,000 versions read, 1,000,001 refused', () => {
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_MAX_VERSIONS).toBe(
+      1_000_000
+    );
+    expect(() =>
+      assertContentStudioSourceVersionRetentionScale(1_000_000)
+    ).not.toThrow();
+    expect(
+      policyError(() =>
+        assertContentStudioSourceVersionRetentionScale(1_000_001)
+      )
+    ).toBe('RETENTION_DRY_RUN_SCALE_LIMIT');
+    expect(() =>
+      assertContentStudioSourceVersionRetentionScale(5, 5)
+    ).not.toThrow();
+    expect(
+      policyError(() => assertContentStudioSourceVersionRetentionScale(6, 5))
+    ).toBe('RETENTION_DRY_RUN_SCALE_LIMIT');
+  });
+
+  it('P5 the error codes: a dry-run code, an integrity error, nothing else', () => {
+    expect(
+      contentStudioSourceVersionRetentionErrorCode(
+        new ContentStudioSourceRetentionDryRunError(
+          'RETENTION_DRY_RUN_SNAPSHOT_FAILED'
+        )
+      )
+    ).toBe('RETENTION_DRY_RUN_SNAPSHOT_FAILED');
+    expect(
+      contentStudioSourceVersionRetentionErrorCode(
+        new ContentStudioSourceRetentionIntegrityError({
+          type: 'ContentPackage',
+          id: 'x',
+        })
+      )
+    ).toBe('RETENTION_INTEGRITY_ERROR');
+    expect(contentStudioSourceVersionRetentionErrorCode(new Error('x'))).toBe(
+      null
+    );
+    expect(
+      new ContentStudioSourceRetentionDryRunError('RETENTION_POLICY_INVALID')
+        .message
+    ).toBe(
+      'The source version retention dry run failed: RETENTION_POLICY_INVALID'
+    );
+  });
+});
+
+describe('P8-R1B the retained-set simulation', () => {
+  it('S1 compact_repeats keeps every page change, comparison and run: the named fixtures', () => {
+    for (const [letters, at] of [
+      ['AAB', undefined],
+      ['AABB', undefined],
+      ['ABA', undefined],
+      ['AADAA', undefined],
+      ['AACCC', undefined],
+      ['AAABBBA', [3, 6, 9, 10, 11, 15, 18]],
+      ['AAAAABBBBB', undefined],
+      ['AAAAAAAAAACCCCCCDDDDDA', undefined],
+    ] as const) {
+      const p = lettered(SOURCE, letters, at ? [...at] : undefined);
+      const result = dryRun([p]);
+      const source = result.sources[0];
+      expect([letters, source.blocker]).toEqual([letters, null]);
+      const removed = new Set(source.candidates.map((c) => c.id));
+      const retained = p.versions.filter((v) => !removed.has(v.id));
+      expect([letters, oracleState(retained)]).toEqual([
+        letters,
+        oracleState(p.versions),
+      ]);
+      const before = oracleChanges(p.versions);
+      const after = oracleChanges(retained);
+      for (const v of retained) {
+        expect([letters, v.versionNumber, after.get(v.id)]).toEqual([
+          letters,
+          v.versionNumber,
+          before.get(v.id),
+        ]);
+      }
+    }
+    // the gapped one: v6 and v11 go, the runs keep their ends
+    expect(
+      numbers(
+        dryRun([lettered(SOURCE, 'AAABBBA', [3, 6, 9, 10, 11, 15, 18])]),
+        SOURCE
+      )
+    ).toEqual([6, 11]);
+  });
+
+  it('S2 a candidate set with a run first, a run last or a changed version is refused', () => {
+    // A1 A2 A3 B4 B5 B6 A7: its change is v7 against v6
+    const p = lettered(SOURCE, 'AAABBBA');
+    expect(simulate(p, [2, 5])).toBeNull();
+    // the first of a run: what v2, v3 are compared with
+    expect(simulate(p, [1])).toBe('RETAINED_SET_INVARIANT_CHANGED');
+    // the first of the B run: v7's comparison baseline
+    expect(simulate(p, [4])).toBe('RETAINED_SET_INVARIANT_CHANGED');
+    // the last of a run: v4 was found against it
+    expect(simulate(p, [3])).toBe('RETAINED_SET_INVARIANT_CHANGED');
+    // the last change's predecessor, the changed version (the latest)
+    expect(simulate(p, [6])).toBe('RETAINED_SET_INVARIANT_CHANGED');
+    expect(simulate(p, [7])).toBe('RETAINED_SET_INVARIANT_CHANGED');
+    // one bad member spoils the whole set
+    expect(simulate(p, [2, 5, 4])).toBe('RETAINED_SET_INVARIANT_CHANGED');
+    // a change in the middle of A B A: without B there is no change
+    expect(simulate(lettered(SOURCE, 'ABA'), [2])).toBe(
+      'RETAINED_SET_INVARIANT_CHANGED'
+    );
+    // an extraction flip-flop: A B D B without v2 loses content_changed@v2
+    expect(simulate(lettered(SOURCE, 'ABDB'), [2])).toBe(
+      'RETAINED_SET_INVARIANT_CHANGED'
+    );
+    // a run's first that nothing stored needs: only the runs see it
+    expect(simulate(lettered(SOURCE, 'AAADAAA'), [1])).toBe(
+      'RETAINED_SET_INVARIANT_CHANGED'
+    );
+    // a version that is not the source's is a caller error
+    expect(() =>
+      simulateContentStudioSourcePageChangeStateAfterRetention({
+        source: p.source,
+        versions: p.versions,
+        candidateIds: new Set([vid(SOURCE_2, 1)]),
+        now: NOW,
+        inFlightMs: CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
+        pickerWindow: 1,
+      })
+    ).toThrow(RangeError);
+  });
+
+  it('S3 a stored last page change that is not the one the versions show: PAGE_CHANGE_STATE_STALE', () => {
+    // A A B C: the versions show title_changed at v4; the stored change is
+    // the older content change at v3 (valid-looking: R1A accepts it)
+    const p = lettered(SOURCE, 'AAABBC');
+    const stale = {
+      ...p,
+      source: {
+        ...p.source,
+        lastPageChangeAt: p.n(4).fetchedAt,
+        lastPageChangeVersionNumber: 4,
+        lastPageChangeKind: 'content_changed',
+        lastPageChangePreviousCaptureAt: p.n(3).fetchedAt,
+      },
+    };
+    expect(() => derive([stale.source], stale.versions)).not.toThrow();
+    expect(simulate(stale, [])).toBe('PAGE_CHANGE_STATE_STALE');
+    expect(simulate(stale, [2])).toBe('PAGE_CHANGE_STATE_STALE');
+    // no change stored at all, while the versions show one
+    expect(
+      simulate({ ...p, source: source(SOURCE, { latestVersionNumber: 6 }) }, [])
+    ).toBe('PAGE_CHANGE_STATE_STALE');
+  });
+
+  it('S4 a blocked source holds back all its candidates and is reported; the others go on', () => {
+    const blocked = lettered(SOURCE, 'AAAABBC');
+    blocked.source = {
+      ...blocked.source,
+      lastPageChangeAt: blocked.n(5).fetchedAt,
+      lastPageChangeVersionNumber: 5,
+      lastPageChangeKind: 'content_changed',
+      lastPageChangePreviousCaptureAt: blocked.n(4).fetchedAt,
+    };
+    const fine = lettered(SOURCE_2, 'AAAAB');
+    const result = dryRun([blocked, fine]);
+    expect(result.sources).toEqual([
+      {
+        sourceId: SOURCE,
+        totalVersions: 7,
+        protectedVersions: 4,
+        policyRetainedByRule: { RUN_BOUNDARY: 1, TOO_RECENT: 0 },
+        candidates: [],
+        blocker: 'PAGE_CHANGE_STATE_STALE',
+        blockedCandidateVersions: 2,
+      },
+      expect.objectContaining({
+        sourceId: SOURCE_2,
+        blocker: null,
+        blockedCandidateVersions: 0,
+      }),
+    ]);
+    expect(numbers(result, SOURCE_2)).toEqual([2, 3]);
+    const r = report(result);
+    expect(r.blockedSources).toEqual([
+      {
+        sourceId: SOURCE,
+        blocker: 'PAGE_CHANGE_STATE_STALE',
+        suppressedCandidates: 2,
+      },
+    ]);
+    expect(r.candidateSummary).toEqual(
+      expect.objectContaining({
+        candidateVersions: 2,
+        blockedCandidateVersions: 2,
+        blockedSources: 1,
+      })
+    );
+    // a stale source with nothing to select is not blocked
+    const nothing = lettered(SOURCE, 'ABC');
+    nothing.source = { ...nothing.source, latestVersionNumber: 3 };
+    nothing.source.lastPageChangeAt = null;
+    nothing.source.lastPageChangeVersionNumber = null;
+    nothing.source.lastPageChangeKind = null;
+    nothing.source.lastPageChangePreviousCaptureAt = null;
+    expect(dryRun([nothing]).sources[0].blocker).toBeNull();
+  });
+
+  it('S5 stored data that does not hold together fails the whole dry run, never one source', () => {
+    const p = lettered(SOURCE, 'AAAB');
+    const other = lettered(SOURCE_2, 'AAAB');
+    expect(
+      failure(() =>
+        dryRun([p, other], {
+          references: [ref(p.n(2), { contentHash: sha256Hex('other') })],
+        })
+      )
+    ).toEqual({ type: 'ContentPackage', id: uuid(0x9001, 1) });
+    expect(
+      failure(() =>
+        dryRun([
+          p,
+          { ...other, source: { ...other.source, latestVersionNumber: 9 } },
+        ])
+      )
+    ).toEqual({ type: 'ContentStudioSource', id: SOURCE_2 });
+  });
+});
+
+describe('P8-R1B the bounded exhaustive check', () => {
+  // Every sequence of up to 6 captures of A B C D N F, numbered 1, 2, 3...
+  // and with gaps: every subset of its run interiors (all of them unless
+  // LATEST or PAGE_CHANGE needs one) keeps the stored page change and every
+  // retained version's comparison; and wherever the simulation lets a
+  // single version go, nothing it would change shows
+  it('X1 up to 6 captures over six identities: no counterexample', () => {
+    const letters = 'ABCDNF';
+    let sequences = 0;
+    let subsets = 0;
+    let singlesRefused = 0;
+    const all = (length: number, prefix = ''): string[] =>
+      length === 0
+        ? [prefix]
+        : [...letters].flatMap((l) => all(length - 1, prefix + l));
+    for (let length = 1; length <= 6; length++) {
+      for (const seq of all(length)) {
+        for (const gaps of [false, true]) {
+          sequences++;
+          const p = lettered(
+            SOURCE,
+            seq,
+            gaps ? [...seq].map((_, i) => i * 3 + (i % 2) + 1) : undefined
+          );
+          const state = oracleState(p.versions);
+          const before = oracleChanges(p.versions);
+          const protectedIds = new Set(
+            derive([p.source], p.versions)
+              .filter(
+                (e) => e.reason === 'LATEST' || e.reason === 'PAGE_CHANGE'
+              )
+              .map((e) => e.sourceVersionId)
+          );
+          const interiors = groupContentStudioSourceVersionRuns(p.versions)
+            .flatMap((run) => run.versionIds.slice(1, -1))
+            .filter((id) => !protectedIds.has(id));
+          expect(protectedIds.size).toBeGreaterThan(0);
+          for (let mask = 0; mask < 1 << interiors.length; mask++) {
+            subsets++;
+            const ids = new Set(interiors.filter((_, i) => mask & (1 << i)));
+            const retained = p.versions.filter((v) => !ids.has(v.id));
+            const after = oracleChanges(retained);
+            const verdict =
+              simulateContentStudioSourcePageChangeStateAfterRetention({
+                source: p.source,
+                versions: p.versions,
+                candidateIds: ids,
+                now: NOW,
+                inFlightMs: CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
+                pickerWindow: 1,
+              });
+            if (
+              verdict !== null ||
+              JSON.stringify(oracleState(retained)) !== JSON.stringify(state) ||
+              retained.some((v) => after.get(v.id) !== before.get(v.id))
+            ) {
+              throw new Error(`counterexample ${seq} ${gaps} ${mask}`);
+            }
+          }
+          // soundness: a single version the simulation lets go changes
+          // nothing the oracle sees
+          for (const v of p.versions) {
+            const retained = p.versions.filter((w) => w.id !== v.id);
+            const verdict =
+              simulateContentStudioSourcePageChangeStateAfterRetention({
+                source: p.source,
+                versions: p.versions,
+                candidateIds: new Set([v.id]),
+                now: NOW,
+                inFlightMs: CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
+                pickerWindow: 1,
+              });
+            if (verdict !== null) {
+              singlesRefused++;
+              continue;
+            }
+            const after = oracleChanges(retained);
+            if (
+              JSON.stringify(oracleState(retained)) !== JSON.stringify(state) ||
+              retained.some((w) => after.get(w.id) !== before.get(w.id))
+            ) {
+              throw new Error(`unsound ${seq} ${gaps} v${v.versionNumber}`);
+            }
+          }
+        }
+      }
+    }
+    // 6 + 36 + ... + 46,656 sequences, each contiguous and with gaps
+    expect(sequences).toBe(2 * 55_986);
+    expect(subsets).toBeGreaterThan(sequences);
+    // the negative controls: the simulation does refuse versions
+    expect(singlesRefused).toBeGreaterThan(sequences);
+  }, 120_000);
+});
+
+describe('P8-R1B the report and its hash', () => {
+  const pages = () => [
+    lettered(SOURCE, 'AAAABBBBC'),
+    lettered(SOURCE_2, 'AAAB', undefined, (n) =>
+      n === 2 ? { createdAt: new Date(NOW.getTime() - 3 * DAY) } : {}
+    ),
+  ];
+  const hashOf = (
+    over: Partial<
+      Parameters<typeof contentStudioSourceVersionRetentionDryRunHash>[0]
+    > = {}
+  ) => {
+    const r = report(dryRun(pages()));
+    return contentStudioSourceVersionRetentionDryRunHash({
+      organizationId: ORG,
+      evaluationNow: NOW,
+      validUntil: new Date(
+        NOW.getTime() +
+          CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_VALIDITY_MS
+      ),
+      policy: POLICY,
+      candidates: r.candidates,
+      blockedSources: r.blockedSources,
+      ...over,
+    });
+  };
+
+  it('R1 the exact report: counts that add up, sources, candidates in order, no content', () => {
+    const r = report(dryRun(pages()));
+    expect(Object.keys(r)).toEqual([
+      'format',
+      'dryRunFormatVersion',
+      'protectionVersion',
+      'policyVersion',
+      'organizationId',
+      'evaluationNow',
+      'validUntil',
+      'policy',
+      'snapshot',
+      'protectionSummary',
+      'candidateSummary',
+      'sources',
+      'blockedSources',
+      'candidates',
+      'dryRunHash',
+    ]);
+    expect(r.format).toBe('content-studio.source-version-retention-dry-run');
+    expect([
+      r.dryRunFormatVersion,
+      r.protectionVersion,
+      r.policyVersion,
+    ]).toEqual([1, 1, 1]);
+    expect(r.evaluationNow).toBe('2026-10-26T12:00:00.000Z');
+    expect(r.validUntil).toBe('2026-10-26T13:00:00.000Z');
+    expect(r.policy).toEqual({
+      mode: 'compact_repeats',
+      olderThan: '2026-10-19T12:00:00.000Z',
+    });
+    expect(r.snapshot).toEqual({
+      isolation: 'repeatable_read',
+      sourceCount: 2,
+      versionCount: 13,
+    });
+    // A1-A4 B5-B8 C9: v5, v8, v9 protected (the change against the B run
+    // and the latest), v1 and v4 kept, v2 v3 v6 v7 candidates; A1 A2 A3 B4:
+    // v1, v3, v4 protected, v2 too recent
+    expect(r.candidateSummary).toEqual({
+      totalVersions: 13,
+      protectedVersions: 6,
+      technicallyUnprotectedVersions: 7,
+      policyRetainedVersions: 3,
+      policyRetainedByRule: { RUN_BOUNDARY: 2, TOO_RECENT: 1 },
+      candidateVersions: 4,
+      blockedCandidateVersions: 0,
+      blockedSources: 0,
+      logicalContentBytes: 102 + 103 + 106 + 107,
+      oldestCandidateCreatedAt: '2026-01-01T00:02:00.000Z',
+      newestCandidateCreatedAt: '2026-01-01T00:07:00.000Z',
+    });
+    expect(r.protectionSummary.protectedVersions).toBe(6);
+    expect(r.sources.map((s) => [s.sourceId, s.candidateVersions])).toEqual([
+      [SOURCE, 4],
+      [SOURCE_2, 0],
+    ]);
+    expect(r.candidates[0]).toEqual({
+      id: vid(SOURCE, 2),
+      sourceId: SOURCE,
+      versionNumber: 2,
+      contentHash: sha256Hex('A'),
+      createdAt: '2026-01-01T00:02:00.000Z',
+      fetchedAt: '2026-01-01T00:02:00.000Z',
+      candidateReason: 'REPEAT_RUN_INTERIOR',
+      logicalContentBytes: 102,
+    });
+    expect(r.candidates.map((c) => c.versionNumber)).toEqual([2, 3, 6, 7]);
+    // plain JSON: canonical JSON takes it as it is
+    expect(JSON.parse(canonicalJson(r))).toEqual(r);
+    expect(JSON.stringify(r)).not.toMatch(/content"|quote|title|Url|url"/);
+  });
+
+  it('R2 the partitions hold for the organization and each source; reasons are never summed', () => {
+    const many = [
+      lettered(SOURCE, 'AAAAAABBBBBBBBC'),
+      lettered(
+        SOURCE_2,
+        'ANNNNNFFFFF',
+        [1, 2, 5, 6, 9, 10, 20, 21, 22, 23, 24]
+      ),
+    ];
+    const result = dryRun(many, {
+      references: [
+        ref(many[0].n(3)),
+        ref(many[0].n(3), { referenceId: uuid(0x9001, 2) }),
+      ],
+      pickerWindow: 4,
+    });
+    const r = report(result);
+    const c = r.candidateSummary;
+    expect(c.totalVersions).toBe(
+      c.protectedVersions + c.technicallyUnprotectedVersions
+    );
+    expect(c.technicallyUnprotectedVersions).toBe(
+      c.policyRetainedVersions +
+        c.candidateVersions +
+        c.blockedCandidateVersions
+    );
+    expect(c.policyRetainedVersions).toBe(
+      c.policyRetainedByRule.RUN_BOUNDARY + c.policyRetainedByRule.TOO_RECENT
+    );
+    for (const s of r.sources) {
+      expect(s.totalVersions).toBe(
+        s.protectedVersions +
+          s.policyRetainedVersions +
+          s.candidateVersions +
+          s.blockedCandidateVersions
+      );
+    }
+    const p = r.protectionSummary;
+    expect(p.protectedVersions).toBe(result.protections.size);
+    expect(Object.values(p.edgesByReason).reduce((a, b) => a + b, 0)).toBe(
+      p.protectionEdges
+    );
+    // v15 is LATEST and in the picker window: one version, two reasons
+    expect(
+      Object.values(p.versionsByReason).reduce((a, b) => a + b, 0)
+    ).toBeGreaterThan(p.protectedVersions);
+    expect(p.edgesByReason.DRAFT_EVIDENCE).toBe(2);
+    expect(p.versionsByReason.DRAFT_EVIDENCE).toBe(1);
+    // a report whose counts do not add up is never made
+    expect(() =>
+      buildContentStudioSourceVersionRetentionDryRun({
+        organizationId: ORG,
+        evaluationNow: NOW,
+        policy: POLICY,
+        snapshot: { sourceCount: 2, versionCount: c.totalVersions + 1 },
+        protectionSummary: summarizeContentStudioSourceVersionProtections([
+          result.protections,
+        ]),
+        sources: result.sources,
+        logicalContentBytes: new Map(
+          r.candidates.map((x) => [x.id, x.logicalContentBytes])
+        ),
+      })
+    ).toThrow(RangeError);
+  });
+
+  it('H1/H11 the same input, in any order, is the same hash; it is the hash of exactly the pinned payload', () => {
+    const r = report(dryRun(pages()));
+    expect(report(dryRun(pages().reverse())).dryRunHash).toBe(r.dryRunHash);
+    expect(
+      report(
+        dryRun(
+          pages().map((p) => ({ ...p, versions: p.versions.slice().reverse() }))
+        )
+      ).dryRunHash
+    ).toBe(r.dryRunHash);
+    expect(hashOf()).toBe(r.dryRunHash);
+    expect(hashOf({ candidates: r.candidates.slice().reverse() })).toBe(
+      r.dryRunHash
+    );
+    expect(r.dryRunHash).toBe(
+      sha256Hex(
+        canonicalJson({
+          format: CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_FORMAT,
+          dryRunFormatVersion: 1,
+          protectionVersion: 1,
+          policyVersion: 1,
+          organizationId: ORG,
+          evaluationNow: '2026-10-26T12:00:00.000Z',
+          validUntil: '2026-10-26T13:00:00.000Z',
+          policy: {
+            mode: 'compact_repeats',
+            olderThan: '2026-10-19T12:00:00.000Z',
+          },
+          candidates: r.candidates.map((c) => [
+            c.sourceId,
+            c.versionNumber,
+            c.id,
+            c.contentHash,
+          ]),
+          blockedSources: [],
+        })
+      )
+    );
+  });
+
+  it('H2-H10/H13 every part of the plan changes the hash', () => {
+    const r = report(dryRun(pages()));
+    const base = hashOf();
+    const first = r.candidates[0];
+    const changed = (c: typeof first) => [c, ...r.candidates.slice(1)];
+    const variants: Array<[string, string]> = [
+      [
+        'id',
+        hashOf({ candidates: changed({ ...first, id: vid(SOURCE, 99) }) }),
+      ],
+      [
+        'sourceId',
+        hashOf({ candidates: changed({ ...first, sourceId: SOURCE_2 }) }),
+      ],
+      [
+        'versionNumber',
+        hashOf({ candidates: changed({ ...first, versionNumber: 99 }) }),
+      ],
+      [
+        'contentHash',
+        hashOf({
+          candidates: changed({ ...first, contentHash: sha256Hex('Z') }),
+        }),
+      ],
+      [
+        'policy',
+        hashOf({
+          policy: {
+            ...POLICY,
+            olderThan: new Date(POLICY.olderThan.getTime() - 1000),
+          },
+        }),
+      ],
+      [
+        'evaluationNow',
+        hashOf({ evaluationNow: new Date(NOW.getTime() + 1000) }),
+      ],
+      [
+        'validUntil',
+        hashOf({ validUntil: new Date(NOW.getTime() + 2 * 60 * 60 * 1000) }),
+      ],
+      [
+        'protectionVersion',
+        hashOf({ versions: { format: 1, protection: 2, policy: 1 } }),
+      ],
+      [
+        'policyVersion',
+        hashOf({ versions: { format: 1, protection: 1, policy: 2 } }),
+      ],
+      [
+        'formatVersion',
+        hashOf({ versions: { format: 2, protection: 1, policy: 1 } }),
+      ],
+      [
+        'blockedSources',
+        hashOf({
+          blockedSources: [
+            {
+              sourceId: SOURCE_2,
+              blocker: 'PAGE_CHANGE_STATE_STALE',
+              suppressedCandidates: 1,
+            },
+          ],
+        }),
+      ],
+      [
+        'blocker',
+        hashOf({
+          blockedSources: [
+            {
+              sourceId: SOURCE_2,
+              blocker: 'RETAINED_SET_INVARIANT_CHANGED',
+              suppressedCandidates: 1,
+            },
+          ],
+        }),
+      ],
+      ['fewer', hashOf({ candidates: r.candidates.slice(1) })],
+      ['organization', hashOf({ organizationId: OTHER_ORG })],
+    ];
+    const hashes = variants.map(([, h]) => h);
+    expect(new Set([base, ...hashes]).size).toBe(variants.length + 1);
+    // the versions in use are 1, 1, 1
+    expect(hashOf({ versions: { format: 1, protection: 1, policy: 1 } })).toBe(
+      base
+    );
+    expect([
+      CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_FORMAT_VERSION,
+      CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PROTECTION_VERSION,
+      CONTENT_STUDIO_SOURCE_VERSION_RETENTION_POLICY_VERSION,
+    ]).toEqual([1, 1, 1]);
+  });
+
+  it('H12 the sizes, times and counts are reported, never hashed', () => {
+    const result = dryRun(pages());
+    const r = report(result);
+    const other = buildContentStudioSourceVersionRetentionDryRun({
+      organizationId: ORG,
+      evaluationNow: NOW,
+      policy: POLICY,
+      snapshot: { sourceCount: 2, versionCount: 13 },
+      protectionSummary: summarizeContentStudioSourceVersionProtections([
+        result.protections,
+      ]),
+      sources: result.sources.map((s) => ({
+        ...s,
+        candidates: s.candidates.map((c) => ({
+          ...c,
+          createdAt: new Date(c.createdAt.getTime() - DAY),
+          fetchedAt: new Date(c.fetchedAt.getTime() - DAY),
+        })),
+      })),
+      logicalContentBytes: new Map(r.candidates.map((c) => [c.id, 9_999])),
+    });
+    expect(other.candidateSummary.logicalContentBytes).toBe(4 * 9_999);
+    expect(other.candidates[0].createdAt).not.toBe(r.candidates[0].createdAt);
+    expect(other.dryRunHash).toBe(r.dryRunHash);
+  });
+
+  it('H14 no candidate: a valid report with its own stable hash', () => {
+    const r = report(dryRun([lettered(SOURCE, 'AB')]));
+    expect(r.candidates).toEqual([]);
+    expect(r.candidateSummary.candidateVersions).toBe(0);
+    expect(r.candidateSummary.oldestCandidateCreatedAt).toBeNull();
+    expect(r.dryRunHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(report(dryRun([lettered(SOURCE, 'AB')])).dryRunHash).toBe(
+      r.dryRunHash
+    );
+    const empty = report(dryRun([]));
+    expect(empty.sources).toEqual([]);
+    expect(empty.dryRunHash).toBe(r.dryRunHash);
+  });
+
+  it('H15 the order is code units, never the locale: source, number, id', () => {
+    // 'a' sorts after 'B' in code units, before it in most locales
+    const lower = 'a0000000-0000-4000-8000-000000000001';
+    const upper = 'B0000000-0000-4000-8000-000000000001';
+    const candidate = (
+      sourceId: string,
+      versionNumber: number,
+      id: string
+    ) => ({
+      sourceId,
+      versionNumber,
+      id,
+      contentHash: sha256Hex('A'),
+    });
+    expect(
+      hashOf({
+        candidates: [
+          candidate(lower, 2, 'x'),
+          candidate(upper, 10, 'y'),
+          candidate(upper, 9, 'z'),
+        ],
+      })
+    ).toBe(
+      sha256Hex(
+        canonicalJson({
+          format: CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_FORMAT,
+          dryRunFormatVersion: 1,
+          protectionVersion: 1,
+          policyVersion: 1,
+          organizationId: ORG,
+          evaluationNow: NOW.toISOString(),
+          validUntil: '2026-10-26T13:00:00.000Z',
+          policy: {
+            mode: 'compact_repeats',
+            olderThan: POLICY.olderThan.toISOString(),
+          },
+          candidates: [
+            [upper, 9, 'z', sha256Hex('A')],
+            [upper, 10, 'y', sha256Hex('A')],
+            [lower, 2, 'x', sha256Hex('A')],
+          ],
+          blockedSources: [],
+        })
+      )
+    );
+  });
+});
+
+describe('P8-R1B batches', () => {
+  // Many pages with gaps, repeats, changes, references of every kind
+  // (some across sources), recent versions: evaluated whole and in batches
+  // of every size, the protections, candidates, blocked sources and hash
+  // are the same
+  it('B1 a batch is the organization: the same map, candidates and hash however the sources are batched', () => {
+    let seed = 20261026;
+    const rnd = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+    const pages = Array.from({ length: 450 }, (_, s) => {
+      const id = uuid(0x5100 + (s % 7), s + 1);
+      let seq = 'ABCDNF'[Math.floor(rnd() * 6)];
+      const length = 1 + Math.floor(rnd() * 30);
+      while (seq.length < length) {
+        seq +=
+          rnd() < 0.7 ? seq[seq.length - 1] : 'ABCDNF'[Math.floor(rnd() * 6)];
+      }
+      let n = 0;
+      return lettered(
+        id,
+        seq,
+        [...seq].map(() => (n += 1 + Math.floor(rnd() * 3))),
+        () =>
+          rnd() < 0.05 ? { createdAt: new Date(NOW.getTime() - HOUR) } : {}
+      );
+    });
+    // a stale one
+    pages[7].source = {
+      ...pages[7].source,
+      lastPageChangeAt: null,
+      lastPageChangeVersionNumber: null,
+      lastPageChangeKind: null,
+      lastPageChangePreviousCaptureAt: null,
+    };
+    const references: ContentStudioSourceVersionReference[] = [];
+    const reasons = [
+      ['DRAFT_EVIDENCE', 'ContentPackage'],
+      ['REVISION_EVIDENCE', 'ContentPackageRevision'],
+      ['REVIEW_EVIDENCE', 'ContentStudioReview'],
+      ['AI_OPERATION', 'ContentStudioAIOperation'],
+    ] as const;
+    for (let r = 0; r < 600; r++) {
+      const [reason, referenceType] = reasons[r % 4];
+      // one record naming versions of two sources, as a prompt or a draft can
+      for (const p of [pages[r % 450], pages[(r * 7 + 3) % 450]]) {
+        const v = p.versions[Math.floor(rnd() * p.versions.length)];
+        references.push(
+          ref(v, { reason, referenceType, referenceId: uuid(0x9100, r + 1) })
+        );
+      }
+    }
+    const evaluate = (
+      batch: typeof pages,
+      refs: ContentStudioSourceVersionReference[]
+    ) =>
+      evaluateContentStudioSourceVersionRetention({
+        organizationId: ORG,
+        sources: batch.map((p) => p.source),
+        versions: batch.flatMap((p) => p.versions),
+        references: refs,
+        now: NOW,
+        inFlightMs: CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
+        pickerWindow: 3,
+        policy: POLICY,
+      });
+    const whole = evaluate(pages, references);
+    const wholeReport = report(whole);
+    expect(wholeReport.candidateSummary.candidateVersions).toBeGreaterThan(500);
+    expect(wholeReport.candidateSummary.blockedSources).toBe(1);
+    for (const size of [
+      CONTENT_STUDIO_SOURCE_VERSION_RETENTION_SOURCE_BATCH_SIZE,
+      1,
+      7,
+      449,
+    ]) {
+      const sorted = pages
+        .slice()
+        .sort((a, b) => (a.source.id < b.source.id ? -1 : 1));
+      const batches = [];
+      for (let i = 0; i < sorted.length; i += size) {
+        const batch = sorted.slice(i, i + size);
+        const ids = new Set(batch.map((p) => p.source.id));
+        batches.push(
+          evaluate(
+            batch,
+            references.filter((x) => ids.has(x.sourceId))
+          )
+        );
+      }
+      const merged = buildContentStudioSourceVersionProtectionMap(
+        batches.flatMap((b) => [...b.protections.values()].flat())
+      );
+      expect([size, serialized(merged)]).toEqual([
+        size,
+        serialized(whole.protections),
+      ]);
+      const batched = buildContentStudioSourceVersionRetentionDryRun({
+        organizationId: ORG,
+        evaluationNow: NOW,
+        policy: POLICY,
+        snapshot: wholeReport.snapshot,
+        protectionSummary: summarizeContentStudioSourceVersionProtections(
+          batches.map((b) => b.protections)
+        ),
+        sources: batches.flatMap((b) => b.sources),
+        logicalContentBytes: new Map(
+          wholeReport.candidates.map((c) => [c.id, c.logicalContentBytes])
+        ),
+      });
+      expect([size, canonicalJson(batched)]).toEqual([
+        size,
+        canonicalJson(wholeReport),
+      ]);
+    }
   });
 });
