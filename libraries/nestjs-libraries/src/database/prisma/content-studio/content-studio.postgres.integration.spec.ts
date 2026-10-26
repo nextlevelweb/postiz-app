@@ -859,6 +859,8 @@ describe('revision immutability boundary', () => {
     'createRevisionWithCompareAndSwap',
     'getLatestRevisionForPackage',
     'getRevisionForPackage',
+    // P8-R1A: a read for source version protection
+    'listPackageRevisionsForVersionProtection',
     'listRevisionsForPackage',
   ];
 

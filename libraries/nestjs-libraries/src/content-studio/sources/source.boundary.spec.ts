@@ -80,6 +80,8 @@ describe('Source layer boundaries', () => {
         `${SOURCES_DIRECTORY}/source.content.ts`,
         `${SOURCES_DIRECTORY}/source.extract.ts`,
         `${SOURCES_DIRECTORY}/source.feed.ts`,
+        // which versions stored data protects (P8-R1A), pure
+        `${SOURCES_DIRECTORY}/source.retention.ts`,
         `${SOURCES_DIRECTORY}/source.types.ts`,
         `${SOURCES_DIRECTORY}/source.url.ts`,
         `${SOURCES_DIRECTORY}/source.version.ts`,

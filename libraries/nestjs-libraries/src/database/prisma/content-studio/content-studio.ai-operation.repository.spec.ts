@@ -357,6 +357,8 @@ describe('ContentStudioAIOperationRepository: completion', () => {
       'constructor',
       'createRunningOperation',
       'getOperationForOrganization',
+      // read only, for source version protection (P8-R1A)
+      'listOperationContextsForVersionProtection',
     ]);
   });
 });

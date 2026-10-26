@@ -27,7 +27,9 @@ import {
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.url';
 import {
   ContentStudioSourceIntegrityError,
+  ContentStudioSourcePageChangeRow,
   parseVerifiedContentStudioSourceVersion,
+  storedContentStudioSourcePageChange as storedPageChange,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.version';
 import {
   classifyContentStudioSourceCaptureTransition,
@@ -196,48 +198,6 @@ interface SourceRow {
   nextCaptureAt?: Date | null;
   consecutiveCaptureFailures?: number;
 }
-
-// A source's stored last page change (P8-04B1)
-interface PageChangeRow {
-  latestVersionNumber: number;
-  lastPageChangeAt: Date | null;
-  lastPageChangeVersionNumber: number | null;
-  lastPageChangeKind: string | null;
-  lastPageChangePreviousCaptureAt: Date | null;
-}
-
-// The stored fields as one value: null when all four are null, the change
-// when all four are set and make sense (a page change, a later version than
-// the first, at most the current one), undefined for anything else
-const storedPageChange = (
-  row: PageChangeRow
-): ContentStudioSourcePageChangeData | null | undefined => {
-  const fields = [
-    row.lastPageChangeAt,
-    row.lastPageChangeVersionNumber,
-    row.lastPageChangeKind,
-    row.lastPageChangePreviousCaptureAt,
-  ];
-  if (fields.every((field) => field === null)) {
-    return null;
-  }
-  if (
-    !(row.lastPageChangeAt instanceof Date) ||
-    !(row.lastPageChangePreviousCaptureAt instanceof Date) ||
-    !isContentStudioSourcePageChange(row.lastPageChangeKind) ||
-    !Number.isInteger(row.lastPageChangeVersionNumber) ||
-    row.lastPageChangeVersionNumber! < 2 ||
-    row.lastPageChangeVersionNumber! > row.latestVersionNumber
-  ) {
-    return undefined;
-  }
-  return {
-    at: row.lastPageChangeAt,
-    versionNumber: row.lastPageChangeVersionNumber!,
-    kind: row.lastPageChangeKind,
-    previousCaptureAt: row.lastPageChangePreviousCaptureAt,
-  };
-};
 
 const samePageChange = (
   a: ContentStudioSourcePageChangeData | null,
@@ -1289,7 +1249,7 @@ export class ContentStudioSourceService {
 
   // One source of the backfill, read again when a write finds it changed
   private async backfillPageChange(
-    source: PageChangeRow & {
+    source: ContentStudioSourcePageChangeRow & {
       id: string;
       organizationId: string;
       updatedAt: Date;

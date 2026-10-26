@@ -993,4 +993,31 @@ export class ContentStudioReviewRepository {
       return true;
     });
   }
+
+  // For source version protection (P8-R1A) only: one page of the
+  // organization's package reviews, in any state, after `afterId` in id
+  // order: which revision each one reviews. Their claims and approvals are
+  // that revision's
+  listPackageReviewsForVersionProtection(input: {
+    organizationId: string;
+    afterId: string | null;
+    take: number;
+  }) {
+    return this._review.model.contentStudioReview.findMany({
+      where: {
+        organizationId: input.organizationId,
+        packageRevisionId: { not: null },
+        ...(input.afterId ? { id: { gt: input.afterId } } : {}),
+      },
+      orderBy: {
+        id: 'asc',
+      },
+      select: {
+        id: true,
+        organizationId: true,
+        packageRevisionId: true,
+      },
+      take: input.take,
+    });
+  }
 }

@@ -10,6 +10,11 @@ import {
   CONTENT_STUDIO_SOURCE_KINDS,
   isContentStudioSourceKind,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.types';
+import {
+  CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
+  CONTENT_STUDIO_SOURCE_VERSION_PICKER_WINDOW,
+  CONTENT_STUDIO_SOURCE_VERSION_PROTECTION_REASONS,
+} from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
 
 // Research feed ingestion (P8-01) in one place, pinned on the source: a feed
 // is an ordinary source of kind `feed`, read only through SafeFetch and an
@@ -1111,8 +1116,14 @@ describe('P8-04B1 organization page changes', () => {
     expect(module).toMatch(
       /return previous\.extractionVersion !== next\.extractionVersion\s*\? 'extraction_changed'\s*: previous\.contentHash !== next\.contentHash\s*\? 'content_changed'\s*: 'title_changed';/
     );
+    // P8-R1A: source version protection checks a stored change with it
     expect(users(/classifyContentStudioSourceCaptureTransition\(/)).toEqual(
-      [PAGE_CHANGE.module, PAGE_CHANGE.ingestion, PAGE_CHANGE.service].sort()
+      [
+        PAGE_CHANGE.module,
+        PAGE_CHANGE.ingestion,
+        PAGE_CHANGE.service,
+        `${SOURCES}/source.retention.ts`,
+      ].sort()
     );
     const backend = PRODUCTION.filter(
       (file) =>
@@ -1124,9 +1135,23 @@ describe('P8-04B1 organization page changes', () => {
       /\.contentHash !== \w+\.contentHash/,
       /'title_changed'\s*;/,
     ]) {
-      expect(backend.filter((file) => pattern.test(CODE.get(file)!))).toEqual([
-        PAGE_CHANGE.module,
-      ]);
+      expect(
+        backend.filter(
+          (file) =>
+            pattern.test(CODE.get(file)!) &&
+            // P8-R1A: a stored reference checked against the version it
+            // names (as grounding does), never a capture transition
+            !(
+              file === `${SOURCES}/source.retention.ts` &&
+              pattern.source.includes('contentHash') &&
+              CODE.get(file)!.match(/\.contentHash !== \w+\.contentHash/g)!
+                .length === 1 &&
+              /version\.contentHash !== reference\.contentHash/.test(
+                CODE.get(file)!
+              )
+            )
+        )
+      ).toEqual([PAGE_CHANGE.module]);
     }
     expect(module.match(/\.extractionVersion !== /g)).toHaveLength(1);
   });
@@ -1776,9 +1801,19 @@ describe('P8-C1 organization safety caps', () => {
     const contentStudio = PRODUCTION.filter((file) =>
       /content-studio|content\.studio/.test(file)
     );
+    // P8-R1A: the source version protection map, which only reads and
+    // removes nothing (pinned in its own block below), is the one exception
     expect(
       contentStudio.filter((file) =>
         /retention|purge|keepLast|prune|cleanup/i.test(CODE.get(file)!)
+      )
+    ).toEqual([
+      'libraries/nestjs-libraries/src/content-studio/sources/source.retention.ts',
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.service.ts',
+    ]);
+    expect(
+      contentStudio.filter((file) =>
+        /purge|keepLast|prune|cleanup/i.test(CODE.get(file)!)
       )
     ).toEqual([]);
   });
@@ -3563,5 +3598,482 @@ describe('P8-G1 conditional source fetching', () => {
         g1(key).match(/retention|purge|prune|cleanup|keepLast/gi),
       ]).toEqual([key, null]);
     }
+  });
+});
+
+describe('P8-R1A source version protection', () => {
+  const R1 = {
+    pure: `${SOURCES}/source.retention.ts`,
+    service:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.service.ts',
+    sources:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.repository.ts',
+    packages:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.repository.ts',
+    reviews:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.review.repository.ts',
+    operations:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.ai-operation.repository.ts',
+    sourceService:
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source.service.ts',
+    draft:
+      'libraries/nestjs-libraries/src/content-studio/content.package.draft.ts',
+    context:
+      'libraries/nestjs-libraries/src/content-studio/ai/ai.operation.types.ts',
+    picker:
+      'apps/frontend/src/components/content-studio/content-studio.grounding.tsx',
+    module: 'libraries/nestjs-libraries/src/database/prisma/database.module.ts',
+    controller: 'apps/backend/src/api/routes/content-studio.controller.ts',
+  };
+  const r1 = (key: keyof typeof R1) => CODE.get(R1[key])!;
+  // the repository reads protection makes, by file, and nothing else
+  const READS: Array<[keyof typeof R1, string, string]> = [
+    ['sources', 'listSourcesForVersionProtection', 'contentStudioSource'],
+    ['sources', 'listVersionsForProtection', 'contentStudioSourceVersion'],
+    ['packages', 'listPackageDraftsForVersionProtection', 'contentPackage'],
+    [
+      'reviews',
+      'listPackageReviewsForVersionProtection',
+      'contentStudioReview',
+    ],
+    [
+      'packages',
+      'listPackageRevisionsForVersionProtection',
+      'contentPackageRevision',
+    ],
+    [
+      'operations',
+      'listOperationContextsForVersionProtection',
+      'contentStudioAIOperation',
+    ],
+  ];
+  const read = (file: keyof typeof R1, name: string) =>
+    between(r1(file), `\n  ${name}(`, '\n  }\n');
+  const WRITES =
+    /\.(create|createMany|update|updateMany|upsert|delete|deleteMany)\(|\$executeRaw|\$queryRaw|\$transaction/;
+
+  it('R1-1/R1-2 nothing removes a version: no delete anywhere in production, no write in protection', () => {
+    expect(users(/contentStudioSourceVersion\.(delete|deleteMany)\(/)).toEqual(
+      []
+    );
+    expect(users(/sourceVersion[s]?:\s*\{\s*delete/i)).toEqual([]);
+    for (const key of ['pure', 'service'] as const) {
+      expect([key, r1(key).match(WRITES)]).toEqual([key, null]);
+      expect([
+        key,
+        r1(key).match(
+          /deletable|safeToDelete|deleteCandidate|purge|prune|cleanup|keepLast/i
+        ),
+      ]).toEqual([key, null]);
+    }
+    // the reads are reads: findMany, nothing else
+    for (const [file, name] of READS) {
+      const body = read(file, name);
+      expect([name, body.match(WRITES)]).toEqual([name, null]);
+      expect([name, body.match(/\.(\w+)\(\{/g)]).toEqual([
+        name,
+        ['.findMany({'],
+      ]);
+    }
+  });
+
+  it('R1-3 every stored document and every field naming a source or version of Content Studio is classified', () => {
+    // documents: Json, or a String holding JSON
+    const DOCUMENTS: Record<string, 'enumerated' | 'no-reference'> = {
+      'ContentPackage.draft': 'enumerated',
+      'ContentPackageRevision.content': 'enumerated',
+      'ContentStudioAIOperation.context': 'enumerated',
+      // the version itself
+      'ContentStudioSourceVersion.content': 'no-reference',
+      // profiles, policy, brand and design: no source, ever
+      'ContentStudioWritingProfileRevision.content': 'no-reference',
+      'ContentStudioEditorialPolicyRevision.content': 'no-reference',
+      'ContentStudioAudienceProfileRevision.content': 'no-reference',
+      'ContentStudioExpertiseProfileRevision.content': 'no-reference',
+      'ContentStudioBrandKitRevision.content': 'no-reference',
+      'ContentStudioDesignRevision.content': 'no-reference',
+      'ContentStudioDesignTemplateRevision.content': 'no-reference',
+      'ContentStudioDesignStylePreset.content': 'no-reference',
+      'ContentStudioDesignLayoutPattern.content': 'no-reference',
+      'ContentStudioDesignPageSet.content': 'no-reference',
+      'ContentStudioDesignBlock.content': 'no-reference',
+      'ContentStudioDesignRender.assetSnapshot': 'no-reference',
+    };
+    // fields naming a source or a version, or holding one by relation
+    const REFERENCES: Record<string, string> = {
+      'ContentStudioSource.versions': 'the versions themselves',
+      'ContentStudioSourceVersion.sourceId': 'its own source',
+      'ContentStudioSourceVersion.source': 'its own source',
+      'ContentStudioSourceCaptureAttempt.sourceId': 'no-reference (P8-O1)',
+      'ContentStudioSourceCaptureAttempt.source': 'no-reference (P8-O1)',
+      'ContentStudioSourceDiscovery.feedSourceId': 'no-reference (sources)',
+      'ContentStudioSourceDiscovery.discoveredSourceId':
+        'no-reference (sources)',
+      'ContentStudioSourceDiscovery.feedSource': 'no-reference (sources)',
+      'ContentStudioSourceDiscovery.discoveredSource': 'no-reference (sources)',
+    };
+    const documents: string[] = [];
+    const references: string[] = [];
+    for (const [, name, body] of schema.matchAll(
+      /\nmodel (\w+) \{([\s\S]*?)\n\}/g
+    )) {
+      if (!/^(ContentStudio|ContentPackage)/.test(name)) {
+        continue;
+      }
+      for (const line of body.split('\n')) {
+        const [field, type] = line.trim().split(/\s+/);
+        if (!field || !type || field.startsWith('@@')) {
+          continue;
+        }
+        const scalar = type.replace(/\?$/, '');
+        if (
+          scalar === 'Json' ||
+          (scalar === 'String' &&
+            /(content|draft|document|context|snapshot|payload|metadata)$/i.test(
+              field
+            ))
+        ) {
+          documents.push(`${name}.${field}`);
+        }
+        if (
+          /versionId|sourceId/i.test(field) ||
+          /^ContentStudioSource(Version)?(\[\])?\??$/.test(type)
+        ) {
+          references.push(`${name}.${field}`);
+        }
+      }
+    }
+    expect(documents.sort()).toEqual(Object.keys(DOCUMENTS).sort());
+    expect(references.sort()).toEqual(Object.keys(REFERENCES).sort());
+    // nothing holds a version by a foreign key: only its parents' lists
+    expect(
+      [...schema.matchAll(/\n\s+(\w+)\s+ContentStudioSourceVersion\[\]/g)].map(
+        (match) => match[1]
+      )
+    ).toEqual([
+      'contentStudioSourceVersions',
+      'contentStudioSourceVersions',
+      'versions',
+    ]);
+    expect(schema).not.toMatch(/sourceVersionId|\bversionId\b/);
+    // each enumerated document is read by its protection read
+    expect(read('packages', 'listPackageDraftsForVersionProtection')).toMatch(
+      /draft: true/
+    );
+    expect(
+      read('packages', 'listPackageRevisionsForVersionProtection')
+    ).toMatch(/content: true,\s*contentHash: true/);
+    expect(
+      read('operations', 'listOperationContextsForVersionProtection')
+    ).toMatch(/context: true/);
+    // the code that names a version id: the two stored schemas protection
+    // parses, the grounding and AI writing that write them, the source
+    // routes and capture, protection itself and the frontend's requests.
+    // A new place that stores one must be classified here and in protection
+    expect(users(/\bversionId\b/)).toEqual(
+      [
+        R1.controller,
+        'apps/frontend/src/components/content-studio/content-studio.ai-proposal.tsx',
+        'apps/frontend/src/components/content-studio/content-studio.ai-writing.tsx',
+        'apps/frontend/src/components/content-studio/content-studio.api.ts',
+        R1.picker,
+        'apps/frontend/src/components/content-studio/content-studio.sources.api.ts',
+        R1.context,
+        R1.draft,
+        `${SOURCES}/ingestion/source.ingestion.service.ts`,
+        R1.pure,
+        'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.ai-writing.service.ts',
+        'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.grounding.service.ts',
+        R1.service,
+        R1.sources,
+        R1.sourceService,
+      ].sort()
+    );
+  });
+
+  it('R1-4 every protection read is of the request organization, in id order, after an id, a bounded page', () => {
+    for (const [file, name, model] of READS) {
+      const body = read(file, name);
+      expect([name, body]).toEqual([
+        name,
+        expect.stringMatching(
+          new RegExp(
+            `^\\n  ${name}\\(input: \\{\\n    organizationId: string;\\n    afterId: string \\| null;\\n    take: number;\\n  \\}\\) \\{\\n    return this\\._\\w+\\.model\\.${model}\\.findMany\\(\\{\\n      where: \\{\\n        organizationId: input\\.organizationId,`
+          )
+        ),
+      ]);
+      expect([name, body]).toEqual([
+        name,
+        expect.stringMatching(
+          /\.\.\.\(input\.afterId \? \{ id: \{ gt: input\.afterId \} \} : \{\}\),\s*\},\s*orderBy: \{\s*id: 'asc',\s*\},\s*select: \{[\s\S]*\},\s*take: input\.take,\s*\}\);$/
+        ),
+      ]);
+      expect([name, body.match(/organizationId: true/g)]).toEqual([
+        name,
+        ['organizationId: true'],
+      ]);
+    }
+    // and the service checks every row it gets is of that organization
+    const service = r1('service');
+    expect(service.match(/scoped\('(\w+)'\)/g)).toEqual([
+      "scoped('ContentPackage')",
+      "scoped('ContentStudioReview')",
+      "scoped('ContentPackageRevision')",
+      "scoped('ContentStudioAIOperation')",
+    ]);
+    expect(
+      [...service.matchAll(/this\._\w+Repository\.(\w+)\(/g)].map((m) => m[1])
+    ).toEqual(READS.map(([, name]) => name));
+    expect(
+      service.match(/organizationId,\n\s+afterId,\n\s+take,/g)
+    ).toHaveLength(4);
+    expect(service.match(/\{ organizationId, afterId, take \}/g)).toHaveLength(
+      2
+    );
+    // and the pure rules check the sources and versions themselves
+    expect(
+      between(
+        r1('pure'),
+        'export function deriveContentStudioSourceVersionProtections(',
+        '\n}\n'
+      )
+    ).toMatch(
+      /source\.organizationId !== organizationId[\s\S]*version\.organizationId !== organizationId/
+    );
+  });
+
+  it('R1-5 a reference that does not resolve fails the organization: never skipped, never empty', () => {
+    const resolve = between(
+      r1('pure'),
+      'export function resolveContentStudioSourceVersionReferences(',
+      '\n}\n'
+    );
+    expect(resolve).not.toMatch(/continue|return \[\]|console|logger|warn/i);
+    expect(resolve).toMatch(
+      /if \(\s*!version \|\|\s*version\.organizationId !== input\.organizationId \|\|\s*version\.sourceId !== reference\.sourceId \|\|\s*version\.versionNumber !== reference\.versionNumber \|\|\s*version\.contentHash !== reference\.contentHash\s*\) \{\s*throw integrity\(reference\.referenceType, reference\.referenceId\);\s*\}/
+    );
+    const service = r1('service');
+    expect(service).not.toMatch(
+      /continue|return \[\]|catch \{\s*\}|console|_logger|\.warn\(/
+    );
+    expect(service.match(/catch \{\s*throw integrity\(/g)).toHaveLength(2);
+    expect(service).toMatch(
+      /if \(!context\) \{\s*throw integrity\('ContentStudioAIOperation', row\.id\);/
+    );
+  });
+
+  it('R1-6 the latest version, the last page change with its predecessor and baseline, and the in-flight guard are derived', () => {
+    const derive = between(
+      r1('pure'),
+      'export function deriveContentStudioSourceVersionProtections(',
+      '\n}\n'
+    );
+    for (const call of [
+      "protect(latest, 'LATEST', 'ContentStudioSource', source.id, 'latest')",
+      "'changed'",
+      "'predecessor'",
+      "'comparison_baseline'",
+      "'picker_window'",
+      "'age'",
+      'storedContentStudioSourcePageChange(source)',
+      'classifyContentStudioSourceCaptureTransition(predecessor, changed)',
+      'isSameContentStudioSourceCapture(versions[first - 1], predecessor)',
+      'versions.slice(-input.pickerWindow)',
+      'version.createdAt.getTime() >= cutoff',
+    ]) {
+      expect([call, derive.includes(call)]).toEqual([call, true]);
+    }
+    // the predecessor is the version before it that exists, never number - 1
+    expect(derive).not.toMatch(
+      /versionNumber - 1|latestVersionNumber - |- input\.pickerWindow/
+    );
+    // the stored change is read as the Changes list reads it, from one place
+    expect(users(/storedContentStudioSourcePageChange/)).toEqual(
+      [`${SOURCES}/source.version.ts`, R1.pure, R1.sourceService].sort()
+    );
+    expect(r1('sourceService')).not.toMatch(/const storedPageChange =/);
+    expect(CONTENT_STUDIO_SOURCE_VERSION_PROTECTION_REASONS).toEqual([
+      'LATEST',
+      'PAGE_CHANGE',
+      'DRAFT_EVIDENCE',
+      'REVISION_EVIDENCE',
+      'REVIEW_EVIDENCE',
+      'AI_OPERATION',
+      'IN_FLIGHT',
+    ]);
+  });
+
+  it("R1-7/R1-8 a review protects through its revision's grounding; an AI operation through its context sources", () => {
+    const service = r1('service');
+    expect(service).toMatch(
+      /const refs = revisionEvidence\.get\(review\.packageRevisionId\);\s*if \(!refs\) \{\s*throw integrity\('ContentStudioReview', review\.id\);\s*\}\s*refer\('REVIEW_EVIDENCE', 'ContentStudioReview', review\.id, refs\);/
+    );
+    expect(service.match(/'REVIEW_EVIDENCE'/g)).toHaveLength(1);
+    expect(service).toMatch(
+      /parseVerifiedContentPackageRevision\(row\)[\s\S]*revisionEvidence\.set\(row\.id, refs\);/
+    );
+    expect(service).toMatch(
+      /contentPackageClaims\(\s*parseContentPackageDraft\(JSON\.parse\(row\.draft\)\)\s*\)\.flatMap\(\(claim\) => claim\.evidence\)/
+    );
+    expect(service).toMatch(
+      /const context = parseContentStudioAIOperationContext\(row\.context\);[\s\S]*distinctEvidence\(context\.sources \?\? \[\]\)/
+    );
+    // no status, state or archive filter: every record of each kind counts
+    for (const [file, name] of READS) {
+      expect([
+        name,
+        read(file, name).match(/status|state|archivedAt|deletedAt/),
+      ]).toEqual([name, null]);
+    }
+    // no reason of its own for approvals, handoffs, designs or research
+    expect(r1('pure')).not.toMatch(/APPROVAL|HANDOFF|DESIGN|RESEARCH|HISTORY/);
+  });
+
+  it('R1-9/R1-10 capture history and HTTP validators hold no version and protect nothing', () => {
+    expect(
+      fields('ContentStudioSourceCaptureAttempt').filter((f) =>
+        /version/i.test(f)
+      )
+    ).toEqual(['versionsCreated Int?']);
+    expect(model('ContentStudioSourceCaptureAttempt')).not.toMatch(
+      /ContentStudioSourceVersion|versionId/
+    );
+    for (const key of ['pure', 'service'] as const) {
+      expect([
+        key,
+        r1(key).match(
+          /httpEtag|httpLastModified|CaptureAttempt|captureAttempt|scanPausedAt|nextCaptureAt|captureIntervalMinutes|Discovery|discovery/g
+        ),
+      ]).toEqual([key, null]);
+    }
+    expect(read('sources', 'listSourcesForVersionProtection')).not.toMatch(
+      /http|scanPausedAt|nextCaptureAt|lastCapturedAt|captureAttempts|discover|feedDiscoveries/
+    );
+  });
+
+  it('R1-11 the rules are pure: the caller passes the time', () => {
+    const pure = r1('pure');
+    expect(pure).not.toMatch(
+      /Date\.now|new Date\(|Math\.random|randomUUID|process\.env|@prisma|@nestjs|fetch\(/
+    );
+    expect(r1('service')).not.toMatch(/Date\.now|new Date\(/);
+    expect(r1('service')).toMatch(/now: input\.now,/);
+    expect(CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS).toBe(
+      24 * 60 * 60 * 1000
+    );
+  });
+
+  it('R1-12 the picker window is the page of versions the evidence picker offers', () => {
+    expect(CONTENT_STUDIO_SOURCE_VERSION_PICKER_WINDOW).toBe(20);
+    const sourceService = r1('sourceService');
+    expect(sourceService).toContain(
+      `const PAGE_SIZE = ${CONTENT_STUDIO_SOURCE_VERSION_PICKER_WINDOW};`
+    );
+    expect(
+      between(sourceService, 'async listVersions(input', '\n  }\n')
+    ).toMatch(/skip: \(input\.page - 1\) \* PAGE_SIZE,\s*take: PAGE_SIZE,/);
+    expect(
+      between(r1('sources'), 'listVersionsForSource(input', '\n  }\n')
+    ).toMatch(/orderBy: \{\s*versionNumber: 'desc',\s*\}/);
+    // the first page, newest first, and nothing else
+    expect(
+      r1('picker').match(/useContentStudioSourceVersions\([^)]*\)/g)
+    ).toEqual(['useContentStudioSourceVersions(sourceId, 1)']);
+  });
+
+  it('R1-13 internal only: a provider, and no route, command, activity, workflow or frontend reaches it', () => {
+    expect(
+      users(
+        /ContentStudioSourceRetentionService|explainRetentionEligibility|computeProtectionMap|source\.retention'/
+      )
+    ).toEqual([R1.service, R1.module].sort());
+    expect(r1('module')).toMatch(
+      /ContentStudioSourceService,\n\s*ContentStudioSourceRetentionService,\n/
+    );
+    const commands = walk(path.join(REPO_ROOT, 'apps/commands/src'));
+    expect(
+      commands.filter((file) =>
+        /retention|Retention|ForVersionProtection|ForProtection/.test(
+          fs.readFileSync(file, 'utf8')
+        )
+      )
+    ).toEqual([]);
+    expect(users(/ForVersionProtection|ForProtection\(/)).toEqual(
+      [R1.service, R1.sources, R1.packages, R1.reviews, R1.operations].sort()
+    );
+    expect(r1('controller')).not.toMatch(/retention|eligib|protection/i);
+    expect(
+      r1('controller').match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
+    ).toHaveLength(149);
+    // and no schema for it: no table, flag or index of retention
+    expect(schema).not.toMatch(
+      /retention|Retention|eligib|protected|quarantine|pendingAt/
+    );
+    expect(fields('ContentStudioSourceVersion')).toEqual([
+      'id String',
+      'organizationId String',
+      'sourceId String',
+      'versionNumber Int',
+      'schemaVersion Int',
+      'extractionVersion String',
+      'requestedUrl String',
+      'finalUrl String',
+      'redirectCount Int',
+      'fetchedAt DateTime',
+      'httpStatus Int?',
+      'contentType String?',
+      'contentLength Int?',
+      'title String?',
+      'content String',
+      'contentHash String',
+      'sourceHash String?',
+      'createdById String',
+      'createdAt DateTime',
+      'organization Organization',
+      'source ContentStudioSource',
+      'createdBy User',
+    ]);
+  });
+
+  it('R1-14 the references protection parses are pinned: a change of grounding or AI context must change protection', () => {
+    const shape = (text: string, start: string) =>
+      [...between(text, start, '.strict()').matchAll(/\n\s+(\w+): /g)].map(
+        (match) => match[1]
+      );
+    expect(shape(r1('draft'), 'const evidenceSchema = z')).toEqual([
+      'sourceId',
+      'versionId',
+      'versionNumber',
+      'contentHash',
+      'blockId',
+      'quote',
+    ]);
+    expect(shape(r1('context'), 'const sourceRef = z')).toEqual([
+      'sourceId',
+      'versionId',
+      'versionNumber',
+      'contentHash',
+    ]);
+    expect(shape(r1('context'), 'const contextV1 = z')).toEqual([
+      'v',
+      'itemId',
+      'profiles',
+      'editorialPolicy',
+      'sources',
+      'design',
+    ]);
+    expect(r1('draft')).toMatch(
+      /export const contentPackageClaims = \(\s*draft: ContentPackageDraft\s*\): readonly ContentPackageClaimV2\[\] =>\s*draft\.schemaVersion === CONTENT_PACKAGE_GROUNDED_SCHEMA_VERSION\s*\? draft\.grounding\.claims\s*: \[\];/
+    );
+    expect([
+      CONTENT_PACKAGE_SCHEMA_VERSION,
+      CONTENT_PACKAGE_GROUNDED_SCHEMA_VERSION,
+    ]).toEqual([1, 2]);
+    // what protection compares of a reference: all four, as grounding does
+    expect(
+      between(r1('service'), 'const distinctEvidence = (', '\n};\n')
+    ).toMatch(
+      /sourceId: entry\.sourceId,\s*versionId: entry\.versionId,\s*versionNumber: entry\.versionNumber,\s*contentHash: entry\.contentHash,/
+    );
   });
 });
