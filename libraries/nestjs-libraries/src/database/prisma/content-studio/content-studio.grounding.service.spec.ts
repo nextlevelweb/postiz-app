@@ -33,6 +33,7 @@ import {
 import { parseContentStudioSourceContent } from '@gitroom/nestjs-libraries/content-studio/sources/source.content';
 import { storedContentStudioSourceContent } from '@gitroom/nestjs-libraries/content-studio/sources/source.version';
 import { safeFetch } from '@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch';
+import { ContentStudioSourceVersionRetentionPendingError } from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
 
 // The real MediaService pulls in uploads, Redis and Temporal at import time
 jest.mock(
@@ -207,6 +208,14 @@ const setup = (stored: object = v1Draft()) => {
       content: string;
       contentHash: string;
     }>,
+    // versions held for retention (P8-R1Q): the repository refuses a write
+    // naming one, as its transaction does
+    pending: new Set<string>(),
+  };
+  const refuseHeld = (ids: readonly string[]) => {
+    if (ids.some((id) => state.pending.has(id))) {
+      throw new ContentStudioSourceVersionRetentionPendingError();
+    }
   };
   const row = () => ({
     id: PACKAGE,
@@ -235,7 +244,9 @@ const setup = (stored: object = v1Draft()) => {
         packageId: string;
         baseDraftVersion: number;
         draft: string;
+        sourceVersionIds: readonly string[];
       }) => {
+        refuseHeld(input.sourceVersionIds);
         if (
           input.organizationId !== ORG ||
           input.packageId !== PACKAGE ||
@@ -270,7 +281,9 @@ const setup = (stored: object = v1Draft()) => {
         content: string;
         contentHash: string;
         origin: string;
+        sourceVersionIds: readonly string[];
       }) => {
+        refuseHeld(input.sourceVersionIds);
         if (
           input.expectedDraftVersion !== state.draftVersion ||
           input.expectedLatestRevisionNumber !== state.latestRevisionNumber
@@ -824,6 +837,88 @@ describe('ContentStudioService.createRevision with grounding (P3-11)', () => {
     expect(parseVerifiedContentPackageRevision(ctx.state.revisions[0])).toEqual(
       parseContentPackageDraft(grounded())
     );
+  });
+});
+
+describe('P8-R1Q a source version held for retention gains no new reference', () => {
+  const grounded = (...evidence: ContentPackageClaimEvidenceV2[]) =>
+    v2Draft([claimOf('c_claim0001', 'main', evidence)]);
+  const HELD = {
+    status: 409,
+    code: 'CS_SOURCE_VERSION_RETENTION_PENDING',
+    msg: 'This source version is temporarily unavailable for new references',
+  };
+
+  it('Q20 a draft naming versions that are not held is saved, with every version it names given to the write', async () => {
+    const ctx = setup();
+    const draft = grounded(evidenceFor(SOURCE_1, 1), evidenceFor(SOURCE_2, 1));
+    expect(await ctx.save(draft)).toEqual({ draftVersion: 5 });
+    expect(
+      ctx.packages.saveDraftCompareAndSwap.mock.calls[0][0].sourceVersionIds
+    ).toEqual([versionId(SOURCE_1, 1), versionId(SOURCE_2, 1)]);
+  });
+
+  it('Q21/Q22/Q144 a stale or crafted save naming a held version is the fixed 409: the draft is not written', async () => {
+    const ctx = setup();
+    // the editor picked the version before it was held
+    const draft = grounded(evidenceFor(SOURCE_1, 1), evidenceFor(SOURCE_2, 1));
+    ctx.state.pending.add(versionId(SOURCE_2, 1));
+    expect(await refusal(ctx.save(draft))).toEqual(HELD);
+    expect(ctx.state.draftVersion).toBe(4);
+    expect(JSON.parse(ctx.state.draft).schemaVersion).toBe(1);
+  });
+
+  it('Q23 the same save without the held version goes on', async () => {
+    const ctx = setup();
+    ctx.state.pending.add(versionId(SOURCE_2, 1));
+    expect(await ctx.save(grounded(evidenceFor(SOURCE_1, 1)))).toEqual({
+      draftVersion: 5,
+    });
+  });
+
+  it('Q96 a save that keeps the held version it already named is refused too: nothing is written over it', async () => {
+    const ctx = setup(grounded(evidenceFor(SOURCE_1, 1)));
+    ctx.state.pending.add(versionId(SOURCE_1, 1));
+    expect(await refusal(ctx.save(grounded(evidenceFor(SOURCE_1, 1))))).toEqual(
+      HELD
+    );
+    expect(ctx.state.draftVersion).toBe(4);
+  });
+
+  it('Q95 missing or of another organization stays the 400 it was: never the held answer', async () => {
+    const ctx = setup();
+    ctx.state.pending.add(versionId(FOREIGN_SOURCE, 1));
+    expect(
+      await refusal(
+        ctx.save(grounded(evidenceFor(FOREIGN_SOURCE, 1, {}, OTHER_ORG)))
+      )
+    ).toEqual(GROUNDING_INVALID);
+    expect(ctx.packages.saveDraftCompareAndSwap).not.toHaveBeenCalled();
+  });
+
+  it('Q24 a revision of a draft naming versions that are not held is made, with every version given to the write', async () => {
+    const ctx = setup(grounded(evidenceFor(SOURCE_1, 1)));
+    expect((await ctx.revise()).created).toBe(true);
+    expect(
+      ctx.packages.createRevisionWithCompareAndSwap.mock.calls[0][0]
+        .sourceVersionIds
+    ).toEqual([versionId(SOURCE_1, 1)]);
+  });
+
+  it('Q25/Q26 a revision of a draft naming a held version is the fixed 409: no revision', async () => {
+    const ctx = setup(grounded(evidenceFor(SOURCE_1, 1)));
+    ctx.state.pending.add(versionId(SOURCE_1, 1));
+    expect(await refusal(ctx.revise())).toEqual(HELD);
+    expect(ctx.state.revisions).toEqual([]);
+    expect(ctx.state.latestRevisionNumber).toBe(0);
+  });
+
+  it('a draft without claims names no version: nothing to check', async () => {
+    const ctx = setup();
+    await ctx.save(v1Draft());
+    expect(
+      ctx.packages.saveDraftCompareAndSwap.mock.calls[0][0].sourceVersionIds
+    ).toEqual([]);
   });
 });
 

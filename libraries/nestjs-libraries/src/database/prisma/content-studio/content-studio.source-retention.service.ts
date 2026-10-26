@@ -21,8 +21,11 @@ import {
   computeContentStudioSourceVersionProtectionMap,
   CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
   CONTENT_STUDIO_SOURCE_VERSION_PICKER_WINDOW,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PLAN_HASH,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_BATCH_SIZE,
   CONTENT_STUDIO_SOURCE_VERSION_RETENTION_SOURCE_BATCH_SIZE,
   ContentStudioSourceRetentionDryRunError,
+  ContentStudioSourceVersionQuarantineError,
   ContentStudioSourceRetentionIntegrityError,
   ContentStudioSourceVersionProtection,
   ContentStudioSourceVersionProtectionMap,
@@ -40,6 +43,48 @@ const notFound = () =>
     { msg: 'Source version not found.', code: 'CS_NOT_FOUND' },
     404
   );
+
+// Ids of organizations and versions are Prisma uuid()
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+const quarantineInvalid = () =>
+  new ContentStudioSourceVersionQuarantineError('RETENTION_QUARANTINE_INVALID');
+
+// What a quarantine call is about: the organization and the plan, checked
+// before anything is read
+const quarantineScope = (input: {
+  organizationId: unknown;
+  planHash: unknown;
+}) => {
+  if (
+    typeof input.organizationId !== 'string' ||
+    !UUID.test(input.organizationId) ||
+    typeof input.planHash !== 'string' ||
+    !CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PLAN_HASH.test(input.planHash)
+  ) {
+    throw quarantineInvalid();
+  }
+  return { organizationId: input.organizationId, planHash: input.planHash };
+};
+
+// One to CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_BATCH_SIZE
+// version ids, each once, in the order given
+const quarantineVersionIds = (value: unknown) => {
+  if (
+    !Array.isArray(value) ||
+    !value.every((id) => typeof id === 'string' && UUID.test(id))
+  ) {
+    throw quarantineInvalid();
+  }
+  const ids = [...new Set(value as string[])];
+  if (
+    !ids.length ||
+    ids.length > CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_BATCH_SIZE
+  ) {
+    throw quarantineInvalid();
+  }
+  return ids;
+};
 
 // Rows per read: small rows (sources, reviews) and documents (a draft or
 // revision is at most 64 KiB, an AI context 8 KiB). Versions are read by
@@ -138,7 +183,10 @@ interface Batch {
 // there throws ContentStudioSourceRetentionIntegrityError for the whole
 // organization. A version with no protection is eligible in principle only,
 // and a dry-run candidate only a candidate: whether history may be shortened
-// is still a product decision (PD1)
+// is still a product decision (PD1). The retention quarantine (P8-R1Q) holds
+// versions for one plan, internally only: no route, command or schedule
+// reaches it yet. While an organization has a held version no dry run is
+// made for it
 @Injectable()
 export class ContentStudioSourceRetentionService {
   constructor(
@@ -232,6 +280,56 @@ export class ContentStudioSourceRetentionService {
     });
   }
 
+  // Holds versions of the organization for one plan (P8-R1Q), all or none:
+  // see ContentStudioSourceRetentionRepository.quarantineVersions. Throws
+  // ContentStudioSourceVersionQuarantineError
+  async quarantineSourceVersions(input: {
+    organizationId: string;
+    sourceVersionIds: readonly string[];
+    planHash: string;
+    now: Date;
+  }) {
+    const scope = quarantineScope(input);
+    const sourceVersionIds = quarantineVersionIds(input.sourceVersionIds);
+    if (!(input.now instanceof Date) || Number.isNaN(input.now.getTime())) {
+      throw quarantineInvalid();
+    }
+    return this._contentStudioSourceRetentionRepository.quarantineVersions({
+      ...scope,
+      sourceVersionIds,
+      now: input.now,
+    });
+  }
+
+  // Releases the plan's held versions of the organization: these ones, or
+  // all of them. Never another plan's or organization's, never a version
+  async releaseSourceVersionQuarantine(input: {
+    organizationId: string;
+    planHash: string;
+    sourceVersionIds?: readonly string[];
+  }) {
+    const scope = quarantineScope(input);
+    const { count } =
+      await this._contentStudioSourceRetentionRepository.releaseQuarantine({
+        ...scope,
+        ...(input.sourceVersionIds === undefined
+          ? {}
+          : { sourceVersionIds: quarantineVersionIds(input.sourceVersionIds) }),
+      });
+    return { released: count };
+  }
+
+  // The plan's held versions of the organization, by version id, with when
+  // each was held
+  listSourceVersionQuarantine(input: {
+    organizationId: string;
+    planHash: string;
+  }) {
+    return this._contentStudioSourceRetentionRepository.listPendingForPlan(
+      quarantineScope(input)
+    );
+  }
+
   // The protection map, batch by batch, merged: the same map as one of the
   // whole organization, each version being in exactly one batch
   private async protect(
@@ -266,17 +364,24 @@ export class ContentStudioSourceRetentionService {
   // The organization in one snapshot, handed over a batch of sources at a
   // time with all their versions and the references naming them. Every
   // reference must name a source of the organization, and the batches must
-  // hold every version it has, or the whole organization fails
+  // hold every version it has, or the whole organization fails. A dry run
+  // is refused in the same snapshot when a version of the organization is
+  // held for a plan, or it has too many versions, before any is read
   private evaluate(
     input: { organizationId: string },
-    limited: boolean,
+    dryRun: boolean,
     use: (batch: Batch) => void
   ) {
     const organizationId = input.organizationId;
     return this._contentStudioSourceRetentionRepository.readSnapshot(
       async (reads) => {
+        if (dryRun && (await reads.findPending(organizationId))) {
+          throw new ContentStudioSourceRetentionDryRunError(
+            'RETENTION_DRY_RUN_QUARANTINE_ACTIVE'
+          );
+        }
         const versionCount = await reads.countVersions(organizationId);
-        if (limited) {
+        if (dryRun) {
           assertContentStudioSourceVersionRetentionScale(versionCount);
         }
 

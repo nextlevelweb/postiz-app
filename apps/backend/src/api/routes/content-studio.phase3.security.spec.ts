@@ -421,8 +421,27 @@ describe('Phase 3 AI operations and source material', () => {
   });
 
   it('P3AI2 source text goes to the prompt only: the execution and operation layers never see a source', () => {
+    // P8-R1Q: the one exception, the retention held check of the version ids
+    // the context already names, and its error: never a source or its text
+    const held = (text: string) =>
+      text
+        .replace(
+          /^import \{ ContentStudioSourceVersionRetentionPendingError \} from '@gitroom\/nestjs-libraries\/content-studio\/sources\/source\.retention';$/m,
+          ''
+        )
+        .replace(
+          /^import \{ assertContentStudioSourceVersionsNotPending \} from '@gitroom\/nestjs-libraries\/database\/prisma\/content-studio\/content-studio\.source-retention\.repository';$/m,
+          ''
+        )
+        .replace(
+          /\b(ContentStudioSourceVersionRetentionPendingError|assertContentStudioSourceVersionsNotPending|contentStudioSourceVersionRetentionPending)\b/g,
+          ''
+        );
+    expect(SOURCE.aiOperationRepository.match(/\bsource\.\w+/g)).toEqual([
+      'source.versionId',
+    ]);
     for (const file of ['aiExecution', 'aiOperationRepository'] as const) {
-      expect([file, SOURCE[file]]).not.toEqual([
+      expect([file, held(SOURCE[file])]).not.toEqual([
         file,
         expect.stringMatching(
           /content-studio\/sources|SourceRepository|SourceVersion/

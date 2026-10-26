@@ -3,6 +3,8 @@ import {
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { assertContentStudioSourceVersionsNotPending } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.repository';
 
 // Every query filters on organizationId itself, so a record of another
 // organization reads exactly like a missing one (null or count 0). Archived
@@ -228,26 +230,41 @@ export class ContentStudioRepository {
   }
 
   // Saves only over the version the editor started from: count 0 means the
-  // package is missing, foreign, archived or was saved by someone else since
+  // package is missing, foreign, archived or was saved by someone else since.
+  // A draft whose evidence names source versions is saved in one transaction
+  // with the check that none of them is held for retention (P8-R1Q), which
+  // throws ContentStudioSourceVersionRetentionPendingError and writes nothing
   saveDraftCompareAndSwap(input: {
     organizationId: string;
     packageId: string;
     baseDraftVersion: number;
     draft: string;
+    sourceVersionIds: readonly string[];
   }) {
-    return this._package.model.contentPackage.updateMany({
-      where: {
-        id: input.packageId,
-        organizationId: input.organizationId,
-        archivedAt: null,
-        draftVersion: input.baseDraftVersion,
-      },
-      data: {
-        draft: input.draft,
-        draftVersion: {
-          increment: 1,
+    const save = (tx: Pick<Prisma.TransactionClient, 'contentPackage'>) =>
+      tx.contentPackage.updateMany({
+        where: {
+          id: input.packageId,
+          organizationId: input.organizationId,
+          archivedAt: null,
+          draftVersion: input.baseDraftVersion,
         },
-      },
+        data: {
+          draft: input.draft,
+          draftVersion: {
+            increment: 1,
+          },
+        },
+      });
+    if (!input.sourceVersionIds.length) {
+      return save(this._package.model);
+    }
+    return this._transaction.model.$transaction(async (tx) => {
+      await assertContentStudioSourceVersionsNotPending(tx, {
+        organizationId: input.organizationId,
+        sourceVersionIds: input.sourceVersionIds,
+      });
+      return save(tx);
     });
   }
 
@@ -398,7 +415,10 @@ export class ContentStudioRepository {
   // Stores a revision of the draft the caller read, validated and hashed. The
   // package update only matches while that draft version and latest revision
   // number are still current (and the package is live), and it holds the
-  // package row until commit, so two revisions can never take the same number
+  // package row until commit, so two revisions can never take the same number.
+  // No source version its evidence names may be held for retention (P8-R1Q),
+  // checked first in the same transaction: one that is throws
+  // ContentStudioSourceVersionRetentionPendingError and nothing is written
   createRevisionWithCompareAndSwap(input: {
     organizationId: string;
     packageId: string;
@@ -409,8 +429,13 @@ export class ContentStudioRepository {
     contentHash: string;
     origin: string;
     createdById: string;
+    sourceVersionIds: readonly string[];
   }) {
     return this._transaction.model.$transaction(async (tx) => {
+      await assertContentStudioSourceVersionsNotPending(tx, {
+        organizationId: input.organizationId,
+        sourceVersionIds: input.sourceVersionIds,
+      });
       const { count } = await tx.contentPackage.updateMany({
         where: {
           id: input.packageId,

@@ -4,12 +4,15 @@ import {
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import {
+  assertContentStudioSourceVersionsNotPending,
   ContentStudioSourceRetentionRepository,
   ContentStudioSourceRetentionSnapshotReads,
 } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.repository';
 import {
   ContentStudioSourceRetentionDryRunError,
   ContentStudioSourceRetentionIntegrityError,
+  ContentStudioSourceVersionQuarantineError,
+  ContentStudioSourceVersionRetentionPendingError,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
 
 // The read model of source version protection and the retention dry run
@@ -46,9 +49,11 @@ const setup = (
     contentPackageRevision: delegate(),
     contentStudioReview: delegate(),
     contentStudioAIOperation: delegate(),
+    contentStudioSourceVersionRetentionPending: delegate(),
   };
   // the client outside the transaction: never read inside it
   const outside = delegate();
+  const pending = delegate();
   const $transaction = jest.fn(
     transaction ?? ((work: (t: unknown) => Promise<unknown>) => work(tx))
   );
@@ -56,13 +61,17 @@ const setup = (
     {
       model: { contentStudioSourceVersion: outside },
     } as unknown as PrismaRepository<'contentStudioSourceVersion'>,
+    {
+      model: { contentStudioSourceVersionRetentionPending: pending },
+    } as unknown as PrismaRepository<'contentStudioSourceVersionRetentionPending'>,
     { model: { $transaction } } as unknown as PrismaTransaction
   );
-  return { repository, tx, outside, $transaction };
+  return { repository, tx, outside, pending, $transaction };
 };
 
 const everyRead = async (reads: ContentStudioSourceRetentionSnapshotReads) => {
   const page = { organizationId: ORG, afterId: null, take: 10 };
+  await reads.findPending(ORG);
   await reads.countVersions(ORG);
   await reads.listSources(page);
   await reads.listPackageDrafts(page);
@@ -125,7 +134,15 @@ describe('ContentStudioSourceRetentionRepository (P8-R1B)', () => {
       ['contentPackageRevision', 1],
       ['contentStudioReview', 1],
       ['contentStudioAIOperation', 1],
+      // P8-R1Q: whether any version of the organization is held
+      ['contentStudioSourceVersionRetentionPending', 1],
     ]);
+    expect(
+      tx.contentStudioSourceVersionRetentionPending.findFirst
+    ).toHaveBeenCalledWith({
+      where: { organizationId: ORG },
+      select: { id: true },
+    });
   });
 
   it('RR3 versions are read whole by a batch of sources, by source and number, never their blocks', async () => {
@@ -222,11 +239,415 @@ describe('ContentStudioSourceRetentionRepository (P8-R1B)', () => {
     );
   });
 
-  it('RR6 its methods: the snapshot and the measuring read, nothing that writes', () => {
+  it('RR6 its methods: the snapshot, the measuring read and the quarantine (P8-R1Q), nothing else that writes', () => {
     expect(
       Object.getOwnPropertyNames(
         ContentStudioSourceRetentionRepository.prototype
       ).sort()
-    ).toEqual(['constructor', 'listVersionContents', 'readSnapshot']);
+    ).toEqual([
+      'assertVersionsNotPending',
+      'constructor',
+      'getPendingForVersion',
+      'listPendingForPlan',
+      'listVersionContents',
+      'quarantineVersions',
+      'readSnapshot',
+      'releaseQuarantine',
+    ]);
+  });
+});
+
+const ORG_B = '22222222-2222-4222-8222-222222222222';
+const PLAN_A = 'a'.repeat(64);
+const PLAN_B = 'b'.repeat(64);
+const V1 = '33333333-3333-4333-8333-333333333331';
+const V2 = '33333333-3333-4333-8333-333333333332';
+const NOW = new Date('2026-10-26T12:00:00.000Z');
+
+const race = (code: string) =>
+  new Prisma.PrismaClientKnownRequestError('conflict', {
+    code,
+    clientVersion: '6.5.0',
+  });
+
+// The held versions of a fake transaction: the versions the organization
+// has and the rows already held
+const quarantineSetup = (input: {
+  versions: string[];
+  held?: { sourceVersionId: string; planHash: string }[];
+}) => {
+  const s = setup();
+  const held = input.held ?? [];
+  s.tx.contentStudioSourceVersion.findMany.mockImplementation((async (args: {
+    where: { id: { in: string[] } };
+  }) =>
+    args.where.id.in
+      .filter((id) => input.versions.includes(id))
+      .map((id) => ({ id }))) as never);
+  s.tx.contentStudioSourceVersionRetentionPending.findFirst.mockImplementation(
+    (async (args: { where: { planHash: { not: string } } }) =>
+      held.find((row) => row.planHash !== args.where.planHash.not)
+        ? { id: 'other' }
+        : null) as never
+  );
+  s.tx.contentStudioSourceVersionRetentionPending.findMany.mockImplementation(
+    (async (args: { where: { sourceVersionId: { in: string[] } } }) =>
+      held
+        .filter((row) =>
+          args.where.sourceVersionId.in.includes(row.sourceVersionId)
+        )
+        .map((row) => ({ sourceVersionId: row.sourceVersionId }))) as never
+  );
+  s.tx.contentStudioSourceVersionRetentionPending.createMany.mockImplementation(
+    (async (args: { data: unknown[] }) => ({
+      count: args.data.length,
+    })) as never
+  );
+  return s;
+};
+
+const quarantine = (
+  s: ReturnType<typeof setup>,
+  sourceVersionIds: string[],
+  planHash = PLAN_A
+) =>
+  s.repository.quarantineVersions({
+    organizationId: ORG,
+    sourceVersionIds,
+    planHash,
+    now: NOW,
+  });
+
+const writes = (s: ReturnType<typeof setup>) =>
+  [s.tx, { outside: s.outside, pending: s.pending }].flatMap((models) =>
+    Object.entries(models).flatMap(([model, d]) =>
+      (
+        [
+          'create',
+          'createMany',
+          'update',
+          'updateMany',
+          'upsert',
+          'delete',
+          'deleteMany',
+        ] as const
+      )
+        .filter((method) => d[method].mock.calls.length)
+        .map((method) => `${model}.${method}`)
+    )
+  );
+
+describe('ContentStudioSourceRetentionRepository: the writer check (P8-R1Q)', () => {
+  it('Q1/Q2 no held version: the check passes after one read of the organization', async () => {
+    const { tx } = setup();
+    await expect(
+      assertContentStudioSourceVersionsNotPending(tx as never, {
+        organizationId: ORG,
+        sourceVersionIds: [V1],
+      })
+    ).resolves.toBeUndefined();
+    expect(
+      tx.contentStudioSourceVersionRetentionPending.findFirst
+    ).toHaveBeenCalledWith({
+      where: { organizationId: ORG, sourceVersionId: { in: [V1] } },
+      select: { id: true },
+    });
+  });
+
+  it('Q3 a held version among them is refused, with a fixed message', async () => {
+    const { tx } = setup();
+    tx.contentStudioSourceVersionRetentionPending.findFirst.mockResolvedValue({
+      id: 'pending',
+    } as never);
+    const thrown = await assertContentStudioSourceVersionsNotPending(
+      tx as never,
+      { organizationId: ORG, sourceVersionIds: [V1, V2] }
+    ).catch((err: unknown) => err);
+    expect(thrown).toBeInstanceOf(
+      ContentStudioSourceVersionRetentionPendingError
+    );
+    expect((thrown as Error).message).toBe(
+      'This source version is temporarily unavailable for new references'
+    );
+  });
+
+  it("Q4 only the organization's own held rows are read: another organization's never refuse it", async () => {
+    const { tx } = setup();
+    for (const organizationId of [ORG, ORG_B]) {
+      await assertContentStudioSourceVersionsNotPending(tx as never, {
+        organizationId,
+        sourceVersionIds: [V1],
+      });
+    }
+    expect(
+      tx.contentStudioSourceVersionRetentionPending.findFirst.mock.calls.map(
+        (call) =>
+          (call as unknown as [{ where: { organizationId: string } }])[0].where
+            .organizationId
+      )
+    ).toEqual([ORG, ORG_B]);
+  });
+
+  it('Q5 many ids, repeated ones too: one read of each distinct id', async () => {
+    const { tx } = setup();
+    await assertContentStudioSourceVersionsNotPending(tx as never, {
+      organizationId: ORG,
+      sourceVersionIds: [V2, V1, V2, V1],
+    });
+    expect(
+      tx.contentStudioSourceVersionRetentionPending.findFirst
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      tx.contentStudioSourceVersionRetentionPending.findFirst
+    ).toHaveBeenCalledWith({
+      where: { organizationId: ORG, sourceVersionId: { in: [V2, V1] } },
+      select: { id: true },
+    });
+  });
+
+  it('Q6 no version: no read at all', async () => {
+    const { tx, repository, pending } = setup();
+    await assertContentStudioSourceVersionsNotPending(tx as never, {
+      organizationId: ORG,
+      sourceVersionIds: [],
+    });
+    await repository.assertVersionsNotPending({
+      organizationId: ORG,
+      sourceVersionIds: [],
+    });
+    expect(
+      tx.contentStudioSourceVersionRetentionPending.findFirst
+    ).not.toHaveBeenCalled();
+    expect(pending.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('Q2 without a transaction of its own: the same check through the default client', async () => {
+    const { repository, pending, $transaction } = setup();
+    pending.findFirst.mockResolvedValueOnce({ id: 'pending' } as never);
+    await expect(
+      repository.assertVersionsNotPending({
+        organizationId: ORG,
+        sourceVersionIds: [V1],
+      })
+    ).rejects.toBeInstanceOf(ContentStudioSourceVersionRetentionPendingError);
+    expect(pending.findFirst).toHaveBeenCalledWith({
+      where: { organizationId: ORG, sourceVersionId: { in: [V1] } },
+      select: { id: true },
+    });
+    expect($transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe('ContentStudioSourceRetentionRepository: holding versions (P8-R1Q)', () => {
+  it('Q7/Q8 holds every version for the plan at now, in one serializable transaction: exists, no other plan, then created', async () => {
+    const s = quarantineSetup({ versions: [V1, V2] });
+    await expect(quarantine(s, [V1, V2])).resolves.toEqual({
+      created: 2,
+      alreadyPending: 0,
+    });
+    expect(s.$transaction).toHaveBeenCalledTimes(1);
+    expect(s.$transaction.mock.calls[0][1]).toEqual({
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    });
+    expect(s.tx.contentStudioSourceVersion.findMany).toHaveBeenCalledWith({
+      where: { organizationId: ORG, id: { in: [V1, V2] } },
+      select: { id: true },
+    });
+    expect(
+      s.tx.contentStudioSourceVersionRetentionPending.findFirst
+    ).toHaveBeenCalledWith({
+      where: { organizationId: ORG, planHash: { not: PLAN_A } },
+      select: { id: true },
+    });
+    expect(
+      s.tx.contentStudioSourceVersionRetentionPending.createMany
+    ).toHaveBeenCalledWith({
+      data: [
+        {
+          organizationId: ORG,
+          sourceVersionId: V1,
+          planHash: PLAN_A,
+          pendingAt: NOW,
+        },
+        {
+          organizationId: ORG,
+          sourceVersionId: V2,
+          planHash: PLAN_A,
+          pendingAt: NOW,
+        },
+      ],
+    });
+    // never a version, never an update of a held row
+    expect(writes(s)).toEqual([
+      'contentStudioSourceVersionRetentionPending.createMany',
+    ]);
+  });
+
+  it('Q9/Q10/Q114 the same plan again: held rows stay as they were (first pendingAt), only the others are held', async () => {
+    const s = quarantineSetup({
+      versions: [V1, V2],
+      held: [{ sourceVersionId: V1, planHash: PLAN_A }],
+    });
+    await expect(quarantine(s, [V1, V2])).resolves.toEqual({
+      created: 1,
+      alreadyPending: 1,
+    });
+    expect(
+      s.tx.contentStudioSourceVersionRetentionPending.createMany
+    ).toHaveBeenCalledWith({
+      data: [
+        {
+          organizationId: ORG,
+          sourceVersionId: V2,
+          planHash: PLAN_A,
+          pendingAt: NOW,
+        },
+      ],
+    });
+    expect(writes(s)).toEqual([
+      'contentStudioSourceVersionRetentionPending.createMany',
+    ]);
+
+    const again = quarantineSetup({
+      versions: [V1],
+      held: [{ sourceVersionId: V1, planHash: PLAN_A }],
+    });
+    await expect(quarantine(again, [V1])).resolves.toEqual({
+      created: 0,
+      alreadyPending: 1,
+    });
+  });
+
+  it('Q11/Q115 a version, or any version of the organization, held for another plan: PLAN_CONFLICT and nothing is held', async () => {
+    for (const versions of [[V1, V2], [V2]]) {
+      const s = quarantineSetup({
+        versions: [V1, V2],
+        held: [{ sourceVersionId: V1, planHash: PLAN_B }],
+      });
+      const thrown = await quarantine(s, versions).catch((err: unknown) => err);
+      expect(thrown).toEqual(
+        new ContentStudioSourceVersionQuarantineError(
+          'RETENTION_QUARANTINE_PLAN_CONFLICT'
+        )
+      );
+      expect((thrown as Error).message).not.toContain(PLAN_B);
+      expect(writes(s)).toEqual([]);
+    }
+  });
+
+  it("Q12/Q13 a missing version or another organization's fails the whole batch: VERSION_NOT_FOUND, nothing held", async () => {
+    // the read is of the organization: another organization's version is
+    // not found, like a missing one
+    const s = quarantineSetup({ versions: [V1] });
+    await expect(quarantine(s, [V1, V2])).rejects.toEqual(
+      new ContentStudioSourceVersionQuarantineError(
+        'RETENTION_QUARANTINE_VERSION_NOT_FOUND'
+      )
+    );
+    expect(writes(s)).toEqual([]);
+    expect(
+      s.tx.contentStudioSourceVersionRetentionPending.findFirst
+    ).not.toHaveBeenCalled();
+  });
+
+  it('Q63 a concurrent plan (P2034) or the same key held meanwhile (P2002): run again from the start, at most 3 times, then CONFLICT', async () => {
+    for (const code of ['P2034', 'P2002']) {
+      const s = quarantineSetup({ versions: [V1] });
+      let calls = 0;
+      s.$transaction.mockImplementation((async (
+        work: (tx: unknown) => Promise<unknown>
+      ) => {
+        calls++;
+        if (calls < 3) {
+          throw race(code);
+        }
+        return work(s.tx);
+      }) as never);
+      await expect(quarantine(s, [V1])).resolves.toEqual({
+        created: 1,
+        alreadyPending: 0,
+      });
+      expect(calls).toBe(3);
+
+      const lost = setup(async () => {
+        throw race(code);
+      });
+      await expect(quarantine(lost, [V1])).rejects.toEqual(
+        new ContentStudioSourceVersionQuarantineError(
+          'RETENTION_QUARANTINE_CONFLICT'
+        )
+      );
+      expect(lost.$transaction).toHaveBeenCalledTimes(3);
+    }
+    // anything else at once, as it is
+    const other = race('P2003');
+    const s = setup(async () => {
+      throw other;
+    });
+    await expect(quarantine(s, [V1])).rejects.toBe(other);
+    expect(s.$transaction).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ContentStudioSourceRetentionRepository: releasing and reading held versions (P8-R1Q)', () => {
+  it('Q15/Q18/Q19 releases these versions only of this organization and plan, and only held rows', async () => {
+    const s = setup();
+    s.pending.deleteMany.mockResolvedValueOnce({ count: 1 } as never);
+    await expect(
+      s.repository.releaseQuarantine({
+        organizationId: ORG,
+        planHash: PLAN_A,
+        sourceVersionIds: [V1],
+      })
+    ).resolves.toEqual({ count: 1 });
+    expect(s.pending.deleteMany).toHaveBeenCalledWith({
+      where: {
+        organizationId: ORG,
+        planHash: PLAN_A,
+        sourceVersionId: { in: [V1] },
+      },
+    });
+    expect(writes(s)).toEqual(['pending.deleteMany']);
+  });
+
+  it("Q16/Q17 all the plan's rows of the organization; none left is no error", async () => {
+    const s = setup();
+    s.pending.deleteMany.mockResolvedValueOnce({ count: 0 } as never);
+    await expect(
+      s.repository.releaseQuarantine({ organizationId: ORG, planHash: PLAN_A })
+    ).resolves.toEqual({ count: 0 });
+    expect(s.pending.deleteMany).toHaveBeenCalledWith({
+      where: { organizationId: ORG, planHash: PLAN_A },
+    });
+    expect(s.outside.delete).not.toHaveBeenCalled();
+    expect(s.outside.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("Q119/Q120 a plan's held versions by version id with pendingAt; one version's by its key", async () => {
+    const s = setup();
+    const findUnique = jest.fn(async () => null);
+    (s.pending as unknown as { findUnique: jest.Mock }).findUnique = findUnique;
+    await s.repository.listPendingForPlan({
+      organizationId: ORG,
+      planHash: PLAN_A,
+    });
+    expect(s.pending.findMany).toHaveBeenCalledWith({
+      where: { organizationId: ORG, planHash: PLAN_A },
+      orderBy: { sourceVersionId: 'asc' },
+      select: { sourceVersionId: true, planHash: true, pendingAt: true },
+    });
+    await s.repository.getPendingForVersion({
+      organizationId: ORG,
+      sourceVersionId: V1,
+    });
+    expect(findUnique).toHaveBeenCalledWith({
+      where: {
+        sourceVersionId_organizationId: {
+          sourceVersionId: V1,
+          organizationId: ORG,
+        },
+      },
+      select: { sourceVersionId: true, planHash: true, pendingAt: true },
+    });
   });
 });

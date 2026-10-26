@@ -144,6 +144,8 @@ const revisionCas = (
     ...revisionContent(`version from draft ${expectedDraftVersion}`),
     origin: 'manual',
     createdById,
+    // P8-R1Q: these revisions name no source version
+    sourceVersionIds: [],
   });
 
 const newHandoffId = () => randomBytes(32).toString('hex');
@@ -292,6 +294,7 @@ describe('draft compare-and-swap on PostgreSQL', () => {
             packageId,
             baseDraftVersion: 1,
             draft,
+            sourceVersionIds: [],
           })
         )
       );
@@ -313,6 +316,7 @@ describe('draft compare-and-swap on PostgreSQL', () => {
         packageId,
         baseDraftVersion,
         draft: draftJson(text),
+        sourceVersionIds: [],
       });
 
     expect(await save(4, 'first')).toEqual({ count: 1 });
@@ -337,6 +341,7 @@ describe('draft compare-and-swap on PostgreSQL', () => {
         packageId,
         baseDraftVersion: 1,
         draft: draftJson('foreign'),
+        sourceVersionIds: [],
       })
     ).toEqual({ count: 0 });
     expect(await packageRow(packageId)).toEqual(before);
@@ -353,6 +358,7 @@ describe('draft compare-and-swap on PostgreSQL', () => {
         packageId,
         baseDraftVersion: 1,
         draft: draftJson('archived'),
+        sourceVersionIds: [],
       })
     ).toEqual({ count: 0 });
     expect(
@@ -454,6 +460,7 @@ describe('revision compare-and-swap on PostgreSQL', () => {
           packageId,
           baseDraftVersion: 5,
           draft: draftJson(`racing ${race}`),
+          sourceVersionIds: [],
         }),
         revisionCas(ORG_A, packageId, 5, 0),
       ]);
@@ -500,6 +507,7 @@ describe('revision compare-and-swap on PostgreSQL', () => {
         packageId,
         baseDraftVersion: 5,
         draft: draftJson('after the revision'),
+        sourceVersionIds: [],
       })
     ).toEqual({ count: 1 });
     expect(await packageRow(packageId)).toMatchObject({
@@ -878,6 +886,7 @@ describe('revision immutability boundary', () => {
         packageId,
         baseDraftVersion: 5,
         draft: draftJson('edited after revision #1'),
+        sourceVersionIds: [],
       })
     ).toEqual({ count: 1 });
     const second = await revisionCas(ORG_A, packageId, 6, 1);

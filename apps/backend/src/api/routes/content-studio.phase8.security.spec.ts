@@ -23,9 +23,12 @@ import {
   CONTENT_STUDIO_SOURCE_VERSION_RETENTION_ERRORS,
   CONTENT_STUDIO_SOURCE_VERSION_RETENTION_MIN_AGE_MS,
   CONTENT_STUDIO_SOURCE_VERSION_RETENTION_MODES,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PLAN_HASH,
   CONTENT_STUDIO_SOURCE_VERSION_RETENTION_POLICY_RETAINED,
   CONTENT_STUDIO_SOURCE_VERSION_RETENTION_POLICY_VERSION,
   CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PROTECTION_VERSION,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_BATCH_SIZE,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_WAIT_MS,
   CONTENT_STUDIO_SOURCE_VERSION_RETENTION_SOURCE_BATCH_SIZE,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
 
@@ -107,6 +110,65 @@ const fields = (name: string) =>
     .map((line) => line.trim().split(/\s+/))
     .filter(([field]) => field && !field.startsWith('@@'))
     .map(([field, type]) => `${field} ${type}`);
+// The retention quarantine (P8-R1Q) in the schema: its model, with the
+// comment before it, and the two relations to it. Cut out for the pins of
+// the phases before it; R1Q-3 pins them
+const QUARANTINE_MODEL =
+  /\n(\/\/[^\n]*\n)*model ContentStudioSourceVersionRetentionPending \{[\s\S]*?\n\}\n/;
+const beforeQuarantine = (text: string) =>
+  text
+    .replace(QUARANTINE_MODEL, '\n')
+    .replace(
+      /\n\s*retentionPending\s+ContentStudioSourceVersionRetentionPending\?/,
+      ''
+    )
+    .replace(
+      /\n\s*contentStudioSourceVersionsPending\s+ContentStudioSourceVersionRetentionPending\[\]/,
+      ''
+    );
+const fieldsBeforeQuarantine = (name: string) =>
+  fields(name).filter(
+    (field) => !/ContentStudioSourceVersionRetentionPending/.test(field)
+  );
+// The quarantine's own code in the files it shares with the dry run: cut
+// out for the dry run's pins (R1B-*), pinned itself by R1Q-*
+const R1Q_SECTIONS: Record<string, Array<[string, string | null]>> = {
+  'libraries/nestjs-libraries/src/content-studio/sources/source.retention.ts': [
+    [
+      'export const CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_BATCH_SIZE',
+      null,
+    ],
+  ],
+  'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.repository.ts':
+    [
+      [
+        'export const assertContentStudioSourceVersionsNotPending',
+        '@Injectable()',
+      ],
+      ['  assertVersionsNotPending(input: {', '  async listVersionContents('],
+    ],
+  'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.service.ts':
+    [
+      ['const UUID = ', 'const ROWS_PAGE_SIZE'],
+      ['  async quarantineSourceVersions(', '  private async protect('],
+    ],
+};
+const withoutQuarantine = (file: string, text: string) =>
+  (R1Q_SECTIONS[file] ?? []).reduce((rest, [start, end]) => {
+    const from = rest.indexOf(start);
+    if (from < 0) {
+      throw new Error(`${file}: ${start} not found`);
+    }
+    const to = end === null ? rest.length : rest.indexOf(end, from);
+    if (to < 0) {
+      throw new Error(`${file}: ${end} not found`);
+    }
+    return rest.slice(0, from) + rest.slice(to);
+  }, text);
+// The one name a writer of a new reference knows of retention (P8-R1Q,
+// R1Q-4): the held check, its error and its codes
+const WRITER_GATE =
+  /\b(ContentStudioSourceVersionRetentionPendingError|assertContentStudioSourceVersionsNotPending|contentStudioSourceVersionRetentionPending|(CS_)?SOURCE_VERSION_RETENTION_PENDING|sourceVersionRetentionPending)\b|'@gitroom\/nestjs-libraries\/(content-studio\/sources\/source\.retention|database\/prisma\/content-studio\/content-studio\.source-retention\.repository)'/g;
 
 describe('P8-01 feed network access', () => {
   it('P801-1 Content Studio fetches a feed or a page only through safeFetch, in the ingestion service', () => {
@@ -493,8 +555,10 @@ describe('P8-02 News Radar', () => {
     // P8-O1 adds the capture history model, nothing this forbids (P8O1-1)
     // P8-G1 adds the HTTP validators and notModified, nothing this forbids
     // (P8G1-4)
+    // P8-R1Q adds the retention quarantine model, nothing this forbids
+    // (R1Q-3)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      'a7622590115d8b660e7783196d0577335f4afb70379d2ce1d386368776d69aed'
+      'a753d9a6e0d259c4b065b7bd2470a3d420b903853d4768242269bf712da15e44'
     );
     // the Radar reads the P8-01 indexes
     expect(model('ContentStudioSourceDiscovery')).toMatch(
@@ -611,8 +675,10 @@ describe('P8-03 research into content', () => {
     // P8-O1 adds the capture history model, nothing this forbids (P8O1-1)
     // P8-G1 adds the HTTP validators and notModified, nothing this forbids
     // (P8G1-4)
+    // P8-R1Q adds the retention quarantine model, nothing this forbids
+    // (R1Q-3)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      'a7622590115d8b660e7783196d0577335f4afb70379d2ce1d386368776d69aed'
+      'a753d9a6e0d259c4b065b7bd2470a3d420b903853d4768242269bf712da15e44'
     );
     expect(schema).not.toMatch(
       /model \w*(Research|Selection|Basket|Collection|Radar)\w* \{/
@@ -876,8 +942,10 @@ describe('P8-04A source change detection', () => {
     // P8-O1 adds the capture history model, nothing this forbids (P8O1-1)
     // P8-G1 adds the HTTP validators and notModified, nothing this forbids
     // (P8G1-4)
+    // P8-R1Q adds the retention quarantine model, nothing this forbids
+    // (R1Q-3)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      'a7622590115d8b660e7783196d0577335f4afb70379d2ce1d386368776d69aed'
+      'a753d9a6e0d259c4b065b7bd2470a3d420b903853d4768242269bf712da15e44'
     );
     expect(schema).not.toMatch(/model \w*(Change|Diff|Comparison)\w* \{/);
     expect(schema).not.toMatch(
@@ -1612,8 +1680,10 @@ describe('P8-04B2 News Radar change signals', () => {
     // P8-O1 adds the capture history model, nothing this forbids (P8O1-1)
     // P8-G1 adds the HTTP validators and notModified, nothing this forbids
     // (P8G1-4)
+    // P8-R1Q adds the retention quarantine model, nothing this forbids
+    // (R1Q-3)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      'a7622590115d8b660e7783196d0577335f4afb70379d2ce1d386368776d69aed'
+      'a753d9a6e0d259c4b065b7bd2470a3d420b903853d4768242269bf712da15e44'
     );
     expect(model('ContentStudioSourceDiscovery')).not.toMatch(/change/i);
     expect(schema).not.toMatch(/changedSinceFound/);
@@ -1783,8 +1853,10 @@ describe('P8-C1 organization safety caps', () => {
     // P8-O1 adds the capture history model, nothing this forbids (P8O1-1)
     // P8-G1 adds the HTTP validators and notModified, nothing this forbids
     // (P8G1-4)
+    // P8-R1Q adds the retention quarantine model, nothing this forbids
+    // (R1Q-3)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      'a7622590115d8b660e7783196d0577335f4afb70379d2ce1d386368776d69aed'
+      'a753d9a6e0d259c4b065b7bd2470a3d420b903853d4768242269bf712da15e44'
     );
     // the feed pause came with P8-C3 (P8C3-1), the schedule with P8-C4
     // (P8C4-1); nothing else here
@@ -1819,9 +1891,13 @@ describe('P8-C1 organization safety caps', () => {
     // removes nothing (pinned in its own block below), is the one exception;
     // P8-R1B: with the retention dry run and its read model, which only
     // read too (pinned in the P8-R1B block)
+    // P8-R1Q: and the writers of new references with their held check,
+    // which removes nothing either (R1Q-4)
     expect(
       contentStudio.filter((file) =>
-        /retention|purge|keepLast|prune|cleanup/i.test(CODE.get(file)!)
+        /retention|purge|keepLast|prune|cleanup/i.test(
+          CODE.get(file)!.replace(WRITER_GATE, '')
+        )
       )
     ).toEqual([
       'libraries/nestjs-libraries/src/content-studio/sources/source.retention.ts',
@@ -2145,8 +2221,10 @@ describe('P8-C2 global feed-capture concurrency', () => {
     // P8-C4 adds a feed's schedule (P8C4-1), and no queue or priority
     // P8-G1 adds the HTTP validators and notModified, nothing this forbids
     // (P8G1-4)
+    // P8-R1Q adds the retention quarantine model, nothing this forbids
+    // (R1Q-3)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      'a7622590115d8b660e7783196d0577335f4afb70379d2ce1d386368776d69aed'
+      'a753d9a6e0d259c4b065b7bd2470a3d420b903853d4768242269bf712da15e44'
     );
     // the feed pause came with P8-C3 (P8C3-1), the schedule with P8-C4
     // (P8C4-1); nothing else here
@@ -2344,8 +2422,10 @@ describe('P8-C3 feed pause', () => {
     // P8-C4 adds a feed's schedule after it (P8C4-1)
     // P8-G1 adds the HTTP validators and notModified, nothing this forbids
     // (P8G1-4)
+    // P8-R1Q adds the retention quarantine model, nothing this forbids
+    // (R1Q-3)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      'a7622590115d8b660e7783196d0577335f4afb70379d2ce1d386368776d69aed'
+      'a753d9a6e0d259c4b065b7bd2470a3d420b903853d4768242269bf712da15e44'
     );
     const source = fields('ContentStudioSource');
     expect(source.filter((f) => /paus/i.test(f))).toEqual([
@@ -3726,6 +3806,12 @@ describe('P8-R1A source version protection', () => {
         'no-reference (sources)',
       'ContentStudioSourceDiscovery.feedSource': 'no-reference (sources)',
       'ContentStudioSourceDiscovery.discoveredSource': 'no-reference (sources)',
+      // P8-R1Q: a version held for a retention plan, operational state and
+      // never a protection: holding it never keeps it (R1Q-3, R1Q-7)
+      'ContentStudioSourceVersionRetentionPending.sourceVersionId':
+        'no-reference (held for retention, P8-R1Q)',
+      'ContentStudioSourceVersionRetentionPending.sourceVersion':
+        'no-reference (held for retention, P8-R1Q)',
     };
     const documents: string[] = [];
     const references: string[] = [];
@@ -3760,7 +3846,8 @@ describe('P8-R1A source version protection', () => {
     }
     expect(documents.sort()).toEqual(Object.keys(DOCUMENTS).sort());
     expect(references.sort()).toEqual(Object.keys(REFERENCES).sort());
-    // nothing holds a version by a foreign key: only its parents' lists
+    // nothing holds a version by a foreign key: only its parents' lists,
+    // and the held row of P8-R1Q (R1Q-3), which is no reference
     expect(
       [...schema.matchAll(/\n\s+(\w+)\s+ContentStudioSourceVersion\[\]/g)].map(
         (match) => match[1]
@@ -3770,7 +3857,14 @@ describe('P8-R1A source version protection', () => {
       'contentStudioSourceVersions',
       'versions',
     ]);
-    expect(schema).not.toMatch(/sourceVersionId|\bversionId\b/);
+    expect(beforeQuarantine(schema)).not.toMatch(
+      /sourceVersionId|\bversionId\b/
+    );
+    expect(
+      model('ContentStudioSourceVersionRetentionPending').match(
+        /sourceVersionId/g
+      )
+    ).toHaveLength(3);
     // each enumerated document is read by its protection read
     expect(read('retention', 'listPackageDrafts')).toMatch(/draft: true/);
     expect(read('retention', 'listPackageRevisions')).toMatch(
@@ -3798,6 +3892,9 @@ describe('P8-R1A source version protection', () => {
         R1.service,
         R1.sources,
         R1.sourceService,
+        // P8-R1Q: the writers' held check of the ids they write (R1Q-4)
+        R1.operations,
+        'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.service.ts',
       ].sort()
     );
   });
@@ -3835,10 +3932,17 @@ describe('P8-R1A source version protection', () => {
     ]);
     // P8-R1B: every read is of the snapshot (in the order of the code:
     // the count, sources and versions, then the stored records)
+    // (P8-R1Q: the quarantine's own calls are pinned by R1Q-*)
     expect(
-      [...service.matchAll(/this\._\w+Repository\.(\w+)\(/g)].map((m) => m[1])
+      [
+        ...withoutQuarantine(R1.service, service).matchAll(
+          /this\._\w+Repository\.(\w+)\(/g
+        ),
+      ].map((m) => m[1])
     ).toEqual(['listVersionContents', 'readSnapshot']);
     expect([...service.matchAll(/reads\.(\w+)\(/g)].map((m) => m[1])).toEqual([
+      // P8-R1Q: the dry run's check for held versions (R1Q-9)
+      'findPending',
       'countVersions',
       'listSources',
       'listVersionsOfSources',
@@ -4016,11 +4120,27 @@ describe('P8-R1A source version protection', () => {
   it('R1-13 internal only: a provider, and no route, command, activity, workflow or frontend reaches it', () => {
     // P8-R1B: and its read model; the dry run's read-only command is the
     // one command (R1B-12)
+    // P8-R1Q: and two writers of new references, for the held error alone
+    // (R1Q-4)
+    const writers = [
+      'libraries/nestjs-libraries/src/content-studio/ai/ai.execution.service.ts',
+      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.service.ts',
+    ];
     expect(
       users(
         /ContentStudioSourceRetentionService|explainRetentionEligibility|computeProtectionMap|source\.retention'/
       )
-    ).toEqual([R1.service, R1.module, R1.retention].sort());
+    ).toEqual([R1.service, R1.module, R1.retention, ...writers].sort());
+    for (const file of writers) {
+      expect([
+        file,
+        [
+          ...CODE.get(file)!.matchAll(
+            /import \{([^}]*)\} from '@gitroom\/nestjs-libraries\/content-studio\/sources\/source\.retention';/g
+          ),
+        ].map((m) => m[1].trim()),
+      ]).toEqual([file, ['ContentStudioSourceVersionRetentionPendingError']]);
+    }
     expect(r1('module')).toMatch(
       /ContentStudioSourceService,\n\s*ContentStudioSourceRetentionRepository,\n\s*ContentStudioSourceRetentionService,\n/
     );
@@ -4044,11 +4164,12 @@ describe('P8-R1A source version protection', () => {
     expect(
       r1('controller').match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
     ).toHaveLength(149);
-    // and no schema for it: no table, flag or index of retention
-    expect(schema).not.toMatch(
+    // and no schema for it: no table, flag or index of retention (P8-R1Q:
+    // but the quarantine model, which protects nothing, R1Q-3)
+    expect(beforeQuarantine(schema)).not.toMatch(
       /retention|Retention|eligib|protected|quarantine|pendingAt/
     );
-    expect(fields('ContentStudioSourceVersion')).toEqual([
+    expect(fieldsBeforeQuarantine('ContentStudioSourceVersion')).toEqual([
       'id String',
       'organizationId String',
       'sourceId String',
@@ -4133,6 +4254,15 @@ describe('P8-R1B retention dry run', () => {
     controller: 'apps/backend/src/api/routes/content-studio.controller.ts',
   };
   const r1b = (key: keyof typeof R1B) => CODE.get(R1B[key])!;
+  // the dry run's own code: without the quarantine (P8-R1Q) and the one
+  // refusal it causes
+  const dryRun = (key: keyof typeof R1B) =>
+    withoutQuarantine(R1B[key], r1b(key))
+      .replace(/'RETENTION_DRY_RUN_QUARANTINE_ACTIVE'/g, '')
+      .replace(
+        /\n\s*(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_(QUARANTINE_BATCH_SIZE|PLAN_HASH)|ContentStudioSourceVersion(Quarantine|RetentionPending)Error),/g,
+        ''
+      );
   // apps/commands is not among the production bases: read it here
   const COMMAND = 'apps/commands/src/tasks/content.studio.retention.ts';
   const command = code(COMMAND);
@@ -4143,10 +4273,12 @@ describe('P8-R1B retention dry run', () => {
     createHash('sha256').update(parts.join('')).digest('hex');
 
   it('R1B-1 the dry run only reads: no write, raw SQL or removal in its engine, service, read model or command', () => {
+    // P8-R1Q: the quarantine shares these files and writes its held rows,
+    // pinned by R1Q-*; the dry run only refuses while any is held (R1Q-9)
     for (const [key, text] of [
-      ['pure', r1b('pure')],
-      ['service', r1b('service')],
-      ['repository', r1b('repository')],
+      ['pure', dryRun('pure')],
+      ['service', dryRun('service')],
+      ['repository', dryRun('repository')],
       ['command', command],
     ] as const) {
       expect([key, text.match(WRITES)]).toEqual([key, null]);
@@ -4158,7 +4290,7 @@ describe('P8-R1B retention dry run', () => {
       ]).toEqual([key, null]);
     }
     // its one transaction is the snapshot
-    expect(r1b('repository').match(/\$transaction\(/g)).toHaveLength(1);
+    expect(dryRun('repository').match(/\$transaction\(/g)).toHaveLength(1);
     expect(users(/\$transaction\(/)).not.toContain(R1B.service);
     // the snapshot's reads: counts and finds only
     const reads = between(
@@ -4167,6 +4299,8 @@ describe('P8-R1B retention dry run', () => {
       '\n});\n'
     );
     expect(reads.match(/\.(\w+)\(\{/g)).toEqual([
+      // P8-R1Q: whether a version is held
+      '.findFirst({',
       '.count({',
       '.findMany({',
       '.findMany({',
@@ -4183,7 +4317,7 @@ describe('P8-R1B retention dry run', () => {
   });
 
   it('R1B-2 one RepeatableRead snapshot, 5 seconds to start and 2 minutes at most; every read in it is through its client', () => {
-    const repository = r1b('repository');
+    const repository = dryRun('repository');
     const snapshot = between(repository, 'async readSnapshot<T>(', '\n  }\n');
     expect(snapshot).toMatch(
       /this\._transaction\.model\.\$transaction\(\s*\(tx\) => work\(snapshotReads\(tx\)\),\s*\{\s*isolationLevel: Prisma\.TransactionIsolationLevel\.RepeatableRead,\s*maxWait: 5_000,\s*timeout: 120_000,\s*\}\s*\)/
@@ -4197,7 +4331,8 @@ describe('P8-R1B retention dry run', () => {
     );
     // every read goes through tx, none through the repository's own client
     expect(reads).not.toMatch(/this\.|\._\w+\.model|\bprisma\b/);
-    expect(reads.match(/return tx\.\w+\.\w+\(/g)).toHaveLength(8);
+    // (P8-R1Q: one more, whether a version is held)
+    expect(reads.match(/return tx\.\w+\.\w+\(/g)).toHaveLength(9);
     // only the measuring read is outside the snapshot
     expect(repository.match(/this\._version\.model\./g)).toEqual([
       'this._version.model.',
@@ -4532,8 +4667,9 @@ describe('P8-R1B retention dry run', () => {
       '  private evaluate(',
       '\n  }\n\n'
     );
+    // (P8-R1Q: after the check for held versions, R1Q-9)
     expect(evaluate).toMatch(
-      /async \(reads\) => \{\s*const versionCount = await reads\.countVersions\(organizationId\);\s*if \(limited\) \{\s*assertContentStudioSourceVersionRetentionScale\(versionCount\);\s*\}/
+      /\s*const versionCount = await reads\.countVersions\(organizationId\);\s*if \(dryRun\) \{\s*assertContentStudioSourceVersionRetentionScale\(versionCount\);\s*\}/
     );
     expect(evaluate.indexOf('countVersions')).toBeLessThan(
       evaluate.indexOf('listSources')
@@ -4607,11 +4743,13 @@ describe('P8-R1B retention dry run', () => {
   });
 
   it('R1B-13 no schema for it: no retention, pending or quarantine model or field', () => {
-    expect(schema).not.toMatch(
+    // P8-R1Q adds the quarantine model, the one retention model (R1Q-3);
+    // the dry run has none and the version no field
+    expect(beforeQuarantine(schema)).not.toMatch(
       /retention|Retention|quarantine|Quarantine|pendingAt|PendingAt|eligib/
     );
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      'a7622590115d8b660e7783196d0577335f4afb70379d2ce1d386368776d69aed'
+      'a753d9a6e0d259c4b065b7bd2470a3d420b903853d4768242269bf712da15e44'
     );
   });
 
@@ -4652,6 +4790,403 @@ describe('P8-R1B retention dry run', () => {
       'RETENTION_POLICY_INVALID',
       'RETENTION_DRY_RUN_SCALE_LIMIT',
       'RETENTION_DRY_RUN_SNAPSHOT_FAILED',
+      // P8-R1Q: a version of the organization is held (R1Q-9)
+      'RETENTION_DRY_RUN_QUARANTINE_ACTIVE',
     ]);
+  });
+});
+
+// The retention quarantine (P8-R1Q), pinned: a separate held-row model with
+// the first foreign key onto a version (Restrict), one plan per version and
+// organization, a held row only created and removed, the three writers of a
+// new reference refusing a held version in the transaction of their write,
+// the dry run refused while anything is held, and still no removal of a
+// version, no command, route, schedule or wait. Its behavior is covered by
+// the repository, service, grounding and AI specs and the PostgreSQL
+// quarantine suite
+describe('P8-R1Q retention quarantine', () => {
+  const PRISMA =
+    'libraries/nestjs-libraries/src/database/prisma/content-studio';
+  const R1Q = {
+    pure: `${SOURCES}/source.retention.ts`,
+    repository: `${PRISMA}/content-studio.source-retention.repository.ts`,
+    service: `${PRISMA}/content-studio.source-retention.service.ts`,
+    packages: `${PRISMA}/content-studio.repository.ts`,
+    packageService: `${PRISMA}/content-studio.service.ts`,
+    operations: `${PRISMA}/content-studio.ai-operation.repository.ts`,
+    execution:
+      'libraries/nestjs-libraries/src/content-studio/ai/ai.execution.service.ts',
+    writing: `${PRISMA}/content-studio.ai-writing.service.ts`,
+    controller: 'apps/backend/src/api/routes/content-studio.controller.ts',
+  };
+  const r1q = (key: keyof typeof R1Q) => CODE.get(R1Q[key])!;
+  const PENDING = 'ContentStudioSourceVersionRetentionPending';
+  const quarantine = () =>
+    between(r1q('repository'), '  async quarantineVersions(', '\n  }\n');
+
+  it('R1Q-1 a version row is never changed or removed in production: no update, upsert or delete of one', () => {
+    expect(
+      users(
+        /contentStudioSourceVersion\.(update|updateMany|upsert|delete|deleteMany)\(/
+      )
+    ).toEqual([]);
+    expect(
+      users(
+        /sourceVersions?:\s*\{\s*(update|updateMany|upsert|delete|deleteMany)/i
+      )
+    ).toEqual([]);
+    expect(
+      users(/\$executeRaw|\$queryRaw|Prisma\.sql/).filter((file) =>
+        /content-studio|content\.studio/.test(file)
+      )
+    ).toEqual([]);
+  });
+
+  it('R1Q-2 the version gains no column: the quarantine is a model of its own', () => {
+    expect(fieldsBeforeQuarantine('ContentStudioSourceVersion')).toEqual(
+      fields('ContentStudioSourceVersion').filter(
+        (field) => field !== `retentionPending ${PENDING}?`
+      )
+    );
+    expect(fields('ContentStudioSourceVersion')).toContain(
+      `retentionPending ${PENDING}?`
+    );
+    expect(fields('ContentStudioSourceVersion')).toHaveLength(23);
+    expect(schema).not.toMatch(
+      /retentionPendingAt|pendingAt\s+DateTime[^\n]*\n[^}]*model ContentStudioSourceVersion \{/
+    );
+    expect(model('ContentStudioSourceVersion')).not.toMatch(
+      /pendingAt|planHash/
+    );
+  });
+
+  it('R1Q-3 the held row: exactly its organization, version, plan and time, unique per version, Restrict onto the version', () => {
+    expect(fields(PENDING)).toEqual([
+      'id String',
+      'organizationId String',
+      'sourceVersionId String',
+      'planHash String',
+      'pendingAt DateTime',
+      'organization Organization',
+      'sourceVersion ContentStudioSourceVersion',
+    ]);
+    const block = model(PENDING);
+    expect(block).toMatch(/\n\s*id\s+String\s+@id @default\(uuid\(\)\)\n/);
+    expect(block).toMatch(/\n\s*pendingAt\s+DateTime\s+@default\(now\(\)\)\n/);
+    expect(block).toMatch(
+      /\n\s*organization\s+Organization\s+@relation\(fields: \[organizationId\], references: \[id\]\)\n/
+    );
+    expect(block).toMatch(
+      /\n\s*sourceVersion\s+ContentStudioSourceVersion\s+@relation\(fields: \[sourceVersionId, organizationId\], references: \[id, organizationId\], onDelete: Restrict, onUpdate: Restrict\)\n/
+    );
+    expect(block).not.toMatch(/Cascade|SetNull|NoAction|SetDefault/);
+    expect(
+      block
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith('@@'))
+    ).toEqual([
+      '@@unique([sourceVersionId, organizationId])',
+      '@@index([organizationId, planHash])',
+    ]);
+    // what the composite key points at
+    expect(model('ContentStudioSourceVersion')).toMatch(
+      /@@unique\(\[id, organizationId\]\)/
+    );
+    expect(block).not.toMatch(
+      /deletedAt|completedAt|attempt|retry|actor|userId|createdById|updatedAt/i
+    );
+    expect(model('Organization')).toMatch(
+      new RegExp(
+        `\\n\\s*contentStudioSourceVersionsPending\\s+${PENDING}\\[\\]\\n`
+      )
+    );
+    expect(schema.match(new RegExp(`\\b${PENDING}\\b`, 'g'))).toHaveLength(3);
+  });
+
+  it('R1Q-4 every writer of a new reference to a version checks it is not held, in the transaction of its write, before it', () => {
+    // the drafts, revisions and AI operations: the only stored documents
+    // naming a version (R1-3), and their only writers
+    expect(users(/contentPackageRevision\.create\(/)).toEqual([R1Q.packages]);
+    expect(users(/contentStudioAIOperation\.create\(/)).toEqual([
+      R1Q.operations,
+    ]);
+    expect(
+      users(/assertContentStudioSourceVersionsNotPending\(/).sort()
+    ).toEqual([R1Q.packages, R1Q.operations, R1Q.repository].sort());
+    const save = between(
+      r1q('packages'),
+      '  saveDraftCompareAndSwap(input: {',
+      '\n  }\n'
+    );
+    expect(save).toMatch(
+      /return this\._transaction\.model\.\$transaction\(async \(tx\) => \{\s*await assertContentStudioSourceVersionsNotPending\(tx, \{\s*organizationId: input\.organizationId,\s*sourceVersionIds: input\.sourceVersionIds,\s*\}\);\s*return save\(tx\);\s*\}\);/
+    );
+    // the draft without a version is saved as it was
+    expect(save).toMatch(
+      /if \(!input\.sourceVersionIds\.length\) \{\s*return save\(this\._package\.model\);\s*\}/
+    );
+    const revision = between(
+      r1q('packages'),
+      '  createRevisionWithCompareAndSwap(input: {',
+      '\n  }\n'
+    );
+    expect(revision).toMatch(
+      /return this\._transaction\.model\.\$transaction\(async \(tx\) => \{\s*await assertContentStudioSourceVersionsNotPending\(tx, \{\s*organizationId: input\.organizationId,\s*sourceVersionIds: input\.sourceVersionIds,\s*\}\);\s*const \{ count \} = await tx\.contentPackage\.updateMany\(/
+    );
+    const operation = between(
+      r1q('operations'),
+      '  createRunningOperation(input: ContentStudioAIOperationCreate) {',
+      '\n  }\n'
+    );
+    expect(operation).toMatch(
+      /const sourceVersionIds = \(input\.context\.sources \?\? \[\]\)\.map\(\s*\(source\) => source\.versionId\s*\);/
+    );
+    expect(operation).toMatch(
+      /return this\._transaction\.model\.\$transaction\(async \(tx\) => \{\s*await assertContentStudioSourceVersionsNotPending\(tx, \{\s*organizationId: input\.organizationId,\s*sourceVersionIds,\s*\}\);\s*return create\(tx\);\s*\}\);/
+    );
+    // the service gives every version the draft's evidence names, for
+    // both writes, and answers a held one with its own 409
+    const service = r1q('packageService');
+    expect(service).toMatch(
+      /const evidenceVersionIds = \(draft: ContentPackageDraft\) => \[\s*\.\.\.new Set\(\s*contentPackageClaims\(draft\)\.flatMap\(\(claim\) =>\s*claim\.evidence\.map\(\(entry\) => entry\.versionId\)\s*\)\s*\),\s*\];/
+    );
+    expect(
+      service.match(/sourceVersionIds: evidenceVersionIds\(draft\),/g)
+    ).toHaveLength(2);
+    expect(
+      service.match(/await this\.writingReferences\(\(\) =>/g)
+    ).toHaveLength(2);
+  });
+
+  it('R1Q-5 the writer check: the distinct ids, none read for none, one read of the organization, never per version', () => {
+    const check = between(
+      r1q('repository'),
+      'export const assertContentStudioSourceVersionsNotPending = async (',
+      '\n};\n'
+    );
+    expect(check).toMatch(
+      /const ids = \[\.\.\.new Set\(input\.sourceVersionIds\)\];/
+    );
+    expect(check).toMatch(/if \(!ids\.length\) \{\s*return;\s*\}/);
+    expect(check.match(/\.(\w+)\(/g)).toEqual(['.findFirst(']);
+    expect(check).toMatch(
+      /where: \{\s*organizationId: input\.organizationId,\s*sourceVersionId: \{ in: ids \},\s*\}/
+    );
+    expect(check).not.toMatch(/for \(|\.map\(|\.forEach\(|Promise\.all/);
+    expect(check).toMatch(
+      /if \(pending\) \{\s*throw new ContentStudioSourceVersionRetentionPendingError\(\);\s*\}/
+    );
+  });
+
+  it('R1Q-6 no AI operation, and so no provider call, with a held version: the operation is created first and refused whole', () => {
+    const run = between(r1q('execution'), '  private async run(', '\n  }\n\n');
+    expect(run.indexOf('createRunningOperation(')).toBeGreaterThan(-1);
+    expect(run.indexOf('createRunningOperation(')).toBeLessThan(
+      run.indexOf('generateText(')
+    );
+    expect(run).toMatch(
+      /if \(err instanceof ContentStudioSourceVersionRetentionPendingError\) \{\s*throw new ContentStudioAIExecutionError\(\s*'SOURCE_VERSION_RETENTION_PENDING'\s*\);\s*\}\s*throw new ContentStudioAIExecutionError\('PERSISTENCE_FAILED'\);/
+    );
+    expect(r1q('writing')).toMatch(
+      /SOURCE_VERSION_RETENTION_PENDING: \(\) =>\s*fail\(\s*409,\s*'CS_SOURCE_VERSION_RETENTION_PENDING',\s*'This source version is temporarily unavailable for new references'\s*\),/
+    );
+  });
+
+  it('R1Q-7 holding is never a protection: the seven reasons of P8-R1A stay as they are', () => {
+    expect([...CONTENT_STUDIO_SOURCE_VERSION_PROTECTION_REASONS]).toEqual([
+      'LATEST',
+      'PAGE_CHANGE',
+      'DRAFT_EVIDENCE',
+      'REVISION_EVIDENCE',
+      'REVIEW_EVIDENCE',
+      'AI_OPERATION',
+      'IN_FLIGHT',
+    ]);
+    expect(r1q('pure')).not.toMatch(
+      /RETENTION_PENDING'|'PENDING'|'QUARANTINED'/
+    );
+    // protection never reads a held row (R1Q-9: the dry run only refuses)
+    expect(
+      between(r1q('service'), '  private async protect(', '\n  }\n')
+    ).not.toMatch(/findPending|Pending|quarantine/i);
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PROTECTION_VERSION).toBe(1);
+  });
+
+  it('R1Q-8 compact_repeats is still the only mode, its policy and format versions unchanged', () => {
+    expect([...CONTENT_STUDIO_SOURCE_VERSION_RETENTION_MODES]).toEqual([
+      'compact_repeats',
+    ]);
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_POLICY_VERSION).toBe(1);
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_FORMAT_VERSION).toBe(
+      1
+    );
+  });
+
+  it('R1Q-9 the dry run is refused in its snapshot while a version of the organization is held, before anything else is read', () => {
+    const evaluate = between(
+      r1q('service'),
+      '  private evaluate(',
+      '\n  }\n\n'
+    );
+    expect(evaluate).toMatch(
+      /return this\._contentStudioSourceRetentionRepository\.readSnapshot\(\s*async \(reads\) => \{\s*if \(dryRun && \(await reads\.findPending\(organizationId\)\)\) \{\s*throw new ContentStudioSourceRetentionDryRunError\(\s*'RETENTION_DRY_RUN_QUARANTINE_ACTIVE'\s*\);\s*\}\s*const versionCount = await reads\.countVersions\(organizationId\);/
+    );
+    expect(
+      between(
+        r1q('repository'),
+        'const snapshotReads = (tx: Prisma.TransactionClient) => ({',
+        '\n});\n'
+      )
+    ).toMatch(
+      /findPending\(organizationId: string\) \{\s*return tx\.contentStudioSourceVersionRetentionPending\.findFirst\(\{\s*where: \{ organizationId \},\s*select: \{\s*id: true,\s*\},\s*\}\);\s*\}/
+    );
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_ERRORS).toContain(
+      'RETENTION_DRY_RUN_QUARANTINE_ACTIVE'
+    );
+  });
+
+  it('R1Q-10 internal only: no route, controller, DTO, frontend, workflow or activity reaches the quarantine', () => {
+    expect(users(/quarantine|Quarantine/).sort()).toEqual(
+      [R1Q.pure, R1Q.repository, R1Q.service].sort()
+    );
+    expect(
+      users(/RetentionPending|retentionPending|RETENTION_PENDING/).filter(
+        (file) => /^apps\/(frontend|orchestrator|backend)\//.test(file)
+      )
+    ).toEqual([]);
+    expect(
+      users(
+        /quarantineSourceVersions|releaseSourceVersionQuarantine|listSourceVersionQuarantine/
+      )
+    ).toEqual([R1Q.service]);
+    expect(r1q('controller')).not.toMatch(/quarantine|pending|retention/i);
+    expect(
+      r1q('controller').match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
+    ).toHaveLength(149);
+  });
+
+  it('R1Q-11 no command but the read-only dry run: no quarantine, release or execution command', () => {
+    const commands = walk(path.join(REPO_ROOT, 'apps/commands/src'));
+    expect(
+      commands
+        .filter((file) =>
+          /quarantine|Quarantine|releaseSourceVersion|retention-(execute|apply|delete|run)/.test(
+            fs.readFileSync(file, 'utf8')
+          )
+        )
+        .map((file) => path.relative(REPO_ROOT, file))
+    ).toEqual([]);
+    const tasks = commands.flatMap((file) =>
+      [...fs.readFileSync(file, 'utf8').matchAll(/command: '([\w:-]+)'/g)].map(
+        (m) => m[1]
+      )
+    );
+    expect(tasks.filter((task) => /^content-studio:/.test(task))).toEqual([
+      // the page-change backfill of P8-04B1, which writes no version
+      'content-studio:backfill-page-changes',
+      'content-studio:retention-dry-run',
+    ]);
+  });
+
+  it('R1Q-12 release removes held rows only, of one organization and plan: never a version', () => {
+    expect(
+      users(
+        new RegExp(
+          `contentStudioSourceVersionRetentionPending\\.(delete|deleteMany)\\(`
+        )
+      )
+    ).toEqual([R1Q.repository]);
+    const release = between(
+      r1q('repository'),
+      '  releaseQuarantine(input: {',
+      '\n  }\n'
+    );
+    expect(release.match(/\.(\w+)\(/g)).toEqual(['.deleteMany(']);
+    expect(release).toMatch(
+      /this\._pending\.model\.contentStudioSourceVersionRetentionPending\.deleteMany\(\s*\{\s*where: \{\s*organizationId: input\.organizationId,\s*planHash: input\.planHash,/
+    );
+    expect(r1q('repository')).not.toMatch(
+      /contentStudioSourceVersion\.(delete|deleteMany|update|updateMany|upsert)\(/
+    );
+  });
+
+  it('R1Q-13 a held row is never changed: holding again for its plan keeps its first pendingAt', () => {
+    expect(
+      users(
+        /contentStudioSourceVersionRetentionPending\.(update|updateMany|upsert)\(/
+      )
+    ).toEqual([]);
+    const body = quarantine();
+    expect(body).toMatch(
+      /data: input\.sourceVersionIds\s*\.filter\(\(id\) => !held\.has\(id\)\)\s*\.map\(\(sourceVersionId\) => \(\{\s*organizationId: input\.organizationId,\s*sourceVersionId,\s*planHash: input\.planHash,\s*pendingAt: input\.now,\s*\}\)\),/
+    );
+    expect(body.match(/\.createMany\(/g)).toHaveLength(1);
+    expect(body).not.toMatch(/skipDuplicates|\.create\(/);
+  });
+
+  it('R1Q-14 one plan per version and per organization: a row of another plan fails the call before anything is held', () => {
+    const body = quarantine();
+    const conflict = body.indexOf("'RETENTION_QUARANTINE_PLAN_CONFLICT'");
+    expect(conflict).toBeGreaterThan(-1);
+    expect(conflict).toBeLessThan(body.indexOf('.createMany('));
+    expect(
+      body.indexOf("'RETENTION_QUARANTINE_VERSION_NOT_FOUND'")
+    ).toBeLessThan(conflict);
+    expect(body).toMatch(
+      /where: \{\s*organizationId: input\.organizationId,\s*planHash: \{ not: input\.planHash \},\s*\}/
+    );
+    expect(body).toMatch(
+      /if \(versions\.length !== input\.sourceVersionIds\.length\) \{/
+    );
+    // serializable, again on a concurrent plan or the same key, 3 times
+    expect(body).toMatch(
+      /isolationLevel: Prisma\.TransactionIsolationLevel\.Serializable,/
+    );
+    expect(r1q('repository')).toMatch(
+      /const QUARANTINE_TRANSACTION_ATTEMPTS = 3;/
+    );
+    expect(r1q('repository')).toMatch(
+      /\(err\.code === 'P2034' \|\| err\.code === 'P2002'\)/
+    );
+  });
+
+  it('R1Q-15 a plan is a lowercase sha256, checked with the organization and versions before anything is read', () => {
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PLAN_HASH.source).toBe(
+      '^[0-9a-f]{64}$'
+    );
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PLAN_HASH.flags).toBe('');
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_BATCH_SIZE).toBe(
+      500
+    );
+    const service = r1q('service');
+    expect(service.match(/quarantineScope\(input\)/g)).toHaveLength(3);
+    expect(service).toMatch(
+      /!CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PLAN_HASH\.test\(input\.planHash\)/
+    );
+    expect(
+      service.match(/quarantineVersionIds\(input\.sourceVersionIds\)/g)
+    ).toHaveLength(2);
+  });
+
+  it('R1Q-16 the wait is a constant for the plan that comes later: nothing here waits, sleeps or removes on its own', () => {
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_WAIT_MS).toBe(
+      60_000
+    );
+    for (const key of ['pure', 'repository', 'service'] as const) {
+      expect([
+        key,
+        r1q(key).match(
+          /setTimeout|setInterval|sleep|\bwait\(|cron|@Cron|Interval\(/
+        ),
+      ]).toEqual([key, null]);
+    }
+    expect(
+      users(/CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_WAIT_MS/)
+    ).toEqual([R1Q.pure]);
+    // no automatic release, expiry or cleanup of held rows
+    expect(
+      users(/releaseQuarantine\(|releaseSourceVersionQuarantine\(/).sort()
+    ).toEqual([R1Q.repository, R1Q.service].sort());
   });
 });

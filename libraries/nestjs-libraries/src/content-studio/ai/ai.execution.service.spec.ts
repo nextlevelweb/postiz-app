@@ -26,6 +26,7 @@ import {
   canonicalJson,
   sha256Hex,
 } from '@gitroom/nestjs-libraries/content-studio/canonical.json';
+import { ContentStudioSourceVersionRetentionPendingError } from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
 
 // No database and no provider: the package repository, the operation
 // repository, the resolver and its adapter are mocks. Every argument handed
@@ -778,6 +779,22 @@ describe('ContentStudioAIExecutionService: persistence failures', () => {
     expect(err.code).toBe('PERSISTENCE_FAILED');
     expect(adapter.generateText).not.toHaveBeenCalled();
     expect(operations.completeSucceededWithUsage).not.toHaveBeenCalled();
+  });
+
+  it('Q30 P8-R1Q a held source version: SOURCE_VERSION_RETENTION_PENDING, no operation and the provider never asked', async () => {
+    const { service, adapter, operations } = setup();
+    operations.createRunningOperation.mockRejectedValueOnce(
+      new ContentStudioSourceVersionRetentionPendingError()
+    );
+    const err = await failure(service.execute(input()));
+    expect(err).toBeInstanceOf(ContentStudioAIExecutionError);
+    expect(err.code).toBe('SOURCE_VERSION_RETENTION_PENDING');
+    expect(err.message).toBe(
+      'A selected source version is temporarily unavailable for new references'
+    );
+    expect(adapter.generateText).not.toHaveBeenCalled();
+    expect(operations.completeSucceededWithUsage).not.toHaveBeenCalled();
+    expect(operations.completeFailedWithUsage).not.toHaveBeenCalled();
   });
 
   it.each([

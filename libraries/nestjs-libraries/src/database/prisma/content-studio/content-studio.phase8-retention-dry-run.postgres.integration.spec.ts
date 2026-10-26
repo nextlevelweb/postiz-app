@@ -414,6 +414,7 @@ beforeAll(async () => {
   );
   retentionRepository = new ContentStudioSourceRetentionRepository(
     new PrismaRepository<'contentStudioSourceVersion'>(prisma),
+    new PrismaRepository<'contentStudioSourceVersionRetentionPending'>(prisma),
     transaction
   );
   retention = new ContentStudioSourceRetentionService(retentionRepository);
@@ -647,6 +648,8 @@ describe('P8-R1B retention dry run on PostgreSQL', () => {
       contents: 1,
     });
     expect(run.calls).toEqual([
+      // P8-R1Q: whether a version of the organization is held, first
+      'findPending',
       'countVersions',
       'listSources',
       'listPackageDrafts',
@@ -951,6 +954,9 @@ describe('P8-R1B retention dry run on PostgreSQL', () => {
     const slow = new ContentStudioSourceRetentionService(
       new ContentStudioSourceRetentionRepository(
         new PrismaRepository<'contentStudioSourceVersion'>(
+          client as unknown as PrismaService
+        ),
+        new PrismaRepository<'contentStudioSourceVersionRetentionPending'>(
           client as unknown as PrismaService
         ),
         {

@@ -644,6 +644,9 @@ export const CONTENT_STUDIO_SOURCE_VERSION_RETENTION_ERRORS = [
   // the snapshot timed out or its connection failed, or a candidate was
   // not there to be measured
   'RETENTION_DRY_RUN_SNAPSHOT_FAILED',
+  // a version of the organization is held for a retention plan (P8-R1Q):
+  // one plan at a time, so no dry run is made until it is released
+  'RETENTION_DRY_RUN_QUARANTINE_ACTIVE',
 ] as const;
 
 export type ContentStudioSourceVersionRetentionErrorCode =
@@ -1306,3 +1309,59 @@ export function buildContentStudioSourceVersionRetentionDryRun(input: {
 export type ContentStudioSourceVersionRetentionDryRun = ReturnType<
   typeof buildContentStudioSourceVersionRetentionDryRun
 >;
+
+// The retention quarantine (P8-R1Q): a version held for one retention plan
+// can gain no new reference, so the plan's fresh check later cannot be
+// overtaken by a draft, revision or AI operation naming it. Holding a
+// version is never removing it, and nothing here removes one. The order a
+// plan follows: its dry run made again with the same hash, its candidates
+// held, the wait below, a fresh protection check, and only then anything
+// else. A version is held by one plan at a time, and an organization's held
+// versions all belong to one plan
+
+// The most versions held or released by one call
+export const CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_BATCH_SIZE = 500;
+
+// How long a plan waits after holding its versions before its fresh check:
+// a writer that verified a version just before it was held commits its
+// reference well within this (its check and write share one transaction,
+// which Prisma ends after 5 seconds). Nothing here waits
+export const CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_WAIT_MS = 60_000;
+
+// A plan is named by its dry run hash (dryRunHash), exactly: a sha256 in
+// lowercase hex. It names the plan; it authorizes nothing
+export const CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PLAN_HASH =
+  /^[0-9a-f]{64}$/;
+
+// Why holding or releasing versions fails: nothing is held or released
+export const CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_ERRORS = [
+  'RETENTION_QUARANTINE_INVALID',
+  // a version that is not the organization's, like a missing one
+  'RETENTION_QUARANTINE_VERSION_NOT_FOUND',
+  // a version of the organization is held for another plan
+  'RETENTION_QUARANTINE_PLAN_CONFLICT',
+  // concurrent writes went on aborting the transaction
+  'RETENTION_QUARANTINE_CONFLICT',
+] as const;
+
+export type ContentStudioSourceVersionRetentionQuarantineErrorCode =
+  (typeof CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_ERRORS)[number];
+
+// A fixed message with the code only: never a version id or a plan hash
+export class ContentStudioSourceVersionQuarantineError extends Error {
+  constructor(
+    readonly code: ContentStudioSourceVersionRetentionQuarantineErrorCode
+  ) {
+    super(`The source version retention quarantine failed: ${code}`);
+    this.name = 'ContentStudioSourceVersionQuarantineError';
+  }
+}
+
+// A new draft, revision or AI operation named a held version. A fixed
+// message: never which version, the plan or what retention is
+export class ContentStudioSourceVersionRetentionPendingError extends Error {
+  constructor() {
+    super('This source version is temporarily unavailable for new references');
+    this.name = 'ContentStudioSourceVersionRetentionPendingError';
+  }
+}

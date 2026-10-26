@@ -379,6 +379,7 @@ beforeAll(async () => {
   );
   retentionRepository = new ContentStudioSourceRetentionRepository(
     new PrismaRepository<'contentStudioSourceVersion'>(prisma),
+    new PrismaRepository<'contentStudioSourceVersionRetentionPending'>(prisma),
     transaction
   );
   retention = new ContentStudioSourceRetentionService(retentionRepository);

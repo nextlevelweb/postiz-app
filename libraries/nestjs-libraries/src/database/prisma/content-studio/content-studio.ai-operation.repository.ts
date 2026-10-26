@@ -3,7 +3,9 @@ import {
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { ContentStudioAIOperationContext } from '@gitroom/nestjs-libraries/content-studio/ai/ai.operation.types';
+import { assertContentStudioSourceVersionsNotPending } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.repository';
 
 // A new operation, as the execution service checked and hashed it. There is
 // no field for a prompt, an instruction or a generated text. A package
@@ -63,28 +65,48 @@ export class ContentStudioAIOperationRepository {
     private _transaction: PrismaTransaction
   ) {}
 
+  // An operation whose context names source versions is created in one
+  // transaction with the check that none of them is held for retention
+  // (P8-R1Q), which throws ContentStudioSourceVersionRetentionPendingError
+  // and creates nothing
   createRunningOperation(input: ContentStudioAIOperationCreate) {
-    return this._operation.model.contentStudioAIOperation.create({
-      data: {
-        id: input.id,
+    const create = (
+      tx: Pick<Prisma.TransactionClient, 'contentStudioAIOperation'>
+    ) =>
+      tx.contentStudioAIOperation.create({
+        data: {
+          id: input.id,
+          organizationId: input.organizationId,
+          userId: input.userId,
+          connectionId: input.connectionId,
+          packageId: input.packageId,
+          designRevisionId: input.designRevisionId ?? null,
+          kind: input.kind,
+          status: 'running',
+          provider: input.provider,
+          model: input.model,
+          promptVersion: input.promptVersion,
+          baseDraftVersion: input.baseDraftVersion,
+          context: input.context,
+          requestHash: input.requestHash,
+          startedAt: input.startedAt,
+        },
+        select: {
+          id: true,
+        },
+      });
+    const sourceVersionIds = (input.context.sources ?? []).map(
+      (source) => source.versionId
+    );
+    if (!sourceVersionIds.length) {
+      return create(this._operation.model);
+    }
+    return this._transaction.model.$transaction(async (tx) => {
+      await assertContentStudioSourceVersionsNotPending(tx, {
         organizationId: input.organizationId,
-        userId: input.userId,
-        connectionId: input.connectionId,
-        packageId: input.packageId,
-        designRevisionId: input.designRevisionId ?? null,
-        kind: input.kind,
-        status: 'running',
-        provider: input.provider,
-        model: input.model,
-        promptVersion: input.promptVersion,
-        baseDraftVersion: input.baseDraftVersion,
-        context: input.context,
-        requestHash: input.requestHash,
-        startedAt: input.startedAt,
-      },
-      select: {
-        id: true,
-      },
+        sourceVersionIds,
+      });
+      return create(tx);
     });
   }
 

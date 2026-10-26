@@ -23,6 +23,9 @@ const {
   ContentStudioSourceRetentionRepository,
 }: typeof import('@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.repository') = require('@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.repository');
 const {
+  ContentStudioSourceRetentionService,
+}: typeof import('@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.service') = require('@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.service');
+const {
   assertContentStudioPostgresUrl,
   contentStudioPostgresUrlFromEnv,
   createContentStudioPostgresClient,
@@ -163,6 +166,7 @@ const run = async (...args: string[]) => {
 const cleanFixtures = async () => {
   const where = { organizationId: { in: [ORG, EMPTY_ORG] } };
   // test data only, in the disposable database
+  await client.contentStudioSourceVersionRetentionPending.deleteMany({ where });
   await client.contentStudioSourceVersion.deleteMany({ where });
   await client.contentStudioSource.deleteMany({ where });
   await client.userOrganization.deleteMany({ where });
@@ -399,4 +403,62 @@ describe('The retention dry-run command on PostgreSQL', () => {
     }
     expect(fetchSpy).not.toHaveBeenCalled();
   }, 120_000);
+
+  it('P8R1QC1 P8-R1Q: while a version of the organization is held the command refuses with exit code 1 and no report; released, the same plan again', async () => {
+    // the command runtime P8R1BC1 started, with its real providers
+    expect(moduleRef).toBeDefined();
+    const args = ['--organization', ORG, '--older-than-days', '7'];
+    const first = await run(...args, '--json');
+    expect(first.exitCode).toBeUndefined();
+    const report = JSON.parse(first.stdout[0]);
+    expect(report.candidates.length).toBe(9);
+    const versions = await rows();
+
+    // held through the internal service, as the next phase will
+    const retention = moduleRef.get(ContentStudioSourceRetentionService);
+    expect(
+      await retention.quarantineSourceVersions({
+        organizationId: ORG,
+        sourceVersionIds: [report.candidates[0].id],
+        planHash: report.dryRunHash,
+        now: new Date(),
+      })
+    ).toEqual({ created: 1, alreadyPending: 0 });
+    for (const json of [['--json'], []]) {
+      expect(await run(...args, ...json)).toEqual({
+        stdout: [],
+        stderr: [
+          'Retention dry run refused: RETENTION_DRY_RUN_QUARANTINE_ACTIVE',
+        ],
+        exitCode: 1,
+      });
+    }
+    // another organization is not refused
+    expect(
+      (
+        await run(
+          '--organization',
+          EMPTY_ORG,
+          '--older-than-days',
+          '7',
+          '--json'
+        )
+      ).exitCode
+    ).toBeUndefined();
+
+    expect(
+      await retention.releaseSourceVersionQuarantine({
+        organizationId: ORG,
+        planHash: report.dryRunHash,
+      })
+    ).toEqual({ released: 1 });
+    const again = await run(...args, '--json');
+    expect(again.exitCode).toBeUndefined();
+    const after = JSON.parse(again.stdout[0]);
+    // the same plan; only the command's own clock moved
+    expect(after.candidates).toEqual(report.candidates);
+    expect(after.blockedSources).toEqual(report.blockedSources);
+    expect(after.candidateSummary).toEqual(report.candidateSummary);
+    expect(await rows()).toEqual(versions);
+  }, 60_000);
 });

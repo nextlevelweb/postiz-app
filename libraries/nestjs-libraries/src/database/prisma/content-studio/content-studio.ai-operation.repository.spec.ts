@@ -8,6 +8,7 @@ import {
   ContentStudioAIOperationRepository,
   ContentStudioAIUsageCreate,
 } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-operation.repository';
+import { ContentStudioSourceVersionRetentionPendingError } from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
 
 // No database: the Prisma delegates are mocked. The transaction mock keeps a
 // tiny in-memory copy of the rows and puts it back when the callback throws,
@@ -62,7 +63,12 @@ const setup = () => {
       ([key, value]) => value === undefined || row[key] === value
     );
   const tx = {
+    // P8-R1Q: whether a source version the context names is held
+    contentStudioSourceVersionRetentionPending: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     contentStudioAIOperation: {
+      create: jest.fn().mockResolvedValue({ id: OPERATION }),
       updateMany: jest.fn(
         async (args: {
           where: Record<string, unknown>;
@@ -183,6 +189,74 @@ describe('ContentStudioAIOperationRepository: operations', () => {
     expect(args.data).toEqual({ ...design, status: 'running' });
     expect(args.data.packageId).toBeNull();
     expect(args.data.baseDraftVersion).toBeNull();
+  });
+
+  const sourced = {
+    ...createInput,
+    context: {
+      v: 1 as const,
+      itemId: 'item-1',
+      sources: [
+        '77777777-7777-4777-8777-777777777771',
+        '77777777-7777-4777-8777-777777777772',
+      ].map((versionId, i) => ({
+        sourceId: `88888888-8888-4888-8888-88888888888${i}`,
+        versionId,
+        versionNumber: 3,
+        contentHash: 'b'.repeat(64),
+      })),
+    },
+  };
+
+  it('Q27 P8-R1Q an operation naming source versions: the held check and the create in one transaction, the check first, of the organization', async () => {
+    const { repository, operation, transaction, tx } = setup();
+    await expect(repository.createRunningOperation(sourced)).resolves.toEqual({
+      id: OPERATION,
+    });
+    expect(transaction.$transaction).toHaveBeenCalledTimes(1);
+    expect(
+      tx.contentStudioSourceVersionRetentionPending.findFirst
+    ).toHaveBeenCalledWith({
+      where: {
+        organizationId: ORG,
+        sourceVersionId: {
+          in: sourced.context.sources.map((source) => source.versionId),
+        },
+      },
+      select: { id: true },
+    });
+    expect(
+      tx.contentStudioSourceVersionRetentionPending.findFirst.mock
+        .invocationCallOrder[0]
+    ).toBeLessThan(
+      tx.contentStudioAIOperation.create.mock.invocationCallOrder[0]
+    );
+    expect(tx.contentStudioAIOperation.create.mock.calls[0][0]).toEqual({
+      data: { ...sourced, designRevisionId: null, status: 'running' },
+      select: { id: true },
+    });
+    expect(operation.create).not.toHaveBeenCalled();
+  });
+
+  it('Q28/Q29 P8-R1Q a held source version: no operation is created', async () => {
+    const { repository, operation, tx } = setup();
+    tx.contentStudioSourceVersionRetentionPending.findFirst.mockResolvedValue({
+      id: 'pending',
+    });
+    await expect(
+      repository.createRunningOperation(sourced)
+    ).rejects.toBeInstanceOf(ContentStudioSourceVersionRetentionPendingError);
+    expect(tx.contentStudioAIOperation.create).not.toHaveBeenCalled();
+    expect(operation.create).not.toHaveBeenCalled();
+  });
+
+  it('Q6 P8-R1Q an operation naming no source version is created as before: no transaction, no held check', async () => {
+    const { repository, transaction, tx } = setup();
+    await repository.createRunningOperation(createInput);
+    expect(transaction.$transaction).not.toHaveBeenCalled();
+    expect(
+      tx.contentStudioSourceVersionRetentionPending.findFirst
+    ).not.toHaveBeenCalled();
   });
 
   it('OR4/OR5 reads an operation of the organization only', async () => {

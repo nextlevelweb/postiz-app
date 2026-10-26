@@ -31,6 +31,7 @@ import {
   hashContentStudioAIRequest,
   hashContentStudioAIResult,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.operation.hash';
+import { ContentStudioSourceVersionRetentionPendingError } from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
 
 // Ids of organizations, users, connections and packages are Prisma uuid()
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -292,7 +293,14 @@ export class ContentStudioAIExecutionService {
         requestHash,
         startedAt: new Date(),
       });
-    } catch {
+    } catch (err) {
+      // a source version the context names is held for retention (P8-R1Q):
+      // no operation exists and the provider is never asked
+      if (err instanceof ContentStudioSourceVersionRetentionPendingError) {
+        throw new ContentStudioAIExecutionError(
+          'SOURCE_VERSION_RETENTION_PENDING'
+        );
+      }
       throw new ContentStudioAIExecutionError('PERSISTENCE_FAILED');
     }
 

@@ -4,7 +4,11 @@ import {
   PrismaRepository,
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
-import { ContentStudioSourceRetentionDryRunError } from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
+import {
+  ContentStudioSourceRetentionDryRunError,
+  ContentStudioSourceVersionQuarantineError,
+  ContentStudioSourceVersionRetentionPendingError,
+} from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
 
 // A read that failed for the database itself: the snapshot timed out
 // (P2028), or its connection or the engine failed. Never a write conflict:
@@ -31,6 +35,17 @@ const snapshotFailed = (err: unknown) =>
 // the versions of some of its sources, whole, with what tells a capture and
 // its age, never their blocks. Pages are in id order after an id
 const snapshotReads = (tx: Prisma.TransactionClient) => ({
+  // whether any version of the organization is held for a retention plan
+  // (P8-R1Q)
+  findPending(organizationId: string) {
+    return tx.contentStudioSourceVersionRetentionPending.findFirst({
+      where: { organizationId },
+      select: {
+        id: true,
+      },
+    });
+  },
+
   countVersions(organizationId: string) {
     return tx.contentStudioSourceVersion.count({
       where: { organizationId },
@@ -205,16 +220,68 @@ export type ContentStudioSourceRetentionSnapshotReads = ReturnType<
   typeof snapshotReads
 >;
 
-// The read model of source version protection and the retention dry run.
-// It only reads: every read of an evaluation is in one RepeatableRead
-// transaction, so the whole organization is read as it was at one moment,
-// whatever is captured or saved meanwhile. That transaction only reads and
-// holds no row lock; it may last up to two minutes. After it, only the
-// blocks of the candidates are read, to be measured
+// The check every write of a new reference to source versions makes (a
+// draft's or revision's evidence, an AI operation's sources), in the
+// transaction of that write (P8-R1Q): one read of the organization's held
+// versions among them, whatever their number, none for no version. A version
+// of another organization is never held for this one, and is never
+// reported: the writer's own lookup already refused it as missing
+export const assertContentStudioSourceVersionsNotPending = async (
+  tx: Pick<
+    Prisma.TransactionClient,
+    'contentStudioSourceVersionRetentionPending'
+  >,
+  input: { organizationId: string; sourceVersionIds: readonly string[] }
+) => {
+  const ids = [...new Set(input.sourceVersionIds)];
+  if (!ids.length) {
+    return;
+  }
+  const pending = await tx.contentStudioSourceVersionRetentionPending.findFirst(
+    {
+      where: {
+        organizationId: input.organizationId,
+        sourceVersionId: { in: ids },
+      },
+      select: {
+        id: true,
+      },
+    }
+  );
+  if (pending) {
+    throw new ContentStudioSourceVersionRetentionPendingError();
+  }
+};
+
+// Holding is one serializable transaction: two plans holding the same
+// version, or the same organization, can never both commit. PostgreSQL
+// aborts one (P2034, or the unique key, P2002) and it runs again from the
+// start, this many times in all, then sees the other plan
+const QUARANTINE_TRANSACTION_ATTEMPTS = 3;
+
+const isQuarantineRace = (err: unknown) =>
+  err instanceof Prisma.PrismaClientKnownRequestError &&
+  (err.code === 'P2034' || err.code === 'P2002');
+
+const PENDING = {
+  sourceVersionId: true,
+  planHash: true,
+  pendingAt: true,
+} as const;
+
+// The read model of source version protection and the retention dry run,
+// and the retention quarantine (P8-R1Q). An evaluation only reads: every
+// read of it is in one RepeatableRead transaction, so the whole organization
+// is read as it was at one moment, whatever is captured or saved meanwhile.
+// That transaction only reads and holds no row lock; it may last up to two
+// minutes. After it, only the blocks of the candidates are read, to be
+// measured. The quarantine writes held rows only: it creates and removes
+// them, never changes one, and never writes a version
 @Injectable()
 export class ContentStudioSourceRetentionRepository {
   constructor(
     private _version: PrismaRepository<'contentStudioSourceVersion'>,
+    private _pending: PrismaRepository<'contentStudioSourceVersionRetentionPending'>,
     private _transaction: PrismaTransaction
   ) {}
 
@@ -233,6 +300,165 @@ export class ContentStudioSourceRetentionRepository {
     } catch (err) {
       throw snapshotFailed(err);
     }
+  }
+
+  // The writer check above, outside a write: for a caller with no
+  // transaction of its own
+  assertVersionsNotPending(input: {
+    organizationId: string;
+    sourceVersionIds: readonly string[];
+  }) {
+    return assertContentStudioSourceVersionsNotPending(
+      this._pending.model,
+      input
+    );
+  }
+
+  // The held versions of one plan of the organization, by version id
+  listPendingForPlan(input: { organizationId: string; planHash: string }) {
+    return this._pending.model.contentStudioSourceVersionRetentionPending.findMany(
+      {
+        where: {
+          organizationId: input.organizationId,
+          planHash: input.planHash,
+        },
+        orderBy: {
+          sourceVersionId: 'asc',
+        },
+        select: PENDING,
+      }
+    );
+  }
+
+  // Whether one version of the organization is held, and by which plan
+  getPendingForVersion(input: {
+    organizationId: string;
+    sourceVersionId: string;
+  }) {
+    return this._pending.model.contentStudioSourceVersionRetentionPending.findUnique(
+      {
+        where: {
+          sourceVersionId_organizationId: {
+            sourceVersionId: input.sourceVersionId,
+            organizationId: input.organizationId,
+          },
+        },
+        select: PENDING,
+      }
+    );
+  }
+
+  // Holds these versions of the organization for one plan, all or none.
+  // Every version must be the organization's (one missing or of another
+  // organization fails the call, like a missing one), and no version of the
+  // organization may be held for another plan. A version already held for
+  // this plan stays as it is, with its first pendingAt; only the others are
+  // held, at `now`. Nothing of a version itself is written. The ids must be
+  // distinct
+  async quarantineVersions(input: {
+    organizationId: string;
+    sourceVersionIds: readonly string[];
+    planHash: string;
+    now: Date;
+  }) {
+    for (
+      let attempt = 1;
+      attempt <= QUARANTINE_TRANSACTION_ATTEMPTS;
+      attempt++
+    ) {
+      try {
+        return await this._transaction.model.$transaction(
+          async (tx) => {
+            const versions = await tx.contentStudioSourceVersion.findMany({
+              where: {
+                organizationId: input.organizationId,
+                id: { in: [...input.sourceVersionIds] },
+              },
+              select: {
+                id: true,
+              },
+            });
+            if (versions.length !== input.sourceVersionIds.length) {
+              throw new ContentStudioSourceVersionQuarantineError(
+                'RETENTION_QUARANTINE_VERSION_NOT_FOUND'
+              );
+            }
+            const other =
+              await tx.contentStudioSourceVersionRetentionPending.findFirst({
+                where: {
+                  organizationId: input.organizationId,
+                  planHash: { not: input.planHash },
+                },
+                select: {
+                  id: true,
+                },
+              });
+            if (other) {
+              throw new ContentStudioSourceVersionQuarantineError(
+                'RETENTION_QUARANTINE_PLAN_CONFLICT'
+              );
+            }
+            const held = new Set(
+              (
+                await tx.contentStudioSourceVersionRetentionPending.findMany({
+                  where: {
+                    organizationId: input.organizationId,
+                    sourceVersionId: { in: [...input.sourceVersionIds] },
+                  },
+                  select: {
+                    sourceVersionId: true,
+                  },
+                })
+              ).map((row) => row.sourceVersionId)
+            );
+            const { count } =
+              await tx.contentStudioSourceVersionRetentionPending.createMany({
+                data: input.sourceVersionIds
+                  .filter((id) => !held.has(id))
+                  .map((sourceVersionId) => ({
+                    organizationId: input.organizationId,
+                    sourceVersionId,
+                    planHash: input.planHash,
+                    pendingAt: input.now,
+                  })),
+              });
+            return { created: count, alreadyPending: held.size };
+          },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          }
+        );
+      } catch (err) {
+        if (!isQuarantineRace(err)) {
+          throw err;
+        }
+      }
+    }
+    throw new ContentStudioSourceVersionQuarantineError(
+      'RETENTION_QUARANTINE_CONFLICT'
+    );
+  }
+
+  // Releases versions of the organization held for this plan: these ones,
+  // or all of the plan's. Only held rows are removed, never a version, and
+  // never a row of another plan or organization; a version not held for
+  // the plan is no error
+  releaseQuarantine(input: {
+    organizationId: string;
+    planHash: string;
+    sourceVersionIds?: readonly string[];
+  }) {
+    return this._pending.model.contentStudioSourceVersionRetentionPending.deleteMany(
+      {
+        where: {
+          organizationId: input.organizationId,
+          planHash: input.planHash,
+          ...(input.sourceVersionIds
+            ? { sourceVersionId: { in: [...input.sourceVersionIds] } }
+            : {}),
+        },
+      }
+    );
   }
 
   // The blocks of these versions of the organization, to measure them

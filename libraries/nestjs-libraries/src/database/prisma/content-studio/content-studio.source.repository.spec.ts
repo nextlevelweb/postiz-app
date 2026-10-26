@@ -1525,6 +1525,8 @@ describe('ContentStudioSource schema', () => {
       organization: 'Organization',
       source: 'ContentStudioSource',
       createdBy: 'User',
+      // held for a retention plan (P8-R1Q), a relation only: no column
+      retentionPending: 'ContentStudioSourceVersionRetentionPending?',
     });
     expect(schema).not.toMatch(/enum ContentStudioSource/);
   });

@@ -3,6 +3,7 @@ import {
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.repository';
+import { ContentStudioSourceVersionRetentionPendingError } from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
 
 // No database: the Prisma delegates are mocked, so these tests pin the queries
 // the repository sends, which is where the organization boundary lives
@@ -31,6 +32,7 @@ const setup = () => {
   const tx = {
     contentPackage: delegate(),
     contentPackageRevision: delegate(),
+    contentStudioSourceVersionRetentionPending: delegate(),
   };
   const $transaction = jest.fn(
     async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx)
@@ -57,6 +59,7 @@ const allDelegates = (s: Setup): [string, Delegate][] => [
   ['revision', s.revision],
   ['tx.package', s.tx.contentPackage],
   ['tx.revision', s.tx.contentPackageRevision],
+  ['tx.pending', s.tx.contentStudioSourceVersionRetentionPending],
 ];
 const allCalls = (s: Setup) =>
   allDelegates(s).flatMap(([name, d]) =>
@@ -64,6 +67,19 @@ const allCalls = (s: Setup) =>
       fn.mock.calls.map((call) => ({ name, method, args: call[0] }))
     )
   );
+// Every call by delegate and method, in the order they were made
+const callOrder = (s: Setup) =>
+  allDelegates(s)
+    .flatMap(([name, d]) =>
+      Object.entries(d).flatMap(([method, fn]) =>
+        fn.mock.invocationCallOrder.map((order) => ({
+          order,
+          call: `${name}.${method}`,
+        }))
+      )
+    )
+    .sort((a, b) => a.order - b.order)
+    .map(({ call }) => call);
 const onlyCall = (fn: jest.Mock) => {
   expect(fn).toHaveBeenCalledTimes(1);
   return fn.mock.calls[0][0];
@@ -132,6 +148,7 @@ const REVISION_INPUT = {
   contentHash: 'a'.repeat(64),
   origin: 'manual',
   createdById: 'user-1',
+  sourceVersionIds: [] as string[],
 };
 
 // Calls every public method once, with arguments for org-a
@@ -175,6 +192,7 @@ const callEveryMethod = async (repository: ContentStudioRepository) => {
     packageId: 'package-1',
     baseDraftVersion: 3,
     draft: '{}',
+    sourceVersionIds: [],
   });
   await repository.getPackageWriteStateForOrganization(ORG, 'package-1');
   await repository.archivePackage(ORG, 'package-1', ARCHIVED_AT);
@@ -546,6 +564,7 @@ describe('ContentStudioRepository', () => {
           packageId: 'package-1',
           baseDraftVersion: 3,
           draft: '{"schemaVersion":1}',
+          sourceVersionIds: [],
         })
       ).resolves.toEqual({ count: 1 });
 
@@ -573,11 +592,83 @@ describe('ContentStudioRepository', () => {
           packageId: 'package-1',
           baseDraftVersion: 3,
           draft: '{}',
+          sourceVersionIds: [],
         })
       ).resolves.toEqual({ count: 0 });
       expect(contentPackage.updateMany).toHaveBeenCalledTimes(1);
       expect(contentPackage.findFirst).not.toHaveBeenCalled();
       expect(contentPackage.update).not.toHaveBeenCalled();
+    });
+
+    it('Q20/Q22 P8-R1Q a draft naming versions: the held check and the save in one transaction, the check first and once', async () => {
+      const s = setup();
+      await expect(
+        s.repository.saveDraftCompareAndSwap({
+          organizationId: ORG,
+          packageId: 'package-1',
+          baseDraftVersion: 3,
+          draft: '{"schemaVersion":1}',
+          sourceVersionIds: ['v-2', 'v-1', 'v-2'],
+        })
+      ).resolves.toEqual({ count: 1 });
+
+      expect(s.$transaction).toHaveBeenCalledTimes(1);
+      expect(callOrder(s)).toEqual([
+        'tx.pending.findFirst',
+        'tx.package.updateMany',
+      ]);
+      expect(
+        onlyCall(s.tx.contentStudioSourceVersionRetentionPending.findFirst)
+      ).toEqual({
+        where: { organizationId: ORG, sourceVersionId: { in: ['v-2', 'v-1'] } },
+        select: { id: true },
+      });
+      expect(onlyCall(s.tx.contentPackage.updateMany)).toEqual({
+        where: {
+          id: 'package-1',
+          organizationId: ORG,
+          archivedAt: null,
+          draftVersion: 3,
+        },
+        data: {
+          draft: '{"schemaVersion":1}',
+          draftVersion: { increment: 1 },
+        },
+      });
+    });
+
+    it('Q21/Q22 P8-R1Q a held version refuses the save: nothing is written', async () => {
+      const s = setup();
+      s.tx.contentStudioSourceVersionRetentionPending.findFirst.mockResolvedValue(
+        { id: 'pending-1' }
+      );
+      await expect(
+        s.repository.saveDraftCompareAndSwap({
+          organizationId: ORG,
+          packageId: 'package-1',
+          baseDraftVersion: 3,
+          draft: '{}',
+          sourceVersionIds: ['v-1'],
+        })
+      ).rejects.toBeInstanceOf(ContentStudioSourceVersionRetentionPendingError);
+      expect(
+        allCalls(s).map(({ name, method }) => `${name}.${method}`)
+      ).toEqual(['tx.pending.findFirst']);
+    });
+
+    it('Q6 P8-R1Q a draft naming no version is saved as before: no transaction, no held check', async () => {
+      const s = setup();
+      await s.repository.saveDraftCompareAndSwap({
+        organizationId: ORG,
+        packageId: 'package-1',
+        baseDraftVersion: 3,
+        draft: '{}',
+        sourceVersionIds: [],
+      });
+      expect(s.$transaction).not.toHaveBeenCalled();
+      expect(
+        allCalls(s).map(({ name, method }) => `${name}.${method}`)
+      ).toEqual(['package.updateMany']);
     });
 
     it('K7 reads the write state by id and organization, nothing else', async () => {
@@ -864,6 +955,40 @@ describe('ContentStudioRepository', () => {
       ).toBeLessThan(
         s.tx.contentPackageRevision.create.mock.invocationCallOrder[0]
       );
+    });
+
+    it('Q24/Q25/Q26 P8-R1Q the held check comes first in the same transaction; a held version writes nothing', async () => {
+      const s = setup();
+      await s.repository.createRevisionWithCompareAndSwap({
+        ...REVISION_INPUT,
+        sourceVersionIds: ['v-1', 'v-1', 'v-3'],
+      });
+      expect(s.$transaction).toHaveBeenCalledTimes(1);
+      expect(callOrder(s)).toEqual([
+        'tx.pending.findFirst',
+        'tx.package.updateMany',
+        'tx.revision.create',
+      ]);
+      expect(
+        onlyCall(s.tx.contentStudioSourceVersionRetentionPending.findFirst)
+      ).toEqual({
+        where: { organizationId: ORG, sourceVersionId: { in: ['v-1', 'v-3'] } },
+        select: { id: true },
+      });
+
+      const held = setup();
+      held.tx.contentStudioSourceVersionRetentionPending.findFirst.mockResolvedValue(
+        { id: 'pending-1' }
+      );
+      await expect(
+        held.repository.createRevisionWithCompareAndSwap({
+          ...REVISION_INPUT,
+          sourceVersionIds: ['v-1'],
+        })
+      ).rejects.toBeInstanceOf(ContentStudioSourceVersionRetentionPendingError);
+      expect(
+        allCalls(held).map(({ name, method }) => `${name}.${method}`)
+      ).toEqual(['tx.pending.findFirst']);
     });
 
     it('T4 stores the canonical content byte for byte', async () => {

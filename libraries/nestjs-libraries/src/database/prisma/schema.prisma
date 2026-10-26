@@ -9,18 +9,18 @@ datasource db {
 }
 
 model Organization {
-  id                                     String                                  @id @default(uuid())
+  id                                     String                                       @id @default(uuid())
   name                                   String
   description                            String?
   apiKey                                 String?
   paymentId                              String?
   streakSince                            DateTime?
-  createdAt                              DateTime                                @default(now())
-  updatedAt                              DateTime                                @updatedAt
+  createdAt                              DateTime                                     @default(now())
+  updatedAt                              DateTime                                     @updatedAt
   deletedAt                              DateTime?
-  allowTrial                             Boolean                                 @default(false)
-  isTrailing                             Boolean                                 @default(false)
-  shortlink                              ShortLinkPreference                     @default(ASK)
+  allowTrial                             Boolean                                      @default(false)
+  isTrailing                             Boolean                                      @default(false)
+  shortlink                              ShortLinkPreference                          @default(ASK)
   autoPost                               AutoPost[]
   Comments                               Comments[]
   credits                                Credits[]
@@ -33,8 +33,8 @@ model Organization {
   buyerOrganization                      MessagesGroup[]
   notifications                          Notifications[]
   plugs                                  Plugs[]
-  post                                   Post[]                                  @relation("organization")
-  submittedPost                          Post[]                                  @relation("submittedForOrg")
+  post                                   Post[]                                       @relation("organization")
+  submittedPost                          Post[]                                       @relation("submittedForOrg")
   sets                                   Sets[]
   signatures                             Signatures[]
   subscription                           Subscription?
@@ -64,6 +64,7 @@ model Organization {
   contentStudioSourceVersions            ContentStudioSourceVersion[]
   contentStudioSourceDiscoveries         ContentStudioSourceDiscovery[]
   contentStudioSourceCaptureAttempts     ContentStudioSourceCaptureAttempt[]
+  contentStudioSourceVersionsPending     ContentStudioSourceVersionRetentionPending[]
   contentStudioBrandKit                  ContentStudioBrandKit?
   contentStudioBrandKitRevisions         ContentStudioBrandKitRevision[]
   contentStudioDesignProjects            ContentStudioDesignProject[]
@@ -2434,7 +2435,7 @@ model ContentStudioSourceDiscovery {
 // HTML). contentHash covers those blocks; sourceHash, when ingestion has one,
 // covers what was fetched before extraction
 model ContentStudioSourceVersion {
-  id                String              @id @default(uuid())
+  id                String                                      @id @default(uuid())
   organizationId    String
   sourceId          String
   versionNumber     Int
@@ -2452,16 +2453,36 @@ model ContentStudioSourceVersion {
   contentHash       String
   sourceHash        String?
   createdById       String
-  createdAt         DateTime            @default(now())
-  organization      Organization        @relation(fields: [organizationId], references: [id])
-  source            ContentStudioSource @relation(fields: [sourceId, organizationId], references: [id, organizationId])
-  createdBy         User                @relation("ContentStudioSourceVersionCreatedBy", fields: [createdById], references: [id])
+  createdAt         DateTime                                    @default(now())
+  organization      Organization                                @relation(fields: [organizationId], references: [id])
+  source            ContentStudioSource                         @relation(fields: [sourceId, organizationId], references: [id, organizationId])
+  createdBy         User                                        @relation("ContentStudioSourceVersionCreatedBy", fields: [createdById], references: [id])
+  retentionPending  ContentStudioSourceVersionRetentionPending?
 
   @@unique([sourceId, versionNumber])
   @@unique([id, organizationId])
   @@index([organizationId])
   @@index([sourceId, createdAt])
   @@index([createdById])
+}
+
+// A source version held for a retention plan (P8-R1Q), never the version
+// itself: the version row stays exactly as it was captured. While a version
+// has this row no new draft, revision or AI operation may name it, and
+// PostgreSQL refuses to remove the version (Restrict). planHash is the dry
+// run hash of the plan that holds it (P8-R1B); pendingAt is when it was first
+// held, never moved. A row is only created and removed
+model ContentStudioSourceVersionRetentionPending {
+  id              String                     @id @default(uuid())
+  organizationId  String
+  sourceVersionId String
+  planHash        String
+  pendingAt       DateTime                   @default(now())
+  organization    Organization               @relation(fields: [organizationId], references: [id])
+  sourceVersion   ContentStudioSourceVersion @relation(fields: [sourceVersionId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([sourceVersionId, organizationId])
+  @@index([organizationId, planHash])
 }
 
 // One per organization: organizationId is unique. The kit itself (identity,

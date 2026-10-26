@@ -5,6 +5,7 @@ import {
   ContentStudioSourceRetentionDryRunError,
   ContentStudioSourceRetentionIntegrityError,
   ContentStudioSourceVersionProtectionMap,
+  ContentStudioSourceVersionQuarantineError,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
 import { parseContentPackageDraft } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 import {
@@ -228,6 +229,8 @@ type FakeOptions = {
   fail?: Error;
   // versions gone before they are measured
   missing?: string[];
+  // organizations with a version held for a retention plan (P8-R1Q)
+  pending?: string[];
 };
 const fakeRetentionRepository = (w: World, options: FakeOptions = {}) => {
   const reads = options.reads ?? [];
@@ -262,6 +265,12 @@ const fakeRetentionRepository = (w: World, options: FakeOptions = {}) => {
         throw options.fail;
       }
       const result = await work({
+        findPending: async (organizationId: string) => {
+          reads.push('pending');
+          return (options.pending ?? []).includes(organizationId)
+            ? { id: 'pending' }
+            : null;
+        },
         countVersions: async (organizationId: string) => {
           reads.push('count');
           return (
@@ -940,6 +949,10 @@ describe('P8-R1A explainRetentionEligibility', () => {
   });
 });
 
+// The P8-R1B dry run's hash of the DR1 fixture, from f7eec46f
+const R1B_FIXTURE_HASH =
+  '69b221328b23ce9e6b29fee2ca28661dccff7539ed9836d7d49e6984b161d6c6';
+
 describe('P8-R1B the retention dry run', () => {
   const POLICY = {
     mode: 'compact_repeats',
@@ -1016,6 +1029,8 @@ describe('P8-R1B the retention dry run', () => {
     // versions; then the candidates' blocks
     expect(reads).toEqual([
       'snapshot',
+      // P8-R1Q: whether a version is held, first
+      'pending',
       'count',
       'sources',
       'packages',
@@ -1037,7 +1052,7 @@ describe('P8-R1B the retention dry run', () => {
     expect(await code(dryRun(w, { reads, count: 1_000_001 }))).toBe(
       'RETENTION_DRY_RUN_SCALE_LIMIT'
     );
-    expect(reads).toEqual(['snapshot', 'count']);
+    expect(reads).toEqual(['snapshot', 'pending', 'count']);
     // at the limit the guard lets it through: these rows are then not
     // the 1,000,000 counted, which fails the organization
     const atLimit: string[] = [];
@@ -1116,6 +1131,43 @@ describe('P8-R1B the retention dry run', () => {
     expect(report.candidateSummary.blockedCandidateVersions).toBe(9);
   });
 
+  it('Q31 P8-R1Q no held version: the report and hash are exactly those of P8-R1B', async () => {
+    // the same ids whatever ran before
+    sourceCount = 1000;
+    const { w } = fixture();
+    const report = await dryRun(w, { pending: [OTHER_ORG] });
+    // computed by the P8-R1B dry run (f7eec46f) for this fixture, at NOW
+    expect(report.dryRunHash).toBe(R1B_FIXTURE_HASH);
+    expect(report.dryRunFormatVersion).toBe(1);
+    expect(report.policyVersion).toBe(1);
+    expect(report.protectionVersion).toBe(1);
+  });
+
+  it("Q32/Q33 P8-R1Q a held version of the organization refuses the run in its snapshot, before anything else is read; another organization's does not", async () => {
+    const { w } = fixture();
+    const reads: string[] = [];
+    expect(await code(dryRun(w, { reads, pending: [ORG] }))).toBe(
+      'RETENTION_DRY_RUN_QUARANTINE_ACTIVE'
+    );
+    expect(reads).toEqual(['snapshot', 'pending']);
+    // the scale guard comes after it
+    const both: string[] = [];
+    expect(
+      await code(dryRun(w, { reads: both, pending: [ORG], count: 2_000_000 }))
+    ).toBe('RETENTION_DRY_RUN_QUARANTINE_ACTIVE');
+    // protection (P8-R1A) reads no held version and is never refused for one
+    const protectionReads: string[] = [];
+    await service(w, {
+      reads: protectionReads,
+      pending: [ORG],
+    }).computeProtectionMap({ organizationId: ORG, now: NOW });
+    expect(protectionReads).not.toContain('pending');
+    expect(
+      (await dryRun(w, { pending: [OTHER_ORG] })).candidateSummary
+        .candidateVersions
+    ).toBe(8);
+  });
+
   it('DR6 reads by batch and page, never per version or candidate', async () => {
     const w = world();
     // 450 sources of 30 captures (A1..A29, B30), the change at v30
@@ -1147,5 +1199,152 @@ describe('P8-R1B the retention dry run', () => {
       // 4,050 candidates in pages of 500
       contents: 9,
     });
+  });
+});
+
+describe('P8-R1Q the retention quarantine, as the service checks it', () => {
+  const PLAN = 'c'.repeat(64);
+  const V1 = uuid(0x9000, 1);
+  const V2 = uuid(0x9000, 2);
+  const setup = () => {
+    const repository = {
+      quarantineVersions: jest.fn(async () => ({
+        created: 1,
+        alreadyPending: 0,
+      })),
+      releaseQuarantine: jest.fn(async () => ({ count: 2 })),
+      listPendingForPlan: jest.fn(async () => []),
+    };
+    return {
+      repository,
+      service: new ContentStudioSourceRetentionService(
+        repository as unknown as ContentStudioSourceRetentionRepository
+      ),
+    };
+  };
+  const invalid = async (call: () => Promise<unknown>) => {
+    const err = await call().then(
+      () => null,
+      (e: unknown) => e
+    );
+    expect(err).toEqual(
+      new ContentStudioSourceVersionQuarantineError(
+        'RETENTION_QUARANTINE_INVALID'
+      )
+    );
+  };
+
+  it('Q7/Q8 holds distinct versions for the plan, in the order given, at now', async () => {
+    const { repository, service } = setup();
+    await service.quarantineSourceVersions({
+      organizationId: ORG,
+      sourceVersionIds: [V2, V1, V2],
+      planHash: PLAN,
+      now: NOW,
+    });
+    expect(repository.quarantineVersions).toHaveBeenCalledWith({
+      organizationId: ORG,
+      planHash: PLAN,
+      sourceVersionIds: [V2, V1],
+      now: NOW,
+    });
+  });
+
+  it('Q14 a plan hash that is not a lowercase sha256, an organization or version that is not an id, no version, more than 500 or no valid now: refused before anything is read', async () => {
+    const { repository, service } = setup();
+    const call = (over: Record<string, unknown>) => () =>
+      service.quarantineSourceVersions({
+        organizationId: ORG,
+        sourceVersionIds: [V1],
+        planHash: PLAN,
+        now: NOW,
+        ...over,
+      } as never);
+    for (const over of [
+      { planHash: 'C'.repeat(64) },
+      { planHash: 'c'.repeat(63) },
+      { planHash: 'c'.repeat(65) },
+      { planHash: `${'c'.repeat(63)}g` },
+      { planHash: undefined },
+      { organizationId: 'org' },
+      { organizationId: ORG.toUpperCase() },
+      { sourceVersionIds: [] },
+      { sourceVersionIds: ['v1'] },
+      { sourceVersionIds: [V1, 7] },
+      { sourceVersionIds: 'x' },
+      {
+        sourceVersionIds: Array.from({ length: 501 }, (_, i) =>
+          uuid(0x9100, i + 1)
+        ),
+      },
+      { now: new Date(Number.NaN) },
+      { now: '2026-10-26T12:00:00.000Z' },
+    ]) {
+      await invalid(call(over));
+    }
+    // 500 is the most one call holds
+    await call({
+      sourceVersionIds: Array.from({ length: 500 }, (_, i) =>
+        uuid(0x9100, i + 1)
+      ),
+    })();
+    expect(repository.quarantineVersions).toHaveBeenCalledTimes(1);
+  });
+
+  it('Q15/Q16/Q116 releases these versions, or all of the plan, of the organization; checked like holding', async () => {
+    const { repository, service } = setup();
+    await expect(
+      service.releaseSourceVersionQuarantine({
+        organizationId: ORG,
+        planHash: PLAN,
+        sourceVersionIds: [V1, V1],
+      })
+    ).resolves.toEqual({ released: 2 });
+    expect(repository.releaseQuarantine).toHaveBeenLastCalledWith({
+      organizationId: ORG,
+      planHash: PLAN,
+      sourceVersionIds: [V1],
+    });
+    await service.releaseSourceVersionQuarantine({
+      organizationId: ORG,
+      planHash: PLAN,
+    });
+    expect(repository.releaseQuarantine).toHaveBeenLastCalledWith({
+      organizationId: ORG,
+      planHash: PLAN,
+    });
+    for (const over of [
+      { planHash: 'x' },
+      { organizationId: 'org' },
+      { sourceVersionIds: [] },
+      { sourceVersionIds: ['v1'] },
+    ]) {
+      await invalid(() =>
+        service.releaseSourceVersionQuarantine({
+          organizationId: ORG,
+          planHash: PLAN,
+          ...over,
+        } as never)
+      );
+    }
+    expect(repository.releaseQuarantine).toHaveBeenCalledTimes(2);
+  });
+
+  it("Q119 lists a plan's held versions of the organization, checked like holding", async () => {
+    const { repository, service } = setup();
+    await service.listSourceVersionQuarantine({
+      organizationId: ORG,
+      planHash: PLAN,
+    });
+    expect(repository.listPendingForPlan).toHaveBeenCalledWith({
+      organizationId: ORG,
+      planHash: PLAN,
+    });
+    await invalid(async () =>
+      service.listSourceVersionQuarantine({
+        organizationId: ORG,
+        planHash: PLAN.toUpperCase(),
+      })
+    );
   });
 });

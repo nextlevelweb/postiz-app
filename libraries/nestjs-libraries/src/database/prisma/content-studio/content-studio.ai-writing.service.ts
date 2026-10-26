@@ -205,6 +205,14 @@ const EXECUTION_FAILURES: Record<
       'CS_AI_OPERATION_FAILED',
       'The AI operation could not be recorded.'
     ),
+  // a selected source's version is held for retention (P8-R1Q): no
+  // operation was recorded and the provider was not asked
+  SOURCE_VERSION_RETENTION_PENDING: () =>
+    fail(
+      409,
+      'CS_SOURCE_VERSION_RETENTION_PENDING',
+      'This source version is temporarily unavailable for new references'
+    ),
 };
 
 // One Content Studio code per normalized provider code

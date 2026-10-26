@@ -38,6 +38,7 @@ import {
   contentStudioAISourceContextBytes,
   renderContentStudioAISourceContext,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.writing.prompt';
+import { ContentStudioSourceVersionRetentionPendingError } from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
 import { safeFetch } from '@gitroom/nestjs-libraries/dtos/webhooks/safe.fetch';
 
 // No database and no provider. The package and profile repositories, the
@@ -2098,6 +2099,30 @@ describe('ContentStudioAIWritingService: source grounding', () => {
     ).not.toHaveBeenCalled();
     expect(jest.mocked(safeFetch)).not.toHaveBeenCalled();
     nothingRan(ctx);
+  });
+
+  it('Q28/Q29/Q30 P8-R1Q a source version held for retention is the fixed 409: the operation repository refused it, the provider is never asked', async () => {
+    const ctx = setup();
+    ctx.operations.createRunningOperation.mockImplementationOnce(async () => {
+      throw new ContentStudioSourceVersionRetentionPendingError();
+    });
+    expect(
+      await refusal(ctx.service.proposeItem(itemInput({}, withSources(1, 2))))
+    ).toEqual({
+      status: 409,
+      code: 'CS_SOURCE_VERSION_RETENTION_PENDING',
+      msg: 'This source version is temporarily unavailable for new references',
+    });
+    // the operation it asked for named exactly the versions resolved
+    expect(
+      created(ctx).context.sources.map(
+        (source: { versionId: string }) => source.versionId
+      )
+    ).toHaveLength(2);
+    expect(ctx.adapter.generateText).not.toHaveBeenCalled();
+    expect(ctx.operations.completeSucceededWithUsage).not.toHaveBeenCalled();
+    expect(ctx.operations.completeFailedWithUsage).not.toHaveBeenCalled();
+    noDraftOrProfileWrite(ctx);
   });
 
   it('SR-AI8 a current version that is missing is a broken store, not "not ingested"', async () => {

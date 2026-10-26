@@ -35,6 +35,7 @@ import {
   ContentStudioDesignFromPackageError,
 } from '@gitroom/nestjs-libraries/content-studio/design/design.package.source';
 import { ContentPackageRevisionOrigin } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.package.dto';
+import { ContentStudioSourceVersionRetentionPendingError } from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
 
 export const CONTENT_STUDIO_PAGE_SIZE = 20;
 const UNTITLED_PACKAGE = 'Untitled package';
@@ -107,6 +108,16 @@ const groundingStale = () =>
       code: 'CS_DRAFT_GROUNDING_STALE',
     },
     400
+  );
+// A source version the evidence names is held for retention (P8-R1Q): it
+// can be named again once released. Never which version or why
+const sourceVersionRetentionPending = () =>
+  new HttpException(
+    {
+      msg: 'This source version is temporarily unavailable for new references',
+      code: 'CS_SOURCE_VERSION_RETENTION_PENDING',
+    },
+    409
   );
 const groundingSourceIntegrityError = () =>
   new HttpException(
@@ -205,6 +216,16 @@ interface RevisionRow {
   sourceDraftVersion: number;
   createdAt: Date;
 }
+
+// Every source version the draft's evidence names, once each: what a write
+// of it newly names
+const evidenceVersionIds = (draft: ContentPackageDraft) => [
+  ...new Set(
+    contentPackageClaims(draft).flatMap((claim) =>
+      claim.evidence.map((entry) => entry.versionId)
+    )
+  ),
+];
 
 const revisionSummary = (row: RevisionRow) => ({
   id: row.id,
@@ -447,13 +468,15 @@ export class ContentStudioService {
       await this.assertGroundingSavable(input, draft);
     }
 
-    const { count } =
-      await this._contentStudioRepository.saveDraftCompareAndSwap({
+    const { count } = await this.writingReferences(() =>
+      this._contentStudioRepository.saveDraftCompareAndSwap({
         organizationId: input.organizationId,
         packageId: input.packageId,
         baseDraftVersion: input.baseDraftVersion,
         draft: JSON.stringify(draft),
-      });
+        sourceVersionIds: evidenceVersionIds(draft),
+      })
+    );
     if (count === 1) {
       return { draftVersion: input.baseDraftVersion + 1 };
     }
@@ -545,8 +568,8 @@ export class ContentStudioService {
 
     let result;
     try {
-      result =
-        await this._contentStudioRepository.createRevisionWithCompareAndSwap({
+      result = await this.writingReferences(() =>
+        this._contentStudioRepository.createRevisionWithCompareAndSwap({
           organizationId: input.organizationId,
           packageId: input.packageId,
           expectedDraftVersion: row.draftVersion,
@@ -556,7 +579,9 @@ export class ContentStudioService {
           contentHash,
           origin: input.origin ?? 'manual',
           createdById: input.userId,
-        });
+          sourceVersionIds: evidenceVersionIds(draft),
+        })
+      );
     } catch (err) {
       if (isUniqueConstraintError(err)) {
         throw packageChanged();
@@ -793,6 +818,19 @@ export class ContentStudioService {
       throw groundingStale();
     }
     await this.verifyGrounding(input.organizationId, draft);
+  }
+
+  // A write of a draft or revision whose evidence names a source version
+  // held for retention (P8-R1Q) is refused as a whole
+  private async writingReferences<T>(write: () => Promise<T>) {
+    try {
+      return await write();
+    } catch (err) {
+      if (err instanceof ContentStudioSourceVersionRetentionPendingError) {
+        throw sourceVersionRetentionPending();
+      }
+      throw err;
+    }
   }
 
   private async verifyGrounding(

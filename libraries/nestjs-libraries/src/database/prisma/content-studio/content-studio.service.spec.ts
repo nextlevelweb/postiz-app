@@ -907,6 +907,8 @@ describe('ContentStudioService.saveDraft', () => {
       packageId: PACKAGE_ID,
       baseDraftVersion: 4,
       draft: JSON.stringify(parseContentPackageDraft(sent)),
+      // P8-R1Q: the versions its evidence names; none without claims
+      sourceVersionIds: [],
     });
     expect(repository.saveDraftCompareAndSwap.mock.calls[0][0].draft).toBe(
       '{"schemaVersion":1,"copy":{"global":{"thread":[{"id":"main","text":"Hi","mediaIds":[]}]}}}'
@@ -1269,6 +1271,7 @@ describe('ContentStudioService.createRevision', () => {
       contentHash: HASH_A,
       origin: 'manual',
       createdById: USER,
+      sourceVersionIds: [],
     });
     // no revision yet, so nothing to compare with
     expect(repository.getLatestRevisionForPackage).not.toHaveBeenCalled();

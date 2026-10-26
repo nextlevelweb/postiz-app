@@ -151,7 +151,8 @@ export type ContentStudioAIExecutionErrorCode =
   | 'PACKAGE_ARCHIVED'
   | 'DRAFT_VERSION_CONFLICT'
   | 'MODEL_UNSUPPORTED'
-  | 'PERSISTENCE_FAILED';
+  | 'PERSISTENCE_FAILED'
+  | 'SOURCE_VERSION_RETENTION_PENDING';
 
 const EXECUTION_MESSAGES: Record<ContentStudioAIExecutionErrorCode, string> = {
   INVALID_INPUT: 'The AI operation request is invalid',
@@ -160,6 +161,8 @@ const EXECUTION_MESSAGES: Record<ContentStudioAIExecutionErrorCode, string> = {
   DRAFT_VERSION_CONFLICT: 'The content package changed since it was read',
   MODEL_UNSUPPORTED: 'The AI model is not supported for this connection',
   PERSISTENCE_FAILED: 'The AI operation could not be recorded',
+  SOURCE_VERSION_RETENTION_PENDING:
+    'A selected source version is temporarily unavailable for new references',
 };
 
 // Why an AI operation was not run or not recorded. A provider failure is a
