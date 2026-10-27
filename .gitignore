@@ -9,6 +9,8 @@ tmp
 # the committed example stays tracked
 .env.*
 !.env.example
+# local-only development secrets (scripts/content-studio-dev-db.sh)
+/.local/
 .apple
 # dependencies
 node_modules

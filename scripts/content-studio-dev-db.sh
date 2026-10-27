@@ -20,12 +20,23 @@
 # Prisma alike. Any target other than the profile's database on
 # 127.0.0.1:5432 is refused, and so is anything that resets the database.
 # postiz-prod-migration-test is the source of the clone and is never a target.
+#
+# The command also gets a local Secret Box keyring (SECRET_BOX_KEYS and
+# SECRET_BOX_ACTIVE_KEY), so Content Studio can store AI connection keys
+# encrypted. The keyring is a development key made for this checkout on first
+# use, in .local/content-studio/secret-box.env (gitignored, mode 600). It is
+# never printed, never a production key and never read from .env; a file
+# that is not exactly that keyring, or is readable by others, is refused.
+# Deleting the file makes stored AI keys unreadable: replace them in Brand &
+# AI afterwards.
 set -euo pipefail
 
 CONTAINER=postiz-postgres
 DB_HOST=127.0.0.1
 DB_PORT=5432
 SOURCE_DB=postiz-prod-migration-test
+SECRET_BOX_DIR=.local/content-studio
+SECRET_BOX_FILE=$SECRET_BOX_DIR/secret-box.env
 
 fail() {
   echo "content-studio-dev-db: $*" >&2
@@ -113,5 +124,40 @@ node -e '
   }
 ' "$DB_HOST" "$DB_PORT" "$DB_NAME"
 
-echo "content-studio-dev-db: profile $profile, database $DB_NAME on $DB_HOST:$DB_PORT" >&2
+# the local Secret Box keyring: made once, then only read
+if [ ! -e "$SECRET_BOX_FILE" ]; then
+  (
+    umask 077
+    mkdir -p "$SECRET_BOX_DIR"
+    key=$(node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("base64"))')
+    printf 'SECRET_BOX_KEYS=local1:%s\nSECRET_BOX_ACTIVE_KEY=local1\n' "$key" >"$SECRET_BOX_FILE"
+  )
+  echo "content-studio-dev-db: created a local Secret Box key in $SECRET_BOX_FILE" >&2
+fi
+[ -f "$SECRET_BOX_FILE" ] && [ ! -L "$SECRET_BOX_FILE" ] ||
+  fail "$SECRET_BOX_FILE is not a regular file"
+[ -O "$SECRET_BOX_FILE" ] || fail "$SECRET_BOX_FILE is not owned by you"
+mode=$(stat -f '%Lp' "$SECRET_BOX_FILE" 2>/dev/null || stat -c '%a' "$SECRET_BOX_FILE")
+[ "$mode" = 600 ] || fail "$SECRET_BOX_FILE must have mode 600 (chmod 600 $SECRET_BOX_FILE)"
+keys=
+active=
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in
+    SECRET_BOX_KEYS=*) keys=${line#SECRET_BOX_KEYS=} ;;
+    SECRET_BOX_ACTIVE_KEY=*) active=${line#SECRET_BOX_ACTIVE_KEY=} ;;
+    *) fail "$SECRET_BOX_FILE holds something other than the Secret Box keyring" ;;
+  esac
+done <"$SECRET_BOX_FILE"
+printf '%s' "$keys" | grep -qE '^[a-z0-9_-]{1,32}:[A-Za-z0-9+/]{43}=(,[a-z0-9_-]{1,32}:[A-Za-z0-9+/]{43}=)*$' ||
+  fail "$SECRET_BOX_FILE has an invalid SECRET_BOX_KEYS"
+printf '%s' "$active" | grep -qE '^[a-z0-9_-]{1,32}$' ||
+  fail "$SECRET_BOX_FILE has an invalid SECRET_BOX_ACTIVE_KEY"
+case ",$keys" in
+  *",$active:"*) ;;
+  *) fail "$SECRET_BOX_FILE: the active key is not in the keyring" ;;
+esac
+export SECRET_BOX_KEYS="$keys" SECRET_BOX_ACTIVE_KEY="$active"
+unset keys active line mode
+
+echo "content-studio-dev-db: profile $profile, database $DB_NAME on $DB_HOST:$DB_PORT, Secret Box configured (local key)" >&2
 exec "$@"
