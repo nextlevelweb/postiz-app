@@ -1,37 +1,76 @@
 #!/usr/bin/env bash
 # LOCAL DEVELOPMENT ONLY. Never use this script on a server.
 #
-# Runs a command against the local Content Studio development database:
+# Runs a command against one of the two local Content Studio development
+# databases, chosen by an explicit profile:
 #
-#   scripts/content-studio-dev-db.sh pnpm run dev:backend
-#   scripts/content-studio-dev-db.sh pnpm run prisma-db-push
+#   scripts/content-studio-dev-db.sh scratch pnpm run dev:backend
+#   scripts/content-studio-dev-db.sh existing-data pnpm run dev:backend
+#   scripts/content-studio-dev-db.sh existing-data pnpm run prisma-db-push
+#
+#   scratch        postiz-dev-content-studio, an empty database for tests
+#   existing-data  postiz-dev-content-studio-from-existing, a clone of
+#                  postiz-prod-migration-test (real accounts, posts and social
+#                  integration tokens), for reviewing Content Studio locally
 #
 # DATABASE_URL is built for the command's process only, from the credentials
 # of the postiz-postgres container of docker-compose.dev.yaml. It is never
 # printed or written to disk, and .env is neither read nor changed: a
 # DATABASE_URL already in the environment wins over .env, for dotenv and for
-# Prisma alike. Any target other than postiz-dev-content-studio on
+# Prisma alike. Any target other than the profile's database on
 # 127.0.0.1:5432 is refused, and so is anything that resets the database.
+# postiz-prod-migration-test is the source of the clone and is never a target.
 set -euo pipefail
 
 CONTAINER=postiz-postgres
 DB_HOST=127.0.0.1
 DB_PORT=5432
-DB_NAME=postiz-dev-content-studio
+SOURCE_DB=postiz-prod-migration-test
 
 fail() {
   echo "content-studio-dev-db: $*" >&2
   exit 3
 }
 
-[ "$#" -gt 0 ] || fail "usage: scripts/content-studio-dev-db.sh <command> [args...]"
+usage="usage: scripts/content-studio-dev-db.sh scratch|existing-data <command> [args...]"
+[ "$#" -gt 1 ] || fail "$usage"
+profile=$1
+shift
+case "$profile" in
+  scratch) DB_NAME=postiz-dev-content-studio ;;
+  existing-data) DB_NAME=postiz-dev-content-studio-from-existing ;;
+  "$SOURCE_DB") fail "refusing $SOURCE_DB: it is the source of the clone, never a target" ;;
+  *) fail "unknown profile '$profile'; $usage" ;;
+esac
+[ "$DB_NAME" != "$SOURCE_DB" ] || fail "refusing $SOURCE_DB"
+
 for arg in "$@"; do
   case "$arg" in
-    *--force-reset* | *--accept-data-loss* | *prisma-reset* | *migrate\ reset*)
+    *"$SOURCE_DB"*)
+      fail "refusing a command that names $SOURCE_DB"
+      ;;
+    *--force-reset* | *--accept-data-loss* | *prisma-reset* | *migrate\ reset* | *db\ reset*)
       fail "refusing a command that can reset or drop data: $arg"
       ;;
   esac
 done
+case " $* " in
+  *" migrate reset "* | *" db reset "*)
+    fail "refusing a command that can reset or drop data"
+    ;;
+esac
+# existing-data holds real social integration tokens: nothing that starts the
+# orchestrator (it publishes and refreshes tokens) runs against it
+if [ "$profile" = existing-data ]; then
+  for arg in "$@"; do
+    case "$arg" in
+      *orchestrator* | dev | dev:stripe | pm2 | pm2-run)
+        fail "refusing to start the orchestrator against $DB_NAME: $arg"
+        ;;
+    esac
+  done
+fi
+
 command -v docker >/dev/null || fail "docker is not installed"
 command -v node >/dev/null || fail "node is not installed"
 
@@ -74,5 +113,5 @@ node -e '
   }
 ' "$DB_HOST" "$DB_PORT" "$DB_NAME"
 
-echo "content-studio-dev-db: database $DB_NAME on $DB_HOST:$DB_PORT" >&2
+echo "content-studio-dev-db: profile $profile, database $DB_NAME on $DB_HOST:$DB_PORT" >&2
 exec "$@"
