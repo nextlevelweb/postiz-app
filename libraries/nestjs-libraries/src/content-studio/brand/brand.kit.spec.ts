@@ -1001,7 +1001,7 @@ describe('Brand Kit P4-01 scope boundary', () => {
 
   // P4-08: the design editor lists the revisions to pin one exactly, and
   // asks the server for that revision's reference; still no write
-  it('75 the frontend reads Brand Kit revisions for Creative Studio only, and never writes', () => {
+  it('75 the frontend reads Brand Kit revisions for Creative Studio, and only the setup API writes, the identity alone', () => {
     const walk = (dir: string): string[] =>
       fs
         .readdirSync(path.join(ROOT, dir), { withFileTypes: true })
@@ -1047,6 +1047,13 @@ describe('Brand Kit P4-01 scope boundary', () => {
       `${CS}/content-studio.design.preview.tsx`,
       `${CS}/content-studio.design.workspace.tsx`,
       `${CS}/content-studio.designs.api.ts`,
+      // Product UX foundation: the setup assistant and the Company tab of
+      // Brand & AI show and save the kit's identity (name, tagline,
+      // description) through the setup API, over the latest revision and
+      // keeping colors, typography and visual direction as they are
+      `${CS}/content-studio.setup.api.ts`,
+      `${CS}/content-studio.setup.tsx`,
+      `${CS}/intelligence/content-studio.company-profile.tsx`,
     ]);
     const routes = frontend.flatMap((file) =>
       Array.from(
@@ -1063,6 +1070,15 @@ describe('Brand Kit P4-01 scope boundary', () => {
         /brand-kit[^'`]*['`],\s*\{\s*method/.test(code(file))
       )
     ).toEqual([]);
+    // the one write: a new revision over the latest, the identity replaced
+    // and everything else of the kit spread through unchanged
+    const writers = frontend.filter((file) =>
+      /\$\{BRAND_KIT_PATH\}\/revisions`,\s*\{\s*method: 'POST'/.test(code(file))
+    );
+    expect(writers).toEqual([`${CS}/content-studio.setup.api.ts`]);
+    const setupApi = code(`${CS}/content-studio.setup.api.ts`);
+    expect(setupApi).toMatch(/\.\.\.\(isRecord\(content\)\s*\?\s*content/);
+    expect(setupApi).toMatch(/identity: \{\s*brandName/);
     for (const file of frontend) {
       expect([file, code(file)]).not.toEqual([
         file,

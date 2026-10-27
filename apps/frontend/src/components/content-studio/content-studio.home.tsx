@@ -30,6 +30,7 @@ import {
   ContentStudioPage,
 } from '@gitroom/frontend/components/content-studio/content-studio.shell';
 import { ContentStudioDialogLayout } from '@gitroom/frontend/components/content-studio/content-studio.dialog';
+import { ContentStudioSetupCard } from '@gitroom/frontend/components/content-studio/content-studio.setup.card';
 
 // What each other part of Content Studio is for, in one line
 const SectionCards: FC = () => {
@@ -200,6 +201,8 @@ export const ContentStudioHome: FC = () => {
         </Button>
       }
     >
+      <ContentStudioSetupCard hasContent={!!packages.data?.results.length} />
+
       {!!latest && (
         <div className="flex flex-wrap items-center gap-[12px] p-[16px] rounded-[12px] bg-newBgLineColor">
           <div className="flex flex-col gap-[2px] flex-1 min-w-[200px]">

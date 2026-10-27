@@ -1,3 +1,4 @@
+import { ContentStudioAISetupService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-setup.service';
 import {
   ArgumentMetadata,
   BadRequestException,
@@ -99,7 +100,8 @@ const setup = () => {
     {} as ContentStudioDesignPageSetService,
     {} as ContentStudioDesignBlockService,
     {} as ContentStudioReviewService,
-    {} as ContentStudioDesignAIService
+    {} as ContentStudioDesignAIService,
+    {} as ContentStudioAISetupService
   );
   return { writing, controller, result };
 };
@@ -161,7 +163,7 @@ describe('ContentStudioController AI writing routes', () => {
     );
     expect(
       routes.filter((r) =>
-        /generate|execute|operation|usage|openai|anthropic|openrouter|\/ai\/(?!item$|thread$|providers$|connections|propose$)/.test(
+        /generate|execute|operation|usage|openai|anthropic|openrouter|\/ai\/(?!item$|thread$|providers$|connections|propose$|setup\/proposal$)/.test(
           r
         )
       )
@@ -170,6 +172,11 @@ describe('ContentStudioController AI writing routes', () => {
     // design revision
     expect(routes.filter((r) => /\/ai\/propose$/.test(r))).toEqual([
       'POST /designs/:id/revisions/:revisionId/ai/propose',
+    ]);
+    // Product UX foundation: the setup assistant's AI draft, for the
+    // organization itself (no package, no design)
+    expect(routes.filter((r) => /\/ai\/setup\//.test(r))).toEqual([
+      'POST /ai/setup/proposal',
     ]);
   });
 

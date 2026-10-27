@@ -10,17 +10,27 @@ import { WritingProfilesSection } from '@gitroom/frontend/components/content-stu
 import { EditorialPolicySection } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.editorial-policy';
 import { AudienceProfilesSection } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.audience-profiles';
 import { ExpertiseProfilesSection } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.expertise-profiles';
+import { CompanyProfileSection } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.company-profile';
+import { PROFILE_PARAM } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
+import { useConfirmLeave } from '@gitroom/frontend/components/content-studio/content-studio.dialog';
+import {
+  CONTENT_STUDIO_SETUP_PATH,
+  ContentStudioPage,
+} from '@gitroom/frontend/components/content-studio/content-studio.shell';
 
 export const CONTENT_STUDIO_INTELLIGENCE_PATH = '/content-studio/intelligence';
 
 // The tab lives in the URL (?tab=), so a reload or the back button keeps it.
-// Only these fixed names ever go there; anything else is the first tab
+// Only these fixed names ever go there; anything else is the AI tab, the one
+// every "connect AI" link opens. The order is the order of setting up:
+// AI, who you are, how you sound, for whom, what you know, the rules
 export const INTELLIGENCE_TABS = [
   'ai',
+  'company',
   'writing',
-  'editorial',
   'audiences',
   'expertise',
+  'editorial',
 ] as const;
 export type IntelligenceTab = (typeof INTELLIGENCE_TABS)[number];
 
@@ -41,42 +51,45 @@ export const ContentStudioIntelligence: FC = () => {
 
   const labels: Record<IntelligenceTab, string> = {
     ai: t('content_studio_tab_ai', 'AI Connections'),
+    company: t('content_studio_tab_company', 'Company'),
     writing: t('content_studio_tab_writing', 'Writing'),
-    editorial: t('content_studio_tab_editorial', 'Editorial Policy'),
     audiences: t('content_studio_tab_audiences', 'Audiences'),
     expertise: t('content_studio_tab_expertise', 'Expertise'),
+    editorial: t('content_studio_tab_editorial', 'Editorial Policy'),
   };
 
+  // another tab never keeps the open editor of this one, and never drops
+  // its unsaved changes without asking
+  const confirmLeave = useConfirmLeave();
   const select = useCallback(
-    (next: IntelligenceTab) => {
+    async (next: IntelligenceTab) => {
+      if (!(await confirmLeave())) {
+        return;
+      }
       const params = new URLSearchParams(searchParams.toString());
       params.set('tab', next);
+      params.delete(PROFILE_PARAM);
       router.replace(`${pathname}?${params.toString()}`, { scroll: false });
     },
-    [router, pathname, searchParams]
+    [router, pathname, searchParams, confirmLeave]
   );
 
   return (
-    <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col gap-[16px] min-w-0">
-      <div className="flex flex-wrap items-center gap-[12px]">
-        <div className="flex flex-col gap-[4px] flex-1 min-w-[200px]">
-          <h1 className="text-[20px] font-[600]">
-            {t('content_studio_brand_ai', 'Brand & AI')}
-          </h1>
-          <div className="text-textItemBlur">
-            {t(
-              'content_studio_brand_ai_subtitle',
-              'Your AI connections and the editorial context of your organization.'
-            )}
-          </div>
-        </div>
+    <ContentStudioPage
+      title={t('content_studio_brand_ai', 'Brand & AI')}
+      description={t(
+        'content_studio_brand_ai_subtitle',
+        'What every AI suggestion in Content Studio starts from: your AI connection, who you are, how you sound and who you write for.'
+      )}
+      actions={
         <Link
-          href="/content-studio"
+          href={CONTENT_STUDIO_SETUP_PATH}
           className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
         >
-          {t('content_studio', 'Content Studio')}
+          {t('content_studio_setup_run_again', 'Run setup assistant')}
         </Link>
-      </div>
+      }
+    >
       <div
         role="tablist"
         aria-label={t('content_studio_brand_ai', 'Brand & AI')}
@@ -112,11 +125,12 @@ export const ContentStudioIntelligence: FC = () => {
         className="flex flex-col min-w-0"
       >
         {tab === 'ai' && <AIConnectionsSection />}
+        {tab === 'company' && <CompanyProfileSection />}
         {tab === 'writing' && <WritingProfilesSection />}
-        {tab === 'editorial' && <EditorialPolicySection />}
         {tab === 'audiences' && <AudienceProfilesSection />}
         {tab === 'expertise' && <ExpertiseProfilesSection />}
+        {tab === 'editorial' && <EditorialPolicySection />}
       </div>
-    </div>
+    </ContentStudioPage>
   );
 };

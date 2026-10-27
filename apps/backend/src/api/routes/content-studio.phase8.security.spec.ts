@@ -473,7 +473,7 @@ describe('P8-01 routes', () => {
       // P8-04B1: one more, the organization's page changes
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(149);
+    ).toHaveLength(150);
     const handler = controller.slice(
       controller.indexOf("@Get('/sources/:id/discoveries')"),
       controller.indexOf("@Post('/sources/:id/archive')")
@@ -645,7 +645,7 @@ describe('P8-02 News Radar', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(149);
+    ).toHaveLength(150);
     expect(controller.match(/@Get\('\/discoveries'\)/g)).toHaveLength(1);
     expect(controller).not.toMatch(
       /@(Post|Put|Patch|Delete)\('\/discoveries|\/research|\/radar/
@@ -787,7 +787,7 @@ describe('P8-03 research into content', () => {
       // P8-04B1: one more, the organization's page changes
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(149);
+    ).toHaveLength(150);
     // the routes of sources: the P8-02 ones, nothing to resolve or keep a
     // selection with
     expect(
@@ -1001,7 +1001,7 @@ describe('P8-04A source change detection', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(149);
+    ).toHaveLength(150);
     expect(controller.match(/\/changes'/g)).toEqual(["/changes'"]);
     const handler = between(
       controller,
@@ -1534,7 +1534,7 @@ describe('P8-04B1 organization page changes', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(149);
+    ).toHaveLength(150);
     expect(controller.match(/'\/source-changes'/g)).toEqual([
       "'/source-changes'",
     ]);
@@ -1759,7 +1759,7 @@ describe('P8-04B2 News Radar change signals', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(149);
+    ).toHaveLength(150);
     expect(controller).not.toMatch(/changedSinceFound|radar-changes|\/changed/);
   });
 
@@ -1938,7 +1938,7 @@ describe('P8-C1 organization safety caps', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(149);
+    ).toHaveLength(150);
     expect(controller).not.toMatch(
       /\/limits|\/usage|\/quota|activeFeedsMax|urlSourcesMax|manualRefreshCooldownMs|contentStudioSourceLimits/
     );
@@ -2321,7 +2321,7 @@ describe('P8-C2 global feed-capture concurrency', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(149);
+    ).toHaveLength(150);
     expect(controller).not.toMatch(
       /CAPTURE_CONCURRENCY|capture-queue|TaskQueue/
     );
@@ -3096,7 +3096,7 @@ describe('P8-C4 feed schedule and retries', () => {
     const controller = c4('controller');
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(149);
+    ).toHaveLength(150);
     const block = between(
       controller,
       "@Post('/sources/:id/interval')",
@@ -3272,7 +3272,7 @@ describe('P8-O1 feed capture history', () => {
     const controller = o1('controller');
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(149);
+    ).toHaveLength(150);
     expect(
       Array.from(
         controller.matchAll(/@(Get|Post|Put|Patch|Delete)\('([^']*)'\)/g),
@@ -3737,7 +3737,7 @@ describe('P8-G1 conditional source fetching', () => {
     ]);
     expect(
       g1('controller').match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(149);
+    ).toHaveLength(150);
   });
 
   it('P8G1-14 still one record per feed capture, written by the capture, whatever the answer', () => {
@@ -4276,7 +4276,7 @@ describe('P8-R1A source version protection', () => {
     expect(r1('controller')).not.toMatch(/retention|eligib|protection/i);
     expect(
       r1('controller').match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(149);
+    ).toHaveLength(150);
     // and no schema for it: no table, flag or index of retention (P8-R1Q:
     // but the quarantine model, which protects nothing, R1Q-3)
     expect(beforeQuarantine(schema)).not.toMatch(
@@ -4854,7 +4854,7 @@ describe('P8-R1B retention dry run', () => {
     );
     expect(
       r1b('controller').match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(149);
+    ).toHaveLength(150);
     expect(
       PRODUCTION.filter(
         (file) =>
@@ -5203,7 +5203,7 @@ describe('P8-R1Q retention quarantine', () => {
     expect(r1q('controller')).not.toMatch(/quarantine|pending|retention/i);
     expect(
       r1q('controller').match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(149);
+    ).toHaveLength(150);
   });
 
   it('R1Q-11 no command but the read-only dry run: no quarantine, release or execution command', () => {
@@ -5428,7 +5428,7 @@ describe('P8-R1C retention execution', () => {
     expect(r1c('controller')).not.toMatch(/retention|prepare|quarantine/i);
     expect(
       r1c('controller').match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(149);
+    ).toHaveLength(150);
     expect(command.match(/command: '([\w:-]+)'/g)).toEqual([
       "command: 'content-studio:retention-prepare'",
       "command: 'content-studio:retention-execute'",

@@ -72,6 +72,7 @@ const mockModals = {
 let modalId = 0;
 const mockOpenModal = jest.fn();
 jest.mock('@gitroom/frontend/components/layout/new-modal', () => ({
+  useModalCloseGuard: () => undefined,
   useModals: () => ({
     openModal: mockOpenModal,
     closeAll: () => mockModals.set([]),
@@ -201,6 +202,9 @@ const server = (method: string, url: string): Reply => {
   if (method === 'GET' && pathname === '/content-studio/editorial-policy') {
     return reply(200, { latestRevisionNumber: 0, currentRevision: null });
   }
+  if (method === 'GET' && pathname === '/content-studio/brand-kit') {
+    return reply(200, { latestRevisionNumber: 0, currentRevision: null });
+  }
   if (method === 'GET' && /-profiles$/.test(pathname)) {
     return reply(200, { pages: 0, results: [] });
   }
@@ -232,10 +236,15 @@ afterEach(async () => {
 
 const TABS = [
   ['ai', 'AI Connections', 'No AI connections yet.'],
+  [
+    'company',
+    'Company',
+    'Who you are and what you do. Every AI suggestion in Content Studio starts from this.',
+  ],
   ['writing', 'Writing', 'No writing profiles yet.'],
-  ['editorial', 'Editorial Policy', 'No editorial policy saved yet.'],
   ['audiences', 'Audiences', 'No audience profiles yet.'],
   ['expertise', 'Expertise', 'No expertise profiles yet.'],
+  ['editorial', 'Editorial Policy', 'No editorial policy saved yet.'],
 ] as const;
 const selectedTab = () =>
   screen
@@ -244,7 +253,7 @@ const selectedTab = () =>
     .map((tab) => tab.textContent);
 
 describe('Brand & AI page', () => {
-  it('PG1-PG4/PG10 renders for an ordinary member, titled Brand & AI, five tabs, AI connections first', async () => {
+  it('PG1-PG4/PG10 renders for an ordinary member, titled Brand & AI, six tabs, AI connections first', async () => {
     renderPage();
     expect(
       screen.getByRole('heading', { level: 1, name: 'Brand & AI' })
@@ -256,8 +265,9 @@ describe('Brand & AI page', () => {
     expect(await screen.findByText('No AI connections yet.')).toBeTruthy();
     const panel = screen.getByRole('tabpanel');
     expect(panel.getAttribute('aria-labelledby')).toBe('content-studio-tab-ai');
+    // the way back: the Content Studio navigation, Home first
     expect(
-      screen.getByRole('link', { name: 'Content Studio' }).getAttribute('href')
+      screen.getByRole('link', { name: 'Home' }).getAttribute('href')
     ).toBe('/content-studio');
     await flush();
   });
@@ -393,6 +403,7 @@ describe('Brand & AI: source surface', () => {
   const FILES = [
     'content-studio.ai-connections.tsx',
     'content-studio.audience-profiles.tsx',
+    'content-studio.company-profile.tsx',
     'content-studio.editorial-policy.tsx',
     'content-studio.expertise-profiles.tsx',
     'content-studio.intelligence.api.ts',

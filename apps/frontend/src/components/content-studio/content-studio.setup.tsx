@@ -1,0 +1,1711 @@
+'use client';
+
+import { FC, ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import clsx from 'clsx';
+import Link from 'next/link';
+import i18next from 'i18next';
+import { Button } from '@gitroom/react/form/button';
+import { Input } from '@gitroom/react/form/input';
+import { useT } from '@gitroom/react/translation/get.transation.service.client';
+import { useUser } from '@gitroom/frontend/components/layout/user.context';
+import { useModals } from '@gitroom/frontend/components/layout/new-modal';
+import { ContentStudioRequestError } from '@gitroom/frontend/components/content-studio/content-studio.api';
+import { CreateContentStudioPackageModal } from '@gitroom/frontend/components/content-studio/content-studio.package.modal';
+import {
+  CONTENT_STUDIO_HOME_PATH,
+  ContentStudioBreadcrumbs,
+  ContentStudioLoading,
+} from '@gitroom/frontend/components/content-studio/content-studio.shell';
+import {
+  brandKitWithIdentity,
+  clearContentStudioSetupDraft,
+  ContentStudioSetupCompany,
+  ContentStudioSetupProposal,
+  isUsableAIConnection,
+  loadContentStudioSetupDraft,
+  saveContentStudioSetupDraft,
+  setContentStudioSetupHidden,
+  useContentStudioSetupActions,
+} from '@gitroom/frontend/components/content-studio/content-studio.setup.api';
+import {
+  AUDIENCE_PROFILES_PATH,
+  ContentStudioProfilesPath,
+  EXPERTISE_PROFILES_PATH,
+  profileErrorMessage,
+  useContentStudioAIConnections,
+  useContentStudioAIProviders,
+  useContentStudioEditorialPolicyActions,
+  useContentStudioProfileActions,
+  WRITING_PROFILES_PATH,
+} from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.api';
+import {
+  AIConnectionCreateForm,
+  useCanManageAIConnections,
+} from '@gitroom/frontend/components/content-studio/intelligence/content-studio.ai-connections';
+import {
+  emptyWritingProfileContent,
+  WritingProfileContent,
+  WritingProfileForm,
+} from '@gitroom/frontend/components/content-studio/intelligence/content-studio.writing-profiles';
+import {
+  AudienceProfileContent,
+  AudienceProfileForm,
+  emptyAudienceProfileContent,
+} from '@gitroom/frontend/components/content-studio/intelligence/content-studio.audience-profiles';
+import {
+  emptyExpertiseProfileContent,
+  ExpertiseProfileContent,
+  ExpertiseProfileForm,
+} from '@gitroom/frontend/components/content-studio/intelligence/content-studio.expertise-profiles';
+import {
+  EditorialPolicyContent,
+  EditorialPolicyForm,
+  emptyEditorialPolicyContent,
+} from '@gitroom/frontend/components/content-studio/intelligence/content-studio.editorial-policy';
+import {
+  ChoiceField,
+  LongTextField,
+  ShortTextField,
+} from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
+
+// The setup assistant: four short steps from an empty Content Studio to one
+// that is ready to create.
+//   1 AI: ready, or connected right here, or skipped (continue manually)
+//   2 Your company: a few facts, typed once
+//   3 Your content profile: one AI draft (or the existing or empty profile)
+//     of the brand description, writing style, audiences, expertise and
+//     editorial rules, reviewed section by section
+//   4 Save: what will be saved, then saved; nothing is written before this
+// The unfinished assistant is kept in this browser after every change, per
+// organization, so it can be left and resumed. Saving never deletes or
+// replaces anything: a profile with the same name gets a new version, any
+// other is created, and the Brand Kit and editorial policy get a new version
+// over their latest one, keeping everything the assistant does not show
+
+export type SetupStep = 1 | 2 | 3 | 4;
+export const SETUP_STEPS = 4;
+
+interface Named<C> {
+  name: string;
+  content: C;
+  include: boolean;
+}
+
+export interface SetupProfile {
+  brand: { tagline: string; description: string; include: boolean };
+  writing: Named<WritingProfileContent>;
+  audiences: Array<Named<AudienceProfileContent>>;
+  expertise: Named<ExpertiseProfileContent>;
+  editorial: { content: EditorialPolicyContent; include: boolean };
+}
+
+// What has been saved already, so saving again after a failure goes on
+// where it stopped and never creates anything twice
+export interface SetupSaved {
+  brand?: boolean;
+  writing?: boolean;
+  audiences?: number[];
+  expertise?: boolean;
+  editorial?: boolean;
+}
+
+export interface SetupDraft {
+  v: 1;
+  step: SetupStep;
+  connectionId: string | null;
+  // continue without AI: the profile starts from what exists, or empty
+  manual: boolean;
+  company: ContentStudioSetupCompany;
+  // where the profile of step 3 came from
+  source: 'ai' | 'manual' | null;
+  profile: SetupProfile | null;
+  saved: SetupSaved;
+}
+
+export const LANGUAGES: Array<{ value: string; label: string }> = [
+  { value: 'nl', label: 'Nederlands' },
+  { value: 'en', label: 'English' },
+  { value: 'de', label: 'Deutsch' },
+  { value: 'fr', label: 'Français' },
+  { value: 'es', label: 'Español' },
+  { value: 'it', label: 'Italiano' },
+  { value: 'pt', label: 'Português' },
+];
+
+const COMPANY_NAME_MAX = 200;
+const WEBSITE_MAX = 300;
+const DESCRIPTION_MAX = 2000;
+const NOTE_MAX = 500;
+const NAME_MAX = 100;
+
+export const emptySetupCompany = (
+  language: string
+): ContentStudioSetupCompany => ({
+  companyName: '',
+  website: '',
+  description: '',
+  goal: '',
+  audience: '',
+  language,
+});
+
+// A reviewed profile from an AI draft: every section included
+export const setupProfileFromProposal = (
+  proposal: ContentStudioSetupProposal
+): SetupProfile => ({
+  brand: { ...proposal.brand, include: true },
+  writing: { ...proposal.writing, include: true },
+  audiences: proposal.audiences.map((audience) => ({
+    ...audience,
+    include: true,
+  })),
+  expertise: { ...proposal.expertise, include: true },
+  editorial: { content: proposal.editorialPolicy.content, include: true },
+});
+
+// Steps 1 and 2 can always be revisited; 3 and 4 need a company description
+// and, for 4, a profile to save
+export const canOpenSetupStep = (draft: SetupDraft, step: SetupStep) =>
+  step <= 2 ||
+  (!!draft.company.companyName.trim() &&
+    !!draft.company.description.trim() &&
+    (step === 3 || !!draft.profile));
+
+// The website as the server takes it: http(s) only, as typed
+export const isSetupWebsite = (value: string) =>
+  !value.trim() || /^https?:\/\/[^\s/$.?#][^\s]*$/i.test(value.trim());
+
+const setupAIErrorMessage = (
+  t: (key: string, fallback: string) => string,
+  error: unknown
+) => {
+  const code =
+    error instanceof ContentStudioRequestError ? error.code : undefined;
+  switch (code) {
+    case 'CS_AI_AUTH_FAILED':
+    case 'CS_AI_CONNECTION_CREDENTIAL_INVALID':
+      return t(
+        'content_studio_setup_ai_error_key',
+        'The AI provider did not accept the API key. Replace the key under Brand & AI, AI Connections.'
+      );
+    case 'CS_AI_QUOTA_EXCEEDED':
+      return t(
+        'content_studio_setup_ai_error_quota',
+        'Your AI provider account has no credit left.'
+      );
+    case 'CS_AI_RATE_LIMITED':
+      return t(
+        'content_studio_setup_ai_error_rate',
+        'The AI provider is busy. Wait a moment and try again.'
+      );
+    case 'CS_AI_CONNECTION_DISABLED':
+    case 'CS_AI_CONNECTION_REQUIRED':
+      return t(
+        'content_studio_setup_ai_error_connection',
+        'This AI connection is not available. Choose another one in step 1.'
+      );
+    case 'CS_AI_SECRET_STORE_UNAVAILABLE':
+      return t(
+        'content_studio_ai_error_secret_store',
+        'Secure credential storage is temporarily unavailable.'
+      );
+    default:
+      return t(
+        'content_studio_setup_ai_error',
+        "We couldn't generate suggestions right now."
+      );
+  }
+};
+
+// Step x of 4, the steps left and the step names; done steps can be opened
+const WizardProgress: FC<{
+  step: SetupStep;
+  canOpen: (step: SetupStep) => boolean;
+  onOpen: (step: SetupStep) => void;
+}> = ({ step, canOpen, onOpen }) => {
+  const t = useT();
+  const names = [
+    t('content_studio_setup_step_ai', 'Connect AI'),
+    t('content_studio_setup_step_company', 'Your company'),
+    t('content_studio_setup_step_profile', 'Your content profile'),
+    t('content_studio_setup_step_save', 'Review and save'),
+  ];
+  const left = SETUP_STEPS - step;
+  return (
+    <div className="flex flex-col gap-[10px]">
+      <div className="flex flex-wrap items-baseline gap-x-[12px] gap-y-[2px]">
+        <span className="font-[600]" aria-live="polite">
+          {t('content_studio_setup_step_of', 'Step {{step}} of {{total}}', {
+            step,
+            total: SETUP_STEPS,
+          })}
+        </span>
+        <span className="text-[13px] text-textItemBlur">
+          {left === 0
+            ? t('content_studio_setup_last_step', 'Last step')
+            : left === 1
+            ? t('content_studio_setup_one_left', '1 step left')
+            : t('content_studio_setup_steps_left', '{{count}} steps left', {
+                count: left,
+              })}
+        </span>
+      </div>
+      <ol className="grid grid-cols-4 gap-[6px]">
+        {names.map((name, index) => {
+          const number = (index + 1) as SetupStep;
+          const current = number === step;
+          const reachable = !current && canOpen(number);
+          return (
+            <li key={name} className="flex flex-col gap-[6px] min-w-0">
+              <span
+                aria-hidden="true"
+                className={clsx(
+                  'h-[4px] rounded-full',
+                  number <= step
+                    ? 'bg-[var(--brand-primary,#612ad5)]'
+                    : 'bg-newBgLineColor'
+                )}
+              />
+              <button
+                type="button"
+                disabled={!reachable}
+                aria-current={current ? 'step' : undefined}
+                className={clsx(
+                  'text-start text-[12px] truncate',
+                  current ? 'font-[600]' : 'text-textItemBlur',
+                  reachable && 'hover:underline'
+                )}
+                onClick={() => onOpen(number)}
+              >
+                {name}
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+};
+
+// One section of the AI draft: a short summary, included by default, with
+// Edit for the full form and Regenerate for a new AI suggestion of just this
+// section
+const SuggestionCard: FC<{
+  title: string;
+  include: boolean;
+  onInclude: (include: boolean) => void;
+  summary: ReactNode;
+  editor: ReactNode;
+  onRegenerate?: () => void;
+  regenerating?: boolean;
+  disabled?: boolean;
+}> = ({
+  title,
+  include,
+  onInclude,
+  summary,
+  editor,
+  onRegenerate,
+  regenerating,
+  disabled,
+}) => {
+  const t = useT();
+  const [editing, setEditing] = useState(false);
+  return (
+    <section
+      className={clsx(
+        'flex flex-col gap-[12px] p-[16px] rounded-[12px] border',
+        include
+          ? 'border-newTableBorder'
+          : 'border-dashed border-newTableBorder opacity-70'
+      )}
+    >
+      <div className="flex flex-wrap items-center gap-[8px]">
+        <h3 className="flex-1 min-w-[160px] font-[600]">{title}</h3>
+        <label className="flex items-center gap-[6px] text-[14px] cursor-pointer">
+          <input
+            type="checkbox"
+            checked={include}
+            disabled={disabled}
+            onChange={(e) => onInclude(e.target.checked)}
+          />
+          {t('content_studio_setup_use_this', 'Use this')}
+        </label>
+        {!!onRegenerate && (
+          <Button
+            secondary
+            loading={regenerating}
+            disabled={disabled || regenerating}
+            onClick={onRegenerate}
+          >
+            {t('content_studio_setup_regenerate', 'Regenerate')}
+          </Button>
+        )}
+        <Button
+          secondary
+          disabled={disabled}
+          aria-expanded={editing}
+          onClick={() => setEditing(!editing)}
+        >
+          {editing
+            ? t('content_studio_done', 'Done')
+            : t('content_studio_edit_profile', 'Edit')}
+        </Button>
+      </div>
+      {editing ? editor : summary}
+    </section>
+  );
+};
+
+const Chips: FC<{ values: string[]; max?: number }> = ({ values, max = 10 }) =>
+  values.length ? (
+    <ul className="flex flex-wrap gap-[6px]">
+      {values.slice(0, max).map((value) => (
+        <li
+          key={value}
+          className="px-[10px] py-[2px] rounded-full border border-newTableBorder text-[13px] break-words max-w-full"
+        >
+          {value}
+        </li>
+      ))}
+      {values.length > max && (
+        <li className="text-[13px] text-textItemBlur self-center">
+          +{values.length - max}
+        </li>
+      )}
+    </ul>
+  ) : null;
+
+const Bullets: FC<{ values: string[]; max?: number }> = ({ values, max = 3 }) =>
+  values.length ? (
+    <ul className="list-disc ps-[20px] text-[14px] flex flex-col gap-[2px]">
+      {values.slice(0, max).map((value) => (
+        <li key={value} className="break-words">
+          {value}
+        </li>
+      ))}
+      {values.length > max && (
+        <li className="list-none text-textItemBlur">+{values.length - max}</li>
+      )}
+    </ul>
+  ) : null;
+
+const SummaryLine: FC<{ label: string; children: ReactNode }> = ({
+  label,
+  children,
+}) => (
+  <div className="flex flex-col gap-[4px]">
+    <div className="text-[12px] text-textItemBlur">{label}</div>
+    {children}
+  </div>
+);
+
+const NameField: FC<{
+  label: string;
+  value: string;
+  onChange: (next: string) => void;
+}> = ({ label, value, onChange }) => (
+  <Input
+    label={label}
+    name={label}
+    aria-label={label}
+    disableForm={true}
+    removeError={true}
+    value={value}
+    maxLength={NAME_MAX}
+    onChange={(e) => onChange(e.target.value)}
+  />
+);
+
+export const ContentStudioSetupWizard: FC = () => {
+  const t = useT();
+  const user = useUser();
+  const modals = useModals();
+  const organizationId = user?.orgId || '';
+  const canManageAI = useCanManageAIConnections();
+  const providers = useContentStudioAIProviders();
+  const connections = useContentStudioAIConnections();
+  const setup = useContentStudioSetupActions();
+  const writingActions = useContentStudioProfileActions(WRITING_PROFILES_PATH);
+  const audienceActions = useContentStudioProfileActions(
+    AUDIENCE_PROFILES_PATH
+  );
+  const expertiseActions = useContentStudioProfileActions(
+    EXPERTISE_PROFILES_PATH
+  );
+  const policyActions = useContentStudioEditorialPolicyActions();
+
+  const [draft, setDraft] = useState<SetupDraft | null>(null);
+  // what exists already, the start of a manual profile
+  const existing = useRef<SetupProfile | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+  const [regenerating, setRegenerating] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const busy = useRef(false);
+
+  const usable = (connections.data || []).filter((connection) =>
+    isUsableAIConnection(connection, providers.data || [])
+  );
+
+  // the assistant starts from the unfinished one, or from what exists
+  const load = useCallback(async () => {
+    setLoadError(false);
+    try {
+      const [brandKit, writing, audience, expertise, policy] =
+        await Promise.all([
+          setup.getBrandKit(),
+          setup.latestActiveProfile<WritingProfileContent>(
+            WRITING_PROFILES_PATH
+          ),
+          setup.latestActiveProfile<AudienceProfileContent>(
+            AUDIENCE_PROFILES_PATH
+          ),
+          setup.latestActiveProfile<ExpertiseProfileContent>(
+            EXPERTISE_PROFILES_PATH
+          ),
+          setup.getEditorialPolicy(),
+        ]);
+      const kit = brandKit.currentRevision?.content as
+        | {
+            identity?: {
+              brandName: string;
+              tagline: string;
+              description: string;
+            };
+          }
+        | undefined;
+      existing.current = {
+        brand: {
+          tagline: kit?.identity?.tagline ?? '',
+          description: kit?.identity?.description ?? '',
+          include: true,
+        },
+        writing: writing
+          ? {
+              name: writing.name,
+              content: writing.currentRevision.content,
+              include: true,
+            }
+          : {
+              name: t('content_studio_setup_default_voice', 'Brand voice'),
+              content: emptyWritingProfileContent(),
+              include: true,
+            },
+        audiences: [
+          audience
+            ? {
+                name: audience.name,
+                content: audience.currentRevision.content,
+                include: true,
+              }
+            : {
+                name: t(
+                  'content_studio_setup_default_audience',
+                  'Main audience'
+                ),
+                content: emptyAudienceProfileContent(),
+                include: true,
+              },
+        ],
+        expertise: expertise
+          ? {
+              name: expertise.name,
+              content: expertise.currentRevision.content,
+              include: true,
+            }
+          : {
+              name: t(
+                'content_studio_setup_default_expertise',
+                'Core expertise'
+              ),
+              content: emptyExpertiseProfileContent(),
+              include: true,
+            },
+        editorial: {
+          content:
+            policy.currentRevision?.content ?? emptyEditorialPolicyContent(),
+          include: true,
+        },
+      };
+      const saved = loadContentStudioSetupDraft<SetupDraft>(organizationId);
+      if (saved?.v === 1) {
+        setDraft(saved);
+        return;
+      }
+      setDraft({
+        v: 1,
+        step: 1,
+        connectionId: null,
+        manual: false,
+        company: {
+          ...emptySetupCompany(
+            LANGUAGES.some((entry) => entry.value === i18next.resolvedLanguage)
+              ? (i18next.resolvedLanguage as string)
+              : 'en'
+          ),
+          companyName: kit?.identity?.brandName ?? '',
+          description: kit?.identity?.description ?? '',
+        },
+        source: null,
+        profile: null,
+        saved: {},
+      });
+    } catch {
+      setLoadError(true);
+    }
+  }, [organizationId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // every change is kept, so the assistant can be left and resumed
+  useEffect(() => {
+    if (draft && !done) {
+      saveContentStudioSetupDraft(organizationId, draft);
+    }
+  }, [draft, done, organizationId]);
+
+  const update = useCallback(
+    (patch: Partial<SetupDraft>) =>
+      setDraft((current) => (current ? { ...current, ...patch } : current)),
+    []
+  );
+  const updateProfile = useCallback(
+    (patch: Partial<SetupProfile>) =>
+      setDraft((current) =>
+        current?.profile
+          ? { ...current, profile: { ...current.profile, ...patch }, saved: {} }
+          : current
+      ),
+    []
+  );
+
+  const connectionId =
+    draft?.connectionId && usable.some((c) => c.id === draft.connectionId)
+      ? draft.connectionId
+      : usable[0]?.id ?? null;
+
+  const propose = useCallback(async () => {
+    if (!draft || !connectionId) {
+      return null;
+    }
+    const { proposal } = await setup.proposeSetup(connectionId, draft.company);
+    return proposal;
+  }, [draft, connectionId, setup]);
+
+  const generate = useCallback(async () => {
+    if (busy.current) {
+      return;
+    }
+    busy.current = true;
+    setGenerating(true);
+    setGenerateError(null);
+    update({ step: 3 });
+    try {
+      const proposal = await propose();
+      if (proposal) {
+        update({
+          step: 3,
+          source: 'ai',
+          manual: false,
+          profile: setupProfileFromProposal(proposal),
+          saved: {},
+        });
+      }
+    } catch (err) {
+      // the company information stays as typed
+      setGenerateError(setupAIErrorMessage(t, err));
+    } finally {
+      busy.current = false;
+      setGenerating(false);
+    }
+  }, [propose, update, t]);
+
+  const continueManually = useCallback(() => {
+    setGenerateError(null);
+    update({
+      step: 3,
+      manual: true,
+      source: 'manual',
+      profile: draft?.profile ?? existing.current,
+      saved: {},
+    });
+  }, [update, draft?.profile]);
+
+  // a new AI suggestion for one section only; the rest stays as reviewed
+  const regenerate = useCallback(
+    async (
+      section: 'brand' | 'writing' | 'audiences' | 'expertise' | 'editorial'
+    ) => {
+      if (busy.current) {
+        return;
+      }
+      busy.current = true;
+      setRegenerating(section);
+      setGenerateError(null);
+      try {
+        const proposal = await propose();
+        if (proposal) {
+          const next = setupProfileFromProposal(proposal);
+          updateProfile({ [section]: next[section] } as Partial<SetupProfile>);
+        }
+      } catch (err) {
+        setGenerateError(setupAIErrorMessage(t, err));
+      } finally {
+        busy.current = false;
+        setRegenerating(null);
+      }
+    },
+    [propose, updateProfile, t]
+  );
+
+  // Saves what was reviewed, in a fixed order, each part in its own request.
+  // A part that was saved is not saved again when Save is pressed after a
+  // failure
+  const save = useCallback(async () => {
+    if (!draft?.profile || busy.current) {
+      return;
+    }
+    busy.current = true;
+    setSaving(true);
+    setSaveError(null);
+    const profile = draft.profile;
+    const saved: SetupSaved = { ...draft.saved };
+    const keep = () => update({ saved: { ...saved } });
+    const upsert = async <C,>(
+      base: ContentStudioProfilesPath,
+      actions: typeof writingActions,
+      named: Named<C>
+    ) => {
+      const name = named.name.trim();
+      const same = await setup.findActiveProfile(base, name);
+      if (!same) {
+        await actions.createProfile(name, named.content);
+        return;
+      }
+      const current = await setup.getProfile<C>(base, same.id);
+      await actions.saveRevision(
+        same.id,
+        current.currentRevision.revisionNumber,
+        named.content
+      );
+    };
+    try {
+      if (profile.brand.include && !saved.brand) {
+        const kit = await setup.getBrandKit();
+        await setup.saveBrandKit(
+          kit.latestRevisionNumber,
+          brandKitWithIdentity(kit.currentRevision?.content, {
+            brandName: draft.company.companyName,
+            tagline: profile.brand.tagline,
+            description: profile.brand.description,
+          })
+        );
+        saved.brand = true;
+        keep();
+      }
+      if (profile.writing.include && !saved.writing) {
+        await upsert(WRITING_PROFILES_PATH, writingActions, profile.writing);
+        saved.writing = true;
+        keep();
+      }
+      for (const [index, audience] of profile.audiences.entries()) {
+        if (audience.include && !saved.audiences?.includes(index)) {
+          await upsert(AUDIENCE_PROFILES_PATH, audienceActions, audience);
+          saved.audiences = [...(saved.audiences || []), index];
+          keep();
+        }
+      }
+      if (profile.expertise.include && !saved.expertise) {
+        await upsert(
+          EXPERTISE_PROFILES_PATH,
+          expertiseActions,
+          profile.expertise
+        );
+        saved.expertise = true;
+        keep();
+      }
+      if (profile.editorial.include && !saved.editorial) {
+        const policy = await setup.getEditorialPolicy();
+        // the approval workflow is not part of the assistant: kept as it is
+        const workflow = policy.currentRevision?.content.workflow;
+        const { workflow: _ignored, ...rules } = profile.editorial.content;
+        await policyActions.saveRevision(policy.latestRevisionNumber, {
+          ...rules,
+          ...(workflow ? { workflow } : {}),
+        });
+        saved.editorial = true;
+        keep();
+      }
+      clearContentStudioSetupDraft(organizationId);
+      setContentStudioSetupHidden(organizationId, false);
+      setDone(true);
+    } catch (err) {
+      setSaveError(profileErrorMessage(t, 'writing', err));
+    } finally {
+      busy.current = false;
+      setSaving(false);
+    }
+  }, [
+    draft,
+    setup,
+    writingActions,
+    audienceActions,
+    expertiseActions,
+    policyActions,
+    organizationId,
+    update,
+    t,
+  ]);
+
+  const newPackage = () =>
+    modals.openModal({
+      title: t('content_studio_new_package', 'New package'),
+      children: (close: () => void) => (
+        <CreateContentStudioPackageModal close={close} />
+      ),
+    });
+
+  const crumbs = (
+    <ContentStudioBreadcrumbs
+      crumbs={[
+        {
+          label: t('content_studio_brand_ai', 'Brand & AI'),
+          href: '/content-studio/intelligence',
+        },
+        { label: t('content_studio_setup_title', 'Setup assistant') },
+      ]}
+    />
+  );
+
+  const shell = (children: ReactNode) => (
+    <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col gap-[20px] min-w-0">
+      <div className="w-full max-w-[880px] mx-auto flex flex-col gap-[20px]">
+        {crumbs}
+        {children}
+      </div>
+    </div>
+  );
+
+  if (loadError) {
+    return shell(
+      <div className="flex flex-col items-center gap-[12px] py-[40px]">
+        <div role="alert">
+          {t('content_studio_load_error', 'Could not load Content Studio.')}
+        </div>
+        <Button secondary onClick={load}>
+          {t('content_studio_retry', 'Try again')}
+        </Button>
+      </div>
+    );
+  }
+  if (!draft || !connections.data || !providers.data) {
+    return shell(
+      <ContentStudioLoading
+        label={t(
+          'content_studio_setup_loading',
+          'Opening the setup assistant…'
+        )}
+      />
+    );
+  }
+
+  if (done && draft.profile) {
+    const profile = draft.profile;
+    const items = [
+      profile.brand.include &&
+        t('content_studio_setup_done_brand', 'Your company description'),
+      profile.writing.include &&
+        t('content_studio_setup_done_writing', 'Your writing style'),
+      profile.audiences.some((a) => a.include) &&
+        t('content_studio_setup_done_audience', 'Your audiences'),
+      profile.expertise.include &&
+        t('content_studio_setup_done_expertise', 'Your expertise'),
+      profile.editorial.include &&
+        t('content_studio_setup_done_editorial', 'Your editorial rules'),
+    ].filter(Boolean) as string[];
+    return shell(
+      <section className="flex flex-col items-center text-center gap-[16px] py-[32px]">
+        <span
+          aria-hidden="true"
+          className="w-[56px] h-[56px] rounded-full bg-[var(--brand-primary,#612ad5)] text-[var(--brand-action-text,#fff)] flex items-center justify-center text-[28px]"
+        >
+          {'✓'}
+        </span>
+        <h1 className="text-[24px] font-[600]">
+          {t('content_studio_setup_ready', 'Your Content Studio is ready')}
+        </h1>
+        <div className="text-textItemBlur">
+          {t('content_studio_setup_we_set_up', 'We set up:')}
+        </div>
+        <ul className="flex flex-col gap-[6px] text-start">
+          {items.map((item) => (
+            <li key={item} className="flex items-center gap-[8px]">
+              <span aria-hidden="true">{'✓'}</span>
+              {item}
+            </li>
+          ))}
+        </ul>
+        <div className="text-[14px] text-textItemBlur max-w-[520px]">
+          {t(
+            'content_studio_setup_ready_hint',
+            'You can change all of it later under Brand & AI. Every AI suggestion now starts from it.'
+          )}
+        </div>
+        <div className="flex flex-wrap justify-center gap-[8px] pt-[8px]">
+          <Button onClick={newPackage}>
+            {t(
+              'content_studio_setup_first_content',
+              'Create your first content'
+            )}
+          </Button>
+          <Link
+            href="/content-studio/sources"
+            className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
+          >
+            {t('content_studio_setup_add_sources', 'Add sources')}
+          </Link>
+          <Link
+            href={CONTENT_STUDIO_HOME_PATH}
+            className="px-[24px] h-[40px] flex items-center rounded-full text-textColor underline"
+          >
+            {t('content_studio_setup_to_home', 'Go to Content Studio')}
+          </Link>
+        </div>
+      </section>
+    );
+  }
+
+  const company = draft.company;
+  const setCompany = (patch: Partial<ContentStudioSetupCompany>) =>
+    update({ company: { ...company, ...patch } });
+  const companyReady =
+    !!company.companyName.trim() &&
+    !!company.description.trim() &&
+    company.companyName.length <= COMPANY_NAME_MAX &&
+    company.description.length <= DESCRIPTION_MAX &&
+    company.website.length <= WEBSITE_MAX &&
+    company.goal.length <= NOTE_MAX &&
+    company.audience.length <= NOTE_MAX &&
+    isSetupWebsite(company.website);
+  const aiReady = !!connectionId && !draft.manual;
+
+  const header = (
+    <div className="flex flex-col gap-[16px]">
+      <div className="flex flex-wrap items-start gap-[12px]">
+        <div className="flex flex-col gap-[4px] flex-1 min-w-[220px]">
+          <h1 className="text-[22px] font-[600]">
+            {t('content_studio_setup_title', 'Setup assistant')}
+          </h1>
+          <div className="text-textItemBlur">
+            {t(
+              'content_studio_setup_subtitle',
+              'A few questions, then AI drafts your content profile for you to review. Your answers are kept in this browser, so you can stop and continue later.'
+            )}
+          </div>
+        </div>
+        <Link
+          href={CONTENT_STUDIO_HOME_PATH}
+          className="text-[14px] underline text-textItemBlur hover:text-newTextColor"
+        >
+          {t('content_studio_setup_later', 'Finish later')}
+        </Link>
+      </div>
+      <WizardProgress
+        step={draft.step}
+        canOpen={(step) =>
+          canOpenSetupStep(draft, step) && !generating && !saving
+        }
+        onOpen={(step) => update({ step })}
+      />
+    </div>
+  );
+
+  // --- step 1: AI ---
+  if (draft.step === 1) {
+    return shell(
+      <>
+        {header}
+        <section className="flex flex-col gap-[16px]">
+          <h2 className="text-[18px] font-[600]">
+            {t('content_studio_setup_ai_title', 'Connect AI')}
+          </h2>
+          {usable.length ? (
+            <div className="flex flex-col gap-[12px]">
+              <div
+                role="status"
+                className="flex items-center gap-[10px] p-[14px] rounded-[12px] bg-newBgLineColor"
+              >
+                <span aria-hidden="true" className="text-[18px]">
+                  {'✓'}
+                </span>
+                <span className="font-[600]">
+                  {t('content_studio_setup_ai_ready', 'AI is ready')}
+                </span>
+              </div>
+              {usable.length > 1 && (
+                <ChoiceField
+                  label={t(
+                    'content_studio_setup_ai_use',
+                    'Use this AI connection'
+                  )}
+                  value={connectionId || ''}
+                  options={usable.map((connection) => ({
+                    value: connection.id,
+                    label: connection.name,
+                  }))}
+                  onChange={(next) => update({ connectionId: next })}
+                />
+              )}
+            </div>
+          ) : canManageAI ? (
+            <div className="flex flex-col gap-[12px]">
+              <div className="text-textItemBlur">
+                {t(
+                  'content_studio_setup_ai_connect_hint',
+                  'Connect your own OpenAI, Anthropic or OpenRouter account with an API key. Content Studio uses it to draft your profile now and your posts later.'
+                )}
+              </div>
+              <div className="p-[16px] rounded-[12px] border border-newTableBorder">
+                <AIConnectionCreateForm
+                  providers={providers.data}
+                  onCancel={() => undefined}
+                  onCreated={() => update({ manual: false })}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="text-textItemBlur">
+              {t(
+                'content_studio_setup_ai_admin',
+                'An admin of your organization can connect AI under Brand & AI. Until then you can set up Content Studio by hand.'
+              )}
+            </div>
+          )}
+          <div className="flex flex-wrap items-center gap-[8px] justify-end pt-[8px] border-t border-newTableBorder">
+            {!usable.length && (
+              <Button
+                secondary
+                onClick={() => update({ manual: true, step: 2 })}
+              >
+                {t('content_studio_setup_without_ai', 'Continue without AI')}
+              </Button>
+            )}
+            {!!usable.length && (
+              <Button
+                onClick={() => update({ manual: false, connectionId, step: 2 })}
+              >
+                {t('content_studio_setup_next', 'Next')}
+              </Button>
+            )}
+          </div>
+        </section>
+      </>
+    );
+  }
+
+  // --- step 2: your company ---
+  if (draft.step === 2) {
+    return shell(
+      <>
+        {header}
+        <section className="flex flex-col gap-[16px]">
+          <h2 className="text-[18px] font-[600]">
+            {t(
+              'content_studio_setup_company_title',
+              'Tell us about your company'
+            )}
+          </h2>
+          <ShortTextField
+            label={t('content_studio_setup_company_name', 'Company name')}
+            value={company.companyName}
+            onChange={(companyName) => setCompany({ companyName })}
+          />
+          <LongTextField
+            label={t(
+              'content_studio_setup_company_description',
+              'What does your company do?'
+            )}
+            hint={t(
+              'content_studio_setup_company_description_hint',
+              'A few sentences: what you offer, for whom, and what makes you different. The more concrete, the better the draft.'
+            )}
+            rows={5}
+            value={company.description}
+            onChange={(description) => setCompany({ description })}
+          />
+          <div className="grid grid-cols-1 tablet:grid-cols-2 gap-[16px]">
+            <ShortTextField
+              label={t('content_studio_setup_website', 'Website (optional)')}
+              hint={t(
+                'content_studio_setup_website_hint',
+                'Given to the AI as text; nothing is fetched.'
+              )}
+              value={company.website}
+              onChange={(website) => setCompany({ website })}
+            />
+            <ChoiceField
+              label={t(
+                'content_studio_setup_language',
+                'Language of your posts'
+              )}
+              value={company.language}
+              options={LANGUAGES}
+              onChange={(language) => setCompany({ language })}
+            />
+          </div>
+          <ShortTextField
+            label={t(
+              'content_studio_setup_goal',
+              'Main goal of your posts (optional)'
+            )}
+            hint={t(
+              'content_studio_setup_goal_hint',
+              'e.g. more inbound leads, recruiting, being known as the expert in your field'
+            )}
+            value={company.goal}
+            onChange={(goal) => setCompany({ goal })}
+          />
+          <ShortTextField
+            label={t(
+              'content_studio_setup_audience',
+              'Who do you write for? (optional)'
+            )}
+            hint={t(
+              'content_studio_setup_audience_hint',
+              'e.g. owners of small businesses in the Netherlands'
+            )}
+            value={company.audience}
+            onChange={(audience) => setCompany({ audience })}
+          />
+          {!isSetupWebsite(company.website) && (
+            <div role="alert" className="text-[13px]">
+              {t(
+                'content_studio_setup_website_invalid',
+                'Enter the website as a full address, starting with https://'
+              )}
+            </div>
+          )}
+          <div className="flex flex-wrap items-center gap-[8px] justify-end pt-[8px] border-t border-newTableBorder">
+            <Button secondary onClick={() => update({ step: 1 })}>
+              {t('content_studio_setup_back', 'Back')}
+            </Button>
+            {aiReady ? (
+              <>
+                <Button
+                  secondary
+                  disabled={!companyReady}
+                  onClick={continueManually}
+                >
+                  {t('content_studio_setup_fill_myself', 'Fill in myself')}
+                </Button>
+                <Button disabled={!companyReady} onClick={generate}>
+                  {t(
+                    'content_studio_setup_draft_with_ai',
+                    'Draft my profile with AI'
+                  )}
+                </Button>
+              </>
+            ) : (
+              <Button disabled={!companyReady} onClick={continueManually}>
+                {t('content_studio_setup_next', 'Next')}
+              </Button>
+            )}
+          </div>
+        </section>
+      </>
+    );
+  }
+
+  // --- step 3: the content profile ---
+  if (draft.step === 3) {
+    const profile = draft.profile;
+    const ai = draft.source === 'ai' && !!connectionId;
+    let body: ReactNode;
+    if (generating) {
+      body = (
+        <ContentStudioLoading
+          label={t(
+            'content_studio_setup_generating',
+            'Drafting your content profile…'
+          )}
+          detail={t(
+            'content_studio_setup_generating_hint',
+            'AI is writing your brand description, writing style, audiences, expertise and editorial rules. This usually takes 20 to 60 seconds.'
+          )}
+        />
+      );
+    } else if (!profile) {
+      body = (
+        <div className="flex flex-col items-center gap-[12px] py-[24px] text-center">
+          <div role="alert" className="font-[600]">
+            {generateError ||
+              t(
+                'content_studio_setup_ai_error',
+                "We couldn't generate suggestions right now."
+              )}
+          </div>
+          <div className="text-[14px] text-textItemBlur">
+            {t(
+              'content_studio_setup_kept',
+              'Your company information is kept. Try again, or fill in the profile yourself.'
+            )}
+          </div>
+          <div className="flex flex-wrap justify-center gap-[8px]">
+            {aiReady && (
+              <Button onClick={generate}>
+                {t('content_studio_retry', 'Try again')}
+              </Button>
+            )}
+            <Button secondary onClick={continueManually}>
+              {t('content_studio_setup_continue_manually', 'Continue manually')}
+            </Button>
+          </div>
+        </div>
+      );
+    } else {
+      const disabled = !!regenerating;
+      const perspective: Record<string, string> = {
+        first_singular: t(
+          'content_studio_writing_first_singular',
+          'First person singular — I / me'
+        ),
+        first_plural: t(
+          'content_studio_writing_first_plural',
+          'First person plural — we / us'
+        ),
+        second: t('content_studio_writing_second', 'Second person — you'),
+        third: t(
+          'content_studio_writing_third',
+          'Third person — the company / they'
+        ),
+        mixed: t(
+          'content_studio_writing_mixed',
+          'Mixed — e.g. we and you, described under Voice'
+        ),
+      };
+      body = (
+        <div className="flex flex-col gap-[16px]">
+          <div className="text-[14px] text-textItemBlur">
+            {draft.source === 'ai'
+              ? t(
+                  'content_studio_setup_ai_drafted',
+                  'We drafted this from your company description. Check each part: keep it, edit it or leave it out.'
+                )
+              : t(
+                  'content_studio_setup_manual_intro',
+                  'Fill in what you can; you can leave any part out and add it later under Brand & AI.'
+                )}
+          </div>
+          {!!generateError && (
+            <div
+              role="alert"
+              className="p-[12px] rounded-[8px] border border-newTableBorder text-[14px]"
+            >
+              {generateError}
+            </div>
+          )}
+          <SuggestionCard
+            title={t(
+              'content_studio_setup_section_brand',
+              'Company description'
+            )}
+            include={profile.brand.include}
+            onInclude={(include) =>
+              updateProfile({ brand: { ...profile.brand, include } })
+            }
+            disabled={disabled}
+            onRegenerate={ai ? () => regenerate('brand') : undefined}
+            regenerating={regenerating === 'brand'}
+            summary={
+              <div className="flex flex-col gap-[8px]">
+                {!!profile.brand.tagline && (
+                  <div className="font-[600]">{profile.brand.tagline}</div>
+                )}
+                <div className="text-[14px] whitespace-pre-wrap break-words">
+                  {profile.brand.description ||
+                    t('content_studio_list_empty', 'None yet.')}
+                </div>
+              </div>
+            }
+            editor={
+              <div className="flex flex-col gap-[12px]">
+                <ShortTextField
+                  label={t('content_studio_company_tagline', 'Tagline')}
+                  value={profile.brand.tagline}
+                  onChange={(tagline) =>
+                    updateProfile({ brand: { ...profile.brand, tagline } })
+                  }
+                />
+                <LongTextField
+                  label={t('content_studio_company_description', 'What you do')}
+                  rows={5}
+                  value={profile.brand.description}
+                  onChange={(description) =>
+                    updateProfile({ brand: { ...profile.brand, description } })
+                  }
+                />
+              </div>
+            }
+          />
+          <SuggestionCard
+            title={t('content_studio_setup_section_writing', 'Writing style')}
+            include={profile.writing.include}
+            onInclude={(include) =>
+              updateProfile({ writing: { ...profile.writing, include } })
+            }
+            disabled={disabled}
+            onRegenerate={ai ? () => regenerate('writing') : undefined}
+            regenerating={regenerating === 'writing'}
+            summary={
+              <div className="flex flex-col gap-[12px]">
+                {!!profile.writing.content.voice && (
+                  <div className="text-[14px] whitespace-pre-wrap break-words">
+                    {profile.writing.content.voice}
+                  </div>
+                )}
+                <Chips values={profile.writing.content.toneTags} />
+                {!!profile.writing.content.perspective && (
+                  <SummaryLine
+                    label={t(
+                      'content_studio_writing_perspective',
+                      'Perspective'
+                    )}
+                  >
+                    <div className="text-[14px]">
+                      {perspective[profile.writing.content.perspective]}
+                    </div>
+                  </SummaryLine>
+                )}
+                <div className="grid grid-cols-1 tablet:grid-cols-2 gap-[12px]">
+                  {!!profile.writing.content.vocabulary.prefer.length && (
+                    <SummaryLine
+                      label={t(
+                        'content_studio_writing_prefer',
+                        'Words to prefer'
+                      )}
+                    >
+                      <Chips
+                        values={profile.writing.content.vocabulary.prefer}
+                        max={8}
+                      />
+                    </SummaryLine>
+                  )}
+                  {!!profile.writing.content.vocabulary.avoid.length && (
+                    <SummaryLine
+                      label={t(
+                        'content_studio_writing_avoid',
+                        'Words to avoid'
+                      )}
+                    >
+                      <Chips
+                        values={profile.writing.content.vocabulary.avoid}
+                        max={8}
+                      />
+                    </SummaryLine>
+                  )}
+                  {!!profile.writing.content.dos.length && (
+                    <SummaryLine label={t('content_studio_writing_dos', 'Do')}>
+                      <Bullets values={profile.writing.content.dos} />
+                    </SummaryLine>
+                  )}
+                  {!!profile.writing.content.donts.length && (
+                    <SummaryLine
+                      label={t('content_studio_writing_donts', "Don't")}
+                    >
+                      <Bullets values={profile.writing.content.donts} />
+                    </SummaryLine>
+                  )}
+                </div>
+              </div>
+            }
+            editor={
+              <div className="flex flex-col gap-[16px]">
+                <NameField
+                  label={t('content_studio_profile_name', 'Name')}
+                  value={profile.writing.name}
+                  onChange={(name) =>
+                    updateProfile({ writing: { ...profile.writing, name } })
+                  }
+                />
+                <WritingProfileForm
+                  value={profile.writing.content}
+                  onChange={(content) =>
+                    updateProfile({ writing: { ...profile.writing, content } })
+                  }
+                />
+              </div>
+            }
+          />
+          {profile.audiences.map((audience, index) => {
+            const setAudience = (next: Named<AudienceProfileContent>) =>
+              updateProfile({
+                audiences: profile.audiences.map((other, at) =>
+                  at === index ? next : other
+                ),
+              });
+            return (
+              <SuggestionCard
+                key={index}
+                title={`${t(
+                  'content_studio_setup_section_audience',
+                  'Audience'
+                )}: ${audience.name}`}
+                include={audience.include}
+                onInclude={(include) => setAudience({ ...audience, include })}
+                disabled={disabled}
+                onRegenerate={
+                  ai && index === 0 ? () => regenerate('audiences') : undefined
+                }
+                regenerating={regenerating === 'audiences'}
+                summary={
+                  <div className="flex flex-col gap-[10px]">
+                    {!!audience.content.role && (
+                      <div className="font-[600] text-[14px]">
+                        {audience.content.role}
+                      </div>
+                    )}
+                    {!!audience.content.description && (
+                      <div className="text-[14px] whitespace-pre-wrap break-words">
+                        {audience.content.description}
+                      </div>
+                    )}
+                    <div className="grid grid-cols-1 tablet:grid-cols-2 gap-[12px]">
+                      {!!audience.content.goals.length && (
+                        <SummaryLine
+                          label={t('content_studio_audience_goals', 'Goals')}
+                        >
+                          <Bullets values={audience.content.goals} />
+                        </SummaryLine>
+                      )}
+                      {!!audience.content.painPoints.length && (
+                        <SummaryLine
+                          label={t(
+                            'content_studio_audience_pain_points',
+                            'Pain points'
+                          )}
+                        >
+                          <Bullets values={audience.content.painPoints} />
+                        </SummaryLine>
+                      )}
+                    </div>
+                  </div>
+                }
+                editor={
+                  <div className="flex flex-col gap-[16px]">
+                    <NameField
+                      label={t('content_studio_profile_name', 'Name')}
+                      value={audience.name}
+                      onChange={(name) => setAudience({ ...audience, name })}
+                    />
+                    <AudienceProfileForm
+                      value={audience.content}
+                      onChange={(content) =>
+                        setAudience({ ...audience, content })
+                      }
+                    />
+                  </div>
+                }
+              />
+            );
+          })}
+          <SuggestionCard
+            title={t('content_studio_setup_section_expertise', 'Expertise')}
+            include={profile.expertise.include}
+            onInclude={(include) =>
+              updateProfile({ expertise: { ...profile.expertise, include } })
+            }
+            disabled={disabled}
+            onRegenerate={ai ? () => regenerate('expertise') : undefined}
+            regenerating={regenerating === 'expertise'}
+            summary={
+              <div className="flex flex-col gap-[10px]">
+                <Chips values={profile.expertise.content.subjects} />
+                {!!profile.expertise.content.differentiators.length && (
+                  <SummaryLine
+                    label={t(
+                      'content_studio_setup_differentiators',
+                      'What sets you apart'
+                    )}
+                  >
+                    <Bullets
+                      values={profile.expertise.content.differentiators}
+                    />
+                  </SummaryLine>
+                )}
+              </div>
+            }
+            editor={
+              <div className="flex flex-col gap-[16px]">
+                <NameField
+                  label={t('content_studio_profile_name', 'Name')}
+                  value={profile.expertise.name}
+                  onChange={(name) =>
+                    updateProfile({ expertise: { ...profile.expertise, name } })
+                  }
+                />
+                <ExpertiseProfileForm
+                  value={profile.expertise.content}
+                  onChange={(content) =>
+                    updateProfile({
+                      expertise: { ...profile.expertise, content },
+                    })
+                  }
+                />
+              </div>
+            }
+          />
+          <SuggestionCard
+            title={t(
+              'content_studio_setup_section_editorial',
+              'Editorial rules'
+            )}
+            include={profile.editorial.include}
+            onInclude={(include) =>
+              updateProfile({ editorial: { ...profile.editorial, include } })
+            }
+            disabled={disabled}
+            onRegenerate={ai ? () => regenerate('editorial') : undefined}
+            regenerating={regenerating === 'editorial'}
+            summary={
+              <div className="grid grid-cols-1 tablet:grid-cols-2 gap-[12px]">
+                {!!profile.editorial.content.principles.length && (
+                  <SummaryLine
+                    label={t('content_studio_policy_principles', 'Principles')}
+                  >
+                    <Bullets
+                      values={profile.editorial.content.principles}
+                      max={4}
+                    />
+                  </SummaryLine>
+                )}
+                {!!profile.editorial.content.claimRules.length && (
+                  <SummaryLine
+                    label={t(
+                      'content_studio_policy_claim_rules',
+                      'Claim rules'
+                    )}
+                  >
+                    <Bullets
+                      values={profile.editorial.content.claimRules}
+                      max={2}
+                    />
+                  </SummaryLine>
+                )}
+                {!!profile.editorial.content.prohibitedTopics.length && (
+                  <SummaryLine
+                    label={t(
+                      'content_studio_setup_prohibited',
+                      'Topics to stay away from'
+                    )}
+                  >
+                    <Chips
+                      values={profile.editorial.content.prohibitedTopics}
+                      max={6}
+                    />
+                  </SummaryLine>
+                )}
+              </div>
+            }
+            editor={
+              <EditorialPolicyForm
+                value={profile.editorial.content}
+                onChange={(content) =>
+                  updateProfile({
+                    editorial: { ...profile.editorial, content },
+                  })
+                }
+              />
+            }
+          />
+        </div>
+      );
+    }
+    const namesValid =
+      !profile ||
+      [profile.writing, profile.expertise, ...profile.audiences]
+        .filter((entry) => entry.include)
+        .every((entry) => !!entry.name.trim() && entry.name.length <= NAME_MAX);
+    return shell(
+      <>
+        {header}
+        <section className="flex flex-col gap-[16px]">
+          <h2 className="text-[18px] font-[600]">
+            {t('content_studio_setup_profile_title', 'Your content profile')}
+          </h2>
+          {body}
+          <div className="flex flex-wrap items-center gap-[8px] justify-end pt-[8px] border-t border-newTableBorder">
+            {!namesValid && (
+              <span role="alert" className="text-[13px] me-auto">
+                {t(
+                  'content_studio_setup_names_required',
+                  'Every profile you keep needs a name.'
+                )}
+              </span>
+            )}
+            <Button
+              secondary
+              disabled={generating}
+              onClick={() => update({ step: 2 })}
+            >
+              {t('content_studio_setup_back', 'Back')}
+            </Button>
+            <Button
+              disabled={!profile || generating || !!regenerating || !namesValid}
+              onClick={() => update({ step: 4 })}
+            >
+              {t('content_studio_setup_next', 'Next')}
+            </Button>
+          </div>
+        </section>
+      </>
+    );
+  }
+
+  // --- step 4: review and save ---
+  const profile = draft.profile as SetupProfile;
+  const rows: Array<{
+    key: string;
+    label: string;
+    detail: string;
+    include: boolean;
+    saved: boolean;
+  }> = [
+    {
+      key: 'brand',
+      label: t('content_studio_setup_section_brand', 'Company description'),
+      detail: t(
+        'content_studio_setup_saves_brand',
+        'Saved as the identity of your Brand Kit; its colors and fonts stay as they are.'
+      ),
+      include: profile.brand.include,
+      saved: !!draft.saved.brand,
+    },
+    {
+      key: 'writing',
+      label: `${t('content_studio_setup_section_writing', 'Writing style')}: ${
+        profile.writing.name
+      }`,
+      detail: t(
+        'content_studio_setup_saves_named',
+        'A new profile, or a new version of the profile with this name.'
+      ),
+      include: profile.writing.include,
+      saved: !!draft.saved.writing,
+    },
+    ...profile.audiences.map((audience, index) => ({
+      key: `audience-${index}`,
+      label: `${t('content_studio_setup_section_audience', 'Audience')}: ${
+        audience.name
+      }`,
+      detail: t(
+        'content_studio_setup_saves_named',
+        'A new profile, or a new version of the profile with this name.'
+      ),
+      include: audience.include,
+      saved: !!draft.saved.audiences?.includes(index),
+    })),
+    {
+      key: 'expertise',
+      label: `${t('content_studio_setup_section_expertise', 'Expertise')}: ${
+        profile.expertise.name
+      }`,
+      detail: t(
+        'content_studio_setup_saves_named',
+        'A new profile, or a new version of the profile with this name.'
+      ),
+      include: profile.expertise.include,
+      saved: !!draft.saved.expertise,
+    },
+    {
+      key: 'editorial',
+      label: t('content_studio_setup_section_editorial', 'Editorial rules'),
+      detail: t(
+        'content_studio_setup_saves_policy',
+        'A new version of your editorial policy; earlier versions stay in its history.'
+      ),
+      include: profile.editorial.include,
+      saved: !!draft.saved.editorial,
+    },
+  ];
+  const nothing = rows.every((row) => !row.include);
+  return shell(
+    <>
+      {header}
+      <section className="flex flex-col gap-[16px]">
+        <h2 className="text-[18px] font-[600]">
+          {t('content_studio_setup_review_title', 'Review and save')}
+        </h2>
+        <div className="text-[14px] text-textItemBlur">
+          {t(
+            'content_studio_setup_review_hint',
+            'This is what will be saved. Nothing is deleted or overwritten: changed profiles get a new version and keep their history.'
+          )}
+        </div>
+        <ul className="flex flex-col gap-[8px]">
+          {rows.map((row) => (
+            <li
+              key={row.key}
+              className="flex items-start gap-[10px] p-[12px] rounded-[8px] border border-newTableBorder"
+            >
+              <span
+                aria-hidden="true"
+                className="w-[20px] shrink-0 text-center"
+              >
+                {row.saved ? '✓' : row.include ? '•' : '–'}
+              </span>
+              <div className="flex flex-col gap-[2px] min-w-0">
+                <span
+                  className={clsx(
+                    'font-[600] break-words',
+                    !row.include && 'line-through text-textItemBlur'
+                  )}
+                >
+                  {row.label}
+                </span>
+                <span className="text-[13px] text-textItemBlur">
+                  {row.saved
+                    ? t('content_studio_setup_saved_part', 'Saved')
+                    : row.include
+                    ? row.detail
+                    : t('content_studio_setup_left_out', 'Left out')}
+                </span>
+              </div>
+            </li>
+          ))}
+        </ul>
+        {!!saveError && (
+          <div
+            role="alert"
+            className="p-[12px] rounded-[8px] border border-newTableBorder text-[14px]"
+          >
+            {saveError}{' '}
+            {t(
+              'content_studio_setup_save_retry',
+              'What was saved stays saved; Save again continues with the rest.'
+            )}
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-[8px] justify-end pt-[8px] border-t border-newTableBorder">
+          <Button
+            secondary
+            disabled={saving}
+            onClick={() => update({ step: 3 })}
+          >
+            {t('content_studio_setup_back', 'Back')}
+          </Button>
+          <Button loading={saving} disabled={saving || nothing} onClick={save}>
+            {saveError
+              ? t('content_studio_setup_save_again', 'Save again')
+              : t('content_studio_setup_save', 'Save setup')}
+          </Button>
+        </div>
+      </section>
+    </>
+  );
+};

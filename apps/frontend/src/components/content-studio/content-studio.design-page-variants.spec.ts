@@ -729,7 +729,8 @@ describe('Size variant boundaries', () => {
       // P8-04B1: one more, the organization's page changes
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(149);
+      // Product UX foundation: one more, the setup assistant's AI draft
+    ).toHaveLength(150);
     expect(controller).not.toMatch(/variant|campaign|resize|responsive/i);
   });
 

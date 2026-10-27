@@ -1,3 +1,4 @@
+import { ContentStudioAISetupService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-setup.service';
 import {
   ArgumentMetadata,
   BadRequestException,
@@ -122,7 +123,8 @@ const setup = () => {
     {} as ContentStudioDesignPageSetService,
     {} as ContentStudioDesignBlockService,
     {} as ContentStudioReviewService,
-    {} as ContentStudioDesignAIService
+    {} as ContentStudioDesignAIService,
+    {} as ContentStudioAISetupService
   );
   return { designs, controller, result };
 };
@@ -554,7 +556,8 @@ describe('ContentStudioController design from a package revision (P6-01)', () =>
       {} as ContentStudioDesignPageSetService,
       {} as ContentStudioDesignBlockService,
       {} as ContentStudioReviewService,
-      {} as ContentStudioDesignAIService
+      {} as ContentStudioDesignAIService,
+      {} as ContentStudioAISetupService
     );
     return { packages, controller, result };
   };
@@ -764,7 +767,8 @@ describe('ContentStudioController Design Creative AI suggestion (P6-02)', () => 
       {} as ContentStudioDesignPageSetService,
       {} as ContentStudioDesignBlockService,
       {} as ContentStudioReviewService,
-      designAI as unknown as ContentStudioDesignAIService
+      designAI as unknown as ContentStudioDesignAIService,
+      {} as ContentStudioAISetupService
     );
     return { designAI, controller, result };
   };

@@ -22,8 +22,10 @@ import {
   ContentStudioAIDesignOperationKind,
   ContentStudioAIOperationContext,
   ContentStudioAIOperationKind,
+  ContentStudioAISetupOperationKind,
   isContentStudioAIDesignOperationKind,
   isContentStudioAIOperationKind,
+  isContentStudioAISetupOperationKind,
   parseContentStudioAIOperationContext,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.operation.types';
 import {
@@ -80,7 +82,21 @@ export interface ContentStudioAIDesignExecutionInput {
   request: ContentStudioAITextRequest;
 }
 
-// What both kinds of operation have
+// The same for the organization itself (the guided setup): no package, no
+// design and a context that names nothing but its version. The caller has
+// checked the user's input; none of it is stored
+export interface ContentStudioAIOrganizationExecutionInput {
+  organizationId: string;
+  userId: string;
+  connectionId: string;
+  kind: ContentStudioAISetupOperationKind;
+  model: string;
+  promptVersion: string;
+  context: ContentStudioAIOperationContext;
+  request: ContentStudioAITextRequest;
+}
+
+// What every kind of operation has
 type ExecutionCommon = Omit<
   ContentStudioAIExecutionInput,
   'packageId' | 'baseDraftVersion' | 'kind'
@@ -236,6 +252,16 @@ export class ContentStudioAIExecutionService {
     );
   }
 
+  // A setup operation for the organization (the guided setup): the same
+  // single attempt and records, on no package and no design revision
+  async executeForOrganization(
+    input: ContentStudioAIOrganizationExecutionInput,
+    options: ContentStudioAIExecutionOptions = {}
+  ): Promise<{ operationId: string; result: ContentStudioAITextResult }> {
+    const context = this.checkOrganizationInput(input);
+    return this.run(input, { scope: 'organization' }, context, options);
+  }
+
   private async run(
     input: ExecutionCommon,
     target: ContentStudioAIRequestTarget,
@@ -281,6 +307,8 @@ export class ContentStudioAIExecutionService {
               designRevisionId: target.designRevisionId,
               baseDraftVersion: null,
             }
+          : 'scope' in target
+          ? { packageId: null, designRevisionId: null, baseDraftVersion: null }
           : {
               packageId: target.packageId,
               baseDraftVersion: target.baseDraftVersion,
@@ -470,6 +498,36 @@ export class ContentStudioAIExecutionService {
       context.design?.revisionId !== input.designRevisionId ||
       context.itemId !== undefined ||
       context.sources !== undefined ||
+      !isTextRequest(input.request) ||
+      input.request.model !== input.model
+    ) {
+      throw new ContentStudioAIExecutionError('INVALID_INPUT');
+    }
+    return context;
+  }
+
+  // The same for a setup operation: a setup kind and a context that names
+  // no item, profile, policy, source or design
+  private checkOrganizationInput(
+    input: ContentStudioAIOrganizationExecutionInput
+  ) {
+    const context = parseContentStudioAIOperationContext(input?.context);
+    if (
+      !isRecord(input) ||
+      'packageId' in input ||
+      'baseDraftVersion' in input ||
+      'designRevisionId' in input ||
+      !isId(input.organizationId) ||
+      !isId(input.userId) ||
+      !isId(input.connectionId) ||
+      !isContentStudioAISetupOperationKind(input.kind) ||
+      typeof input.model !== 'string' ||
+      !input.model ||
+      input.model.length > MODEL_ID_MAX ||
+      typeof input.promptVersion !== 'string' ||
+      !AI_PROMPT_VERSION.test(input.promptVersion) ||
+      !context ||
+      Object.keys(context).length !== 1 ||
       !isTextRequest(input.request) ||
       input.request.model !== input.model
     ) {

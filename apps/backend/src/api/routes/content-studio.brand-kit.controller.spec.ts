@@ -1,3 +1,4 @@
+import { ContentStudioAISetupService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-setup.service';
 import {
   ArgumentMetadata,
   BadRequestException,
@@ -101,7 +102,8 @@ const setup = () => {
     {} as ContentStudioDesignPageSetService,
     {} as ContentStudioDesignBlockService,
     {} as ContentStudioReviewService,
-    {} as ContentStudioDesignAIService
+    {} as ContentStudioDesignAIService,
+    {} as ContentStudioAISetupService
   );
   return { brandKit, controller, result };
 };

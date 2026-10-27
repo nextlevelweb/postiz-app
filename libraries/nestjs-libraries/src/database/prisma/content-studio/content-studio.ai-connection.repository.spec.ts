@@ -440,7 +440,7 @@ describe('ContentStudioAIConnection schema', () => {
 // workspace's AI writing dialog, which only reads the connection list; with
 // P6-02 the Creative Studio AI suggestions read it the same way
 describe('AI connection surface so far', () => {
-  it('keeps AI connection frontend code in the Brand & AI screen, the AI writing dialog and the design AI suggestions only', () => {
+  it('keeps AI connection frontend code in the Brand & AI screen, the AI writing dialog, the design AI suggestions and the setup assistant only', () => {
     const frontend = path.join(
       REPO_ROOT,
       'apps/frontend/src/components/content-studio'
@@ -463,6 +463,11 @@ describe('AI connection surface so far', () => {
       // P6-02: the design AI suggestions read the same connection list
       'content-studio.design-ai.spec.ts',
       'content-studio.design-ai.tsx',
+      // the setup assistant: whether AI is ready, the inline Add AI
+      // connection form of the Brand & AI screen, and its setup status
+      'content-studio.setup.api.ts',
+      'content-studio.setup.spec.ts',
+      'content-studio.setup.tsx',
     ]);
     const intelligence = path.join(frontend, 'intelligence');
     expect(

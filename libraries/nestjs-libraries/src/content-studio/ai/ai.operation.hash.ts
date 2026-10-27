@@ -17,11 +17,12 @@ import {
 
 const textHash = (text: string) => sha256Hex(canonicalJson(text));
 
-// What an operation ran on: a package draft at a version, or one saved
-// design revision (P6-02)
+// What an operation ran on: a package draft at a version, one saved design
+// revision (P6-02), or the organization itself (the guided setup)
 export type ContentStudioAIRequestTarget =
   | { packageId: string; baseDraftVersion: number }
-  | { designRevisionId: string };
+  | { designRevisionId: string }
+  | { scope: 'organization' };
 
 export type ContentStudioAIRequestProvenance = {
   kind: string;
@@ -50,6 +51,8 @@ export function contentStudioAIRequestDescriptor(
     // operations existed
     ...('designRevisionId' in input
       ? { designRevisionId: input.designRevisionId }
+      : 'scope' in input
+      ? { scope: input.scope }
       : {
           packageId: input.packageId,
           baseDraftVersion: input.baseDraftVersion,

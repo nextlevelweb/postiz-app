@@ -28,6 +28,8 @@ import { ContentStudioEditorialPolicyService } from '@gitroom/nestjs-libraries/d
 import { ContentStudioAudienceProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.audience-profile.service';
 import { ContentStudioExpertiseProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.service';
 import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
+import { ContentStudioAISetupService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-setup.service';
+import { ContentStudioAISetupProposalDto } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.ai-setup.dto';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.service';
@@ -211,7 +213,8 @@ export class ContentStudioController {
     private _contentStudioDesignPageSetService: ContentStudioDesignPageSetService,
     private _contentStudioDesignBlockService: ContentStudioDesignBlockService,
     private _contentStudioReviewService: ContentStudioReviewService,
-    private _contentStudioDesignAIService: ContentStudioDesignAIService
+    private _contentStudioDesignAIService: ContentStudioDesignAIService,
+    private _contentStudioAISetupService: ContentStudioAISetupService
   ) {}
 
   @Get('/projects')
@@ -532,6 +535,33 @@ export class ContentStudioController {
   @Get('/ai/connections')
   listAIConnections(@GetOrgFromRequest() org: Organization) {
     return this._contentStudioAIConnectionService.listConnections(org.id);
+  }
+
+  // The guided setup's AI draft: one suggestion for the organization's brand
+  // description, writing profile, audiences, expertise and editorial policy,
+  // from what the user typed. Any member may ask; nothing is saved here: the
+  // reviewed draft is saved through the routes of each profile. 200, since
+  // nothing is created for the user to keep
+  @Post('/ai/setup/proposal')
+  @HttpCode(200)
+  proposeAISetup(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Body() body: ContentStudioAISetupProposalDto
+  ) {
+    return this._contentStudioAISetupService.proposeSetup({
+      organizationId: org.id,
+      userId: user.id,
+      request: {
+        connectionId: body.connectionId,
+        companyName: body.companyName,
+        website: body.website,
+        description: body.description,
+        goal: body.goal,
+        audience: body.audience,
+        language: body.language,
+      },
+    });
   }
 
   @Get('/ai/connections/:id')

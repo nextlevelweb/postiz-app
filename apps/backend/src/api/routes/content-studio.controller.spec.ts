@@ -1,3 +1,4 @@
+import { ContentStudioAISetupService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-setup.service';
 import {
   ArgumentMetadata,
   BadRequestException,
@@ -116,7 +117,8 @@ const setup = () => {
     {} as ContentStudioDesignPageSetService,
     {} as ContentStudioDesignBlockService,
     {} as ContentStudioReviewService,
-    {} as ContentStudioDesignAIService
+    {} as ContentStudioDesignAIService,
+    {} as ContentStudioAISetupService
   );
   return { service, handoffs, controller, result };
 };
@@ -395,6 +397,8 @@ describe('ContentStudioController wiring', () => {
       'POST /ai/connections/:id/disable',
       'POST /ai/connections/:id/enable',
       'POST /ai/connections/:id/test',
+      // the setup assistant's AI draft (product UX foundation)
+      'POST /ai/setup/proposal',
       'POST /audience-profiles',
       'POST /audience-profiles/:id/archive',
       'POST /audience-profiles/:id/restore',
@@ -610,6 +614,7 @@ describe('ContentStudioController handoffs', () => {
       ContentStudioDesignBlockService,
       ContentStudioReviewService,
       ContentStudioDesignAIService,
+      ContentStudioAISetupService,
     ]);
   });
 });

@@ -1,3 +1,4 @@
+import { ContentStudioAISetupService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-setup.service';
 import {
   ArgumentMetadata,
   BadRequestException,
@@ -104,7 +105,8 @@ const setup = () => {
     pageSets as unknown as ContentStudioDesignPageSetService,
     {} as ContentStudioDesignBlockService,
     {} as ContentStudioReviewService,
-    {} as ContentStudioDesignAIService
+    {} as ContentStudioDesignAIService,
+    {} as ContentStudioAISetupService
   );
   return { pageSets, designs, controller, result };
 };
@@ -159,7 +161,7 @@ describe('ContentStudioController design page set routes', () => {
     // P8-04B1: one more, the organization's page changes
     // P8-C3: two more, pause and resume a feed
     // P8-C4: one more, a feed's interval
-    expect(all).toHaveLength(149);
+    expect(all).toHaveLength(150);
     expect(
       all.filter(
         (r) =>

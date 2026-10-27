@@ -45,6 +45,25 @@ export const isContentStudioAIDesignOperationKind = (
     value
   );
 
+// The AI operations Content Studio runs for the organization itself, on no
+// package and no design: the guided setup's first draft of the brand,
+// writing, audience, expertise and editorial context. The draft is returned
+// for the user to review and is never stored by the operation
+export const CONTENT_STUDIO_AI_SETUP_OPERATION_KINDS = [
+  'setup_proposal',
+] as const;
+
+export type ContentStudioAISetupOperationKind =
+  (typeof CONTENT_STUDIO_AI_SETUP_OPERATION_KINDS)[number];
+
+export const isContentStudioAISetupOperationKind = (
+  value: unknown
+): value is ContentStudioAISetupOperationKind =>
+  typeof value === 'string' &&
+  (CONTENT_STUDIO_AI_SETUP_OPERATION_KINDS as readonly string[]).includes(
+    value
+  );
+
 // Execution is synchronous: an operation is running until its single provider
 // attempt is recorded
 export type ContentStudioAIOperationStatus = 'running' | 'succeeded' | 'failed';
