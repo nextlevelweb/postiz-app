@@ -29,6 +29,10 @@
 # that is not exactly that keyring, or is readable by others, is refused.
 # Deleting the file makes stored AI keys unreadable: replace them in Brand &
 # AI afterwards.
+#
+# existing-data also reads the clone's Media files from a local copy of the
+# source installation's uploads, when migration-data/prod-uploads exists
+# next to the checkout (see the end of this script).
 set -euo pipefail
 
 CONTAINER=postiz-postgres
@@ -159,5 +163,21 @@ esac
 export SECRET_BOX_KEYS="$keys" SECRET_BOX_ACTIVE_KEY="$active"
 unset keys active line mode
 
-echo "content-studio-dev-db: profile $profile, database $DB_NAME on $DB_HOST:$DB_PORT, Secret Box configured (local key)" >&2
+# existing-data: the clone's Media rows point at the uploads of the
+# installation it was cloned from. Where a copy of those uploads exists next
+# to the checkout (migration-data/prod-uploads, outside git), Content Studio
+# reads Media files from it instead of refusing them; nothing is fetched from
+# that URL. Without the copy, designs cannot use the clone's Media
+media=
+if [ "$profile" = existing-data ]; then
+  mirror=$(cd "$(git rev-parse --git-common-dir)/.." && pwd)/migration-data/prod-uploads
+  if [ -d "$mirror" ] && [ ! -L "$mirror" ]; then
+    export CONTENT_STUDIO_MEDIA_MIRROR_URL=https://socialmedia.nlw.app/uploads
+    export CONTENT_STUDIO_MEDIA_MIRROR_DIRECTORY="$mirror"
+    media=", Media read from the local uploads copy"
+  fi
+  unset mirror
+fi
+
+echo "content-studio-dev-db: profile $profile, database $DB_NAME on $DB_HOST:$DB_PORT, Secret Box configured (local key)$media" >&2
 exec "$@"

@@ -3,6 +3,7 @@
 import { FC, useEffect, useState } from 'react';
 import clsx from 'clsx';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Button } from '@gitroom/react/form/button';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useUser } from '@gitroom/frontend/components/layout/user.context';
@@ -13,6 +14,7 @@ import {
   isContentStudioSetupHidden,
   loadContentStudioSetupDraft,
   setContentStudioSetupHidden,
+  shouldOpenContentStudioSetup,
   useContentStudioSetupStatus,
 } from '@gitroom/frontend/components/content-studio/content-studio.setup.api';
 
@@ -194,4 +196,43 @@ export const ContentStudioSetupCard: FC<{ hasContent: boolean }> = ({
       </div>
     </section>
   );
+};
+
+// A new organization opens Content Studio in the setup assistant, and an
+// unfinished assistant is picked up again; anyone who finished, skipped or
+// chose "Finish later" gets the home page. Decided once per visit, from the
+// organization's data and this browser's setup state. Until then nothing is
+// shown, so a new user never sees the home page flash by
+export const useContentStudioFirstUseSetup = (
+  hasContent: boolean | undefined
+) => {
+  const router = useRouter();
+  const user = useUser();
+  const organizationId = user?.orgId || '';
+  const status = useContentStudioSetupStatus();
+  const [decision, setDecision] = useState<'home' | 'setup' | null>(null);
+  useEffect(() => {
+    if (decision) {
+      return;
+    }
+    if (!organizationId) {
+      setDecision('home');
+      return;
+    }
+    if (!status.loaded || hasContent === undefined) {
+      return;
+    }
+    const open = shouldOpenContentStudioSetup({
+      complete: status.complete,
+      doneCount: status.doneCount,
+      hidden: isContentStudioSetupHidden(organizationId),
+      draft: !!loadContentStudioSetupDraft(organizationId),
+      hasContent,
+    });
+    setDecision(open ? 'setup' : 'home');
+    if (open) {
+      router.replace(CONTENT_STUDIO_SETUP_PATH);
+    }
+  }, [decision, organizationId, status, hasContent, router]);
+  return decision;
 };

@@ -23,7 +23,17 @@ export class StoredAssetFactory {
       case 'local':
         return new LocalStoredMediaReader(
           process.env.UPLOAD_DIRECTORY,
-          process.env.FRONTEND_URL
+          process.env.FRONTEND_URL,
+          // local development with a clone of another installation's data
+          // only (scripts/content-studio-dev-db.sh sets both); unset in
+          // every deployment
+          process.env.CONTENT_STUDIO_MEDIA_MIRROR_URL &&
+          process.env.CONTENT_STUDIO_MEDIA_MIRROR_DIRECTORY
+            ? {
+                url: process.env.CONTENT_STUDIO_MEDIA_MIRROR_URL,
+                directory: process.env.CONTENT_STUDIO_MEDIA_MIRROR_DIRECTORY,
+              }
+            : undefined
         );
       case 'cloudflare':
         return new CloudflareStoredMediaReader(

@@ -27,10 +27,14 @@ import { REVIEW_QUEUE_PAGE } from '@gitroom/frontend/components/content-studio/c
 import { RADAR_PAGE } from '@gitroom/frontend/components/content-studio/content-studio.research.api';
 import {
   ContentStudioLinkPending,
+  ContentStudioLoading,
   ContentStudioPage,
 } from '@gitroom/frontend/components/content-studio/content-studio.shell';
 import { ContentStudioDialogLayout } from '@gitroom/frontend/components/content-studio/content-studio.dialog';
-import { ContentStudioSetupCard } from '@gitroom/frontend/components/content-studio/content-studio.setup.card';
+import {
+  ContentStudioSetupCard,
+  useContentStudioFirstUseSetup,
+} from '@gitroom/frontend/components/content-studio/content-studio.setup.card';
 
 // What each other part of Content Studio is for, in one line
 const SectionCards: FC = () => {
@@ -187,6 +191,27 @@ export const ContentStudioHome: FC = () => {
     !filters.archived && !filters.projectId && filters.page === 1
       ? packages.data?.results[0]
       : undefined;
+
+  // only the plain list says whether there is content at all; a filtered or
+  // failed one never sends anyone to setup
+  const unfiltered =
+    !filters.archived && !filters.projectId && filters.page === 1;
+  const decision = useContentStudioFirstUseSetup(
+    !unfiltered || packages.error
+      ? true
+      : packages.data
+      ? !!packages.data.results.length
+      : undefined
+  );
+  if (decision !== 'home') {
+    return (
+      <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col min-w-0">
+        <ContentStudioLoading
+          label={t('content_studio_opening_home', 'Opening Content Studio…')}
+        />
+      </div>
+    );
+  }
 
   return (
     <ContentStudioPage

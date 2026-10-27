@@ -717,7 +717,7 @@ describe('Creative Studio: Design Library', () => {
     ).toBeTruthy();
     expect(
       screen.getByText(
-        'On-brand visuals for your posts: start from a template, edit on the canvas and render images to your media library.'
+        'Make on-brand images for your posts and render them to your media library.'
       )
     ).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Empty one' })).toBeTruthy();
@@ -823,16 +823,34 @@ describe('Creative Studio: Design Library', () => {
     ).toBeTruthy();
   });
 
-  it('DL-UI10 the active empty state invites to create a design', async () => {
+  // UX review 02: "what can I do with Creative Studio?" answered where it
+  // starts, with only what the editor does today
+  it('DL-UI10 the active empty state explains Creative Studio and offers a design or a template', async () => {
     designs = [];
     await renderLibrary();
-    expect(screen.getByText('No designs yet.')).toBeTruthy();
-    expect(
-      screen.getByText('Create a design to start building visual content.')
-    ).toBeTruthy();
+    const intro = screen.getByRole('region', {
+      name: 'Create on-brand visuals for your content',
+    });
+    for (const text of [
+      /blank design in a social media size, or from a template/,
+      /text, images from your media library, rectangles and ellipses/,
+      /Brand Kit colors and fonts, and let AI suggest text/,
+      /Render each page as an image into your media library/,
+    ]) {
+      expect(within(intro).getByText(text)).toBeTruthy();
+    }
     expect(
       screen.getAllByRole('button', { name: 'Create design' })
     ).toHaveLength(2);
+    expect(
+      within(intro)
+        .getByRole('link', { name: 'Browse templates' })
+        .getAttribute('href')
+    ).toBe('/content-studio/templates');
+    // nothing it cannot do: no video, animation, scheduling or export claim
+    expect(intro.textContent).not.toMatch(
+      /video|animat|schedul|export|publish/i
+    );
   });
 
   it('DL-UI11 the archived empty state says so', async () => {

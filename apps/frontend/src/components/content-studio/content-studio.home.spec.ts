@@ -253,6 +253,7 @@ const button = (name: string | RegExp, root: HTMLElement = document.body) =>
   within(root).getByRole('button', { name });
 
 beforeEach(() => {
+  window.localStorage.clear();
   mockModals.set([]);
   activeProjects = [project(P_ALPHA, 'Alpha'), project(P_BETA, 'Beta')];
   archivedProjects = [project(P_OLD, 'Old project', true)];
@@ -321,10 +322,14 @@ describe('Content Studio home: loading the list', () => {
             release = () => resolve(reply(200, packageList));
           })
         : undefined;
-    const view = renderHome();
+    renderHome();
     await flush();
 
-    expect(view.container.querySelector('[style*="animation"]')).not.toBeNull();
+    // UX review 02: until the list says whether there is content, the home
+    // page waits (it may open the setup assistant instead)
+    expect(screen.getByRole('status').textContent).toContain(
+      'Opening Content Studio…'
+    );
     expect(screen.queryByText('Spring launch')).toBeNull();
     await act(async () => release());
     await loaded();
@@ -561,6 +566,8 @@ describe('Content Studio home: empty, loading and error states', () => {
     ['archived=true', 'No archived packages.', false],
   ])('empty list (%s)', async (query, text, offersCreate) => {
     packageList = { pages: 0, results: [] };
+    // set up skipped: an empty organization would get the assistant
+    window.localStorage.setItem('content-studio-setup-hidden:org', '1');
     renderHome(`/content-studio?${query}`);
     await screen.findByText(text);
     // the header button, and one more in the empty state when active
@@ -582,6 +589,58 @@ describe('Content Studio home: empty, loading and error states', () => {
     fail = false;
     fireEvent.click(button('Try again'));
     await loaded();
+  });
+});
+
+// UX review 02: a new organization lands in the setup assistant
+describe('Content Studio home: first use opens the setup assistant', () => {
+  afterEach(() => window.localStorage.clear());
+
+  it('F1 an organization without content or setup goes straight to the assistant', async () => {
+    packageList = { pages: 0, results: [] };
+    renderHome();
+    await waitFor(() =>
+      expect(mockRouter.replace).toHaveBeenCalledWith('/content-studio/setup')
+    );
+    expect(screen.queryByText(/No content yet/)).toBeNull();
+  });
+
+  it('F2 an unfinished assistant is picked up again, even with content', async () => {
+    window.localStorage.setItem(
+      'content-studio-setup-draft:org',
+      JSON.stringify({ v: 1, step: 2 })
+    );
+    renderHome();
+    await flush();
+    await flush();
+    expect(mockRouter.replace).toHaveBeenCalledWith('/content-studio/setup');
+  });
+
+  it('F3 after Finish later or Skip for now, Home stays Home with a quiet Continue setup', async () => {
+    packageList = { pages: 0, results: [] };
+    window.localStorage.setItem('content-studio-setup-hidden:org', '1');
+    window.localStorage.setItem(
+      'content-studio-setup-draft:org',
+      JSON.stringify({ v: 1, step: 2 })
+    );
+    renderHome();
+    await screen.findByText(/No content yet/);
+    await flush();
+    expect(mockRouter.replace).not.toHaveBeenCalledWith(
+      '/content-studio/setup'
+    );
+    expect(
+      screen.getByRole('link', { name: 'Continue setup' }).getAttribute('href')
+    ).toBe('/content-studio/setup');
+    expect(screen.queryByText('Welcome to Content Studio')).toBeNull();
+  });
+
+  it('F4 an organization with content and no assistant in progress gets Home', async () => {
+    renderHome();
+    await loaded();
+    expect(mockRouter.replace).not.toHaveBeenCalledWith(
+      '/content-studio/setup'
+    );
   });
 });
 

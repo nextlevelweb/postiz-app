@@ -678,7 +678,12 @@ export const designReferenceErrorMessage = (t: Translate, error: unknown) => {
     case 'CS_DESIGN_MEDIA_READ_FAILED':
       return t(
         'content_studio_design_media_read_failed',
-        'The media item could not be read safely.'
+        'The file of this image is not available on this server. Add the image to your media library again and use the new one.'
+      );
+    case 'CS_DESIGN_MEDIA_UNSUPPORTED':
+      return t(
+        'content_studio_design_media_unsupported',
+        'This file type cannot be used in a design. Use a PNG, JPEG or WebP image.'
       );
     case 'CS_BRAND_KIT_INTEGRITY_ERROR':
       return t(

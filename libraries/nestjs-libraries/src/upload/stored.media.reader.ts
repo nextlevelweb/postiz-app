@@ -82,6 +82,16 @@ export const isPathInside = (root: string, target: string) => {
   );
 };
 
+// A copy of another installation's upload folder, for Media rows whose
+// path was written there (a local clone of that installation's database):
+// `${url}/<folders>/<file>` is read as `<directory>/<folders>/<file>` with
+// exactly the checks of the own upload folder. Local development only; it is
+// configured explicitly and nothing is ever fetched from that URL
+export interface StoredMediaMirror {
+  url: string;
+  directory: string;
+}
+
 // LocalStorage: `${FRONTEND_URL}/uploads/<folders>/<file>` is the file
 // `<UPLOAD_DIRECTORY>/<folders>/<file>`. The file's real path, links
 // resolved, must still be inside the real upload directory, and it is opened
@@ -89,10 +99,25 @@ export const isPathInside = (root: string, target: string) => {
 export class LocalStoredMediaReader implements IStoredMediaReader {
   constructor(
     private _uploadDirectory: string | undefined,
-    private _frontendUrl: string | undefined
+    private _frontendUrl: string | undefined,
+    private _mirror?: StoredMediaMirror
   ) {}
 
   async readStoredMediaBytes(storedLocation: string, maxBytes: number) {
+    const mirror = this._mirror;
+    if (
+      mirror &&
+      mirror.url &&
+      path.isAbsolute(mirror.directory || '') &&
+      typeof storedLocation === 'string' &&
+      storedLocation.startsWith(`${mirror.url}/`)
+    ) {
+      return readFromFolder(
+        mirror.directory,
+        relativeToBase(storedLocation, mirror.url),
+        maxBytes
+      );
+    }
     if (
       !this._uploadDirectory ||
       !path.isAbsolute(this._uploadDirectory) ||
@@ -100,43 +125,51 @@ export class LocalStoredMediaReader implements IStoredMediaReader {
     ) {
       throw refused();
     }
-    const relative = relativeToBase(
-      storedLocation,
-      `${this._frontendUrl}/uploads`
+    return readFromFolder(
+      this._uploadDirectory,
+      relativeToBase(storedLocation, `${this._frontendUrl}/uploads`),
+      maxBytes
     );
-    const segments = relative.split('/');
-    if (!segments.every((segment) => SEGMENT.test(segment))) {
+  }
+}
+
+async function readFromFolder(
+  directory: string,
+  relative: string,
+  maxBytes: number
+) {
+  const segments = relative.split('/');
+  if (!segments.every((segment) => SEGMENT.test(segment))) {
+    throw refused();
+  }
+
+  let file: Buffer;
+  try {
+    const root = await realpath(directory);
+    const target = await realpath(path.join(root, ...segments));
+    if (target === root || !isPathInside(root, target)) {
       throw refused();
     }
-
-    let file: Buffer;
+    const handle = await open(
+      target,
+      constants.O_RDONLY | constants.O_NOFOLLOW
+    );
     try {
-      const root = await realpath(this._uploadDirectory);
-      const target = await realpath(path.join(root, ...segments));
-      if (target === root || !isPathInside(root, target)) {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > maxBytes) {
         throw refused();
       }
-      const handle = await open(
-        target,
-        constants.O_RDONLY | constants.O_NOFOLLOW
-      );
-      try {
-        const stat = await handle.stat();
-        if (!stat.isFile() || stat.size > maxBytes) {
-          throw refused();
-        }
-        file = await handle.readFile();
-      } finally {
-        await handle.close();
-      }
-    } catch {
-      throw refused();
+      file = await handle.readFile();
+    } finally {
+      await handle.close();
     }
-    if (file.length > maxBytes) {
-      throw refused();
-    }
-    return file;
+  } catch {
+    throw refused();
   }
+  if (file.length > maxBytes) {
+    throw refused();
+  }
+  return file;
 }
 
 // The parts of an S3 client used here

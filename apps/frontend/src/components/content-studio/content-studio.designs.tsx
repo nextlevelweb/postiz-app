@@ -470,6 +470,71 @@ const DesignRow: FC<{
   );
 };
 
+// What Creative Studio is for, shown while there is no design yet. Only what
+// the editor does today: blank or template designs, text, images from the
+// media library and shapes, the Brand Kit and AI suggestions, and pages
+// rendered as images into the media library
+export const CreativeStudioIntro: FC<{ onCreate: () => void }> = ({
+  onCreate,
+}) => {
+  const t = useT();
+  const points = [
+    t(
+      'content_studio_creative_intro_start',
+      'Start from a blank design in a social media size, or from a template.'
+    ),
+    t(
+      'content_studio_creative_intro_edit',
+      'Add text, images from your media library, rectangles and ellipses; add pages for a carousel.'
+    ),
+    t(
+      'content_studio_creative_intro_brand',
+      'Apply your Brand Kit colors and fonts, and let AI suggest text.'
+    ),
+    t(
+      'content_studio_creative_intro_render',
+      'Render each page as an image into your media library, ready to add to a post.'
+    ),
+  ];
+  return (
+    <section
+      aria-labelledby="creative-studio-intro"
+      className="flex flex-col gap-[16px] p-[24px] mobile:p-[16px] rounded-[16px] border border-newTableBorder"
+    >
+      <h2 id="creative-studio-intro" className="text-[20px] font-[600]">
+        {t(
+          'content_studio_creative_intro_title',
+          'Create on-brand visuals for your content'
+        )}
+      </h2>
+      <ol className="grid grid-cols-1 tablet:grid-cols-2 gap-[12px]">
+        {points.map((point, index) => (
+          <li key={point} className="flex items-start gap-[10px] text-[14px]">
+            <span
+              aria-hidden="true"
+              className="w-[22px] h-[22px] shrink-0 rounded-full bg-newBgLineColor flex items-center justify-center text-[12px] font-[600]"
+            >
+              {index + 1}
+            </span>
+            <span>{point}</span>
+          </li>
+        ))}
+      </ol>
+      <div className="flex flex-wrap items-center gap-[8px]">
+        <Button onClick={onCreate}>
+          {t('content_studio_create_design', 'Create design')}
+        </Button>
+        <Link
+          href={TEMPLATES_PATH}
+          className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
+        >
+          {t('content_studio_browse_templates', 'Browse templates')}
+        </Link>
+      </div>
+    </section>
+  );
+};
+
 // Creative Studio: the organization's designs, active or archived, one
 // summary page at a time, in the server's order
 export const ContentStudioDesigns: FC = () => {
@@ -502,7 +567,7 @@ export const ContentStudioDesigns: FC = () => {
       title={t('content_studio_creative_studio', 'Creative Studio')}
       description={t(
         'content_studio_designs_subtitle',
-        'On-brand visuals for your posts: start from a template, edit on the canvas and render images to your media library.'
+        'Make on-brand images for your posts and render them to your media library.'
       )}
       help={t(
         'content_studio_designs_note',
@@ -568,18 +633,9 @@ export const ContentStudioDesigns: FC = () => {
               {t('content_studio_no_archived_designs', 'No archived designs.')}
             </div>
           ) : (
-            <>
-              <div>{t('content_studio_no_designs', 'No designs yet.')}</div>
-              <div className="text-textItemBlur">
-                {t(
-                  'content_studio_no_designs_hint',
-                  'Create a design to start building visual content.'
-                )}
-              </div>
-              <Button onClick={createDesign}>
-                {t('content_studio_create_design', 'Create design')}
-              </Button>
-            </>
+            <div className="w-full text-start">
+              <CreativeStudioIntro onCreate={createDesign} />
+            </div>
           )}
         </div>
       ) : (

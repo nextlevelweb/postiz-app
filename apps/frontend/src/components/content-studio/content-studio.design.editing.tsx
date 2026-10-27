@@ -1098,6 +1098,7 @@ export const DesignMediaPicker: FC<{
   onPicked: (ref: ContentStudioDesignMediaRef) => void;
 }> = ({ close, onPicked }) => {
   const t = useT();
+  const toaster = useToaster();
   const { getMediaDesignRef } = useContentStudioDesignActions();
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
@@ -1121,6 +1122,10 @@ export const DesignMediaPicker: FC<{
     try {
       const ref = await getMediaDesignRef(selected);
       onPicked({ mediaId: ref.mediaId, sha256: ref.sha256 });
+      toaster.show(
+        t('content_studio_design_media_added', 'Image added.'),
+        'success'
+      );
       close();
     } catch (err) {
       setError(designReferenceErrorMessage(t, err));
@@ -1215,6 +1220,11 @@ export const DesignMediaPicker: FC<{
           pages={library.data.pages}
           setPage={setPage}
         />
+      )}
+      {busy && (
+        <div role="status" className="text-[14px] text-textItemBlur">
+          {t('content_studio_design_media_adding', 'Adding image…')}
+        </div>
       )}
       {!!error && (
         <div role="alert" className="text-red-400">

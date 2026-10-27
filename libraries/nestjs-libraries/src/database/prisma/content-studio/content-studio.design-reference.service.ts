@@ -32,6 +32,14 @@ const mediaReadFailed = () =>
     },
     500
   );
+const mediaUnsupported = () =>
+  new HttpException(
+    {
+      msg: 'Only PNG, JPEG and WebP images can be used in a design.',
+      code: 'CS_DESIGN_MEDIA_UNSUPPORTED',
+    },
+    409
+  );
 const brandIntegrityError = () =>
   new HttpException(
     {
@@ -40,6 +48,16 @@ const brandIntegrityError = () =>
     },
     500
   );
+
+// The formats a render decodes (DESIGN_RENDER_IMAGE_FORMATS), by their
+// first bytes: PNG, JPEG, and WebP (RIFF....WEBP)
+export const isContentStudioDesignImageBytes = (bytes: Buffer) =>
+  bytes
+    .subarray(0, 8)
+    .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ||
+  (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) ||
+  (bytes.subarray(0, 4).toString('latin1') === 'RIFF' &&
+    bytes.subarray(8, 12).toString('latin1') === 'WEBP');
 
 // the Design Document image rule (the Content Package media id rule)
 const MEDIA_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -83,6 +101,9 @@ export class ContentStudioDesignReferenceService {
       );
     if (!bytes || !bytes.length) {
       throw mediaReadFailed();
+    }
+    if (!isContentStudioDesignImageBytes(bytes)) {
+      throw mediaUnsupported();
     }
     return { mediaId: media.id, sha256: designRenderSha256(bytes) };
   }

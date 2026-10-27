@@ -1,6 +1,14 @@
 'use client';
 
-import { FC, ReactNode, useCallback, useEffect, useState } from 'react';
+import {
+  FC,
+  ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import clsx from 'clsx';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import dayjs from 'dayjs';
@@ -254,6 +262,9 @@ export const StringListEditor: FC<{
 };
 
 // A long text, kept as typed: inner line breaks and spacing are content
+// The most an auto-growing text grows before it scrolls
+const AUTO_GROW_MAX_PX = 360;
+
 export const LongTextField: FC<{
   label: string;
   hint?: string;
@@ -261,18 +272,35 @@ export const LongTextField: FC<{
   onChange: (next: string) => void;
   disabled?: boolean;
   rows?: number;
-}> = ({ label, hint, value, onChange, disabled, rows = 4 }) => (
-  <FieldGroup label={label} hint={hint}>
-    <textarea
-      aria-label={label}
-      className="bg-newBgColorInner min-h-[96px] p-[12px] outline-none border-newTableBorder border rounded-[8px] text-textColor text-[14px] disabled:opacity-60"
-      rows={rows}
-      value={value}
-      disabled={disabled}
-      onChange={(e) => onChange(e.target.value)}
-    />
-  </FieldGroup>
-);
+  // grows with its text from `rows` up to a fixed height, then scrolls
+  autoGrow?: boolean;
+}> = ({ label, hint, value, onChange, disabled, rows = 4, autoGrow }) => {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const area = ref.current;
+    if (!autoGrow || !area) {
+      return;
+    }
+    area.style.height = 'auto';
+    area.style.height = `${Math.min(area.scrollHeight, AUTO_GROW_MAX_PX)}px`;
+  }, [autoGrow, value]);
+  return (
+    <FieldGroup label={label} hint={hint}>
+      <textarea
+        ref={ref}
+        aria-label={label}
+        className={clsx(
+          'bg-newBgColorInner min-h-[96px] p-[12px] outline-none border-newTableBorder border rounded-[8px] text-textColor text-[14px] leading-[1.5] disabled:opacity-60',
+          autoGrow ? 'resize-y max-h-[360px] overflow-y-auto' : undefined
+        )}
+        rows={rows}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </FieldGroup>
+  );
+};
 
 // A one-line text
 export const ShortTextField: FC<{

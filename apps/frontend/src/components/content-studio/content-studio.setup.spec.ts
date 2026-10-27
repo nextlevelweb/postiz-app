@@ -218,7 +218,9 @@ let state: {
     Array<{ id: string; name: string; rev: number; content: unknown }>
   >;
   policy: { latest: number; content: any | null };
-  proposal: () => Reply;
+  proposal: () => Reply | Promise<Reply>;
+  // what a connection test answers
+  test: () => { ok: true } | { ok: false; code: string };
   fail?: (method: string, url: string) => Reply | undefined;
 };
 const BASES = [
@@ -228,7 +230,11 @@ const BASES = [
 ];
 let ids = 0;
 
-const server = (method: string, url: string, body: any): Reply => {
+const server = (
+  method: string,
+  url: string,
+  body: any
+): Reply | Promise<Reply> => {
   const failed = state.fail?.(method, url);
   if (failed) {
     return failed;
@@ -246,6 +252,23 @@ const server = (method: string, url: string, body: any): Reply => {
   }
   if (method === 'POST' && pathname === '/content-studio/ai/setup/proposal') {
     return state.proposal();
+  }
+  const test = pathname.match(
+    /^\/content-studio\/ai\/connections\/([^/]+)\/test$/
+  );
+  if (method === 'POST' && test) {
+    const result = state.test();
+    state.connections = state.connections.map((c) =>
+      c.id === test[1]
+        ? {
+            ...c,
+            lastValidatedAt: T0,
+            lastValidationStatus: result.ok ? 'valid' : 'invalid',
+            lastValidationCode: result.ok ? null : (result as any).code,
+          }
+        : c
+    );
+    return reply(200, result);
   }
   if (method === 'GET' && pathname === '/content-studio/brand-kit') {
     return reply(200, {
@@ -369,7 +392,10 @@ const calls = () =>
     url: url as string,
     body: init?.body ? JSON.parse(init.body as string) : undefined,
   }));
+const TEST_URL = `/content-studio/ai/connections/${CONNECTION.id}/test`;
 const writes = () => calls().filter((c) => c.method !== 'GET');
+// what changes Content Studio data: a connection test only records its result
+const dataWrites = () => writes().filter((c) => c.url !== TEST_URL);
 
 const flush = () =>
   act(async () => {
@@ -398,7 +424,7 @@ const type = (label: string, value: string) =>
 const fillCompany = () => {
   type('Company name', 'Next Level Web');
   type('What does your company do?', 'We build websites for small shops.');
-  type('Website (optional)', 'https://nextlevelweb.example');
+  type('Website', 'https://nextlevelweb.example');
 };
 const DRAFT_KEY = 'content-studio-setup-draft:org-1';
 
@@ -438,6 +464,7 @@ beforeEach(() => {
           promptVersion: 'cs-setup-v1',
         },
       }),
+    test: () => ({ ok: true }),
   };
   mockFetch.mockImplementation(async (url: string, init: RequestInit = {}) =>
     server(
@@ -458,17 +485,19 @@ afterEach(async () => {
 });
 
 describe('Setup assistant: progress and the AI step', () => {
-  it('W1 says which step of four and how many are left; AI ready goes on to the company', async () => {
+  it('W1 says which step of four; AI is ready only after its test, then goes on to the company', async () => {
     await show();
     expect(screen.getByText('Step 1 of 4')).toBeTruthy();
-    expect(screen.getByText('3 steps left')).toBeTruthy();
+    // UX review 02: no second "steps left" line
+    expect(screen.queryByText(/steps? left|Last step/)).toBeNull();
+    // the connection was tested (key and model), and passed
+    expect(writes().map((w) => w.url)).toEqual([TEST_URL]);
     expect(screen.getByText('AI is ready')).toBeTruthy();
-    // nothing is written by opening the assistant
-    expect(writes()).toEqual([]);
+    // nothing else is written by opening the assistant
+    expect(dataWrites()).toEqual([]);
     fireEvent.click(button('Next'));
     await flush();
     expect(screen.getByText('Step 2 of 4')).toBeTruthy();
-    expect(screen.getByText('2 steps left')).toBeTruthy();
     // prefilled from what exists: the Brand Kit's name
     expect(field('Company name').value).toBe('Acme');
   });
@@ -510,6 +539,11 @@ describe('Setup assistant: progress and the AI step', () => {
     await flush();
     expect(screen.getByText('AI is ready')).toBeTruthy();
     expect(screen.getByText('Step 1 of 4')).toBeTruthy();
+    // a new connection is tested right away
+    expect(writes().map((w) => w.url)).toEqual([
+      '/content-studio/ai/connections',
+      TEST_URL,
+    ]);
     const [created] = writes();
     expect(created.url).toBe('/content-studio/ai/connections');
     // a blank name is the provider's name
@@ -553,7 +587,7 @@ describe('Setup assistant: the AI draft', () => {
     expect(screen.getByText('AI voice.')).toBeTruthy();
     expect(screen.getByText('Audience: Start-ups')).toBeTruthy();
     // a draft is a suggestion: nothing of a profile is saved yet
-    expect(writes().map((w) => w.url)).toEqual([
+    expect(dataWrites().map((w) => w.url)).toEqual([
       '/content-studio/ai/setup/proposal',
     ]);
   });
@@ -562,9 +596,13 @@ describe('Setup assistant: the AI draft', () => {
     state.proposal = () => reply(502, { code: 'CS_AI_INVALID_RESPONSE' });
     await toProfile();
     expect(screen.getByRole('alert').textContent).toBe(
-      "We couldn't generate suggestions right now."
+      'The AI answer could not be used. Try again.'
     );
-    expect(screen.getByText(/Your company information is kept/)).toBeTruthy();
+    expect(screen.getByText(/Everything you entered is kept/)).toBeTruthy();
+    // every way on: retry, the connection, by hand, or later
+    expect(button('Check AI connection')).toBeTruthy();
+    expect(button('Continue manually')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Finish later' })).toBeTruthy();
     state.proposal = () =>
       reply(200, { operationId: 'op', proposal: PROPOSAL, ai: {} });
     fireEvent.click(button('Try again'));
@@ -656,13 +694,12 @@ describe('Setup assistant: save', () => {
   it('W11 shows what will be saved, then saves without deleting or overwriting', async () => {
     await toReview();
     expect(screen.getByText('Step 4 of 4')).toBeTruthy();
-    expect(screen.getByText('Last step')).toBeTruthy();
-    expect(writes().map((w) => w.url)).toEqual([
+    expect(dataWrites().map((w) => w.url)).toEqual([
       '/content-studio/ai/setup/proposal',
     ]);
     fireEvent.click(button('Save setup'));
     await flush();
-    const saved = writes().filter(
+    const saved = dataWrites().filter(
       (w) => w.url !== '/content-studio/ai/setup/proposal'
     );
     expect(saved.map((w) => `${w.method} ${w.url}`)).toEqual([
@@ -746,6 +783,220 @@ describe('Setup assistant: save', () => {
       'POST /content-studio/editorial-policy/revisions',
     ]);
     expect(screen.getByText('Your Content Studio is ready')).toBeTruthy();
+  });
+});
+
+// UX review 02: Lambert's second review
+describe('Setup assistant: quiet progress (review 02)', () => {
+  it('W14 only the current step stands out; done steps are checked, later ones muted', async () => {
+    await show();
+    fireEvent.click(button('Next'));
+    await flush();
+    const steps = screen
+      .getByRole('navigation', { name: 'Setup steps' })
+      .querySelectorAll('li');
+    expect(
+      Array.from(steps).map((li) => li.getAttribute('data-state'))
+    ).toEqual(['done', 'current', 'upcoming', 'upcoming']);
+    const current = document.querySelectorAll('[aria-current="step"]');
+    expect(current).toHaveLength(1);
+    expect(current[0].textContent).toContain('Your company');
+    // upcoming steps are muted and cannot be opened yet
+    for (const li of Array.from(steps).slice(2)) {
+      const step = li.querySelector('button') as HTMLButtonElement;
+      expect(step.className).toMatch(/opacity-/);
+      expect(step.disabled).toBe(true);
+    }
+    // "Finish later" is a quiet link, the step's way on a button
+    const later = screen.getByRole('link', { name: 'Finish later' });
+    expect(later.tagName).toBe('A');
+    expect(later.className).toMatch(/text-textItemBlur/);
+    expect(button('Draft my profile with AI')).toBeTruthy();
+  });
+
+  it('W15 Finish later keeps what was typed and stops Home from opening the assistant', async () => {
+    await show();
+    fireEvent.click(button('Next'));
+    await flush();
+    fillCompany();
+    await flush();
+    fireEvent.click(screen.getByRole('link', { name: 'Finish later' }));
+    expect(
+      window.localStorage.getItem('content-studio-setup-hidden:org-1')
+    ).toBe('1');
+    const kept = JSON.parse(window.localStorage.getItem(DRAFT_KEY) as string);
+    expect(kept.company.companyName).toBe('Next Level Web');
+  });
+});
+
+describe('Setup assistant: AI connection health (review 02)', () => {
+  it('W16 a connection whose test fails needs attention: fix it, or continue manually', async () => {
+    state.test = () => ({ ok: false, code: 'WORKSPACE_REQUIRED' });
+    await show();
+    expect(screen.queryByText('AI is ready')).toBeNull();
+    expect(screen.getByText('AI needs attention')).toBeTruthy();
+    expect(screen.getByText(/not tied to a workspace/)).toBeTruthy();
+    expect(
+      screen.getByRole('link', { name: 'Fix connection' }).getAttribute('href')
+    ).toBe('/content-studio/intelligence?tab=ai');
+    expect(screen.queryByRole('button', { name: 'Next' })).toBeNull();
+    fireEvent.click(button('Continue manually'));
+    await flush();
+    expect(screen.getByText('Step 2 of 4')).toBeTruthy();
+    // without working AI the profile is filled in by hand
+    expect(
+      screen.queryByRole('button', { name: 'Draft my profile with AI' })
+    ).toBeNull();
+  });
+
+  it('W17 a member cannot test: an untested connection is used as it is', async () => {
+    mockUser.mockReturnValue({ orgId: 'org-1', tier: 'PRO', role: 'USER' });
+    await show();
+    expect(writes()).toEqual([]);
+    expect(screen.getByText(/An admin can test this connection/)).toBeTruthy();
+    fireEvent.click(button('Next'));
+    await flush();
+    expect(button('Draft my profile with AI')).toBeTruthy();
+  });
+
+  it('W18 a failed draft about the connection goes back to step 1 without losing step 2', async () => {
+    state.proposal = () => reply(502, { code: 'CS_AI_WORKSPACE_REQUIRED' });
+    await show();
+    fireEvent.click(button('Next'));
+    await flush();
+    fillCompany();
+    type('Main goal of your posts (optional)', 'More inbound leads');
+    fireEvent.click(button('Draft my profile with AI'));
+    await flush();
+    expect(screen.getByRole('alert').textContent).toMatch(
+      /not tied to a workspace/
+    );
+    const before = writes().filter((w) => w.url === TEST_URL).length;
+    state.test = () => ({ ok: false, code: 'WORKSPACE_REQUIRED' });
+    fireEvent.click(button('Check AI connection'));
+    await flush();
+    expect(screen.getByText('Step 1 of 4')).toBeTruthy();
+    // tested again on the way back
+    expect(writes().filter((w) => w.url === TEST_URL).length).toBe(before + 1);
+    expect(screen.getByText('AI needs attention')).toBeTruthy();
+    // fixed elsewhere: tested again, ready, and the company is as typed
+    state.test = () => ({ ok: true });
+    fireEvent.click(button('Test again'));
+    await flush();
+    expect(screen.getByText('AI is ready')).toBeTruthy();
+    fireEvent.click(button('Next'));
+    await flush();
+    expect(field('Company name').value).toBe('Next Level Web');
+    expect(field('Main goal of your posts (optional)').value).toBe(
+      'More inbound leads'
+    );
+  });
+
+  it('W19 an answer that arrives after the user went back is dropped', async () => {
+    let answer: (value: Reply) => void = () => undefined;
+    state.proposal = () =>
+      new Promise<Reply>((resolve) => {
+        answer = resolve;
+      });
+    await show();
+    fireEvent.click(button('Next'));
+    await flush();
+    fillCompany();
+    fireEvent.click(button('Draft my profile with AI'));
+    await flush();
+    expect(screen.getByText('Drafting your content profile…')).toBeTruthy();
+    expect(screen.getByText('This may take a moment.')).toBeTruthy();
+    // Back stays possible while the AI works
+    fireEvent.click(button('Back'));
+    await flush();
+    expect(screen.getByText('Step 2 of 4')).toBeTruthy();
+    answer(reply(200, { operationId: 'late', proposal: PROPOSAL, ai: {} }));
+    await flush();
+    expect(screen.getByText('Step 2 of 4')).toBeTruthy();
+    const kept = JSON.parse(window.localStorage.getItem(DRAFT_KEY) as string);
+    expect(kept.profile).toBeNull();
+    // a new attempt still works
+    state.proposal = () =>
+      reply(200, { operationId: 'op', proposal: PROPOSAL, ai: {} });
+    fireEvent.click(button('Draft my profile with AI'));
+    await flush();
+    expect(screen.getByText('AI voice.')).toBeTruthy();
+  });
+});
+
+describe('Setup assistant: company step fields (review 02)', () => {
+  const toCompany = async () => {
+    await show();
+    fireEvent.click(button('Next'));
+    await flush();
+  };
+
+  it('W20 the description, goal and audience are text areas of a useful size', async () => {
+    await toCompany();
+    const description = field('What does your company do?');
+    expect(description.tagName).toBe('TEXTAREA');
+    expect(Number(description.getAttribute('rows'))).toBeGreaterThanOrEqual(5);
+    for (const label of [
+      'Main goal of your posts (optional)',
+      'Who do you write for? (optional)',
+    ]) {
+      const area = field(label);
+      expect(area.tagName).toBe('TEXTAREA');
+      expect(Number(area.getAttribute('rows'))).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it('W21 the website shows no warning until an invalid address is left, then an error under the field', async () => {
+    await toCompany();
+    const website = field('Website');
+    expect(website.getAttribute('placeholder')).toBe('https://nextlevelweb.nl');
+    expect(screen.queryByRole('alert')).toBeNull();
+    fireEvent.change(website, { target: { value: 'nextlevelweb.nl' } });
+    expect(screen.queryByRole('alert')).toBeNull();
+    fireEvent.blur(website);
+    const error = screen.getByRole('alert');
+    expect(error.textContent).toContain(
+      'Use a full URL, for example https://nextlevelweb.nl'
+    );
+    expect(website.getAttribute('aria-invalid')).toBe('true');
+    expect(website.getAttribute('aria-describedby')).toBe(error.id);
+    // the error is next to its field, not elsewhere in the form
+    expect(website.parentElement?.contains(error)).toBe(true);
+    fireEvent.change(website, { target: { value: 'https://nextlevelweb.nl' } });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(website.getAttribute('aria-invalid')).toBeNull();
+  });
+});
+
+describe('Setup: when Content Studio opens the assistant (review 02)', () => {
+  const {
+    shouldOpenContentStudioSetup,
+  } = require('./content-studio.setup.api');
+  const base = {
+    complete: false,
+    doneCount: 0,
+    hidden: false,
+    draft: false,
+    hasContent: false,
+  };
+  it.each([
+    ['a completely new organization', {}, true],
+    ['one with only AI connected', { doneCount: 1 }, true],
+    [
+      'an unfinished assistant',
+      { draft: true, doneCount: 4, hasContent: true },
+      true,
+    ],
+    ['everything set up', { complete: true, doneCount: 6 }, false],
+    [
+      'after Skip for now or Finish later',
+      { hidden: true, draft: true },
+      false,
+    ],
+    ['an organization that already has content', { hasContent: true }, false],
+    ['one that set up several parts by hand', { doneCount: 3 }, false],
+  ])('%s', (_label, patch, expected) => {
+    expect(shouldOpenContentStudioSetup({ ...base, ...patch })).toBe(expected);
   });
 });
 

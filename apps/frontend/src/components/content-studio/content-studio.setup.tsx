@@ -1,6 +1,14 @@
 'use client';
 
-import { FC, ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import {
+  FC,
+  ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from 'react';
 import clsx from 'clsx';
 import Link from 'next/link';
 import i18next from 'i18next';
@@ -13,7 +21,6 @@ import { ContentStudioRequestError } from '@gitroom/frontend/components/content-
 import { CreateContentStudioPackageModal } from '@gitroom/frontend/components/content-studio/content-studio.package.modal';
 import {
   CONTENT_STUDIO_HOME_PATH,
-  ContentStudioBreadcrumbs,
   ContentStudioLoading,
 } from '@gitroom/frontend/components/content-studio/content-studio.shell';
 import {
@@ -28,10 +35,13 @@ import {
   useContentStudioSetupActions,
 } from '@gitroom/frontend/components/content-studio/content-studio.setup.api';
 import {
+  aiConnectionHealth,
+  aiValidationCodeMessage,
   AUDIENCE_PROFILES_PATH,
   ContentStudioProfilesPath,
   EXPERTISE_PROFILES_PATH,
   profileErrorMessage,
+  useContentStudioAIConnectionActions,
   useContentStudioAIConnections,
   useContentStudioAIProviders,
   useContentStudioEditorialPolicyActions,
@@ -40,6 +50,7 @@ import {
 } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.api';
 import {
   AIConnectionCreateForm,
+  AIConnectionHealthBadge,
   useCanManageAIConnections,
 } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.ai-connections';
 import {
@@ -175,6 +186,25 @@ export const canOpenSetupStep = (draft: SetupDraft, step: SetupStep) =>
 export const isSetupWebsite = (value: string) =>
   !value.trim() || /^https?:\/\/[^\s/$.?#][^\s]*$/i.test(value.trim());
 
+export const SETUP_WEBSITE_EXAMPLE = 'https://nextlevelweb.nl';
+
+// A failed AI draft that is about the connection rather than this one
+// attempt: the way on is fixing the connection, not trying again
+export const SETUP_CONNECTION_ERRORS = [
+  'CS_AI_AUTH_FAILED',
+  'CS_AI_WORKSPACE_REQUIRED',
+  'CS_AI_MODEL_UNAVAILABLE',
+  'CS_AI_MODEL_UNSUPPORTED',
+  'CS_AI_QUOTA_EXCEEDED',
+  'CS_AI_REQUEST_REJECTED',
+  'CS_AI_CONNECTION_CREDENTIAL_INVALID',
+  'CS_AI_CONNECTION_DISABLED',
+  'CS_AI_CONNECTION_REQUIRED',
+];
+export const isSetupConnectionError = (error: unknown) =>
+  error instanceof ContentStudioRequestError &&
+  SETUP_CONNECTION_ERRORS.includes(error.code as string);
+
 const setupAIErrorMessage = (
   t: (key: string, fallback: string) => string,
   error: unknown
@@ -186,7 +216,38 @@ const setupAIErrorMessage = (
     case 'CS_AI_CONNECTION_CREDENTIAL_INVALID':
       return t(
         'content_studio_setup_ai_error_key',
-        'The AI provider did not accept the API key. Replace the key under Brand & AI, AI Connections.'
+        "We couldn't use this API key. Check the key under Fix connection and try again."
+      );
+    case 'CS_AI_WORKSPACE_REQUIRED':
+      return t(
+        'content_studio_setup_ai_error_workspace',
+        'This Anthropic key is not tied to a workspace. Add the workspace ID to the connection, or use a key created inside a workspace.'
+      );
+    case 'CS_AI_MODEL_UNAVAILABLE':
+    case 'CS_AI_MODEL_UNSUPPORTED':
+      return t(
+        'content_studio_setup_ai_error_model',
+        'This model is not available for this connection. Choose another model under Fix connection.'
+      );
+    case 'CS_AI_REQUEST_REJECTED':
+      return t(
+        'content_studio_setup_ai_error_rejected',
+        'The AI provider refused the request. Check the connection, then try again.'
+      );
+    case 'CS_AI_TIMEOUT':
+      return t(
+        'content_studio_setup_ai_error_timeout',
+        'The AI provider took too long to answer. Try again; a faster model can help.'
+      );
+    case 'CS_AI_PROVIDER_UNAVAILABLE':
+      return t(
+        'content_studio_setup_ai_error_unavailable',
+        'The AI provider is not available right now. Try again in a moment.'
+      );
+    case 'CS_AI_INVALID_RESPONSE':
+      return t(
+        'content_studio_setup_ai_error_invalid',
+        'The AI answer could not be used. Try again.'
       );
     case 'CS_AI_QUOTA_EXCEEDED':
       return t(
@@ -217,7 +278,16 @@ const setupAIErrorMessage = (
   }
 };
 
-// Step x of 4, the steps left and the step names; done steps can be opened
+// Where the user is, kept quiet: the current step stands out, done steps
+// get a small check and can be opened again, later steps are visible but
+// muted. "Step x of 4" is small text, not a second headline
+export type SetupStepState = 'done' | 'current' | 'upcoming';
+export const setupStepState = (
+  number: SetupStep,
+  current: SetupStep
+): SetupStepState =>
+  number === current ? 'current' : number < current ? 'done' : 'upcoming';
+
 const WizardProgress: FC<{
   step: SetupStep;
   canOpen: (step: SetupStep) => boolean;
@@ -230,59 +300,136 @@ const WizardProgress: FC<{
     t('content_studio_setup_step_profile', 'Your content profile'),
     t('content_studio_setup_step_save', 'Review and save'),
   ];
-  const left = SETUP_STEPS - step;
   return (
-    <div className="flex flex-col gap-[10px]">
-      <div className="flex flex-wrap items-baseline gap-x-[12px] gap-y-[2px]">
-        <span className="font-[600]" aria-live="polite">
-          {t('content_studio_setup_step_of', 'Step {{step}} of {{total}}', {
-            step,
-            total: SETUP_STEPS,
-          })}
-        </span>
-        <span className="text-[13px] text-textItemBlur">
-          {left === 0
-            ? t('content_studio_setup_last_step', 'Last step')
-            : left === 1
-            ? t('content_studio_setup_one_left', '1 step left')
-            : t('content_studio_setup_steps_left', '{{count}} steps left', {
-                count: left,
-              })}
-        </span>
-      </div>
-      <ol className="grid grid-cols-4 gap-[6px]">
+    <nav
+      aria-label={t('content_studio_setup_progress_label', 'Setup steps')}
+      className="flex flex-wrap items-center gap-x-[16px] gap-y-[8px]"
+    >
+      <ol className="flex flex-wrap items-center gap-x-[6px] gap-y-[8px] flex-1 min-w-0">
         {names.map((name, index) => {
           const number = (index + 1) as SetupStep;
-          const current = number === step;
-          const reachable = !current && canOpen(number);
+          const state = setupStepState(number, step);
+          const reachable = state !== 'current' && canOpen(number);
           return (
-            <li key={name} className="flex flex-col gap-[6px] min-w-0">
-              <span
-                aria-hidden="true"
-                className={clsx(
-                  'h-[4px] rounded-full',
-                  number <= step
-                    ? 'bg-[var(--brand-primary,#612ad5)]'
-                    : 'bg-newBgLineColor'
-                )}
-              />
+            <li
+              key={name}
+              data-state={state}
+              className="flex items-center gap-[6px] min-w-0"
+            >
+              {index > 0 && (
+                <span
+                  aria-hidden="true"
+                  className="w-[16px] h-px bg-newTableBorder shrink-0"
+                />
+              )}
               <button
                 type="button"
                 disabled={!reachable}
-                aria-current={current ? 'step' : undefined}
+                aria-current={state === 'current' ? 'step' : undefined}
                 className={clsx(
-                  'text-start text-[12px] truncate',
-                  current ? 'font-[600]' : 'text-textItemBlur',
-                  reachable && 'hover:underline'
+                  'flex items-center gap-[6px] min-w-0 text-[13px] rounded-full',
+                  state === 'current' && 'font-[600] text-newTextColor',
+                  state === 'done' && 'text-textItemBlur',
+                  state === 'upcoming' && 'text-textItemBlur opacity-60',
+                  reachable && 'hover:text-newTextColor hover:underline'
                 )}
                 onClick={() => onOpen(number)}
               >
-                {name}
+                <span
+                  aria-hidden="true"
+                  className={clsx(
+                    'w-[20px] h-[20px] shrink-0 rounded-full flex items-center justify-center text-[11px]',
+                    state === 'current' &&
+                      'bg-[var(--brand-primary,#612ad5)] text-[var(--brand-action-text,#fff)] font-[600]',
+                    state === 'done' &&
+                      'border border-[var(--brand-primary,#612ad5)]/60 text-[var(--brand-primary,#612ad5)]',
+                    state === 'upcoming' && 'border border-newTableBorder'
+                  )}
+                >
+                  {state === 'done' ? '✓' : number}
+                </span>
+                <span
+                  className={clsx(
+                    'truncate',
+                    state !== 'current' && 'mobile:hidden'
+                  )}
+                >
+                  {name}
+                </span>
+                {state === 'done' && (
+                  <span className="sr-only">
+                    {t('content_studio_setup_done', 'done')}
+                  </span>
+                )}
               </button>
             </li>
           );
         })}
       </ol>
+      <span className="text-[12px] text-textItemBlur" aria-live="polite">
+        {t('content_studio_setup_step_of', 'Step {{step}} of {{total}}', {
+          step,
+          total: SETUP_STEPS,
+        })}
+      </span>
+    </nav>
+  );
+};
+
+// The website, optional. Nothing is said about its format until a typed
+// address is left in a form the server refuses; then the field is marked
+// invalid and the message sits right under it, styled as an error
+const WebsiteField: FC<{
+  value: string;
+  onChange: (next: string) => void;
+}> = ({ value, onChange }) => {
+  const t = useT();
+  const id = useId();
+  const [touched, setTouched] = useState(false);
+  const invalid = touched && !isSetupWebsite(value);
+  return (
+    <div className="flex flex-col gap-[8px] min-w-0">
+      <label
+        htmlFor={id}
+        className="flex items-baseline gap-[8px] text-[14px] font-[600]"
+      >
+        {t('content_studio_setup_website_label', 'Website')}
+        <span className="text-[12px] font-[400] text-textItemBlur">
+          {t('content_studio_setup_optional', 'Optional')}
+        </span>
+      </label>
+      <input
+        id={id}
+        aria-label={t('content_studio_setup_website_label', 'Website')}
+        type="url"
+        inputMode="url"
+        autoComplete="url"
+        spellCheck={false}
+        placeholder={SETUP_WEBSITE_EXAMPLE}
+        aria-invalid={invalid || undefined}
+        aria-describedby={invalid ? `${id}-error` : undefined}
+        maxLength={WEBSITE_MAX}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={() => setTouched(true)}
+        className={clsx(
+          'bg-newBgColorInner h-[42px] px-[12px] outline-none border rounded-[8px] text-textColor text-[14px] placeholder:text-textItemBlur/60',
+          invalid ? 'border-red-500' : 'border-newTableBorder'
+        )}
+      />
+      {invalid && (
+        <div
+          id={`${id}-error`}
+          role="alert"
+          className="flex items-start gap-[6px] text-[13px] text-red-400"
+        >
+          <span aria-hidden="true">⚠</span>
+          {t(
+            'content_studio_setup_website_error',
+            'Use a full URL, for example https://nextlevelweb.nl'
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -434,12 +581,22 @@ export const ContentStudioSetupWizard: FC = () => {
     EXPERTISE_PROFILES_PATH
   );
   const policyActions = useContentStudioEditorialPolicyActions();
+  const connectionActions = useContentStudioAIConnectionActions();
 
   const [draft, setDraft] = useState<SetupDraft | null>(null);
   // what exists already, the start of a manual profile
   const existing = useRef<SetupProfile | null>(null);
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
+  // the failed draft was about the connection: fix it, don't just retry
+  const [connectionProblem, setConnectionProblem] = useState(false);
+  // a connection test running for this id
+  const [testing, setTesting] = useState<string | null>(null);
+  const tested = useRef(new Set<string>());
+  // Each AI request has a number; an answer that comes back after the user
+  // moved on (Back, Fix connection, a newer attempt) is dropped, so a late
+  // answer never overwrites a newer state
+  const attempt = useRef(0);
   const [regenerating, setRegenerating] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -603,12 +760,14 @@ export const ContentStudioSetupWizard: FC = () => {
       return;
     }
     busy.current = true;
+    const mine = ++attempt.current;
     setGenerating(true);
     setGenerateError(null);
+    setConnectionProblem(false);
     update({ step: 3 });
     try {
       const proposal = await propose();
-      if (proposal) {
+      if (proposal && mine === attempt.current) {
         update({
           step: 3,
           source: 'ai',
@@ -619,15 +778,80 @@ export const ContentStudioSetupWizard: FC = () => {
       }
     } catch (err) {
       // the company information stays as typed
-      setGenerateError(setupAIErrorMessage(t, err));
+      if (mine === attempt.current) {
+        setGenerateError(setupAIErrorMessage(t, err));
+        setConnectionProblem(isSetupConnectionError(err));
+      }
     } finally {
-      busy.current = false;
-      setGenerating(false);
+      if (mine === attempt.current) {
+        busy.current = false;
+        setGenerating(false);
+      }
     }
   }, [propose, update, t]);
 
-  const continueManually = useCallback(() => {
+  // leaving a running AI request: its answer will be dropped
+  const abandon = useCallback(() => {
+    attempt.current += 1;
+    busy.current = false;
+    setGenerating(false);
+    setRegenerating(null);
+  }, []);
+
+  // Tests a connection and records the result on it (an admin only; the
+  // server refuses others). The list reloads with the new status
+  const testConnection = useCallback(
+    async (id: string) => {
+      tested.current.add(id);
+      setTesting(id);
+      try {
+        await connectionActions.testConnection(id);
+      } catch {
+        // the status stays as it was; the connection can be tested again
+      } finally {
+        setTesting((current) => (current === id ? null : current));
+      }
+    },
+    [connectionActions]
+  );
+
+  // back to step 1 to fix the connection; the company information stays
+  const fixConnection = useCallback(() => {
+    abandon();
     setGenerateError(null);
+    setConnectionProblem(false);
+    if (connectionId) {
+      tested.current.delete(connectionId);
+    }
+    update({ step: 1 });
+  }, [abandon, connectionId, update]);
+
+  // "Finish later": Home stops opening the assistant until it is continued;
+  // what was typed stays kept for "Continue setup"
+  const finishLater = useCallback(() => {
+    abandon();
+    setContentStudioSetupHidden(organizationId, true);
+  }, [abandon, organizationId]);
+
+  // Step 1 asks the provider once per visit whether the chosen connection
+  // works (an admin only: members cannot test). It reads one model and
+  // generates nothing
+  const step = draft?.step;
+  useEffect(() => {
+    if (
+      step === 1 &&
+      canManageAI &&
+      connectionId &&
+      !tested.current.has(connectionId)
+    ) {
+      testConnection(connectionId);
+    }
+  }, [step, canManageAI, connectionId, testConnection]);
+
+  const continueManually = useCallback(() => {
+    abandon();
+    setGenerateError(null);
+    setConnectionProblem(false);
     update({
       step: 3,
       manual: true,
@@ -635,7 +859,7 @@ export const ContentStudioSetupWizard: FC = () => {
       profile: draft?.profile ?? existing.current,
       saved: {},
     });
-  }, [update, draft?.profile]);
+  }, [update, draft?.profile, abandon]);
 
   // a new AI suggestion for one section only; the rest stays as reviewed
   const regenerate = useCallback(
@@ -646,19 +870,25 @@ export const ContentStudioSetupWizard: FC = () => {
         return;
       }
       busy.current = true;
+      const mine = ++attempt.current;
       setRegenerating(section);
       setGenerateError(null);
       try {
         const proposal = await propose();
-        if (proposal) {
+        if (proposal && mine === attempt.current) {
           const next = setupProfileFromProposal(proposal);
           updateProfile({ [section]: next[section] } as Partial<SetupProfile>);
         }
       } catch (err) {
-        setGenerateError(setupAIErrorMessage(t, err));
+        if (mine === attempt.current) {
+          setGenerateError(setupAIErrorMessage(t, err));
+          setConnectionProblem(isSetupConnectionError(err));
+        }
       } finally {
-        busy.current = false;
-        setRegenerating(null);
+        if (mine === attempt.current) {
+          busy.current = false;
+          setRegenerating(null);
+        }
       }
     },
     [propose, updateProfile, t]
@@ -771,22 +1001,11 @@ export const ContentStudioSetupWizard: FC = () => {
       ),
     });
 
-  const crumbs = (
-    <ContentStudioBreadcrumbs
-      crumbs={[
-        {
-          label: t('content_studio_brand_ai', 'Brand & AI'),
-          href: '/content-studio/intelligence',
-        },
-        { label: t('content_studio_setup_title', 'Setup assistant') },
-      ]}
-    />
-  );
-
+  // a focused page: no section navigation or breadcrumbs, one quiet way out
+  // ("Finish later") in the header
   const shell = (children: ReactNode) => (
-    <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col gap-[20px] min-w-0">
-      <div className="w-full max-w-[880px] mx-auto flex flex-col gap-[20px]">
-        {crumbs}
+    <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col gap-[24px] min-w-0">
+      <div className="w-full max-w-[880px] mx-auto flex flex-col gap-[28px] pt-[8px]">
         {children}
       </div>
     </div>
@@ -893,28 +1112,44 @@ export const ContentStudioSetupWizard: FC = () => {
     company.goal.length <= NOTE_MAX &&
     company.audience.length <= NOTE_MAX &&
     isSetupWebsite(company.website);
-  const aiReady = !!connectionId && !draft.manual;
+  const selected = usable.find((c) => c.id === connectionId);
+  // Ready only after a test of the key and its model succeeded. A connection
+  // that was never tested is used as it is when nobody here may test it
+  const health = !selected
+    ? null
+    : testing === selected.id
+    ? 'testing'
+    : aiConnectionHealth(selected);
+  const aiReady =
+    !!connectionId &&
+    !draft.manual &&
+    (health === 'ready' || health === 'untested');
+
+  const finishLaterLink = (
+    <Link
+      href={CONTENT_STUDIO_HOME_PATH}
+      onClick={finishLater}
+      className="text-[13px] text-textItemBlur hover:text-newTextColor hover:underline"
+    >
+      {t('content_studio_setup_later', 'Finish later')}
+    </Link>
+  );
 
   const header = (
-    <div className="flex flex-col gap-[16px]">
+    <div className="flex flex-col gap-[20px]">
       <div className="flex flex-wrap items-start gap-[12px]">
-        <div className="flex flex-col gap-[4px] flex-1 min-w-[220px]">
+        <div className="flex flex-col gap-[6px] flex-1 min-w-[220px]">
           <h1 className="text-[22px] font-[600]">
-            {t('content_studio_setup_title', 'Setup assistant')}
+            {t('content_studio_setup_heading', 'Set up Content Studio')}
           </h1>
-          <div className="text-textItemBlur">
+          <div className="text-[14px] text-textItemBlur max-w-[620px]">
             {t(
               'content_studio_setup_subtitle',
-              'A few questions, then AI drafts your content profile for you to review. Your answers are kept in this browser, so you can stop and continue later.'
+              'A few questions about your company; AI drafts your content profile and you review it. You can stop at any time and continue later.'
             )}
           </div>
         </div>
-        <Link
-          href={CONTENT_STUDIO_HOME_PATH}
-          className="text-[14px] underline text-textItemBlur hover:text-newTextColor"
-        >
-          {t('content_studio_setup_later', 'Finish later')}
-        </Link>
+        {finishLaterLink}
       </div>
       <WizardProgress
         step={draft.step}
@@ -937,17 +1172,6 @@ export const ContentStudioSetupWizard: FC = () => {
           </h2>
           {usable.length ? (
             <div className="flex flex-col gap-[12px]">
-              <div
-                role="status"
-                className="flex items-center gap-[10px] p-[14px] rounded-[12px] bg-newBgLineColor"
-              >
-                <span aria-hidden="true" className="text-[18px]">
-                  {'✓'}
-                </span>
-                <span className="font-[600]">
-                  {t('content_studio_setup_ai_ready', 'AI is ready')}
-                </span>
-              </div>
               {usable.length > 1 && (
                 <ChoiceField
                   label={t(
@@ -962,6 +1186,110 @@ export const ContentStudioSetupWizard: FC = () => {
                   onChange={(next) => update({ connectionId: next })}
                 />
               )}
+              {health === 'testing' ? (
+                <div
+                  role="status"
+                  className="flex items-center gap-[10px] p-[14px] rounded-[12px] bg-newBgLineColor"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="w-[16px] h-[16px] rounded-full border-2 border-[var(--brand-primary,#612ad5)] border-t-transparent animate-spin"
+                  />
+                  <span>
+                    {t(
+                      'content_studio_setup_ai_testing',
+                      'Checking your AI connection…'
+                    )}
+                  </span>
+                </div>
+              ) : health === 'attention' ? (
+                <div
+                  role="alert"
+                  className="flex flex-col gap-[10px] p-[14px] rounded-[12px] border border-red-500/60"
+                >
+                  <div className="flex items-center gap-[10px] font-[600]">
+                    <span aria-hidden="true" className="text-red-400">
+                      {'!'}
+                    </span>
+                    {t(
+                      'content_studio_setup_ai_attention',
+                      'AI needs attention'
+                    )}
+                  </div>
+                  <div className="text-[14px]">
+                    {aiValidationCodeMessage(
+                      t,
+                      selected?.lastValidationCode ?? null
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-[8px]">
+                    {canManageAI && (
+                      <Link
+                        href="/content-studio/intelligence?tab=ai"
+                        className="h-[36px] px-[16px] flex items-center rounded-full bg-[var(--brand-primary,#612ad5)] text-[var(--brand-action-text,#fff)] text-[14px] font-[600]"
+                      >
+                        {t(
+                          'content_studio_setup_fix_connection',
+                          'Fix connection'
+                        )}
+                      </Link>
+                    )}
+                    {canManageAI && !!selected && (
+                      <Button
+                        secondary
+                        onClick={() => testConnection(selected.id)}
+                      >
+                        {t('content_studio_setup_test_again', 'Test again')}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ) : health === 'ready' ? (
+                <div
+                  role="status"
+                  className="flex flex-wrap items-center gap-[10px] p-[14px] rounded-[12px] bg-newBgLineColor"
+                >
+                  <span aria-hidden="true" className="text-[18px]">
+                    {'✓'}
+                  </span>
+                  <span className="font-[600]">
+                    {t('content_studio_setup_ai_ready', 'AI is ready')}
+                  </span>
+                  {!!selected && (
+                    <span className="text-[13px] text-textItemBlur">
+                      {selected.name}
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <div
+                  role="status"
+                  className="flex flex-wrap items-center gap-[10px] p-[14px] rounded-[12px] bg-newBgLineColor"
+                >
+                  {!!selected && (
+                    <AIConnectionHealthBadge connection={selected} />
+                  )}
+                  <span className="text-[14px] text-textItemBlur">
+                    {canManageAI
+                      ? t(
+                          'content_studio_setup_ai_untested',
+                          'This connection has not been tested yet.'
+                        )
+                      : t(
+                          'content_studio_setup_ai_untested_member',
+                          'An admin can test this connection under Brand & AI.'
+                        )}
+                  </span>
+                  {canManageAI && !!selected && (
+                    <Button
+                      secondary
+                      onClick={() => testConnection(selected.id)}
+                    >
+                      {t('content_studio_ai_test', 'Test')}
+                    </Button>
+                  )}
+                </div>
+              )}
             </div>
           ) : canManageAI ? (
             <div className="flex flex-col gap-[12px]">
@@ -975,6 +1303,8 @@ export const ContentStudioSetupWizard: FC = () => {
                 <AIConnectionCreateForm
                   providers={providers.data}
                   onCancel={() => undefined}
+                  // step 1 tests the new connection itself
+                  testAfterCreate={false}
                   onCreated={() => update({ manual: false })}
                 />
               </div>
@@ -987,17 +1317,29 @@ export const ContentStudioSetupWizard: FC = () => {
               )}
             </div>
           )}
-          <div className="flex flex-wrap items-center gap-[8px] justify-end pt-[8px] border-t border-newTableBorder">
-            {!usable.length && (
+          <div className="text-[13px] text-textItemBlur">
+            {t(
+              'content_studio_setup_ai_optional',
+              'AI is recommended, not required: without it you fill in your profile yourself.'
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-[8px] justify-end pt-[16px] border-t border-newTableBorder">
+            {(!usable.length || health === 'attention') && (
               <Button
                 secondary
                 onClick={() => update({ manual: true, step: 2 })}
               >
-                {t('content_studio_setup_without_ai', 'Continue without AI')}
+                {usable.length
+                  ? t(
+                      'content_studio_setup_continue_manually',
+                      'Continue manually'
+                    )
+                  : t('content_studio_setup_without_ai', 'Continue without AI')}
               </Button>
             )}
-            {!!usable.length && (
+            {!!usable.length && health !== 'attention' && (
               <Button
+                disabled={health === 'testing'}
                 onClick={() => update({ manual: false, connectionId, step: 2 })}
               >
                 {t('content_studio_setup_next', 'Next')}
@@ -1035,17 +1377,13 @@ export const ContentStudioSetupWizard: FC = () => {
               'content_studio_setup_company_description_hint',
               'A few sentences: what you offer, for whom, and what makes you different. The more concrete, the better the draft.'
             )}
-            rows={5}
+            rows={6}
+            autoGrow={true}
             value={company.description}
             onChange={(description) => setCompany({ description })}
           />
-          <div className="grid grid-cols-1 tablet:grid-cols-2 gap-[16px]">
-            <ShortTextField
-              label={t('content_studio_setup_website', 'Website (optional)')}
-              hint={t(
-                'content_studio_setup_website_hint',
-                'Given to the AI as text; nothing is fetched.'
-              )}
+          <div className="grid grid-cols-1 tablet:grid-cols-2 gap-[16px] items-start">
+            <WebsiteField
               value={company.website}
               onChange={(website) => setCompany({ website })}
             />
@@ -1059,7 +1397,7 @@ export const ContentStudioSetupWizard: FC = () => {
               onChange={(language) => setCompany({ language })}
             />
           </div>
-          <ShortTextField
+          <LongTextField
             label={t(
               'content_studio_setup_goal',
               'Main goal of your posts (optional)'
@@ -1068,30 +1406,26 @@ export const ContentStudioSetupWizard: FC = () => {
               'content_studio_setup_goal_hint',
               'e.g. more inbound leads, recruiting, being known as the expert in your field'
             )}
+            rows={3}
+            autoGrow={true}
             value={company.goal}
             onChange={(goal) => setCompany({ goal })}
           />
-          <ShortTextField
+          <LongTextField
             label={t(
               'content_studio_setup_audience',
               'Who do you write for? (optional)'
             )}
             hint={t(
               'content_studio_setup_audience_hint',
-              'e.g. owners of small businesses in the Netherlands'
+              'e.g. owners of small businesses in the Netherlands who do their own marketing'
             )}
+            rows={3}
+            autoGrow={true}
             value={company.audience}
             onChange={(audience) => setCompany({ audience })}
           />
-          {!isSetupWebsite(company.website) && (
-            <div role="alert" className="text-[13px]">
-              {t(
-                'content_studio_setup_website_invalid',
-                'Enter the website as a full address, starting with https://'
-              )}
-            </div>
-          )}
-          <div className="flex flex-wrap items-center gap-[8px] justify-end pt-[8px] border-t border-newTableBorder">
+          <div className="flex flex-wrap items-center gap-[8px] justify-end pt-[16px] border-t border-newTableBorder">
             <Button secondary onClick={() => update({ step: 1 })}>
               {t('content_studio_setup_back', 'Back')}
             </Button>
@@ -1136,7 +1470,7 @@ export const ContentStudioSetupWizard: FC = () => {
           )}
           detail={t(
             'content_studio_setup_generating_hint',
-            'AI is writing your brand description, writing style, audiences, expertise and editorial rules. This usually takes 20 to 60 seconds.'
+            'This may take a moment.'
           )}
         />
       );
@@ -1150,16 +1484,24 @@ export const ContentStudioSetupWizard: FC = () => {
                 "We couldn't generate suggestions right now."
               )}
           </div>
-          <div className="text-[14px] text-textItemBlur">
+          <div className="text-[14px] text-textItemBlur max-w-[560px]">
             {t(
               'content_studio_setup_kept',
-              'Your company information is kept. Try again, or fill in the profile yourself.'
+              'Everything you entered is kept. Try again, fix the AI connection, or fill in the profile yourself.'
             )}
           </div>
           <div className="flex flex-wrap justify-center gap-[8px]">
             {aiReady && (
-              <Button onClick={generate}>
+              <Button secondary={connectionProblem} onClick={generate}>
                 {t('content_studio_retry', 'Try again')}
+              </Button>
+            )}
+            {!!connectionId && (
+              <Button secondary={!connectionProblem} onClick={fixConnection}>
+                {t(
+                  'content_studio_setup_check_connection',
+                  'Check AI connection'
+                )}
               </Button>
             )}
             <Button secondary onClick={continueManually}>
@@ -1205,9 +1547,17 @@ export const ContentStudioSetupWizard: FC = () => {
           {!!generateError && (
             <div
               role="alert"
-              className="p-[12px] rounded-[8px] border border-newTableBorder text-[14px]"
+              className="flex flex-wrap items-center gap-[12px] p-[12px] rounded-[8px] border border-newTableBorder text-[14px]"
             >
-              {generateError}
+              <span className="flex-1 min-w-[200px]">{generateError}</span>
+              {connectionProblem && (
+                <Button secondary onClick={fixConnection}>
+                  {t(
+                    'content_studio_setup_check_connection',
+                    'Check AI connection'
+                  )}
+                </Button>
+              )}
             </div>
           )}
           <SuggestionCard
@@ -1550,8 +1900,10 @@ export const ContentStudioSetupWizard: FC = () => {
             )}
             <Button
               secondary
-              disabled={generating}
-              onClick={() => update({ step: 2 })}
+              onClick={() => {
+                abandon();
+                update({ step: 2 });
+              }}
             >
               {t('content_studio_setup_back', 'Back')}
             </Button>

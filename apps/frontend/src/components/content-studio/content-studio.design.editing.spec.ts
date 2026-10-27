@@ -1541,7 +1541,10 @@ describe('Creative Studio editing: Media picker', () => {
     const picker = await openPicker();
     for (const [name, message] of [
       ['Unusable.png', 'This media item cannot be used in a design.'],
-      ['Broken.webp', 'The media item could not be read safely.'],
+      [
+        'Broken.webp',
+        'The file of this image is not available on this server. Add the image to your media library again and use the new one.',
+      ],
     ]) {
       await click(within(picker).getByRole('button', { name }));
       await click(button('Use image', picker));
@@ -1569,9 +1572,33 @@ describe('Creative Studio editing: Media picker', () => {
     fireEvent.click(button('Use image', picker));
     await flush();
     expect(refCalls()).toHaveLength(1);
+    // UX review 02: the wait is said, so the button never looks dead
+    expect(within(picker).getByRole('status').textContent).toBe(
+      'Adding image…'
+    );
     gate.resolve(reply(200, { mediaId: 'img-jpg', sha256: SHA('d') }));
     await flush();
     expect(layerNames()).toHaveLength(4);
+    expect(mockToast.mock.calls.map(([text]) => text)).toContain(
+      'Image added.'
+    );
+  });
+
+  it('MP-UI12 a file type a design cannot use says which types it can', async () => {
+    override = (method, url) =>
+      url.endsWith('/design-ref') && url.includes('/media/')
+        ? reply(409, {
+            msg: `${SECRET} gif`,
+            code: 'CS_DESIGN_MEDIA_UNSUPPORTED',
+          })
+        : undefined;
+    const picker = await openPicker();
+    await click(within(picker).getByRole('button', { name: 'Team.jpg' }));
+    await click(button('Use image', picker));
+    expect(within(picker).getByRole('alert').textContent).toBe(
+      'This file type cannot be used in a design. Use a PNG, JPEG or WebP image.'
+    );
+    expect(layerNames()).toHaveLength(3);
   });
 
   it('MP-UI11/M26 replacing an image changes only its reference', async () => {

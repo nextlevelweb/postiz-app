@@ -26,7 +26,11 @@ const MARKER = 'DESIGN_EDITOR_MEDIA_PRIVATE_789';
 const KIT = '0f8fad5b-d9cb-469f-a165-70867728950e';
 const REV_3 = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
 const REV_7 = '3d6f0a8e-2b4c-4e1a-9f7d-5c8b2a6e4d10';
-const STORED = Buffer.from(`STORED_IMAGE_BYTES ${MARKER}`);
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const STORED = Buffer.concat([
+  PNG,
+  Buffer.from(`STORED_IMAGE_BYTES ${MARKER}`),
+]);
 const sha = (bytes: Buffer | string) =>
   createHash('sha256').update(bytes).digest('hex');
 
@@ -215,6 +219,49 @@ describe('ContentStudioDesignReferenceService Media references', () => {
         status: 500,
         msg: 'The media item could not be read safely.',
         code: 'CS_DESIGN_MEDIA_READ_FAILED',
+      });
+      expect(JSON.stringify(result)).not.toContain(MARKER);
+    }
+  });
+});
+
+// UX review 02: a file a render cannot decode is refused when it is chosen,
+// with its own code, instead of failing later
+describe('ContentStudioDesignReferenceService Media formats', () => {
+  it('MDR12 accepts PNG, JPEG and WebP bytes', async () => {
+    for (const bytes of [
+      STORED,
+      Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]),
+      Buffer.concat([
+        Buffer.from('RIFF'),
+        Buffer.from([0x24, 0, 0, 0]),
+        Buffer.from('WEBPVP8 '),
+      ]),
+    ]) {
+      const { service, reader } = setup();
+      reader.readStoredMediaBytes.mockResolvedValueOnce(bytes);
+      await expect(service.getMediaReference(ORG, 'photo-1')).resolves.toEqual({
+        mediaId: 'photo-1',
+        sha256: sha(bytes),
+      });
+    }
+  });
+
+  it('MDR13 refuses anything else as unsupported, never as a read failure', async () => {
+    for (const bytes of [
+      Buffer.from('GIF89a....'),
+      Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>'),
+      Buffer.from('%PDF-1.7'),
+      Buffer.from('RIFF\u0000\u0000\u0000\u0000WAVE'),
+      Buffer.from(`not an image ${MARKER}`),
+    ]) {
+      const { service, reader } = setup();
+      reader.readStoredMediaBytes.mockResolvedValueOnce(bytes);
+      const result = await failure(service.getMediaReference(ORG, 'photo-1'));
+      expect(result).toEqual({
+        status: 409,
+        msg: 'Only PNG, JPEG and WebP images can be used in a design.',
+        code: 'CS_DESIGN_MEDIA_UNSUPPORTED',
       });
       expect(JSON.stringify(result)).not.toContain(MARKER);
     }

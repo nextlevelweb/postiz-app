@@ -60,15 +60,22 @@ const KIT_REV1 = '8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
 const KIT_REV2 = '9b2c3d4e-5f6a-4b7c-9d8e-0f1a2b3c4d5e';
 const SHA = (seed: string) => seed.repeat(64).slice(0, 64);
 const T0 = new Date('2026-10-15T10:00:00.000Z');
+// a PNG signature first: the reference service refuses other formats
+const pngBytes = (text: string) =>
+  Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.from(text),
+  ]);
+
 // Media rows: an organization, an id and the stored bytes. Looked up like
 // Prisma: an undefined organization is no condition
 const MEDIA = [
-  { organizationId: ORG, id: 'media-new', bytes: Buffer.from('new bytes') },
-  { organizationId: ORG, id: 'media-two', bytes: Buffer.from('two bytes') },
+  { organizationId: ORG, id: 'media-new', bytes: pngBytes('new bytes') },
+  { organizationId: ORG, id: 'media-two', bytes: pngBytes('two bytes') },
   {
     organizationId: OTHER_ORG,
     id: 'media-other',
-    bytes: Buffer.from('other organization bytes'),
+    bytes: pngBytes('other organization bytes'),
   },
 ];
 const findMedia = (organizationId: string | undefined, id: string) =>

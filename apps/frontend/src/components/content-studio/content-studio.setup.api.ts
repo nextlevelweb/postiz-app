@@ -5,6 +5,7 @@ import { useSWRConfig } from 'swr';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { request } from '@gitroom/frontend/components/content-studio/content-studio.api';
 import {
+  aiConnectionHealth,
   AUDIENCE_PROFILES_PATH,
   ContentStudioAIConnection,
   ContentStudioAIProviderInfo,
@@ -68,6 +69,22 @@ export const isUsableAIConnection = (
   connection.credentialPresent &&
   providers.some((provider) => provider.provider === connection.provider);
 
+// Whether opening Content Studio should open the setup assistant instead of
+// the home page: never once everything is set up or after "Finish later" /
+// "Skip for now"; always while an unfinished assistant is kept; and for an
+// organization that has not really started (no content, at most one part
+// set up, such as only an AI connection)
+export const shouldOpenContentStudioSetup = (input: {
+  complete: boolean;
+  doneCount: number;
+  hidden: boolean;
+  draft: boolean;
+  hasContent: boolean;
+}) =>
+  !input.complete &&
+  !input.hidden &&
+  (input.draft || (!input.hasContent && input.doneCount <= 1));
+
 export interface ContentStudioSetupStatus {
   loaded: boolean;
   done: Record<ContentStudioSetupItem, boolean>;
@@ -90,8 +107,11 @@ export const useContentStudioSetupStatus = (): ContentStudioSetupStatus => {
 
   return useMemo(() => {
     const done: Record<ContentStudioSetupItem, boolean> = {
-      ai: !!connections.data?.some((connection) =>
-        isUsableAIConnection(connection, providers.data || [])
+      // a connection whose last test failed is not set up yet
+      ai: !!connections.data?.some(
+        (connection) =>
+          isUsableAIConnection(connection, providers.data || []) &&
+          aiConnectionHealth(connection) !== 'attention'
       ),
       brand: !!brandKitIdentity(
         brandKit.data?.currentRevision?.content
