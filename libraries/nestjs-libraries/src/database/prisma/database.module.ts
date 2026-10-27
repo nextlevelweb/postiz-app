@@ -80,6 +80,8 @@ import { ContentStudioSourceCaptureAttemptRepository } from '@gitroom/nestjs-lib
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { ContentStudioSourceRetentionRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.repository';
 import { ContentStudioSourceRetentionService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.service';
+import { ContentStudioSourceRetentionExecutionRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention-execution.repository';
+import { ContentStudioSourceRetentionExecutionService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention-execution.service';
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 import { ContentStudioBrandKitRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.repository';
 import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.service';
@@ -190,6 +192,8 @@ import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/p
     ContentStudioSourceService,
     ContentStudioSourceRetentionRepository,
     ContentStudioSourceRetentionService,
+    ContentStudioSourceRetentionExecutionRepository,
+    ContentStudioSourceRetentionExecutionService,
     ContentStudioSourceIngestionService,
     ContentStudioBrandKitRepository,
     ContentStudioBrandKitService,

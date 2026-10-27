@@ -46,6 +46,18 @@ const snapshotReads = (tx: Prisma.TransactionClient) => ({
     });
   },
 
+  // every held version of the organization with its plan (P8-R1C: the
+  // recheck of an execution, whose plan must hold exactly its candidates)
+  listPending(organizationId: string) {
+    return tx.contentStudioSourceVersionRetentionPending.findMany({
+      where: { organizationId },
+      select: {
+        sourceVersionId: true,
+        planHash: true,
+      },
+    });
+  },
+
   countVersions(organizationId: string) {
     return tx.contentStudioSourceVersion.count({
       where: { organizationId },
@@ -222,33 +234,31 @@ export type ContentStudioSourceRetentionSnapshotReads = ReturnType<
 
 // The check every write of a new reference to source versions makes (a
 // draft's or revision's evidence, an AI operation's sources), in the
-// transaction of that write (P8-R1Q): one read of the organization's held
-// versions among them, whatever their number, none for no version. A version
-// of another organization is never held for this one, and is never
-// reported: the writer's own lookup already refused it as missing
-export const assertContentStudioSourceVersionsNotPending = async (
-  tx: Pick<
-    Prisma.TransactionClient,
-    'contentStudioSourceVersionRetentionPending'
-  >,
+// transaction of that write (P8-R1Q, P8-R1C): one statement counting the
+// versions that are still there, of the organization and held for no
+// retention plan, whatever their number; none for no version. The writer
+// found its versions before its transaction, and a retention execution may
+// have removed one since (its held row with it, in one transaction): such a
+// version is refused exactly like a held one, so a reference to a removed
+// version is never written. Held or gone, the same fixed error, never which
+// version or why. Never two reads: a version found first and checked for its
+// held row after could be removed in between
+export const assertContentStudioSourceVersionsExistAndNotPending = async (
+  tx: Pick<Prisma.TransactionClient, 'contentStudioSourceVersion'>,
   input: { organizationId: string; sourceVersionIds: readonly string[] }
 ) => {
   const ids = [...new Set(input.sourceVersionIds)];
   if (!ids.length) {
     return;
   }
-  const pending = await tx.contentStudioSourceVersionRetentionPending.findFirst(
-    {
-      where: {
-        organizationId: input.organizationId,
-        sourceVersionId: { in: ids },
-      },
-      select: {
-        id: true,
-      },
-    }
-  );
-  if (pending) {
+  const available = await tx.contentStudioSourceVersion.count({
+    where: {
+      organizationId: input.organizationId,
+      id: { in: ids },
+      retentionPending: { is: null },
+    },
+  });
+  if (available !== ids.length) {
     throw new ContentStudioSourceVersionRetentionPendingError();
   }
 };
@@ -300,18 +310,6 @@ export class ContentStudioSourceRetentionRepository {
     } catch (err) {
       throw snapshotFailed(err);
     }
-  }
-
-  // The writer check above, outside a write: for a caller with no
-  // transaction of its own
-  assertVersionsNotPending(input: {
-    organizationId: string;
-    sourceVersionIds: readonly string[];
-  }) {
-    return assertContentStudioSourceVersionsNotPending(
-      this._pending.model,
-      input
-    );
   }
 
   // The held versions of one plan of the organization, by version id

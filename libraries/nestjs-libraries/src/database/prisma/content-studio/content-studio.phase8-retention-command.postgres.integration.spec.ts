@@ -1,4 +1,7 @@
 import { randomUUID } from 'crypto';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { Test, TestingModule } from '@nestjs/testing';
 import type { PrismaClient } from '@prisma/client';
 import { Redis } from 'ioredis';
@@ -142,16 +145,16 @@ const rows = async () => ({
 });
 
 // what an operator types, parsed by the command runtime
-const run = async (...args: string[]) => {
+const run = (...args: string[]) =>
+  command('content-studio:retention-dry-run', ...args);
+const command = async (name: string, ...args: string[]) => {
   const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
   const error = jest
     .spyOn(console, 'error')
     .mockImplementation(() => undefined);
   const exitCode = process.exitCode;
   process.exitCode = undefined;
-  await moduleRef
-    .get(CommandService)
-    .exec(['content-studio:retention-dry-run', ...args]);
+  await moduleRef.get(CommandService).exec([name, ...args]);
   const result = {
     stdout: log.mock.calls.map((call) => call.join(' ')),
     stderr: error.mock.calls.map((call) => call.join(' ')),
@@ -166,6 +169,15 @@ const run = async (...args: string[]) => {
 const cleanFixtures = async () => {
   const where = { organizationId: { in: [ORG, EMPTY_ORG] } };
   // test data only, in the disposable database
+  await client.contentStudioSourceVersionRetentionExecutionLock.deleteMany({
+    where,
+  });
+  await client.contentStudioSourceVersionRetentionExecutionItem.deleteMany({
+    where,
+  });
+  await client.contentStudioSourceVersionRetentionExecution.deleteMany({
+    where,
+  });
   await client.contentStudioSourceVersionRetentionPending.deleteMany({ where });
   await client.contentStudioSourceVersion.deleteMany({ where });
   await client.contentStudioSource.deleteMany({ where });
@@ -461,4 +473,333 @@ describe('The retention dry-run command on PostgreSQL', () => {
     expect(after.candidateSummary).toEqual(report.candidateSummary);
     expect(await rows()).toEqual(versions);
   }, 60_000);
+
+  it('P8R1CC1 P8-R1C: prepare, execute and cancel through the command runtime: their options, JSON alone on stdout, exit codes 0, 1 and 2, no content', async () => {
+    expect(moduleRef).toBeDefined();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'p8r1cc-'));
+    const file = (name: string, text: string) => {
+      const full = path.join(dir, name);
+      fs.writeFileSync(full, text, { mode: 0o600 });
+      return full;
+    };
+    try {
+      const dryRun = await run(
+        '--organization',
+        ORG,
+        '--older-than-days',
+        '7',
+        '--json'
+      );
+      // the stale page holds its candidates back: no execution runs it
+      const blocked = file('blocked.json', dryRun.stdout[0]);
+      expect(
+        await command(
+          'content-studio:retention-prepare',
+          '--plan',
+          blocked,
+          '--organization',
+          ORG,
+          '--confirm',
+          '--json'
+        )
+      ).toEqual({
+        stdout: [],
+        stderr: [
+          'Retention prepare refused: RETENTION_EXECUTION_BLOCKED_SOURCES',
+        ],
+        exitCode: 1,
+      });
+      // without the stale page
+      await client.contentStudioSourceVersion.deleteMany({
+        where: { organizationId: ORG, source: { lastPageChangeAt: null } },
+      });
+      await client.contentStudioSource.deleteMany({
+        where: { organizationId: ORG, lastPageChangeAt: null },
+      });
+      const plan = file(
+        'plan.json',
+        (await run('--organization', ORG, '--older-than-days', '7', '--json'))
+          .stdout[0]
+      );
+      const reviewed = JSON.parse(fs.readFileSync(plan, 'utf8'));
+      expect(reviewed.candidates).toHaveLength(9);
+      const versions = (await rows()).versions.length;
+
+      // refusals before anything is read or written: exit code 1
+      const prepareRefusals: Array<[string[], string]> = [
+        [
+          ['--plan', plan, '--organization', ORG],
+          'Retention prepare refused: RETENTION_EXECUTION_PLAN_INVALID (--confirm is required)',
+        ],
+        [
+          ['--plan', plan, '--confirm'],
+          'Retention prepare refused: --organization must be an organization id',
+        ],
+        [
+          ['--organization', ORG, '--confirm'],
+          'Retention prepare refused: RETENTION_EXECUTION_PLAN_INVALID (--plan is required)',
+        ],
+        [
+          [
+            '--plan',
+            path.join(dir, 'missing.json'),
+            '--organization',
+            ORG,
+            '--confirm',
+          ],
+          'Retention prepare refused: RETENTION_EXECUTION_PLAN_INVALID (the plan file cannot be read)',
+        ],
+        [
+          ['--plan', dir, '--organization', ORG, '--confirm'],
+          'Retention prepare refused: RETENTION_EXECUTION_PLAN_INVALID (not a plan file, or too large)',
+        ],
+        [
+          [
+            '--plan',
+            file('broken.json', '{'),
+            '--organization',
+            ORG,
+            '--confirm',
+          ],
+          'Retention prepare refused: RETENTION_EXECUTION_PLAN_INVALID',
+        ],
+        [
+          ['--plan', plan, '--organization', EMPTY_ORG, '--confirm'],
+          'Retention prepare refused: RETENTION_EXECUTION_PLAN_INVALID',
+        ],
+      ];
+      for (const [args, message] of prepareRefusals) {
+        expect([
+          args,
+          await command('content-studio:retention-prepare', ...args, '--json'),
+        ]).toEqual([args, { stdout: [], stderr: [message], exitCode: 1 }]);
+      }
+      // a plan file larger than 64 MiB is refused before it is read
+      const large = path.join(dir, 'large.json');
+      fs.writeFileSync(large, '');
+      fs.truncateSync(large, 64 * 1024 * 1024 + 1);
+      expect(
+        await command(
+          'content-studio:retention-prepare',
+          '--plan',
+          large,
+          '--organization',
+          ORG,
+          '--confirm',
+          '--json'
+        )
+      ).toEqual({
+        stdout: [],
+        stderr: [
+          'Retention prepare refused: RETENTION_EXECUTION_PLAN_INVALID (not a plan file, or too large)',
+        ],
+        exitCode: 1,
+      });
+      expect(
+        await client.contentStudioSourceVersionRetentionExecution.count({
+          where: { organizationId: ORG },
+        })
+      ).toBe(0);
+
+      // prepared: exit code 0 and the report alone
+      const prepared = await command(
+        'content-studio:retention-prepare',
+        '--plan',
+        plan,
+        '--organization',
+        ORG,
+        '--confirm',
+        '--json'
+      );
+      expect(prepared.exitCode).toBe(0);
+      expect(prepared.stderr).toEqual([]);
+      expect(prepared.stdout).toHaveLength(1);
+      const report = JSON.parse(prepared.stdout[0]);
+      expect(canonicalJson(report)).toBe(prepared.stdout[0]);
+      expect(report).toEqual(
+        expect.objectContaining({
+          outcome: 'prepared',
+          status: 'prepared',
+          planHash: reviewed.dryRunHash,
+          plannedCount: 9,
+        })
+      );
+      const id = report.executionId;
+
+      // execute: both confirmations, an execution id; then not yet ready
+      const executeRefusals: Array<[string[], string]> = [
+        [
+          ['--execution', id, '--backup-confirmed'],
+          'Retention execute refused: RETENTION_EXECUTION_STATE_INVALID (--confirm is required)',
+        ],
+        [
+          ['--execution', id, '--confirm'],
+          'Retention execute refused: RETENTION_EXECUTION_STATE_INVALID (--backup-confirmed is required). This command does not create or verify your database backup.',
+        ],
+        [
+          ['--execution', 'not-an-id', '--backup-confirmed', '--confirm'],
+          'Retention execute refused: --execution must be an execution id',
+        ],
+        [
+          ['--execution', randomUUID(), '--backup-confirmed', '--confirm'],
+          'Retention execute refused: RETENTION_EXECUTION_STATE_INVALID',
+        ],
+      ];
+      for (const [args, message] of executeRefusals) {
+        expect([
+          args,
+          await command('content-studio:retention-execute', ...args, '--json'),
+        ]).toEqual([args, { stdout: [], stderr: [message], exitCode: 1 }]);
+      }
+      const early = await command(
+        'content-studio:retention-execute',
+        '--execution',
+        id,
+        '--backup-confirmed',
+        '--confirm',
+        '--json'
+      );
+      expect(early.exitCode).toBe(1);
+      expect(JSON.parse(early.stdout[0])).toEqual(
+        expect.objectContaining({
+          outcome: 'not_ready',
+          errorCode: 'RETENTION_EXECUTION_NOT_READY',
+        })
+      );
+      // the human output says what the backup flag is
+      const humanEarly = await command(
+        'content-studio:retention-execute',
+        '--execution',
+        id,
+        '--backup-confirmed',
+        '--confirm'
+      );
+      expect(humanEarly.stdout[0]).toBe(
+        'Content Studio retention execute. This command does not create or verify your database backup. --backup-confirmed is your word that one was made.'
+      );
+      expect(humanEarly.stdout).toContain('Outcome: not_ready');
+
+      // the wait, shortened in this test database only
+      await client.contentStudioSourceVersionRetentionExecution.update({
+        where: { id },
+        data: { readyAt: new Date(Date.now() - 1000) },
+      });
+      const done = await command(
+        'content-studio:retention-execute',
+        '--execution',
+        id,
+        '--backup-confirmed',
+        '--confirm',
+        '--json'
+      );
+      expect(done.exitCode).toBe(0);
+      expect(done.stderr).toEqual([]);
+      expect(JSON.parse(done.stdout[0])).toEqual(
+        expect.objectContaining({
+          outcome: 'completed',
+          deletedCount: 9,
+          integrityCheck: 'passed',
+        })
+      );
+      expect((await rows()).versions).toHaveLength(versions - 9);
+
+      // cancel: confirmation, then an ended execution is refused; the plan
+      // is never prepared again
+      expect(
+        await command('content-studio:retention-cancel', '--execution', id)
+      ).toEqual({
+        stdout: [],
+        stderr: [
+          'Retention cancel refused: RETENTION_EXECUTION_STATE_INVALID (--confirm is required)',
+        ],
+        exitCode: 1,
+      });
+      expect(
+        await command(
+          'content-studio:retention-cancel',
+          '--execution',
+          id,
+          '--confirm',
+          '--json'
+        )
+      ).toEqual({
+        stdout: [],
+        stderr: ['Retention cancel refused: RETENTION_EXECUTION_STATE_INVALID'],
+        exitCode: 1,
+      });
+      expect(
+        await command(
+          'content-studio:retention-prepare',
+          '--plan',
+          plan,
+          '--organization',
+          ORG,
+          '--confirm',
+          '--json'
+        )
+      ).toEqual({
+        stdout: [],
+        stderr: ['Retention prepare refused: RETENTION_EXECUTION_ALREADY_RUN'],
+        exitCode: 1,
+      });
+
+      // a new plan, prepared and cancelled: exit code 0, the human output
+      const fresh = await page([...Array(29).fill('A'), 'B']);
+      const second = file(
+        'second.json',
+        (await run('--organization', ORG, '--older-than-days', '7', '--json'))
+          .stdout[0]
+      );
+      const humanPrepared = await command(
+        'content-studio:retention-prepare',
+        '--plan',
+        second,
+        '--organization',
+        ORG,
+        '--confirm'
+      );
+      expect(humanPrepared.exitCode).toBe(0);
+      expect(humanPrepared.stdout[0]).toBe(
+        'Content Studio retention prepare: prepare does not delete SourceVersions.'
+      );
+      expect(humanPrepared.stdout).toEqual(
+        expect.arrayContaining([
+          `Organization: ${ORG}`,
+          'Candidates: 9 of 1 sources',
+          'Outcome: prepared',
+        ])
+      );
+      const secondId = (
+        await client.contentStudioSourceVersionRetentionExecution.findFirstOrThrow(
+          { where: { organizationId: ORG, status: 'prepared' } }
+        )
+      ).id;
+      const cancelled = await command(
+        'content-studio:retention-cancel',
+        '--execution',
+        secondId,
+        '--confirm'
+      );
+      expect(cancelled.exitCode).toBe(0);
+      expect(cancelled.stdout[0]).toBe(
+        'Content Studio retention cancel: cancel does not delete SourceVersions.'
+      );
+      expect(cancelled.stdout).toEqual(
+        expect.arrayContaining(['Outcome: cancelled', '  releasedCount: 9'])
+      );
+      expect(
+        await client.contentStudioSourceVersion.count({
+          where: { sourceId: fresh },
+        })
+      ).toBe(30);
+      // ids, hashes, counts and times only: no URL, title or content
+      for (const out of [prepared, done, humanPrepared, cancelled]) {
+        expect(out.stdout.join('\n')).not.toMatch(
+          /p8r1bc\.example|Page\b|"content"|"title"/
+        );
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
 });

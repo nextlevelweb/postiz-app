@@ -423,6 +423,8 @@ describe('Phase 3 AI operations and source material', () => {
   it('P3AI2 source text goes to the prompt only: the execution and operation layers never see a source', () => {
     // P8-R1Q: the one exception, the retention held check of the version ids
     // the context already names, and its error: never a source or its text
+    // (P8-R1C: the check counts those versions still there and held for
+    // nothing, by id, in one statement: still never a source or its text)
     const held = (text: string) =>
       text
         .replace(
@@ -430,11 +432,11 @@ describe('Phase 3 AI operations and source material', () => {
           ''
         )
         .replace(
-          /^import \{ assertContentStudioSourceVersionsNotPending \} from '@gitroom\/nestjs-libraries\/database\/prisma\/content-studio\/content-studio\.source-retention\.repository';$/m,
+          /^import \{ assertContentStudioSourceVersionsExistAndNotPending \} from '@gitroom\/nestjs-libraries\/database\/prisma\/content-studio\/content-studio\.source-retention\.repository';$/m,
           ''
         )
         .replace(
-          /\b(ContentStudioSourceVersionRetentionPendingError|assertContentStudioSourceVersionsNotPending|contentStudioSourceVersionRetentionPending)\b/g,
+          /\b(ContentStudioSourceVersionRetentionPendingError|assertContentStudioSourceVersionsExistAndNotPending|contentStudioSourceVersionRetentionPending)\b/g,
           ''
         );
     expect(SOURCE.aiOperationRepository.match(/\bsource\.\w+/g)).toEqual([

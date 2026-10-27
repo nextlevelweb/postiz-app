@@ -35,6 +35,12 @@ import {
   evaluateContentStudioSourceVersionRetention,
   explainContentStudioSourceVersionProtection,
   summarizeContentStudioSourceVersionProtections,
+  ContentStudioSourceVersionRetentionExecutionError,
+  ContentStudioSourceVersionRetentionPlanCandidate,
+  ContentStudioSourceVersionRetentionPolicy,
+  contentStudioSourceVersionRetainedRuns,
+  planContentStudioSourceVersionRetention,
+  simulateContentStudioSourcePageChangeStateAfterRetention,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
 
 // A fixed message only, like any source version of another organization
@@ -165,6 +171,21 @@ interface Batch {
   references: ContentStudioSourceVersionReference[];
 }
 
+// What an evaluation does with the organization's held versions (P8-R1Q,
+// P8-R1C): protection ignores them, a dry run is refused while any is held,
+// and the recheck of an execution requires exactly its plan's candidates,
+// held for its plan
+type Pending =
+  | 'ignore'
+  | 'refuse'
+  | { planHash: string; heldIds: ReadonlySet<string> };
+
+const recheckFailed = (detail: string) =>
+  new ContentStudioSourceVersionRetentionExecutionError(
+    'RETENTION_EXECUTION_RECHECK_FAILED',
+    detail
+  );
+
 // Source version protection (P8-R1A) and the retention dry run (P8-R1B):
 // which captured versions of one organization stored data still needs, and
 // why, and which ones the one retention policy would select. Internal only:
@@ -234,20 +255,7 @@ export class ContentStudioSourceRetentionService {
       input.policy,
       input.now
     );
-    const maps: ContentStudioSourceVersionProtectionMap[] = [];
-    const sources: ContentStudioSourceVersionRetentionSourceResult[] = [];
-    const snapshot = await this.evaluate(input, true, (batch) => {
-      const evaluated = evaluateContentStudioSourceVersionRetention({
-        organizationId: input.organizationId,
-        ...batch,
-        now: input.now,
-        inFlightMs: CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
-        pickerWindow: CONTENT_STUDIO_SOURCE_VERSION_PICKER_WINDOW,
-        policy,
-      });
-      maps.push(evaluated.protections);
-      sources.push(...evaluated.sources);
-    });
+    const { snapshot, maps, sources } = await this.select(input, policy);
 
     const ids = sources.flatMap((source) =>
       source.candidates.map((candidate) => candidate.id)
@@ -278,6 +286,153 @@ export class ContentStudioSourceRetentionService {
       sources,
       logicalContentBytes,
     });
+  }
+
+  // The dry run a reviewed plan was made from, made again at the time it was
+  // made for (P8-R1C): what it selects and holds back and its hash, from the
+  // same snapshot, engine and derivation as the report, refused the same way
+  // while anything is held. Nothing is measured: sizes are not hashed
+  async evaluateRetentionPlan(input: {
+    organizationId: string;
+    now: Date;
+    policy: { mode: unknown; olderThan: unknown };
+  }) {
+    const policy = assertContentStudioSourceVersionRetentionPolicy(
+      input.policy,
+      input.now
+    );
+    const { sources } = await this.select(input, policy);
+    return planContentStudioSourceVersionRetention({
+      organizationId: input.organizationId,
+      evaluationNow: input.now,
+      policy,
+      sources,
+    });
+  }
+
+  // The fresh check of a prepared plan after its wait (P8-R1C), in one
+  // snapshot of the organization: its held versions are exactly the plan's
+  // candidates, held for the plan; and every candidate is still there as the
+  // plan named it (source, number and blocks hash) and still a candidate,
+  // both at the time the plan was made for and at `now` (protections only
+  // shrink with time but for what was stored since, so both are asked), and
+  // each affected source reads the same without exactly the plan's
+  // candidates of it. The whole organization is evaluated, so anything that
+  // does not resolve fails it. The full dry run hash is not asked for again:
+  // captures since may add candidates, which the plan never removes. Anything
+  // else throws RETENTION_EXECUTION_RECHECK_FAILED with a fixed detail: the
+  // plan is never cut. Returns what each affected source keeps
+  async recheckRetentionPlan(input: {
+    organizationId: string;
+    planHash: string;
+    planEvaluationNow: Date;
+    now: Date;
+    policy: { mode: unknown; olderThan: unknown };
+    candidates: readonly ContentStudioSourceVersionRetentionPlanCandidate[];
+  }) {
+    const policies = [input.planEvaluationNow, input.now].map((now) => ({
+      now,
+      policy: assertContentStudioSourceVersionRetentionPolicy(
+        input.policy,
+        now
+      ),
+    }));
+    const planned = new Map<
+      string,
+      ContentStudioSourceVersionRetentionPlanCandidate[]
+    >();
+    for (const candidate of input.candidates) {
+      const list = planned.get(candidate.sourceId);
+      if (list) {
+        list.push(candidate);
+      } else {
+        planned.set(candidate.sourceId, [candidate]);
+      }
+    }
+    const kept = new Map<
+      string,
+      ReturnType<typeof contentStudioSourceVersionRetainedRuns>
+    >();
+    let found = 0;
+    await this.evaluate(
+      input,
+      {
+        planHash: input.planHash,
+        heldIds: new Set(input.candidates.map((candidate) => candidate.id)),
+      },
+      (batch) => {
+        const candidateIds = policies.map(
+          ({ now, policy }) =>
+            new Set(
+              evaluateContentStudioSourceVersionRetention({
+                organizationId: input.organizationId,
+                ...batch,
+                now,
+                inFlightMs: CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
+                pickerWindow: CONTENT_STUDIO_SOURCE_VERSION_PICKER_WINDOW,
+                policy,
+              }).sources.flatMap((source) =>
+                source.candidates.map((candidate) => candidate.id)
+              )
+            )
+        );
+        const bySource = new Map<string, Versions>();
+        for (const version of batch.versions) {
+          const list = bySource.get(version.sourceId);
+          if (list) {
+            list.push(version);
+          } else {
+            bySource.set(version.sourceId, [version]);
+          }
+        }
+        // the sources the plan removes versions of
+        for (const source of batch.sources.filter((source) =>
+          planned.has(source.id)
+        )) {
+          const candidates = planned.get(source.id)!;
+          const versions = bySource.get(source.id) ?? [];
+          const byId = new Map(
+            versions.map((version) => [version.id, version])
+          );
+          for (const candidate of candidates) {
+            const version = byId.get(candidate.id);
+            if (
+              !version ||
+              version.versionNumber !== candidate.versionNumber ||
+              version.contentHash !== candidate.contentHash
+            ) {
+              throw recheckFailed('CANDIDATE_CHANGED');
+            }
+            if (!candidateIds.every((ids) => ids.has(candidate.id))) {
+              throw recheckFailed('CANDIDATE_NOT_ELIGIBLE');
+            }
+            found += 1;
+          }
+          const removed = new Set(candidates.map((candidate) => candidate.id));
+          const blocker =
+            simulateContentStudioSourcePageChangeStateAfterRetention({
+              source,
+              versions,
+              candidateIds: removed,
+              now: input.now,
+              inFlightMs: CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
+              pickerWindow: CONTENT_STUDIO_SOURCE_VERSION_PICKER_WINDOW,
+            });
+          if (blocker) {
+            throw recheckFailed(blocker);
+          }
+          kept.set(
+            source.id,
+            contentStudioSourceVersionRetainedRuns(versions, removed)
+          );
+        }
+      }
+    );
+    // a candidate whose source is gone, or is another organization's
+    if (found !== input.candidates.length) {
+      throw recheckFailed('CANDIDATE_CHANGED');
+    }
+    return kept;
   }
 
   // Holds versions of the organization for one plan (P8-R1Q), all or none:
@@ -338,7 +493,7 @@ export class ContentStudioSourceRetentionService {
   ) {
     const protections: ContentStudioSourceVersionProtection[] = [];
     let found = false;
-    await this.evaluate(input, false, (batch) => {
+    await this.evaluate(input, 'ignore', (batch) => {
       const map = computeContentStudioSourceVersionProtectionMap({
         organizationId: input.organizationId,
         ...batch,
@@ -361,27 +516,65 @@ export class ContentStudioSourceRetentionService {
     };
   }
 
+  // The dry run of every source of the organization, batch by batch: the
+  // protection maps and each source's selection
+  private async select(
+    input: { organizationId: string; now: Date },
+    policy: ContentStudioSourceVersionRetentionPolicy
+  ) {
+    const maps: ContentStudioSourceVersionProtectionMap[] = [];
+    const sources: ContentStudioSourceVersionRetentionSourceResult[] = [];
+    const snapshot = await this.evaluate(input, 'refuse', (batch) => {
+      const evaluated = evaluateContentStudioSourceVersionRetention({
+        organizationId: input.organizationId,
+        ...batch,
+        now: input.now,
+        inFlightMs: CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
+        pickerWindow: CONTENT_STUDIO_SOURCE_VERSION_PICKER_WINDOW,
+        policy,
+      });
+      maps.push(evaluated.protections);
+      sources.push(...evaluated.sources);
+    });
+    return { snapshot, maps, sources };
+  }
+
   // The organization in one snapshot, handed over a batch of sources at a
   // time with all their versions and the references naming them. Every
   // reference must name a source of the organization, and the batches must
   // hold every version it has, or the whole organization fails. A dry run
   // is refused in the same snapshot when a version of the organization is
-  // held for a plan, or it has too many versions, before any is read
+  // held for a plan, and the recheck of an execution unless exactly its
+  // candidates are held for its plan; both when it has too many versions,
+  // before any is read
   private evaluate(
     input: { organizationId: string },
-    dryRun: boolean,
+    pending: Pending,
     use: (batch: Batch) => void
   ) {
     const organizationId = input.organizationId;
     return this._contentStudioSourceRetentionRepository.readSnapshot(
       async (reads) => {
-        if (dryRun && (await reads.findPending(organizationId))) {
+        if (pending === 'refuse' && (await reads.findPending(organizationId))) {
           throw new ContentStudioSourceRetentionDryRunError(
             'RETENTION_DRY_RUN_QUARANTINE_ACTIVE'
           );
         }
+        if (typeof pending === 'object') {
+          const held = await reads.listPending(organizationId);
+          if (
+            held.length !== pending.heldIds.size ||
+            held.some(
+              (row) =>
+                row.planHash !== pending.planHash ||
+                !pending.heldIds.has(row.sourceVersionId)
+            )
+          ) {
+            throw recheckFailed('PENDING_MISMATCH');
+          }
+        }
         const versionCount = await reads.countVersions(organizationId);
-        if (dryRun) {
+        if (pending !== 'ignore') {
           assertContentStudioSourceVersionRetentionScale(versionCount);
         }
 

@@ -1160,10 +1160,8 @@ export function buildContentStudioSourceVersionRetentionDryRun(input: {
   sources: readonly ContentStudioSourceVersionRetentionSourceResult[];
   logicalContentBytes: ReadonlyMap<string, number>;
 }) {
-  const validUntil = new Date(
-    input.evaluationNow.getTime() +
-      CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_VALIDITY_MS
-  );
+  const { validUntil, blockedSources, candidates, dryRunHash } =
+    planContentStudioSourceVersionRetention(input);
   const bytes = (id: string) => {
     const value = input.logicalContentBytes.get(id);
     if (!Number.isSafeInteger(value) || value! < 0) {
@@ -1201,17 +1199,6 @@ export function buildContentStudioSourceVersionRetentionDryRun(input: {
         ),
       };
     });
-  const blockedSources = input.sources
-    .filter((source) => source.blocker !== null)
-    .map((source) => ({
-      sourceId: source.sourceId,
-      blocker: source.blocker!,
-      suppressedCandidates: source.blockedCandidateVersions,
-    }))
-    .sort((a, b) => compareText(a.sourceId, b.sourceId));
-  const candidates = input.sources
-    .flatMap((source) => source.candidates)
-    .sort(compareCandidates);
   const sum = (key: keyof (typeof sources)[number]) =>
     sources.reduce((total, source) => total + (source[key] as number), 0);
   const totalVersions = sum('totalVersions');
@@ -1295,6 +1282,38 @@ export function buildContentStudioSourceVersionRetentionDryRun(input: {
       candidateReason: candidate.candidateReason,
       logicalContentBytes: bytes(candidate.id),
     })),
+    dryRunHash,
+  };
+}
+
+// What a dry run of these sources selects and holds back, in report order,
+// with its validity and hash: the one derivation of the report above and of
+// the replay of a reviewed plan (P8-R1C), which measures nothing
+export function planContentStudioSourceVersionRetention(input: {
+  organizationId: string;
+  evaluationNow: Date;
+  policy: ContentStudioSourceVersionRetentionPolicy;
+  sources: readonly ContentStudioSourceVersionRetentionSourceResult[];
+}) {
+  const validUntil = new Date(
+    input.evaluationNow.getTime() +
+      CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_VALIDITY_MS
+  );
+  const blockedSources = input.sources
+    .filter((source) => source.blocker !== null)
+    .map((source) => ({
+      sourceId: source.sourceId,
+      blocker: source.blocker!,
+      suppressedCandidates: source.blockedCandidateVersions,
+    }))
+    .sort((a, b) => compareText(a.sourceId, b.sourceId));
+  const candidates = input.sources
+    .flatMap((source) => source.candidates)
+    .sort(compareCandidates);
+  return {
+    validUntil,
+    blockedSources,
+    candidates,
     dryRunHash: contentStudioSourceVersionRetentionDryRunHash({
       organizationId: input.organizationId,
       evaluationNow: input.evaluationNow,
@@ -1364,4 +1383,420 @@ export class ContentStudioSourceVersionRetentionPendingError extends Error {
     super('This source version is temporarily unavailable for new references');
     this.name = 'ContentStudioSourceVersionRetentionPendingError';
   }
+}
+
+// The retention execution (P8-R1C): the only way a source version is ever
+// removed, by an operator, one reviewed dry-run plan of one organization at a
+// time. The plan is prepared (its hash made again from the database at the
+// time it was made for, its candidates held), waits until no writer that
+// checked a version before it was held can still be writing, and is executed:
+// checked again as it is then, at the plan's time and at the execution's,
+// and its candidates removed in bounded batches, each with its held rows and
+// its audit in one transaction. Only the candidates the plan named are ever
+// removed, and only while every one of them is still a candidate: one that is
+// not ends the whole plan. A plan is executed once, whatever its end
+
+// The shape and meaning of an execution and its items: a change of either
+// is a new version
+export const CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_FORMAT_VERSION = 1;
+
+// The most candidates one execution removes (first rollout); a larger plan
+// is refused, never cut
+export const CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_MAX_CANDIDATES = 10_000;
+
+// The most versions removed in one transaction: a version holds up to 1 MiB
+// of blocks, and one batch must end well within its transaction's time
+export const CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DELETE_BATCH_SIZE = 100;
+
+// The largest plan file read, before it is parsed
+export const CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PLAN_MAX_BYTES =
+  64 * 1024 * 1024;
+
+export const CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_STATUSES = [
+  'preparing',
+  'prepared',
+  'executing',
+  'completed',
+  'cancelled',
+  'aborted',
+  'partial',
+] as const;
+
+export type ContentStudioSourceVersionRetentionExecutionStatus =
+  (typeof CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_STATUSES)[number];
+
+// An execution in one of these has ended, and has no lock
+export const CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_TERMINAL = [
+  'completed',
+  'cancelled',
+  'aborted',
+  'partial',
+] as const;
+
+export const isContentStudioSourceVersionRetentionExecutionTerminal = (
+  status: string
+) =>
+  (
+    CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_TERMINAL as readonly string[]
+  ).includes(status);
+
+// Why an execution is refused or ended before its end
+export const CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_ERRORS = [
+  'RETENTION_EXECUTION_PLAN_INVALID',
+  'RETENTION_EXECUTION_PLAN_EXPIRED',
+  // the plan made again is not the plan reviewed
+  'RETENTION_EXECUTION_HASH_MISMATCH',
+  'RETENTION_EXECUTION_BLOCKED_SOURCES',
+  'RETENTION_EXECUTION_TOO_LARGE',
+  // the organization has an execution that has not ended
+  'RETENTION_EXECUTION_ALREADY_ACTIVE',
+  // this plan was prepared before, whatever became of it
+  'RETENTION_EXECUTION_ALREADY_RUN',
+  'RETENTION_EXECUTION_NOT_READY',
+  'RETENTION_EXECUTION_STATE_INVALID',
+  'RETENTION_EXECUTION_QUARANTINE_FAILED',
+  // a candidate of the plan is no longer one, or the held rows are not the
+  // plan's
+  'RETENTION_EXECUTION_RECHECK_FAILED',
+  'RETENTION_EXECUTION_BATCH_FAILED',
+  'RETENTION_EXECUTION_INTEGRITY_FAILED',
+  // held rows could not be released: the lock stays until a cancel does
+  'RETENTION_EXECUTION_CLEANUP_REQUIRED',
+] as const;
+
+export type ContentStudioSourceVersionRetentionExecutionErrorCode =
+  (typeof CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_ERRORS)[number];
+
+// A fixed message with the code, and what caused it by code or by model and
+// id: never content, a title or a URL
+export class ContentStudioSourceVersionRetentionExecutionError extends Error {
+  constructor(
+    readonly code: ContentStudioSourceVersionRetentionExecutionErrorCode,
+    readonly detail: string | null = null
+  ) {
+    super(`The source version retention execution failed: ${code}`);
+    this.name = 'ContentStudioSourceVersionRetentionExecutionError';
+  }
+}
+
+const planInvalid = () =>
+  new ContentStudioSourceVersionRetentionExecutionError(
+    'RETENTION_EXECUTION_PLAN_INVALID'
+  );
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+// a time of a dry run, as its report writes it: whole seconds, UTC
+const PLAN_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const planTime = (value: unknown) => {
+  if (typeof value !== 'string' || !PLAN_TIME.test(value)) {
+    throw planInvalid();
+  }
+  const time = new Date(value);
+  if (!isDate(time) || time.toISOString() !== value) {
+    throw planInvalid();
+  }
+  return time;
+};
+
+// One candidate of a plan, by the identity its dry run hashed
+export interface ContentStudioSourceVersionRetentionPlanCandidate {
+  id: string;
+  sourceId: string;
+  versionNumber: number;
+  contentHash: string;
+}
+
+// A reviewed plan as an execution uses it: what its hash covers, checked
+export interface ContentStudioSourceVersionRetentionPlan {
+  organizationId: string;
+  planHash: string;
+  evaluationNow: Date;
+  validUntil: Date;
+  policy: ContentStudioSourceVersionRetentionPolicy;
+  // in canonical order: source id, number, id
+  candidates: ContentStudioSourceVersionRetentionPlanCandidate[];
+  sourceCount: number;
+  // shown to the operator only, never decided on; null when not given
+  logicalContentBytes: number | null;
+}
+
+// The report of `content-studio:retention-dry-run --json`, read back as the
+// plan of an execution, all checked before anything is read from the
+// database: its format and rule versions are the current ones, it is of this
+// organization, its times are those of a dry run (whole seconds, valid one
+// hour), its policy is compact_repeats at least the minimum age before it,
+// it holds no source back, its candidates are distinct run interiors, and
+// its hash is the hash of exactly what it says. Counts, sizes and times of
+// the candidates are shown, never decided on. A plan with more candidates
+// than an execution removes is refused whole
+export function parseContentStudioSourceVersionRetentionPlan(
+  text: string,
+  organizationId: string
+): ContentStudioSourceVersionRetentionPlan {
+  if (
+    typeof text !== 'string' ||
+    Buffer.byteLength(text, 'utf8') >
+      CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PLAN_MAX_BYTES ||
+    !UUID.test(organizationId)
+  ) {
+    throw planInvalid();
+  }
+  let report: unknown;
+  try {
+    report = JSON.parse(text);
+  } catch {
+    throw planInvalid();
+  }
+  if (
+    !isRecord(report) ||
+    report.format !== CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_FORMAT ||
+    report.dryRunFormatVersion !==
+      CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_FORMAT_VERSION ||
+    report.protectionVersion !==
+      CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PROTECTION_VERSION ||
+    report.policyVersion !==
+      CONTENT_STUDIO_SOURCE_VERSION_RETENTION_POLICY_VERSION ||
+    typeof report.organizationId !== 'string' ||
+    report.organizationId !== organizationId ||
+    !isRecord(report.policy) ||
+    report.policy.mode !== 'compact_repeats' ||
+    typeof report.dryRunHash !== 'string' ||
+    !SHA256.test(report.dryRunHash) ||
+    !Array.isArray(report.blockedSources) ||
+    !Array.isArray(report.candidates)
+  ) {
+    throw planInvalid();
+  }
+  const evaluationNow = planTime(report.evaluationNow);
+  const validUntil = planTime(report.validUntil);
+  if (
+    validUntil.getTime() - evaluationNow.getTime() !==
+    CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_VALIDITY_MS
+  ) {
+    throw planInvalid();
+  }
+  let policy: ContentStudioSourceVersionRetentionPolicy;
+  try {
+    policy = assertContentStudioSourceVersionRetentionPolicy(
+      {
+        mode: report.policy.mode,
+        olderThan: planTime(report.policy.olderThan),
+      },
+      evaluationNow
+    );
+  } catch {
+    throw planInvalid();
+  }
+
+  const ids = new Set<string>();
+  const numbers = new Set<string>();
+  const candidates = report.candidates.map((entry: unknown) => {
+    if (
+      !isRecord(entry) ||
+      typeof entry.id !== 'string' ||
+      !UUID.test(entry.id) ||
+      typeof entry.sourceId !== 'string' ||
+      !UUID.test(entry.sourceId) ||
+      !Number.isSafeInteger(entry.versionNumber) ||
+      (entry.versionNumber as number) < 1 ||
+      typeof entry.contentHash !== 'string' ||
+      !SHA256.test(entry.contentHash) ||
+      entry.candidateReason !==
+        CONTENT_STUDIO_SOURCE_VERSION_RETENTION_CANDIDATE_REASON
+    ) {
+      throw planInvalid();
+    }
+    const number = `${entry.sourceId}\n${entry.versionNumber}`;
+    if (ids.has(entry.id) || numbers.has(number)) {
+      throw planInvalid();
+    }
+    ids.add(entry.id);
+    numbers.add(number);
+    return {
+      id: entry.id,
+      sourceId: entry.sourceId,
+      versionNumber: entry.versionNumber as number,
+      contentHash: entry.contentHash,
+    };
+  });
+
+  // a source held back is not part of a plan an execution runs
+  if (report.blockedSources.length) {
+    throw new ContentStudioSourceVersionRetentionExecutionError(
+      'RETENTION_EXECUTION_BLOCKED_SOURCES'
+    );
+  }
+  if (
+    contentStudioSourceVersionRetentionDryRunHash({
+      organizationId,
+      evaluationNow,
+      validUntil,
+      policy,
+      candidates,
+      blockedSources: [],
+    }) !== report.dryRunHash
+  ) {
+    throw planInvalid();
+  }
+  if (
+    candidates.length >
+    CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_MAX_CANDIDATES
+  ) {
+    throw new ContentStudioSourceVersionRetentionExecutionError(
+      'RETENTION_EXECUTION_TOO_LARGE'
+    );
+  }
+
+  const summary = isRecord(report.candidateSummary)
+    ? report.candidateSummary.logicalContentBytes
+    : null;
+  return {
+    organizationId,
+    planHash: report.dryRunHash,
+    evaluationNow,
+    validUntil,
+    policy,
+    candidates: candidates.sort(compareCandidates),
+    sourceCount: new Set(candidates.map((c) => c.sourceId)).size,
+    logicalContentBytes:
+      Number.isSafeInteger(summary) && (summary as number) >= 0
+        ? (summary as number)
+        : null,
+  };
+}
+
+// The candidates of an execution in the batches it removes them in, in
+// canonical order: whole sources together, up to `size` versions; a source
+// with more fills batches of its own, never shared with another source
+export function batchContentStudioSourceVersionRetentionCandidates<
+  T extends { id: string; sourceId: string; versionNumber: number }
+>(
+  candidates: readonly T[],
+  size = CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DELETE_BATCH_SIZE
+): T[][] {
+  if (!Number.isSafeInteger(size) || size < 1) {
+    throw new RangeError('Invalid source version retention batch size');
+  }
+  const bySource: T[][] = [];
+  for (const candidate of candidates.slice().sort(compareCandidates)) {
+    const last = bySource[bySource.length - 1];
+    if (last && last[0].sourceId === candidate.sourceId) {
+      last.push(candidate);
+    } else {
+      bySource.push([candidate]);
+    }
+  }
+  const batches: T[][] = [];
+  let open: T[] = [];
+  for (const source of bySource) {
+    if (source.length > size) {
+      if (open.length) {
+        batches.push(open);
+        open = [];
+      }
+      for (let i = 0; i < source.length; i += size) {
+        batches.push(source.slice(i, i + size));
+      }
+    } else {
+      if (open.length + source.length > size) {
+        batches.push(open);
+        open = [];
+      }
+      open.push(...source);
+    }
+  }
+  if (open.length) {
+    batches.push(open);
+  }
+  return batches;
+}
+
+// When a prepared plan may be executed: the wait after the LAST of its
+// versions was held, since a writer that checked that one just before it
+// was held may still be writing until then
+export function contentStudioSourceVersionRetentionReadyAt(
+  pendingAt: readonly Date[]
+): Date {
+  if (!pendingAt.length || !pendingAt.every(isDate)) {
+    throw new RangeError('Invalid source version retention hold times');
+  }
+  return new Date(
+    Math.max(...pendingAt.map((time) => time.getTime())) +
+      CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_WAIT_MS
+  );
+}
+
+// A source's versions an execution keeps, as its recheck saw them: their
+// ids and the first and last of each of their runs
+export function contentStudioSourceVersionRetainedRuns(
+  versions: readonly ContentStudioSourceVersionProtectionVersion[],
+  removedIds: ReadonlySet<string>
+) {
+  const retained = versions.filter((version) => !removedIds.has(version.id));
+  return {
+    versionIds: retained.map((version) => version.id).sort(compareText),
+    runs: groupContentStudioSourceVersionRuns(retained).map(
+      (run) => [run.firstVersionId, run.lastVersionId] as const
+    ),
+  };
+}
+
+// Why a source does not read as it should once all its candidates of an
+// execution are removed, or null when it does: none of them is left, its
+// latest version is its newest, its stored page change is the one its
+// versions show and its state protections hold (simulated without removing
+// anything), and the versions the recheck kept are all there, in the same
+// runs. Versions captured since are allowed
+export function checkContentStudioSourceAfterRetention(input: {
+  source: ContentStudioSourceVersionProtectionSource;
+  versions: readonly ContentStudioSourceVersionProtectionVersion[];
+  removedIds: ReadonlySet<string>;
+  expected: ReturnType<typeof contentStudioSourceVersionRetainedRuns>;
+  now: Date;
+  inFlightMs: number;
+  pickerWindow: number;
+}): string | null {
+  if (input.versions.some((version) => input.removedIds.has(version.id))) {
+    return 'CANDIDATE_LEFT';
+  }
+  const newest = input.versions.reduce(
+    (max, version) => Math.max(max, version.versionNumber),
+    0
+  );
+  if (newest !== input.source.latestVersionNumber) {
+    return 'LATEST_CHANGED';
+  }
+  const state = simulateContentStudioSourcePageChangeStateAfterRetention({
+    source: input.source,
+    versions: input.versions,
+    candidateIds: new Set(),
+    now: input.now,
+    inFlightMs: input.inFlightMs,
+    pickerWindow: input.pickerWindow,
+  });
+  if (state !== null) {
+    return state;
+  }
+  const expected = new Set(input.expected.versionIds);
+  const kept = contentStudioSourceVersionRetainedRuns(
+    input.versions.filter((version) => expected.has(version.id)),
+    new Set()
+  );
+  if (
+    kept.versionIds.length !== input.expected.versionIds.length ||
+    kept.runs.length !== input.expected.runs.length ||
+    kept.runs.some(
+      ([first, last], index) =>
+        first !== input.expected.runs[index][0] ||
+        last !== input.expected.runs[index][1]
+    )
+  ) {
+    return 'RUNS_CHANGED';
+  }
+  return null;
 }

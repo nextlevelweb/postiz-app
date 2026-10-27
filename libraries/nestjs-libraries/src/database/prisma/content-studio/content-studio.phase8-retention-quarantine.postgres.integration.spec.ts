@@ -1158,6 +1158,8 @@ describe('P8-R1Q the verify-then-write race on PostgreSQL', () => {
       aiOperation: [],
     };
     // the time from the held check's answer to the transaction's end
+    // (P8-R1C: the check is one count of the versions still there and held
+    // for nothing, W1)
     const timed = (db: PrismaClient, into: number[]) =>
       ({
         model: {
@@ -1172,10 +1174,7 @@ describe('P8-R1Q the verify-then-write race on PostgreSQL', () => {
                   new Proxy(tx, {
                     get(target, property, receiver) {
                       const value = Reflect.get(target, property, receiver);
-                      if (
-                        property !==
-                        'contentStudioSourceVersionRetentionPending'
-                      ) {
+                      if (property !== 'contentStudioSourceVersion') {
                         return value;
                       }
                       return new Proxy(value, {
@@ -1185,7 +1184,7 @@ describe('P8-R1Q the verify-then-write race on PostgreSQL', () => {
                             name,
                             modelReceiver
                           );
-                          if (name !== 'findFirst') {
+                          if (name !== 'count') {
                             return original;
                           }
                           return async (args: unknown) => {

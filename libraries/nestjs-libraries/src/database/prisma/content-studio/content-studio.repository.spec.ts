@@ -32,7 +32,7 @@ const setup = () => {
   const tx = {
     contentPackage: delegate(),
     contentPackageRevision: delegate(),
-    contentStudioSourceVersionRetentionPending: delegate(),
+    contentStudioSourceVersion: delegate(),
   };
   const $transaction = jest.fn(
     async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx)
@@ -59,7 +59,7 @@ const allDelegates = (s: Setup): [string, Delegate][] => [
   ['revision', s.revision],
   ['tx.package', s.tx.contentPackage],
   ['tx.revision', s.tx.contentPackageRevision],
-  ['tx.pending', s.tx.contentStudioSourceVersionRetentionPending],
+  ['tx.version', s.tx.contentStudioSourceVersion],
 ];
 const allCalls = (s: Setup) =>
   allDelegates(s).flatMap(([name, d]) =>
@@ -600,8 +600,9 @@ describe('ContentStudioRepository', () => {
       expect(contentPackage.update).not.toHaveBeenCalled();
     });
 
-    it('Q20/Q22 P8-R1Q a draft naming versions: the held check and the save in one transaction, the check first and once', async () => {
+    it('Q20/Q22 P8-R1Q/P8-R1C a draft naming versions: the check (still there, held for nothing) and the save in one transaction, the check first and once', async () => {
       const s = setup();
+      s.tx.contentStudioSourceVersion.count.mockResolvedValue(2);
       await expect(
         s.repository.saveDraftCompareAndSwap({
           organizationId: ORG,
@@ -614,14 +615,15 @@ describe('ContentStudioRepository', () => {
 
       expect(s.$transaction).toHaveBeenCalledTimes(1);
       expect(callOrder(s)).toEqual([
-        'tx.pending.findFirst',
+        'tx.version.count',
         'tx.package.updateMany',
       ]);
-      expect(
-        onlyCall(s.tx.contentStudioSourceVersionRetentionPending.findFirst)
-      ).toEqual({
-        where: { organizationId: ORG, sourceVersionId: { in: ['v-2', 'v-1'] } },
-        select: { id: true },
+      expect(onlyCall(s.tx.contentStudioSourceVersion.count)).toEqual({
+        where: {
+          organizationId: ORG,
+          id: { in: ['v-2', 'v-1'] },
+          retentionPending: { is: null },
+        },
       });
       expect(onlyCall(s.tx.contentPackage.updateMany)).toEqual({
         where: {
@@ -637,23 +639,25 @@ describe('ContentStudioRepository', () => {
       });
     });
 
-    it('Q21/Q22 P8-R1Q a held version refuses the save: nothing is written', async () => {
-      const s = setup();
-      s.tx.contentStudioSourceVersionRetentionPending.findFirst.mockResolvedValue(
-        { id: 'pending-1' }
-      );
-      await expect(
-        s.repository.saveDraftCompareAndSwap({
-          organizationId: ORG,
-          packageId: 'package-1',
-          baseDraftVersion: 3,
-          draft: '{}',
-          sourceVersionIds: ['v-1'],
-        })
-      ).rejects.toBeInstanceOf(ContentStudioSourceVersionRetentionPendingError);
-      expect(
-        allCalls(s).map(({ name, method }) => `${name}.${method}`)
-      ).toEqual(['tx.pending.findFirst']);
+    it('Q21/Q22 P8-R1Q/P8-R1C a version held or gone refuses the save, any one of them: nothing is written', async () => {
+      for (const available of [0, 1]) {
+        const s = setup();
+        s.tx.contentStudioSourceVersion.count.mockResolvedValue(available);
+        await expect(
+          s.repository.saveDraftCompareAndSwap({
+            organizationId: ORG,
+            packageId: 'package-1',
+            baseDraftVersion: 3,
+            draft: '{}',
+            sourceVersionIds: ['v-1', 'v-2'],
+          })
+        ).rejects.toBeInstanceOf(
+          ContentStudioSourceVersionRetentionPendingError
+        );
+        expect(
+          allCalls(s).map(({ name, method }) => `${name}.${method}`)
+        ).toEqual(['tx.version.count']);
+      }
     });
 
     it('Q6 P8-R1Q a draft naming no version is saved as before: no transaction, no held check', async () => {
@@ -957,38 +961,42 @@ describe('ContentStudioRepository', () => {
       );
     });
 
-    it('Q24/Q25/Q26 P8-R1Q the held check comes first in the same transaction; a held version writes nothing', async () => {
+    it('Q24/Q25/Q26 P8-R1Q/P8-R1C the check (still there, held for nothing) comes first in the same transaction; a version held or gone writes nothing', async () => {
       const s = setup();
+      s.tx.contentStudioSourceVersion.count.mockResolvedValue(2);
       await s.repository.createRevisionWithCompareAndSwap({
         ...REVISION_INPUT,
         sourceVersionIds: ['v-1', 'v-1', 'v-3'],
       });
       expect(s.$transaction).toHaveBeenCalledTimes(1);
       expect(callOrder(s)).toEqual([
-        'tx.pending.findFirst',
+        'tx.version.count',
         'tx.package.updateMany',
         'tx.revision.create',
       ]);
-      expect(
-        onlyCall(s.tx.contentStudioSourceVersionRetentionPending.findFirst)
-      ).toEqual({
-        where: { organizationId: ORG, sourceVersionId: { in: ['v-1', 'v-3'] } },
-        select: { id: true },
+      expect(onlyCall(s.tx.contentStudioSourceVersion.count)).toEqual({
+        where: {
+          organizationId: ORG,
+          id: { in: ['v-1', 'v-3'] },
+          retentionPending: { is: null },
+        },
       });
 
-      const held = setup();
-      held.tx.contentStudioSourceVersionRetentionPending.findFirst.mockResolvedValue(
-        { id: 'pending-1' }
-      );
-      await expect(
-        held.repository.createRevisionWithCompareAndSwap({
-          ...REVISION_INPUT,
-          sourceVersionIds: ['v-1'],
-        })
-      ).rejects.toBeInstanceOf(ContentStudioSourceVersionRetentionPendingError);
-      expect(
-        allCalls(held).map(({ name, method }) => `${name}.${method}`)
-      ).toEqual(['tx.pending.findFirst']);
+      for (const available of [0, 1]) {
+        const held = setup();
+        held.tx.contentStudioSourceVersion.count.mockResolvedValue(available);
+        await expect(
+          held.repository.createRevisionWithCompareAndSwap({
+            ...REVISION_INPUT,
+            sourceVersionIds: ['v-1', 'v-3'],
+          })
+        ).rejects.toBeInstanceOf(
+          ContentStudioSourceVersionRetentionPendingError
+        );
+        expect(
+          allCalls(held).map(({ name, method }) => `${name}.${method}`)
+        ).toEqual(['tx.version.count']);
+      }
     });
 
     it('T4 stores the canonical content byte for byte', async () => {

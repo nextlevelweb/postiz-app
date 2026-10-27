@@ -4,7 +4,7 @@ import {
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import {
-  assertContentStudioSourceVersionsNotPending,
+  assertContentStudioSourceVersionsExistAndNotPending,
   ContentStudioSourceRetentionRepository,
   ContentStudioSourceRetentionSnapshotReads,
 } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.repository';
@@ -72,6 +72,7 @@ const setup = (
 const everyRead = async (reads: ContentStudioSourceRetentionSnapshotReads) => {
   const page = { organizationId: ORG, afterId: null, take: 10 };
   await reads.findPending(ORG);
+  await reads.listPending(ORG);
   await reads.countVersions(ORG);
   await reads.listSources(page);
   await reads.listPackageDrafts(page);
@@ -134,14 +135,21 @@ describe('ContentStudioSourceRetentionRepository (P8-R1B)', () => {
       ['contentPackageRevision', 1],
       ['contentStudioReview', 1],
       ['contentStudioAIOperation', 1],
-      // P8-R1Q: whether any version of the organization is held
-      ['contentStudioSourceVersionRetentionPending', 1],
+      // P8-R1Q: whether any version of the organization is held; P8-R1C:
+      // which, for which plan
+      ['contentStudioSourceVersionRetentionPending', 2],
     ]);
     expect(
       tx.contentStudioSourceVersionRetentionPending.findFirst
     ).toHaveBeenCalledWith({
       where: { organizationId: ORG },
       select: { id: true },
+    });
+    expect(
+      tx.contentStudioSourceVersionRetentionPending.findMany
+    ).toHaveBeenCalledWith({
+      where: { organizationId: ORG },
+      select: { sourceVersionId: true, planHash: true },
     });
   });
 
@@ -245,7 +253,6 @@ describe('ContentStudioSourceRetentionRepository (P8-R1B)', () => {
         ContentStudioSourceRetentionRepository.prototype
       ).sort()
     ).toEqual([
-      'assertVersionsNotPending',
       'constructor',
       'getPendingForVersion',
       'listPendingForPlan',
@@ -337,50 +344,59 @@ const writes = (s: ReturnType<typeof setup>) =>
     )
   );
 
-describe('ContentStudioSourceRetentionRepository: the writer check (P8-R1Q)', () => {
-  it('Q1/Q2 no held version: the check passes after one read of the organization', async () => {
+describe('ContentStudioSourceRetentionRepository: the writer check (P8-R1Q, P8-R1C)', () => {
+  it('Q1/Q2/W1 every version still there and held for nothing: the check passes after ONE count of the organization', async () => {
     const { tx } = setup();
+    tx.contentStudioSourceVersion.count.mockResolvedValue(2 as never);
     await expect(
-      assertContentStudioSourceVersionsNotPending(tx as never, {
+      assertContentStudioSourceVersionsExistAndNotPending(tx as never, {
         organizationId: ORG,
-        sourceVersionIds: [V1],
+        sourceVersionIds: [V1, V2],
       })
     ).resolves.toBeUndefined();
+    expect(tx.contentStudioSourceVersion.count).toHaveBeenCalledTimes(1);
+    expect(tx.contentStudioSourceVersion.count).toHaveBeenCalledWith({
+      where: {
+        organizationId: ORG,
+        id: { in: [V1, V2] },
+        retentionPending: { is: null },
+      },
+    });
+    // the one statement: no separate read of held rows or versions
     expect(
       tx.contentStudioSourceVersionRetentionPending.findFirst
-    ).toHaveBeenCalledWith({
-      where: { organizationId: ORG, sourceVersionId: { in: [V1] } },
-      select: { id: true },
-    });
+    ).not.toHaveBeenCalled();
+    expect(tx.contentStudioSourceVersion.findMany).not.toHaveBeenCalled();
   });
 
-  it('Q3 a held version among them is refused, with a fixed message', async () => {
-    const { tx } = setup();
-    tx.contentStudioSourceVersionRetentionPending.findFirst.mockResolvedValue({
-      id: 'pending',
-    } as never);
-    const thrown = await assertContentStudioSourceVersionsNotPending(
-      tx as never,
-      { organizationId: ORG, sourceVersionIds: [V1, V2] }
-    ).catch((err: unknown) => err);
-    expect(thrown).toBeInstanceOf(
-      ContentStudioSourceVersionRetentionPendingError
-    );
-    expect((thrown as Error).message).toBe(
-      'This source version is temporarily unavailable for new references'
-    );
+  it('Q3/W1 one held or gone among them (fewer counted than named) is refused, with the same fixed message', async () => {
+    for (const available of [0, 1]) {
+      const { tx } = setup();
+      tx.contentStudioSourceVersion.count.mockResolvedValue(available as never);
+      const thrown = await assertContentStudioSourceVersionsExistAndNotPending(
+        tx as never,
+        { organizationId: ORG, sourceVersionIds: [V1, V2] }
+      ).catch((err: unknown) => err);
+      expect(thrown).toBeInstanceOf(
+        ContentStudioSourceVersionRetentionPendingError
+      );
+      expect((thrown as Error).message).toBe(
+        'This source version is temporarily unavailable for new references'
+      );
+    }
   });
 
-  it("Q4 only the organization's own held rows are read: another organization's never refuse it", async () => {
+  it("Q4 only the organization's own versions are counted: another organization's is refused like a gone one", async () => {
     const { tx } = setup();
+    tx.contentStudioSourceVersion.count.mockResolvedValue(1 as never);
     for (const organizationId of [ORG, ORG_B]) {
-      await assertContentStudioSourceVersionsNotPending(tx as never, {
+      await assertContentStudioSourceVersionsExistAndNotPending(tx as never, {
         organizationId,
         sourceVersionIds: [V1],
       });
     }
     expect(
-      tx.contentStudioSourceVersionRetentionPending.findFirst.mock.calls.map(
+      tx.contentStudioSourceVersion.count.mock.calls.map(
         (call) =>
           (call as unknown as [{ where: { organizationId: string } }])[0].where
             .organizationId
@@ -388,53 +404,30 @@ describe('ContentStudioSourceRetentionRepository: the writer check (P8-R1Q)', ()
     ).toEqual([ORG, ORG_B]);
   });
 
-  it('Q5 many ids, repeated ones too: one read of each distinct id', async () => {
+  it('Q5 many ids, repeated ones too: one count of each distinct id, against their number', async () => {
     const { tx } = setup();
-    await assertContentStudioSourceVersionsNotPending(tx as never, {
+    tx.contentStudioSourceVersion.count.mockResolvedValue(2 as never);
+    await assertContentStudioSourceVersionsExistAndNotPending(tx as never, {
       organizationId: ORG,
       sourceVersionIds: [V2, V1, V2, V1],
     });
-    expect(
-      tx.contentStudioSourceVersionRetentionPending.findFirst
-    ).toHaveBeenCalledTimes(1);
-    expect(
-      tx.contentStudioSourceVersionRetentionPending.findFirst
-    ).toHaveBeenCalledWith({
-      where: { organizationId: ORG, sourceVersionId: { in: [V2, V1] } },
-      select: { id: true },
+    expect(tx.contentStudioSourceVersion.count).toHaveBeenCalledTimes(1);
+    expect(tx.contentStudioSourceVersion.count).toHaveBeenCalledWith({
+      where: {
+        organizationId: ORG,
+        id: { in: [V2, V1] },
+        retentionPending: { is: null },
+      },
     });
   });
 
   it('Q6 no version: no read at all', async () => {
-    const { tx, repository, pending } = setup();
-    await assertContentStudioSourceVersionsNotPending(tx as never, {
+    const { tx } = setup();
+    await assertContentStudioSourceVersionsExistAndNotPending(tx as never, {
       organizationId: ORG,
       sourceVersionIds: [],
     });
-    await repository.assertVersionsNotPending({
-      organizationId: ORG,
-      sourceVersionIds: [],
-    });
-    expect(
-      tx.contentStudioSourceVersionRetentionPending.findFirst
-    ).not.toHaveBeenCalled();
-    expect(pending.findFirst).not.toHaveBeenCalled();
-  });
-
-  it('Q2 without a transaction of its own: the same check through the default client', async () => {
-    const { repository, pending, $transaction } = setup();
-    pending.findFirst.mockResolvedValueOnce({ id: 'pending' } as never);
-    await expect(
-      repository.assertVersionsNotPending({
-        organizationId: ORG,
-        sourceVersionIds: [V1],
-      })
-    ).rejects.toBeInstanceOf(ContentStudioSourceVersionRetentionPendingError);
-    expect(pending.findFirst).toHaveBeenCalledWith({
-      where: { organizationId: ORG, sourceVersionId: { in: [V1] } },
-      select: { id: true },
-    });
-    expect($transaction).not.toHaveBeenCalled();
+    expect(tx.contentStudioSourceVersion.count).not.toHaveBeenCalled();
   });
 });
 

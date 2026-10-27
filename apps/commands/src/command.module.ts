@@ -6,6 +6,7 @@ import { RefreshTokens } from './tasks/refresh.tokens';
 import { ConfigurationTask } from './tasks/configuration';
 import { ContentStudioPageChangesBackfill } from './tasks/content.studio.page.changes';
 import { ContentStudioRetentionDryRun } from './tasks/content.studio.retention';
+import { ContentStudioRetentionExecution } from './tasks/content.studio.retention.execution';
 
 @Module({
   imports: [ExternalCommandModule, DatabaseModule, getTemporalModule(false)],
@@ -15,6 +16,7 @@ import { ContentStudioRetentionDryRun } from './tasks/content.studio.retention';
     ConfigurationTask,
     ContentStudioPageChangesBackfill,
     ContentStudioRetentionDryRun,
+    ContentStudioRetentionExecution,
   ],
   get exports() {
     return [...this.imports, ...this.providers];

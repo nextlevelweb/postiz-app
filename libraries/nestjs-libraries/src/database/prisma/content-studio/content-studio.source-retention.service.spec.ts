@@ -6,6 +6,7 @@ import {
   ContentStudioSourceRetentionIntegrityError,
   ContentStudioSourceVersionProtectionMap,
   ContentStudioSourceVersionQuarantineError,
+  ContentStudioSourceVersionRetentionExecutionError,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
 import { parseContentPackageDraft } from '@gitroom/nestjs-libraries/content-studio/content.package.draft';
 import {
@@ -231,6 +232,8 @@ type FakeOptions = {
   missing?: string[];
   // organizations with a version held for a retention plan (P8-R1Q)
   pending?: string[];
+  // the held versions of the organization, with their plan (P8-R1C)
+  held?: Array<{ sourceVersionId: string; planHash: string }>;
 };
 const fakeRetentionRepository = (w: World, options: FakeOptions = {}) => {
   const reads = options.reads ?? [];
@@ -270,6 +273,10 @@ const fakeRetentionRepository = (w: World, options: FakeOptions = {}) => {
           return (options.pending ?? []).includes(organizationId)
             ? { id: 'pending' }
             : null;
+        },
+        listPending: async () => {
+          reads.push('held');
+          return options.held ?? [];
         },
         countVersions: async (organizationId: string) => {
           reads.push('count');
@@ -1346,5 +1353,234 @@ describe('P8-R1Q the retention quarantine, as the service checks it', () => {
         planHash: PLAN.toUpperCase(),
       })
     );
+  });
+});
+
+describe('P8-R1C the replay and the recheck of a plan', () => {
+  const POLICY = {
+    mode: 'compact_repeats',
+    olderThan: new Date(NOW.getTime() - 7 * 24 * HOUR),
+  };
+  const PLAN_HASH = 'c'.repeat(64);
+  // 30 captures (A1..A24, B25..B30), the change at v25: v2..v10 are the
+  // candidates
+  const fixture = () => {
+    const w = world();
+    const versions = addPage(w, [
+      ...Array(24).fill('A'),
+      ...Array(6).fill('B'),
+    ]);
+    w.sources[0].lastPageChangeAt = versions[24].fetchedAt;
+    w.sources[0].lastPageChangeVersionNumber = 25;
+    w.sources[0].lastPageChangeKind = 'content_changed';
+    w.sources[0].lastPageChangePreviousCaptureAt = versions[23].fetchedAt;
+    const candidates = versions.slice(1, 10).map((v) => ({
+      id: v.id,
+      sourceId: v.sourceId,
+      versionNumber: v.versionNumber,
+      contentHash: v.contentHash,
+    }));
+    return { w, versions, candidates };
+  };
+  const held = (candidates: Array<{ id: string }>, planHash = PLAN_HASH) =>
+    candidates.map((c) => ({ sourceVersionId: c.id, planHash }));
+  const recheck = (
+    w: World,
+    candidates: ReturnType<typeof fixture>['candidates'],
+    options: FakeOptions
+  ) =>
+    service(w, options).recheckRetentionPlan({
+      organizationId: ORG,
+      planHash: PLAN_HASH,
+      planEvaluationNow: NOW,
+      now: new Date(NOW.getTime() + 2 * 60 * 1000),
+      policy: POLICY,
+      candidates,
+    });
+  const failed = async (call: Promise<unknown>) => {
+    const err = await call.then(
+      () => {
+        throw new Error('expected a recheck failure');
+      },
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(
+      ContentStudioSourceVersionRetentionExecutionError
+    );
+    const { code, detail } =
+      err as ContentStudioSourceVersionRetentionExecutionError;
+    expect(code).toBe('RETENTION_EXECUTION_RECHECK_FAILED');
+    return detail;
+  };
+
+  it('RP1 the plan made again: the hash of the dry run, from the same snapshot, without measuring anything; refused while anything is held', async () => {
+    const { w } = fixture();
+    const report = await service(w).computeRetentionDryRun({
+      organizationId: ORG,
+      now: NOW,
+      policy: POLICY,
+    });
+    const reads: string[] = [];
+    const replayed = await service(w, { reads }).evaluateRetentionPlan({
+      organizationId: ORG,
+      now: NOW,
+      policy: POLICY,
+    });
+    expect(replayed.dryRunHash).toBe(report.dryRunHash);
+    expect(replayed.candidates.map((c) => c.id)).toEqual(
+      report.candidates.map((c) => c.id)
+    );
+    expect(reads).not.toContain('contents');
+    expect(reads.slice(0, 3)).toEqual(['snapshot', 'pending', 'count']);
+    await expect(
+      service(w, { pending: [ORG] }).evaluateRetentionPlan({
+        organizationId: ORG,
+        now: NOW,
+        policy: POLICY,
+      })
+    ).rejects.toThrow('RETENTION_DRY_RUN_QUARANTINE_ACTIVE');
+    // a later time is another plan
+    expect(
+      (
+        await service(w).evaluateRetentionPlan({
+          organizationId: ORG,
+          now: new Date(NOW.getTime() + 1000),
+          policy: POLICY,
+        })
+      ).dryRunHash
+    ).not.toBe(report.dryRunHash);
+  });
+
+  it('RC1 every candidate still one, held for the plan exactly: what each source keeps, its runs', async () => {
+    const { w, versions, candidates } = fixture();
+    const reads: string[] = [];
+    const kept = await recheck(w, candidates, {
+      reads,
+      held: held(candidates),
+    });
+    expect([...kept.keys()]).toEqual([versions[0].sourceId]);
+    const keptIds = versions
+      .filter((v) => !candidates.some((c) => c.id === v.id))
+      .map((v) => v.id);
+    expect(kept.get(versions[0].sourceId)).toEqual({
+      versionIds: [...keptIds].sort(),
+      runs: [
+        [versions[0].id, versions[23].id],
+        [versions[24].id, versions[29].id],
+      ],
+    });
+    // the held rows first, in the snapshot, then the organization whole
+    expect(reads.slice(0, 3)).toEqual(['snapshot', 'held', 'count']);
+    expect(reads).not.toContain('pending');
+    expect(reads).not.toContain('contents');
+  });
+
+  it("RC2 held rows that are not exactly the plan's fail before anything else is read", async () => {
+    const { w, candidates } = fixture();
+    for (const rows of [
+      held(candidates.slice(1)),
+      [...held(candidates), { sourceVersionId: 'other', planHash: PLAN_HASH }],
+      held(candidates, 'd'.repeat(64)),
+      [],
+    ]) {
+      const reads: string[] = [];
+      expect(await failed(recheck(w, candidates, { reads, held: rows }))).toBe(
+        'PENDING_MISMATCH'
+      );
+      expect(reads).toEqual(['snapshot', 'held']);
+    }
+  });
+
+  it('RC3 a candidate gone or not as the plan named it fails the whole plan', async () => {
+    const { w, candidates } = fixture();
+    const variants = [
+      { ...candidates[2], contentHash: sha256Hex('other') },
+      { ...candidates[2], versionNumber: 99 },
+      { ...candidates[2], sourceId: uuid(0x5000, 999) },
+      { ...candidates[2], id: uuid(0x7999, 1) },
+    ];
+    for (const variant of variants) {
+      const changed = candidates.map((c, i) => (i === 2 ? variant : c));
+      expect(await failed(recheck(w, changed, { held: held(changed) }))).toBe(
+        'CANDIDATE_CHANGED'
+      );
+    }
+  });
+
+  it('RC4 a candidate protected since (a draft names it), a run end, or a source that is held back: the whole plan', async () => {
+    const protectedSince = fixture();
+    addPackage(
+      protectedSince.w,
+      PACKAGE,
+      grounded([[evidence(protectedSince.versions[4])]])
+    );
+    expect(
+      await failed(
+        recheck(protectedSince.w, protectedSince.candidates, {
+          held: held(protectedSince.candidates),
+        })
+      )
+    ).toBe('CANDIDATE_NOT_ELIGIBLE');
+    // the first of the run is never a candidate
+    const boundary = fixture();
+    const withEnd = [
+      ...boundary.candidates,
+      {
+        id: boundary.versions[0].id,
+        sourceId: boundary.versions[0].sourceId,
+        versionNumber: 1,
+        contentHash: boundary.versions[0].contentHash,
+      },
+    ];
+    expect(
+      await failed(recheck(boundary.w, withEnd, { held: held(withEnd) }))
+    ).toBe('CANDIDATE_NOT_ELIGIBLE');
+    // the stored change is not the one the versions show: blocked
+    const stale = fixture();
+    stale.w.sources[0].lastPageChangeAt = null;
+    stale.w.sources[0].lastPageChangeVersionNumber = null;
+    stale.w.sources[0].lastPageChangeKind = null;
+    stale.w.sources[0].lastPageChangePreviousCaptureAt = null;
+    expect(
+      await failed(
+        recheck(stale.w, stale.candidates, { held: held(stale.candidates) })
+      )
+    ).toBe('CANDIDATE_NOT_ELIGIBLE');
+  });
+
+  it('RC5 a capture since, after the plan: the plan still holds; a new candidate is never added to it', async () => {
+    const { w, versions, candidates } = fixture();
+    // three repeats of B: v30 becomes an interior, and v11 leaves the window
+    for (let n = 31; n <= 33; n++) {
+      w.versions.push({
+        ...versions[29],
+        id: uuid(0x7fff, n),
+        versionNumber: n,
+      });
+    }
+    w.sources[0].latestVersionNumber = 33;
+    const kept = await recheck(w, candidates, { held: held(candidates) });
+    expect(kept.get(versions[0].sourceId)!.versionIds).toContain(
+      versions[10].id
+    );
+  });
+
+  it('RC6 anything that does not resolve anywhere in the organization fails it', async () => {
+    const { w, candidates } = fixture();
+    addPackage(
+      w,
+      PACKAGE,
+      grounded([
+        [
+          {
+            ...evidence(w.versions[3] as unknown as Version),
+            versionNumber: 77,
+          },
+        ],
+      ])
+    );
+    await expect(
+      recheck(w, candidates, { held: held(candidates) })
+    ).rejects.toBeInstanceOf(ContentStudioSourceRetentionIntegrityError);
   });
 });

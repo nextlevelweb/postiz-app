@@ -4,7 +4,7 @@ import {
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { assertContentStudioSourceVersionsNotPending } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.repository';
+import { assertContentStudioSourceVersionsExistAndNotPending } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source-retention.repository';
 
 // Every query filters on organizationId itself, so a record of another
 // organization reads exactly like a missing one (null or count 0). Archived
@@ -232,8 +232,9 @@ export class ContentStudioRepository {
   // Saves only over the version the editor started from: count 0 means the
   // package is missing, foreign, archived or was saved by someone else since.
   // A draft whose evidence names source versions is saved in one transaction
-  // with the check that none of them is held for retention (P8-R1Q), which
-  // throws ContentStudioSourceVersionRetentionPendingError and writes nothing
+  // with the check that all of them are still there and none is held for
+  // retention (P8-R1Q, P8-R1C), which throws
+  // ContentStudioSourceVersionRetentionPendingError and writes nothing
   saveDraftCompareAndSwap(input: {
     organizationId: string;
     packageId: string;
@@ -260,7 +261,7 @@ export class ContentStudioRepository {
       return save(this._package.model);
     }
     return this._transaction.model.$transaction(async (tx) => {
-      await assertContentStudioSourceVersionsNotPending(tx, {
+      await assertContentStudioSourceVersionsExistAndNotPending(tx, {
         organizationId: input.organizationId,
         sourceVersionIds: input.sourceVersionIds,
       });
@@ -416,9 +417,10 @@ export class ContentStudioRepository {
   // package update only matches while that draft version and latest revision
   // number are still current (and the package is live), and it holds the
   // package row until commit, so two revisions can never take the same number.
-  // No source version its evidence names may be held for retention (P8-R1Q),
-  // checked first in the same transaction: one that is throws
-  // ContentStudioSourceVersionRetentionPendingError and nothing is written
+  // Every source version its evidence names must still be there and held for
+  // no retention (P8-R1Q, P8-R1C), checked first in the same transaction: one
+  // that is not throws ContentStudioSourceVersionRetentionPendingError and
+  // nothing is written
   createRevisionWithCompareAndSwap(input: {
     organizationId: string;
     packageId: string;
@@ -432,7 +434,7 @@ export class ContentStudioRepository {
     sourceVersionIds: readonly string[];
   }) {
     return this._transaction.model.$transaction(async (tx) => {
-      await assertContentStudioSourceVersionsNotPending(tx, {
+      await assertContentStudioSourceVersionsExistAndNotPending(tx, {
         organizationId: input.organizationId,
         sourceVersionIds: input.sourceVersionIds,
       });

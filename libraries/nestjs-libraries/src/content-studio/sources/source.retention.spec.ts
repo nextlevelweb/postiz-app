@@ -45,6 +45,22 @@ import {
   deriveContentStudioSourceVersionProtections,
   explainContentStudioSourceVersionProtection,
   resolveContentStudioSourceVersionReferences,
+  batchContentStudioSourceVersionRetentionCandidates,
+  checkContentStudioSourceAfterRetention,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DELETE_BATCH_SIZE,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_ERRORS,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_FORMAT_VERSION,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_MAX_CANDIDATES,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_STATUSES,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_TERMINAL,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PLAN_MAX_BYTES,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_WAIT_MS,
+  ContentStudioSourceVersionRetentionExecutionError,
+  contentStudioSourceVersionRetainedRuns,
+  contentStudioSourceVersionRetentionReadyAt,
+  isContentStudioSourceVersionRetentionExecutionTerminal,
+  parseContentStudioSourceVersionRetentionPlan,
+  planContentStudioSourceVersionRetention,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
 
 // Source version protection (P8-R1A), the pure rules: which versions the
@@ -1163,10 +1179,16 @@ describe('P8-R1A the whole organization', () => {
 
 describe('P8-R1A the module stays pure', () => {
   it('R1-11 no clock, randomness, environment, database or network in source.retention.ts', () => {
-    const text = fs
+    const all = fs
       .readFileSync(path.join(__dirname, 'source.retention.ts'), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/^\s*\/\/.*$/gm, '');
+    // P8-R1C: the retention execution's section, at the end, pinned below
+    const execution = all.indexOf(
+      'export const CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_FORMAT_VERSION'
+    );
+    expect(execution).toBeGreaterThan(0);
+    const text = all.slice(0, execution);
     // P8-R1B: one Date is made, never from the clock: the dry run's
     // validUntil, from the time the caller passed
     expect(
@@ -1187,6 +1209,23 @@ describe('P8-R1A the module stays pure', () => {
       '@gitroom/nestjs-libraries/content-studio/canonical.json',
     ]);
     expect(text).not.toMatch(/deletable|safeToDelete|deleteCandidate|delete/i);
+    // P8-R1C: the execution's own rules are as pure: the Dates it makes are
+    // a plan's times read from its text and the end of the wait after the
+    // last hold, never the clock; it names a removal only by its batch size
+    const own = all.slice(execution);
+    expect(own).not.toMatch(
+      /Date\.now|Math\.random|randomUUID|process\.env|@prisma|prisma|@nestjs|fetch\(|require\(|\bimport\b/
+    );
+    expect(own.match(/new Date\([^)]*/g)).toEqual([
+      'new Date(value',
+      'new Date(\n    Math.max(...pendingAt.map((time',
+    ]);
+    expect(
+      own.replace(
+        /CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DELETE_BATCH_SIZE/g,
+        ''
+      )
+    ).not.toMatch(/delete|remove\(|purge|prune/i);
   });
 });
 
@@ -2492,5 +2531,610 @@ describe('P8-R1B batches', () => {
         canonicalJson(wholeReport),
       ]);
     }
+  });
+});
+
+// --- the retention execution (P8-R1C) ---
+
+// A reviewed plan: the report of a dry run, as its command prints it
+const reviewed = () => {
+  const pages = [lettered(SOURCE, 'AAAAB'), lettered(SOURCE_2, 'AAAAAAB')];
+  return JSON.parse(canonicalJson(report(dryRun(pages))));
+};
+type Plan = ReturnType<typeof reviewed>;
+// the plan with its hash made again after a change, what a forger would
+// do; a value that cannot be hashed keeps the old hash
+const rehashed = (plan: Plan) => {
+  try {
+    return {
+      ...plan,
+      dryRunHash: contentStudioSourceVersionRetentionDryRunHash({
+        organizationId: plan.organizationId,
+        evaluationNow: new Date(plan.evaluationNow),
+        validUntil: new Date(plan.validUntil),
+        policy: {
+          mode: plan.policy.mode,
+          olderThan: new Date(plan.policy.olderThan),
+        },
+        candidates: plan.candidates,
+        blockedSources: plan.blockedSources,
+      }),
+    };
+  } catch {
+    return plan;
+  }
+};
+const executionError = (run: () => unknown) => {
+  try {
+    run();
+  } catch (err) {
+    expect(err).toBeInstanceOf(
+      ContentStudioSourceVersionRetentionExecutionError
+    );
+    return (err as ContentStudioSourceVersionRetentionExecutionError).code;
+  }
+  throw new Error('expected an execution error');
+};
+const parse = (plan: unknown, organizationId = ORG) =>
+  parseContentStudioSourceVersionRetentionPlan(
+    typeof plan === 'string' ? plan : JSON.stringify(plan),
+    organizationId
+  );
+const invalid = (plan: unknown, organizationId = ORG) =>
+  executionError(() => parse(plan, organizationId));
+
+describe('P8-R1C the plan of an execution', () => {
+  it('E1 the report of a dry run is read back as its plan: what its hash covers, in canonical order', () => {
+    const plan = reviewed();
+    expect(plan.candidates).toHaveLength(2 + 4);
+    const parsed = parse(plan);
+    expect(parsed).toEqual({
+      organizationId: ORG,
+      planHash: plan.dryRunHash,
+      evaluationNow: NOW,
+      validUntil: new Date(NOW.getTime() + HOUR),
+      policy: POLICY,
+      candidates: plan.candidates.map(
+        (c: {
+          id: string;
+          sourceId: string;
+          versionNumber: number;
+          contentHash: string;
+        }) => ({
+          id: c.id,
+          sourceId: c.sourceId,
+          versionNumber: c.versionNumber,
+          contentHash: c.contentHash,
+        })
+      ),
+      sourceCount: 2,
+      logicalContentBytes: plan.candidateSummary.logicalContentBytes,
+    });
+    // the input order does not matter
+    const shuffled = { ...plan, candidates: [...plan.candidates].reverse() };
+    expect(parse(shuffled).candidates).toEqual(parsed.candidates);
+    // the canonical text or any JSON of it
+    expect(parse(canonicalJson(plan))).toEqual(parsed);
+  });
+
+  it('E2/E15 its hash is the hash of exactly what it says: any edit of what is hashed fails, an edit of what is shown does not', () => {
+    const plan = reviewed();
+    const edits: Array<(p: Plan) => void> = [
+      (p) => p.candidates.pop(),
+      (p) => (p.candidates[0].contentHash = 'f'.repeat(64)),
+      (p) => (p.candidates[0].versionNumber += 100),
+      (p) => (p.candidates[0].sourceId = SOURCE_2),
+      (p) => (p.policy.olderThan = '2026-01-01T00:00:00.000Z'),
+      (p) => (p.evaluationNow = '2026-10-26T11:00:00.000Z'),
+      (p) => (p.dryRunHash = 'a'.repeat(64)),
+      (p) => (p.dryRunHash = p.dryRunHash.toUpperCase()),
+    ];
+    for (const edit of edits) {
+      const copy = JSON.parse(JSON.stringify(plan));
+      edit(copy);
+      expect([String(edit), invalid(copy)]).toEqual([
+        String(edit),
+        'RETENTION_EXECUTION_PLAN_INVALID',
+      ]);
+    }
+    const shown = JSON.parse(JSON.stringify(plan));
+    shown.candidateSummary.logicalContentBytes = 1;
+    shown.candidates[0].createdAt = '2000-01-01T00:00:00.000Z';
+    shown.candidates[0].logicalContentBytes = 0;
+    shown.sources = [];
+    shown.protectionSummary = null;
+    expect(parse(shown).planHash).toBe(plan.dryRunHash);
+    expect(parse(shown).logicalContentBytes).toBe(1);
+    shown.candidateSummary = null;
+    expect(parse(shown).logicalContentBytes).toBeNull();
+  });
+
+  it('E3/E4/E14 its times are those of a dry run: whole seconds in UTC, valid for exactly one hour', () => {
+    const plan = reviewed();
+    for (const evaluationNow of [
+      '2026-10-26T12:00:00Z',
+      '2026-10-26T12:00:00.001Z',
+      '2026-10-26T12:00:00.000+00:00',
+      '2026-10-26 12:00:00.000Z',
+      '2026-02-30T12:00:00.000Z',
+      1793016000000,
+      null,
+    ]) {
+      expect([
+        evaluationNow,
+        invalid(rehashed({ ...plan, evaluationNow })),
+      ]).toEqual([evaluationNow, 'RETENTION_EXECUTION_PLAN_INVALID']);
+    }
+    // validUntil one hour after, exactly
+    for (const validUntil of [
+      '2026-10-26T13:00:01.000Z',
+      '2026-10-26T12:59:59.000Z',
+      '2026-10-26T12:00:00.000Z',
+    ]) {
+      expect(invalid(rehashed({ ...plan, validUntil }))).toBe(
+        'RETENTION_EXECUTION_PLAN_INVALID'
+      );
+    }
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DRY_RUN_VALIDITY_MS).toBe(
+      HOUR
+    );
+  });
+
+  it('E5 a plan holding a source back is refused: BLOCKED_SOURCES', () => {
+    const plan = reviewed();
+    expect(
+      invalid(
+        rehashed({
+          ...plan,
+          blockedSources: [
+            {
+              sourceId: SOURCE_2,
+              blocker: 'PAGE_CHANGE_STATE_STALE',
+              suppressedCandidates: 1,
+            },
+          ],
+        })
+      )
+    ).toBe('RETENTION_EXECUTION_BLOCKED_SOURCES');
+    expect(invalid({ ...plan, blockedSources: null })).toBe(
+      'RETENTION_EXECUTION_PLAN_INVALID'
+    );
+  });
+
+  it('E6 a plan with no candidates is read as one: nothing to remove', () => {
+    const plan = rehashed({ ...reviewed(), candidates: [] });
+    expect(parse(plan)).toEqual(
+      expect.objectContaining({ candidates: [], sourceCount: 0 })
+    );
+  });
+
+  it('E7 only the current format and rule versions', () => {
+    const plan = reviewed();
+    for (const [key, value] of [
+      ['format', 'content-studio.source-version-retention-dry-run-v2'],
+      ['dryRunFormatVersion', 2],
+      ['protectionVersion', 2],
+      ['policyVersion', 2],
+      ['dryRunFormatVersion', '1'],
+      ['protectionVersion', 0],
+      ['policyVersion', null],
+    ] as const) {
+      expect([key, value, invalid({ ...plan, [key]: value })]).toEqual([
+        key,
+        value,
+        'RETENTION_EXECUTION_PLAN_INVALID',
+      ]);
+    }
+    expect(
+      CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_FORMAT_VERSION
+    ).toBe(1);
+  });
+
+  it('E8 compact_repeats only, at least the minimum age before the plan', () => {
+    const plan = reviewed();
+    for (const mode of ['all_unprotected', 'COMPACT_REPEATS']) {
+      expect(
+        invalid(rehashed({ ...plan, policy: { ...plan.policy, mode } }))
+      ).toBe('RETENTION_EXECUTION_PLAN_INVALID');
+    }
+    expect(
+      invalid({ ...plan, policy: { olderThan: plan.policy.olderThan } })
+    ).toBe('RETENTION_EXECUTION_PLAN_INVALID');
+    // six days and 23 hours: too recent, even with its own hash
+    expect(
+      invalid(
+        rehashed({
+          ...plan,
+          policy: {
+            ...plan.policy,
+            olderThan: new Date(
+              NOW.getTime() -
+                CONTENT_STUDIO_SOURCE_VERSION_RETENTION_MIN_AGE_MS +
+                HOUR
+            ).toISOString(),
+          },
+        })
+      )
+    ).toBe('RETENTION_EXECUTION_PLAN_INVALID');
+  });
+
+  it('E9 at most 10,000 candidates: a larger plan is refused whole, TOO_LARGE', () => {
+    expect(
+      CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_MAX_CANDIDATES
+    ).toBe(10_000);
+    const many = (count: number) =>
+      rehashed({
+        ...reviewed(),
+        candidates: Array.from({ length: count }, (_, i) => ({
+          id: uuid(0x9000, i + 1),
+          sourceId: SOURCE,
+          versionNumber: i + 2,
+          contentHash: sha256Hex('A'),
+          candidateReason: 'REPEAT_RUN_INTERIOR',
+        })),
+      });
+    expect(parse(many(10_000)).candidates).toHaveLength(10_000);
+    expect(invalid(many(10_001))).toBe('RETENTION_EXECUTION_TOO_LARGE');
+  });
+
+  it('E10/E11/E12 every candidate a distinct run interior, as the dry run names it', () => {
+    const plan = reviewed();
+    const candidate = plan.candidates[0];
+    const variants: Array<Record<string, unknown>> = [
+      // a uuid in capitals
+      { id: `A${candidate.id.slice(1)}` },
+      { id: 'v-1' },
+      { sourceId: 'source' },
+      { versionNumber: 0 },
+      { versionNumber: 1.5 },
+      { versionNumber: '3' },
+      { contentHash: candidate.contentHash.toUpperCase() },
+      { contentHash: 'abc' },
+      { candidateReason: 'RUN_BOUNDARY' },
+      { candidateReason: undefined },
+    ];
+    for (const variant of variants) {
+      expect([
+        variant,
+        invalid(
+          rehashed({
+            ...plan,
+            candidates: [
+              { ...candidate, ...variant },
+              ...plan.candidates.slice(1),
+            ],
+          })
+        ),
+      ]).toEqual([variant, 'RETENTION_EXECUTION_PLAN_INVALID']);
+    }
+    // the same id twice, or the same source and number twice
+    expect(
+      invalid(
+        rehashed({
+          ...plan,
+          candidates: [...plan.candidates, { ...candidate, versionNumber: 99 }],
+        })
+      )
+    ).toBe('RETENTION_EXECUTION_PLAN_INVALID');
+    expect(
+      invalid(
+        rehashed({
+          ...plan,
+          candidates: [
+            ...plan.candidates,
+            { ...candidate, id: uuid(0x9999, 1) },
+          ],
+        })
+      )
+    ).toBe('RETENTION_EXECUTION_PLAN_INVALID');
+    expect(invalid(rehashed({ ...plan, candidates: [null] }))).toBe(
+      'RETENTION_EXECUTION_PLAN_INVALID'
+    );
+  });
+
+  it('E13 of the organization named, an organization id', () => {
+    const plan = reviewed();
+    expect(invalid(plan, OTHER_ORG)).toBe('RETENTION_EXECUTION_PLAN_INVALID');
+    expect(invalid(plan, ORG.toUpperCase())).toBe(
+      'RETENTION_EXECUTION_PLAN_INVALID'
+    );
+    expect(invalid(rehashed({ ...plan, organizationId: OTHER_ORG }))).toBe(
+      'RETENTION_EXECUTION_PLAN_INVALID'
+    );
+  });
+
+  it('E16 not JSON, not a report, or larger than 64 MiB: refused before anything is decided', () => {
+    for (const text of ['', '{', 'null', '[]', '"plan"', '{}']) {
+      expect([text, invalid(text)]).toEqual([
+        text,
+        'RETENTION_EXECUTION_PLAN_INVALID',
+      ]);
+    }
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PLAN_MAX_BYTES).toBe(
+      64 * 1024 * 1024
+    );
+    const parseSpy = jest.spyOn(JSON, 'parse');
+    expect(
+      invalid(
+        ' '.repeat(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PLAN_MAX_BYTES + 1)
+      )
+    ).toBe('RETENTION_EXECUTION_PLAN_INVALID');
+    expect(parseSpy).not.toHaveBeenCalled();
+    parseSpy.mockRestore();
+    // bytes, not characters: 'é' is two
+    const text = canonicalJson(reviewed());
+    expect(
+      invalid(
+        text +
+          'é'.repeat(
+            Math.ceil(
+              (CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PLAN_MAX_BYTES -
+                Buffer.byteLength(text)) /
+                2
+            ) + 1
+          )
+      )
+    ).toBe('RETENTION_EXECUTION_PLAN_INVALID');
+  });
+
+  it('the execution codes, statuses and ends', () => {
+    expect([
+      ...CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_ERRORS,
+    ]).toEqual([
+      'RETENTION_EXECUTION_PLAN_INVALID',
+      'RETENTION_EXECUTION_PLAN_EXPIRED',
+      'RETENTION_EXECUTION_HASH_MISMATCH',
+      'RETENTION_EXECUTION_BLOCKED_SOURCES',
+      'RETENTION_EXECUTION_TOO_LARGE',
+      'RETENTION_EXECUTION_ALREADY_ACTIVE',
+      'RETENTION_EXECUTION_ALREADY_RUN',
+      'RETENTION_EXECUTION_NOT_READY',
+      'RETENTION_EXECUTION_STATE_INVALID',
+      'RETENTION_EXECUTION_QUARANTINE_FAILED',
+      'RETENTION_EXECUTION_RECHECK_FAILED',
+      'RETENTION_EXECUTION_BATCH_FAILED',
+      'RETENTION_EXECUTION_INTEGRITY_FAILED',
+      'RETENTION_EXECUTION_CLEANUP_REQUIRED',
+    ]);
+    expect([
+      ...CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_STATUSES,
+    ]).toEqual([
+      'preparing',
+      'prepared',
+      'executing',
+      'completed',
+      'cancelled',
+      'aborted',
+      'partial',
+    ]);
+    expect([
+      ...CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_TERMINAL,
+    ]).toEqual(['completed', 'cancelled', 'aborted', 'partial']);
+    for (const status of CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_STATUSES) {
+      expect([
+        status,
+        isContentStudioSourceVersionRetentionExecutionTerminal(status),
+      ]).toEqual([
+        status,
+        ['completed', 'cancelled', 'aborted', 'partial'].includes(status),
+      ]);
+    }
+    // a fixed message with the code only
+    const err = new ContentStudioSourceVersionRetentionExecutionError(
+      'RETENTION_EXECUTION_RECHECK_FAILED',
+      'CANDIDATE_CHANGED'
+    );
+    expect(err.message).toBe(
+      'The source version retention execution failed: RETENTION_EXECUTION_RECHECK_FAILED'
+    );
+    expect(err.detail).toBe('CANDIDATE_CHANGED');
+  });
+
+  it('the plan made again is the report: one derivation of what is selected, held back and hashed', () => {
+    const pages = [lettered(SOURCE, 'AAAAB'), lettered(SOURCE_2, 'AAAAAAB')];
+    // a stale page: held back
+    const stale = lettered(uuid(0x5001, 3), 'AAAAB');
+    stale.source.lastPageChangeAt = null;
+    stale.source.lastPageChangeVersionNumber = null;
+    stale.source.lastPageChangeKind = null;
+    stale.source.lastPageChangePreviousCaptureAt = null;
+    const result = dryRun([...pages, stale]);
+    const full = report(result);
+    const replayed = planContentStudioSourceVersionRetention({
+      organizationId: ORG,
+      evaluationNow: NOW,
+      policy: POLICY,
+      sources: result.sources,
+    });
+    expect(full.blockedSources).toHaveLength(1);
+    expect(replayed.dryRunHash).toBe(full.dryRunHash);
+    expect(replayed.validUntil.toISOString()).toBe(full.validUntil);
+    expect(replayed.blockedSources).toEqual(full.blockedSources);
+    expect(replayed.candidates.map((c) => c.id)).toEqual(
+      full.candidates.map((c) => c.id)
+    );
+  });
+});
+
+describe('P8-R1C batches, the wait and each source after', () => {
+  const candidate = (sourceId: string, n: number) => ({
+    id: uuid(0x9100 + Number.parseInt(sourceId.slice(-4), 16), n),
+    sourceId,
+    versionNumber: n,
+  });
+  const S = [1, 2, 3, 4].map((n) => uuid(0x5100, n));
+  const shape = (
+    batches: Array<Array<{ sourceId: string; versionNumber: number }>>
+  ) =>
+    batches.map((batch) =>
+      batch.map((c) => `${S.indexOf(c.sourceId)}:${c.versionNumber}`)
+    );
+
+  it('canonical order; whole small sources packed up to the size; a larger source fills batches of its own', () => {
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DELETE_BATCH_SIZE).toBe(100);
+    const list = [
+      ...[5, 3, 4].map((n) => candidate(S[2], n)),
+      ...[2, 3].map((n) => candidate(S[0], n)),
+      ...Array.from({ length: 7 }, (_, i) => candidate(S[1], i + 2)),
+      candidate(S[3], 9),
+    ];
+    expect(
+      shape(batchContentStudioSourceVersionRetentionCandidates(list, 4))
+    ).toEqual([
+      ['0:2', '0:3'],
+      ['1:2', '1:3', '1:4', '1:5'],
+      ['1:6', '1:7', '1:8'],
+      ['2:3', '2:4', '2:5', '3:9'],
+    ]);
+    // whatever the input order
+    expect(
+      shape(
+        batchContentStudioSourceVersionRetentionCandidates(
+          [...list].reverse(),
+          4
+        )
+      )
+    ).toEqual(
+      shape(batchContentStudioSourceVersionRetentionCandidates(list, 4))
+    );
+    // by default 100: 101 of one source are 100 and 1, then the next
+    const big = [
+      ...Array.from({ length: 101 }, (_, i) => candidate(S[0], i + 2)),
+      ...[2, 3].map((n) => candidate(S[1], n)),
+    ];
+    expect(
+      batchContentStudioSourceVersionRetentionCandidates(big).map(
+        (b) => b.length
+      )
+    ).toEqual([100, 1, 2]);
+    expect(batchContentStudioSourceVersionRetentionCandidates([])).toEqual([]);
+    for (const size of [0, -1, 1.5]) {
+      expect(() =>
+        batchContentStudioSourceVersionRetentionCandidates(list, size)
+      ).toThrow(RangeError);
+    }
+  });
+
+  it('a source never shares a batch once it is split, and no batch is larger than the size', () => {
+    for (let seed = 1; seed < 200; seed++) {
+      let x = seed;
+      const random = () =>
+        (x = (x * 1103515245 + 12345) % 2147483648) / 2147483648;
+      const list = S.flatMap((sourceId) =>
+        Array.from({ length: Math.floor(random() * 12) }, (_, i) =>
+          candidate(sourceId, i + 2)
+        )
+      );
+      const size = 1 + Math.floor(random() * 6);
+      const batches = batchContentStudioSourceVersionRetentionCandidates(
+        list,
+        size
+      );
+      expect(
+        batches
+          .flat()
+          .map((c) => c.id)
+          .sort()
+      ).toEqual(list.map((c) => c.id).sort());
+      for (const batch of batches) {
+        expect(batch.length).toBeLessThanOrEqual(size);
+        const sources = new Set(batch.map((c) => c.sourceId));
+        for (const sourceId of sources) {
+          const all = list.filter((c) => c.sourceId === sourceId).length;
+          if (all > size) {
+            expect([seed, sources.size]).toEqual([seed, 1]);
+          } else {
+            // a small source is whole in one batch
+            expect(batch.filter((c) => c.sourceId === sourceId)).toHaveLength(
+              all
+            );
+          }
+        }
+      }
+    }
+  });
+
+  it('ready a minute after the LAST hold', () => {
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_WAIT_MS).toBe(
+      60_000
+    );
+    const holds = [
+      new Date('2026-10-26T12:00:05.000Z'),
+      new Date('2026-10-26T12:00:01.000Z'),
+      new Date('2026-10-26T12:00:09.500Z'),
+    ];
+    expect(contentStudioSourceVersionRetentionReadyAt(holds)).toEqual(
+      new Date('2026-10-26T12:01:09.500Z')
+    );
+    expect(() => contentStudioSourceVersionRetentionReadyAt([])).toThrow(
+      RangeError
+    );
+    expect(() =>
+      contentStudioSourceVersionRetentionReadyAt([new Date('x')])
+    ).toThrow(RangeError);
+  });
+
+  it('each source after its candidates are removed: none left, its latest its newest, its change state whole, the runs the recheck kept', () => {
+    // A A A A B: v2 and v3 removed
+    const p = lettered(SOURCE, 'AAAAB');
+    const removed = new Set([p.n(2).id, p.n(3).id]);
+    const expected = contentStudioSourceVersionRetainedRuns(
+      p.versions,
+      removed
+    );
+    expect(expected).toEqual({
+      versionIds: [1, 4, 5].map((k) => p.n(k).id).sort(),
+      runs: [
+        [p.n(1).id, p.n(4).id],
+        [p.n(5).id, p.n(5).id],
+      ],
+    });
+    const check = (
+      versions: ContentStudioSourceVersionProtectionVersion[],
+      over: Partial<ContentStudioSourceVersionProtectionSource> = {}
+    ) =>
+      checkContentStudioSourceAfterRetention({
+        source: { ...p.source, ...over },
+        versions,
+        removedIds: removed,
+        expected,
+        now: NOW,
+        inFlightMs: CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
+        pickerWindow: 1,
+      });
+    const after = p.versions.filter((v) => !removed.has(v.id));
+    expect(check(after)).toBeNull();
+    // a capture since, a repeat of B: allowed
+    const repeat = version(SOURCE, 6, IDENTITY.B);
+    expect(check([...after, repeat], { latestVersionNumber: 6 })).toBeNull();
+    // a candidate still there
+    expect(check(p.versions)).toBe('CANDIDATE_LEFT');
+    // the latest is not the newest
+    expect(check(after, { latestVersionNumber: 4 })).toBe('LATEST_CHANGED');
+    // the stored change is not the one the versions show
+    expect(
+      check(after, {
+        lastPageChangeVersionNumber: null,
+        lastPageChangeAt: null,
+        lastPageChangeKind: null,
+        lastPageChangePreviousCaptureAt: null,
+      })
+    ).toBe('PAGE_CHANGE_STATE_STALE');
+    // a version the recheck kept is gone
+    expect(check(after.filter((v) => v.versionNumber !== 4))).not.toBeNull();
+    expect(
+      checkContentStudioSourceAfterRetention({
+        source: p.source,
+        versions: after,
+        removedIds: removed,
+        expected: {
+          ...expected,
+          runs: [[p.n(1).id, p.n(1).id], ...expected.runs.slice(1)],
+        },
+        now: NOW,
+        inFlightMs: CONTENT_STUDIO_SOURCE_VERSION_IN_FLIGHT_MS,
+        pickerWindow: 1,
+      })
+    ).toBe('RUNS_CHANGED');
   });
 });

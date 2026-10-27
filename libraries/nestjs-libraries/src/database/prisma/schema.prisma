@@ -9,18 +9,18 @@ datasource db {
 }
 
 model Organization {
-  id                                     String                                       @id @default(uuid())
+  id                                     String                                             @id @default(uuid())
   name                                   String
   description                            String?
   apiKey                                 String?
   paymentId                              String?
   streakSince                            DateTime?
-  createdAt                              DateTime                                     @default(now())
-  updatedAt                              DateTime                                     @updatedAt
+  createdAt                              DateTime                                           @default(now())
+  updatedAt                              DateTime                                           @updatedAt
   deletedAt                              DateTime?
-  allowTrial                             Boolean                                      @default(false)
-  isTrailing                             Boolean                                      @default(false)
-  shortlink                              ShortLinkPreference                          @default(ASK)
+  allowTrial                             Boolean                                            @default(false)
+  isTrailing                             Boolean                                            @default(false)
+  shortlink                              ShortLinkPreference                                @default(ASK)
   autoPost                               AutoPost[]
   Comments                               Comments[]
   credits                                Credits[]
@@ -33,8 +33,8 @@ model Organization {
   buyerOrganization                      MessagesGroup[]
   notifications                          Notifications[]
   plugs                                  Plugs[]
-  post                                   Post[]                                       @relation("organization")
-  submittedPost                          Post[]                                       @relation("submittedForOrg")
+  post                                   Post[]                                             @relation("organization")
+  submittedPost                          Post[]                                             @relation("submittedForOrg")
   sets                                   Sets[]
   signatures                             Signatures[]
   subscription                           Subscription?
@@ -65,6 +65,9 @@ model Organization {
   contentStudioSourceDiscoveries         ContentStudioSourceDiscovery[]
   contentStudioSourceCaptureAttempts     ContentStudioSourceCaptureAttempt[]
   contentStudioSourceVersionsPending     ContentStudioSourceVersionRetentionPending[]
+  contentStudioRetentionExecutions       ContentStudioSourceVersionRetentionExecution[]
+  contentStudioRetentionExecutionItems   ContentStudioSourceVersionRetentionExecutionItem[]
+  contentStudioRetentionExecutionLock    ContentStudioSourceVersionRetentionExecutionLock?
   contentStudioBrandKit                  ContentStudioBrandKit?
   contentStudioBrandKitRevisions         ContentStudioBrandKitRevision[]
   contentStudioDesignProjects            ContentStudioDesignProject[]
@@ -2483,6 +2486,83 @@ model ContentStudioSourceVersionRetentionPending {
 
   @@unique([sourceVersionId, organizationId])
   @@index([organizationId, planHash])
+}
+
+// One retention execution of one reviewed dry-run plan (P8-R1C), run by an
+// operator from the command line: what was planned, when it was held and
+// ready, and how it ended. Ids, hashes, counts, times and statuses only, never
+// content, a title or a URL. status is preparing, prepared, executing, then
+// completed, cancelled, aborted or partial; a plan is executed at most once
+// per organization, whatever its end. Kept: nothing removes an execution
+model ContentStudioSourceVersionRetentionExecution {
+  id                     String                                             @id @default(uuid())
+  organizationId         String
+  planHash               String
+  policyMode             String
+  policyOlderThan        DateTime
+  planEvaluationNow      DateTime
+  planValidUntil         DateTime
+  dryRunFormatVersion    Int
+  protectionVersion      Int
+  policyVersion          Int
+  executionFormatVersion Int
+  status                 String
+  plannedCount           Int
+  sourceCount            Int
+  deletedCount           Int                                                @default(0)
+  batchCount             Int                                                @default(0)
+  errorCode              String?
+  integrityCheck         String?
+  hostname               String?
+  backupConfirmedAt      DateTime?
+  quarantinedAt          DateTime?
+  readyAt                DateTime?
+  executionStartedAt     DateTime?
+  finishedAt             DateTime?
+  createdAt              DateTime                                           @default(now())
+  updatedAt              DateTime                                           @updatedAt
+  organization           Organization                                       @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  items                  ContentStudioSourceVersionRetentionExecutionItem[]
+  lock                   ContentStudioSourceVersionRetentionExecutionLock?
+
+  @@unique([organizationId, planHash])
+  @@unique([id, organizationId])
+  @@index([organizationId, createdAt])
+}
+
+// One version a retention execution planned to remove, by the identity the
+// plan named (P8-R1C): planned, then deleted in the transaction that removed
+// it. No foreign key onto the version: this row is what remains of it
+model ContentStudioSourceVersionRetentionExecutionItem {
+  id              String                                       @id @default(uuid())
+  organizationId  String
+  executionId     String
+  sourceVersionId String
+  sourceId        String
+  versionNumber   Int
+  contentHash     String
+  status          String
+  batchNumber     Int?
+  deletedAt       DateTime?
+  organization    Organization                                 @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  execution       ContentStudioSourceVersionRetentionExecution @relation(fields: [executionId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([executionId, sourceVersionId])
+  @@index([organizationId, sourceVersionId])
+}
+
+// The one active retention execution of an organization (P8-R1C): made with
+// it, and removed only in the transaction that ends it. Left behind by a
+// crash on purpose, until an operator cancels
+model ContentStudioSourceVersionRetentionExecutionLock {
+  id             String                                       @id @default(uuid())
+  organizationId String                                       @unique
+  executionId    String                                       @unique
+  acquiredAt     DateTime                                     @default(now())
+  organization   Organization                                 @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  execution      ContentStudioSourceVersionRetentionExecution @relation(fields: [executionId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([executionId, organizationId], map: "ContentStudioRetentionExecutionLock_executionId_orgId_key")
 }
 
 // One per organization: organizationId is unique. The kit itself (identity,

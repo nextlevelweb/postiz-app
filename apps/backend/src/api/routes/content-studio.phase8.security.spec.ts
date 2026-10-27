@@ -30,6 +30,9 @@ import {
   CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_BATCH_SIZE,
   CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_WAIT_MS,
   CONTENT_STUDIO_SOURCE_VERSION_RETENTION_SOURCE_BATCH_SIZE,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DELETE_BATCH_SIZE,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_FORMAT_VERSION,
+  CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_MAX_CANDIDATES,
 } from '@gitroom/nestjs-libraries/content-studio/sources/source.retention';
 
 // Research feed ingestion (P8-01) in one place, pinned on the source: a feed
@@ -115,8 +118,20 @@ const fields = (name: string) =>
 // the phases before it; R1Q-3 pins them
 const QUARANTINE_MODEL =
   /\n(\/\/[^\n]*\n)*model ContentStudioSourceVersionRetentionPending \{[\s\S]*?\n\}\n/;
-const beforeQuarantine = (text: string) =>
+// The retention execution (P8-R1C) in the schema: its three models, with
+// the comments before them, and the three relations to them. Cut out with
+// the quarantine for the pins of the phases before it; R1C-10 pins them
+const EXECUTION_MODELS =
+  /\n(\/\/[^\n]*\n)*model ContentStudioSourceVersionRetentionExecution(Item|Lock)? \{[\s\S]*?\n\}\n/g;
+const beforeExecution = (text: string) =>
   text
+    .replace(EXECUTION_MODELS, '\n')
+    .replace(
+      /\n\s*contentStudioRetentionExecution(s|Items|Lock)\s+ContentStudioSourceVersionRetentionExecution(Item|Lock)?(\[\]|\?)/g,
+      ''
+    );
+const beforeQuarantine = (text: string) =>
+  beforeExecution(text)
     .replace(QUARANTINE_MODEL, '\n')
     .replace(
       /\n\s*retentionPending\s+ContentStudioSourceVersionRetentionPending\?/,
@@ -131,7 +146,10 @@ const fieldsBeforeQuarantine = (name: string) =>
     (field) => !/ContentStudioSourceVersionRetentionPending/.test(field)
   );
 // The quarantine's own code in the files it shares with the dry run: cut
-// out for the dry run's pins (R1B-*), pinned itself by R1Q-*
+// out for the dry run's pins (R1B-*), pinned itself by R1Q-*. P8-R1C: and
+// the execution's own code there (the replay and recheck of a plan, the
+// held rows of a plan read in the snapshot, the rules of an execution at
+// the end of source.retention.ts), pinned by R1C-*
 const R1Q_SECTIONS: Record<string, Array<[string, string | null]>> = {
   'libraries/nestjs-libraries/src/content-studio/sources/source.retention.ts': [
     [
@@ -141,16 +159,22 @@ const R1Q_SECTIONS: Record<string, Array<[string, string | null]>> = {
   ],
   'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.repository.ts':
     [
+      ['  listPending(organizationId: string) {', '  countVersions('],
       [
-        'export const assertContentStudioSourceVersionsNotPending',
+        'export const assertContentStudioSourceVersionsExistAndNotPending',
         '@Injectable()',
       ],
-      ['  assertVersionsNotPending(input: {', '  async listVersionContents('],
+      ['  listPendingForPlan(input: {', '  async listVersionContents('],
     ],
   'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.service.ts':
     [
       ['const UUID = ', 'const ROWS_PAGE_SIZE'],
-      ['  async quarantineSourceVersions(', '  private async protect('],
+      ['type Pending =', '@Injectable()'],
+      ['  async evaluateRetentionPlan(', '  private async protect('],
+      [
+        "        if (typeof pending === 'object') {",
+        '        const versionCount',
+      ],
     ],
 };
 const withoutQuarantine = (file: string, text: string) =>
@@ -168,7 +192,19 @@ const withoutQuarantine = (file: string, text: string) =>
 // The one name a writer of a new reference knows of retention (P8-R1Q,
 // R1Q-4): the held check, its error and its codes
 const WRITER_GATE =
-  /\b(ContentStudioSourceVersionRetentionPendingError|assertContentStudioSourceVersionsNotPending|contentStudioSourceVersionRetentionPending|(CS_)?SOURCE_VERSION_RETENTION_PENDING|sourceVersionRetentionPending)\b|'@gitroom\/nestjs-libraries\/(content-studio\/sources\/source\.retention|database\/prisma\/content-studio\/content-studio\.source-retention\.repository)'/g;
+  /\b(ContentStudioSourceVersionRetentionPendingError|assertContentStudioSourceVersionsExistAndNotPending|contentStudioSourceVersionRetentionPending|(CS_)?SOURCE_VERSION_RETENTION_PENDING|sourceVersionRetentionPending)\b|'@gitroom\/nestjs-libraries\/(content-studio\/sources\/source\.retention|database\/prisma\/content-studio\/content-studio\.source-retention\.repository)'/g;
+
+// The one removal of a source version there is (P8-R1C), in the retention
+// execution's repository, pinned by R1C-1: every pin of a phase before it
+// that nothing removes a version allows it, and nothing else
+const RETENTION_REMOVAL = [
+  'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention-execution.repository.ts',
+];
+// The retention execution's own files (P8-R1C), pinned by R1C-*
+const RETENTION_EXECUTION = [
+  'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention-execution.repository.ts',
+  'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention-execution.service.ts',
+];
 
 describe('P8-01 feed network access', () => {
   it('P801-1 Content Studio fetches a feed or a page only through safeFetch, in the ingestion service', () => {
@@ -557,8 +593,10 @@ describe('P8-02 News Radar', () => {
     // (P8G1-4)
     // P8-R1Q adds the retention quarantine model, nothing this forbids
     // (R1Q-3)
+    // P8-R1C adds the retention execution, its items and lock, nothing this
+    // forbids (R1C-10)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      'a753d9a6e0d259c4b065b7bd2470a3d420b903853d4768242269bf712da15e44'
+      '315c1a0bbf5bf3b612d9e48e134c3424efec6b33ef9dc96a79c08a9fb946c216'
     );
     // the Radar reads the P8-01 indexes
     expect(model('ContentStudioSourceDiscovery')).toMatch(
@@ -677,8 +715,10 @@ describe('P8-03 research into content', () => {
     // (P8G1-4)
     // P8-R1Q adds the retention quarantine model, nothing this forbids
     // (R1Q-3)
+    // P8-R1C adds the retention execution, its items and lock, nothing this
+    // forbids (R1C-10)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      'a753d9a6e0d259c4b065b7bd2470a3d420b903853d4768242269bf712da15e44'
+      '315c1a0bbf5bf3b612d9e48e134c3424efec6b33ef9dc96a79c08a9fb946c216'
     );
     expect(schema).not.toMatch(
       /model \w*(Research|Selection|Basket|Collection|Radar)\w* \{/
@@ -944,8 +984,10 @@ describe('P8-04A source change detection', () => {
     // (P8G1-4)
     // P8-R1Q adds the retention quarantine model, nothing this forbids
     // (R1Q-3)
+    // P8-R1C adds the retention execution, its items and lock, nothing this
+    // forbids (R1C-10)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      'a753d9a6e0d259c4b065b7bd2470a3d420b903853d4768242269bf712da15e44'
+      '315c1a0bbf5bf3b612d9e48e134c3424efec6b33ef9dc96a79c08a9fb946c216'
     );
     expect(schema).not.toMatch(/model \w*(Change|Diff|Comparison)\w* \{/);
     expect(schema).not.toMatch(
@@ -1230,6 +1272,23 @@ describe('P8-04B1 organization page changes', () => {
               /version\.contentHash !== reference\.contentHash/.test(
                 CODE.get(file)!
               )
+            ) &&
+            // P8-R1C: a planned candidate checked against the version it
+            // names, in the recheck and the removal, never a transition
+            !(
+              pattern.source.includes('contentHash') &&
+              (
+                {
+                  'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.service.ts':
+                    /^version\.contentHash !== candidate\.contentHash$/,
+                  'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention-execution.repository.ts':
+                    /^version\.contentHash !== item\.contentHash$/,
+                } as Record<string, RegExp>
+              )[file]?.test(
+                CODE.get(file)!
+                  .match(/\w+\.contentHash !== \w+\.contentHash/g)!
+                  .join('\n')
+              )
             )
         )
       ).toEqual([PAGE_CHANGE.module]);
@@ -1504,8 +1563,9 @@ describe('P8-04B1 organization page changes', () => {
       ]).toEqual([key, null]);
     }
     // P8-R1B: the read-only retention dry run is the one command after it
+    // (P8-R1C: and the retention execution's three, R1C-2)
     expect(pageChange('commandModule')).toMatch(
-      /providers: \[\s*RefreshTokens,\s*ConfigurationTask,\s*ContentStudioPageChangesBackfill,\s*ContentStudioRetentionDryRun,\s*\]/
+      /providers: \[\s*RefreshTokens,\s*ConfigurationTask,\s*ContentStudioPageChangesBackfill,\s*ContentStudioRetentionDryRun,\s*ContentStudioRetentionExecution,\s*\]/
     );
     const packageJson = raw('package.json');
     expect(packageJson).not.toMatch(/backfill/i);
@@ -1682,8 +1742,10 @@ describe('P8-04B2 News Radar change signals', () => {
     // (P8G1-4)
     // P8-R1Q adds the retention quarantine model, nothing this forbids
     // (R1Q-3)
+    // P8-R1C adds the retention execution, its items and lock, nothing this
+    // forbids (R1C-10)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      'a753d9a6e0d259c4b065b7bd2470a3d420b903853d4768242269bf712da15e44'
+      '315c1a0bbf5bf3b612d9e48e134c3424efec6b33ef9dc96a79c08a9fb946c216'
     );
     expect(model('ContentStudioSourceDiscovery')).not.toMatch(/change/i);
     expect(schema).not.toMatch(/changedSinceFound/);
@@ -1855,8 +1917,10 @@ describe('P8-C1 organization safety caps', () => {
     // (P8G1-4)
     // P8-R1Q adds the retention quarantine model, nothing this forbids
     // (R1Q-3)
+    // P8-R1C adds the retention execution, its items and lock, nothing this
+    // forbids (R1C-10)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      'a753d9a6e0d259c4b065b7bd2470a3d420b903853d4768242269bf712da15e44'
+      '315c1a0bbf5bf3b612d9e48e134c3424efec6b33ef9dc96a79c08a9fb946c216'
     );
     // the feed pause came with P8-C3 (P8C3-1), the schedule with P8-C4
     // (P8C4-1); nothing else here
@@ -1881,9 +1945,10 @@ describe('P8-C1 organization safety caps', () => {
   });
 
   it('P8C1-3/P8C1-4/P8C1-5/P8C1-14 nothing deletes a source, a version or a discovery; no retention', () => {
+    // P8-R1C: but the one removal of a held version (R1C-1)
     expect(
       users(/contentStudioSource(Version|Discovery)?\.(delete|deleteMany)\(/)
-    ).toEqual([]);
+    ).toEqual(RETENTION_REMOVAL);
     const contentStudio = PRODUCTION.filter((file) =>
       /content-studio|content\.studio/.test(file)
     );
@@ -1893,20 +1958,31 @@ describe('P8-C1 organization safety caps', () => {
     // read too (pinned in the P8-R1B block)
     // P8-R1Q: and the writers of new references with their held check,
     // which removes nothing either (R1Q-4)
+    // P8-R1C: and the retention execution, pinned in its own block
     expect(
       contentStudio.filter((file) =>
         /retention|purge|keepLast|prune|cleanup/i.test(
           CODE.get(file)!.replace(WRITER_GATE, '')
         )
       )
-    ).toEqual([
-      'libraries/nestjs-libraries/src/content-studio/sources/source.retention.ts',
-      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.repository.ts',
-      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.service.ts',
-    ]);
+    ).toEqual(
+      [
+        'libraries/nestjs-libraries/src/content-studio/sources/source.retention.ts',
+        'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.repository.ts',
+        'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.service.ts',
+        ...RETENTION_EXECUTION,
+      ].sort()
+    );
+    // P8-R1C: but the code telling an operator to cancel because held rows
+    // could not be released: nothing is ever cleaned up on its own
     expect(
       contentStudio.filter((file) =>
-        /purge|keepLast|prune|cleanup/i.test(CODE.get(file)!)
+        /purge|keepLast|prune|cleanup/i.test(
+          CODE.get(file)!.replace(
+            /RETENTION_EXECUTION_CLEANUP_REQUIRED|'cleanup_required'/g,
+            ''
+          )
+        )
       )
     ).toEqual([]);
   });
@@ -2038,15 +2114,19 @@ describe('P8-C1 organization safety caps', () => {
       ]).toEqual([file, null]);
     }
     // P8-R1B: and the retention snapshot, RepeatableRead and read only
-    // (pinned in R1B-2)
+    // (pinned in R1B-2); P8-R1C: and the read of one source after its
+    // candidates are removed, RepeatableRead and read only (R1C-8)
     expect(
       users(/isolationLevel|TransactionIsolationLevel/).filter((file) =>
         /content-studio/.test(file)
       )
-    ).toEqual([
-      'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.repository.ts',
-      CAPS.repository,
-    ]);
+    ).toEqual(
+      [
+        'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.source-retention.repository.ts',
+        RETENTION_REMOVAL[0],
+        CAPS.repository,
+      ].sort()
+    );
   });
 
   // P8-C2 changed the workflow and the worker on purpose (the capture queue,
@@ -2223,8 +2303,10 @@ describe('P8-C2 global feed-capture concurrency', () => {
     // (P8G1-4)
     // P8-R1Q adds the retention quarantine model, nothing this forbids
     // (R1Q-3)
+    // P8-R1C adds the retention execution, its items and lock, nothing this
+    // forbids (R1C-10)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      'a753d9a6e0d259c4b065b7bd2470a3d420b903853d4768242269bf712da15e44'
+      '315c1a0bbf5bf3b612d9e48e134c3424efec6b33ef9dc96a79c08a9fb946c216'
     );
     // the feed pause came with P8-C3 (P8C3-1), the schedule with P8-C4
     // (P8C4-1); nothing else here
@@ -2424,8 +2506,10 @@ describe('P8-C3 feed pause', () => {
     // (P8G1-4)
     // P8-R1Q adds the retention quarantine model, nothing this forbids
     // (R1Q-3)
+    // P8-R1C adds the retention execution, its items and lock, nothing this
+    // forbids (R1C-10)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      'a753d9a6e0d259c4b065b7bd2470a3d420b903853d4768242269bf712da15e44'
+      '315c1a0bbf5bf3b612d9e48e134c3424efec6b33ef9dc96a79c08a9fb946c216'
     );
     const source = fields('ContentStudioSource');
     expect(source.filter((f) => /paus/i.test(f))).toEqual([
@@ -2483,9 +2567,10 @@ describe('P8-C3 feed pause', () => {
   });
 
   it('P8C3-4/M29 nothing deletes or prunes: no retention', () => {
+    // P8-R1C: but the one removal of a held version (R1C-1)
     expect(
       users(/contentStudioSource(Version|Discovery)?\.(delete|deleteMany)\(/)
-    ).toEqual([]);
+    ).toEqual(RETENTION_REMOVAL);
     for (const key of ['repository', 'service', 'ingestion'] as const) {
       expect([
         key,
@@ -2955,9 +3040,10 @@ describe('P8-C4 feed schedule and retries', () => {
   });
 
   it('P8C4-13 nothing deletes or prunes: no retention', () => {
+    // P8-R1C: but the one removal of a held version (R1C-1)
     expect(
       users(/contentStudioSource(Version|Discovery)?\.(delete|deleteMany)\(/)
-    ).toEqual([]);
+    ).toEqual(RETENTION_REMOVAL);
     for (const key of ['repository', 'service', 'ingestion'] as const) {
       expect([
         key,
@@ -3689,11 +3775,12 @@ describe('P8-G1 conditional source fetching', () => {
   });
 
   it('P8G1-15 nothing is deleted or pruned: no retention', () => {
+    // P8-R1C: but the one removal of a held version (R1C-1)
     expect(
       users(
         /contentStudioSource(Version|Discovery|CaptureAttempt)?\.(delete|deleteMany)\(/
       )
-    ).toEqual([]);
+    ).toEqual(RETENTION_REMOVAL);
     for (const key of ['repository', 'ingestion', 'service'] as const) {
       expect([
         key,
@@ -3747,15 +3834,19 @@ describe('P8-R1A source version protection', () => {
     /\.(create|createMany|update|updateMany|upsert|delete|deleteMany)\(|\$executeRaw|\$queryRaw|\$transaction/;
 
   it('R1-1/R1-2 nothing removes a version: no delete anywhere in production, no write in protection', () => {
+    // P8-R1C: but the one removal of a held version (R1C-1)
     expect(users(/contentStudioSourceVersion\.(delete|deleteMany)\(/)).toEqual(
-      []
+      RETENTION_REMOVAL
     );
     expect(users(/sourceVersion[s]?:\s*\{\s*delete/i)).toEqual([]);
+    // (P8-R1Q, P8-R1C: their own code in these files is pinned by R1Q-* and
+    // R1C-*)
     for (const key of ['pure', 'service'] as const) {
-      expect([key, r1(key).match(WRITES)]).toEqual([key, null]);
+      const text = withoutQuarantine(R1[key], r1(key));
+      expect([key, text.match(WRITES)]).toEqual([key, null]);
       expect([
         key,
-        r1(key).match(
+        text.match(
           /deletable|safeToDelete|deleteCandidate|purge|prune|cleanup|keepLast/i
         ),
       ]).toEqual([key, null]);
@@ -3812,6 +3903,13 @@ describe('P8-R1A source version protection', () => {
         'no-reference (held for retention, P8-R1Q)',
       'ContentStudioSourceVersionRetentionPending.sourceVersion':
         'no-reference (held for retention, P8-R1Q)',
+      // P8-R1C: what an execution planned to remove, and removed: an audit
+      // that outlives the version, with no key onto it, and never a
+      // protection (R1C-10)
+      'ContentStudioSourceVersionRetentionExecutionItem.sourceVersionId':
+        'no-reference (execution audit, P8-R1C)',
+      'ContentStudioSourceVersionRetentionExecutionItem.sourceId':
+        'no-reference (execution audit, P8-R1C)',
     };
     const documents: string[] = [];
     const references: string[] = [];
@@ -3943,6 +4041,8 @@ describe('P8-R1A source version protection', () => {
     expect([...service.matchAll(/reads\.(\w+)\(/g)].map((m) => m[1])).toEqual([
       // P8-R1Q: the dry run's check for held versions (R1Q-9)
       'findPending',
+      // P8-R1C: the recheck's, that they are exactly a plan's (R1C-7)
+      'listPending',
       'countVersions',
       'listSources',
       'listVersionsOfSources',
@@ -4080,7 +4180,9 @@ describe('P8-R1A source version protection', () => {
   });
 
   it('R1-11 the rules are pure: the caller passes the time', () => {
-    const pure = r1('pure');
+    // (P8-R1Q, P8-R1C: their own sections at the end, pinned by R1Q-16 and
+    // R1C-6)
+    const pure = withoutQuarantine(R1.pure, r1('pure'));
     // P8-R1B: one Date is made, never from the clock: the dry run's
     // validUntil, from the time the caller passed
     expect(pure.match(/new Date\(/g)).toEqual(['new Date(']);
@@ -4126,11 +4228,21 @@ describe('P8-R1A source version protection', () => {
       'libraries/nestjs-libraries/src/content-studio/ai/ai.execution.service.ts',
       'libraries/nestjs-libraries/src/database/prisma/content-studio/content-studio.service.ts',
     ];
+    // P8-R1C: and the retention execution, which rechecks every candidate
+    // with it and the whole organization at its end (R1C-7)
     expect(
       users(
         /ContentStudioSourceRetentionService|explainRetentionEligibility|computeProtectionMap|source\.retention'/
       )
-    ).toEqual([R1.service, R1.module, R1.retention, ...writers].sort());
+    ).toEqual(
+      [
+        R1.service,
+        R1.module,
+        R1.retention,
+        ...writers,
+        ...RETENTION_EXECUTION,
+      ].sort()
+    );
     for (const file of writers) {
       expect([
         file,
@@ -4156,6 +4268,7 @@ describe('P8-R1A source version protection', () => {
         .sort()
     ).toEqual([
       'apps/commands/src/command.module.ts',
+      'apps/commands/src/tasks/content.studio.retention.execution.ts',
       'apps/commands/src/tasks/content.studio.retention.ts',
     ]);
     // P8-R1B: the reads of the four repositories moved to the read model
@@ -4301,6 +4414,8 @@ describe('P8-R1B retention dry run', () => {
     expect(reads.match(/\.(\w+)\(\{/g)).toEqual([
       // P8-R1Q: whether a version is held
       '.findFirst({',
+      // P8-R1C: which are, for which plan (R1C-7)
+      '.findMany({',
       '.count({',
       '.findMany({',
       '.findMany({',
@@ -4310,9 +4425,10 @@ describe('P8-R1B retention dry run', () => {
       '.findMany({',
       '.findFirst({',
     ]);
-    // nothing in production removes a version
+    // nothing in production removes a version (P8-R1C: but the one removal
+    // of a held version, R1C-1)
     expect(users(/contentStudioSourceVersion\.(delete|deleteMany)\(/)).toEqual(
-      []
+      RETENTION_REMOVAL
     );
   });
 
@@ -4415,7 +4531,10 @@ describe('P8-R1B retention dry run', () => {
       pure.match(/function deriveContentStudioSourceVersionProtections\(/g)
     ).toHaveLength(1);
     // the service makes the map or the dry run from those two only
-    const service = r1b('service');
+    // (P8-R1C: the dry run's evaluation moved after protection, in one
+    // place both the report and the replay of a plan use; the recheck of a
+    // plan calls the same engine, R1C-7)
+    const service = dryRun('service');
     expect(
       [
         ...service.matchAll(
@@ -4423,8 +4542,8 @@ describe('P8-R1B retention dry run', () => {
         ),
       ].map((m) => m[1])
     ).toEqual([
-      'evaluateContentStudioSourceVersionRetention',
       'computeContentStudioSourceVersionProtectionMap',
+      'evaluateContentStudioSourceVersionRetention',
     ]);
     expect(service).not.toMatch(
       /'LATEST'|'PAGE_CHANGE'|'IN_FLIGHT'|latestVersionNumber/
@@ -4613,7 +4732,9 @@ describe('P8-R1B retention dry run', () => {
       /blockedCandidateVersions: blocked \? classified\.candidates\.length : 0,/
     );
     expect(
-      r1b('pure').match(
+      // (P8-R1C: and once in the check of a source after its removal,
+      // R1C-7)
+      dryRun('pure').match(
         /simulateContentStudioSourcePageChangeStateAfterRetention\(/g
       )
     ).toHaveLength(2);
@@ -4669,7 +4790,7 @@ describe('P8-R1B retention dry run', () => {
     );
     // (P8-R1Q: after the check for held versions, R1Q-9)
     expect(evaluate).toMatch(
-      /\s*const versionCount = await reads\.countVersions\(organizationId\);\s*if \(dryRun\) \{\s*assertContentStudioSourceVersionRetentionScale\(versionCount\);\s*\}/
+      /\s*const versionCount = await reads\.countVersions\(organizationId\);\s*if \(pending !== 'ignore'\) \{\s*assertContentStudioSourceVersionRetentionScale\(versionCount\);\s*\}/
     );
     expect(evaluate.indexOf('countVersions')).toBeLessThan(
       evaluate.indexOf('listSources')
@@ -4686,8 +4807,13 @@ describe('P8-R1B retention dry run', () => {
     );
     // the dry run is limited, protection itself is not
     expect(
-      r1b('service').match(/this\.evaluate\(input, (true|false),/g)
-    ).toEqual(['this.evaluate(input, true,', 'this.evaluate(input, false,']);
+      r1b('service').match(/this\.evaluate\(input, '(refuse|ignore)',/g)
+    ).toEqual([
+      // P8-R1C: protection first, then the dry run's selection (R1C-7: and
+      // the recheck of a plan, limited too)
+      "this.evaluate(input, 'ignore',",
+      "this.evaluate(input, 'refuse',",
+    ]);
     // never all versions of the organization in one read
     expect(r1b('repository')).not.toMatch(
       /listVersionsForProtection|afterId[^\n]*versionNumber/
@@ -4744,12 +4870,13 @@ describe('P8-R1B retention dry run', () => {
 
   it('R1B-13 no schema for it: no retention, pending or quarantine model or field', () => {
     // P8-R1Q adds the quarantine model, the one retention model (R1Q-3);
-    // the dry run has none and the version no field
+    // the dry run has none and the version no field. P8-R1C adds the
+    // execution's three models (R1C-10), still none of the dry run's
     expect(beforeQuarantine(schema)).not.toMatch(
       /retention|Retention|quarantine|Quarantine|pendingAt|PendingAt|eligib/
     );
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      'a753d9a6e0d259c4b065b7bd2470a3d420b903853d4768242269bf712da15e44'
+      '315c1a0bbf5bf3b612d9e48e134c3424efec6b33ef9dc96a79c08a9fb946c216'
     );
   });
 
@@ -4825,10 +4952,15 @@ describe('P8-R1Q retention quarantine', () => {
     between(r1q('repository'), '  async quarantineVersions(', '\n  }\n');
 
   it('R1Q-1 a version row is never changed or removed in production: no update, upsert or delete of one', () => {
+    // P8-R1C: but the one removal of a held version (R1C-1); a version is
+    // still never changed (R1C-12)
     expect(
       users(
         /contentStudioSourceVersion\.(update|updateMany|upsert|delete|deleteMany)\(/
       )
+    ).toEqual(RETENTION_REMOVAL);
+    expect(
+      users(/contentStudioSourceVersion\.(update|updateMany|upsert)\(/)
     ).toEqual([]);
     expect(
       users(
@@ -4911,16 +5043,20 @@ describe('P8-R1Q retention quarantine', () => {
     expect(users(/contentStudioAIOperation\.create\(/)).toEqual([
       R1Q.operations,
     ]);
+    // P8-R1C: the check is that every version is still there and held for
+    // nothing (W1, R1C-14), under its new name, and only ever in a writer's
+    // transaction: its call without one is gone
     expect(
-      users(/assertContentStudioSourceVersionsNotPending\(/).sort()
-    ).toEqual([R1Q.packages, R1Q.operations, R1Q.repository].sort());
+      users(/assertContentStudioSourceVersionsExistAndNotPending\(/).sort()
+    ).toEqual([R1Q.packages, R1Q.operations].sort());
+    expect(users(/assertContentStudioSourceVersionsNotPending/)).toEqual([]);
     const save = between(
       r1q('packages'),
       '  saveDraftCompareAndSwap(input: {',
       '\n  }\n'
     );
     expect(save).toMatch(
-      /return this\._transaction\.model\.\$transaction\(async \(tx\) => \{\s*await assertContentStudioSourceVersionsNotPending\(tx, \{\s*organizationId: input\.organizationId,\s*sourceVersionIds: input\.sourceVersionIds,\s*\}\);\s*return save\(tx\);\s*\}\);/
+      /return this\._transaction\.model\.\$transaction\(async \(tx\) => \{\s*await assertContentStudioSourceVersionsExistAndNotPending\(tx, \{\s*organizationId: input\.organizationId,\s*sourceVersionIds: input\.sourceVersionIds,\s*\}\);\s*return save\(tx\);\s*\}\);/
     );
     // the draft without a version is saved as it was
     expect(save).toMatch(
@@ -4932,7 +5068,7 @@ describe('P8-R1Q retention quarantine', () => {
       '\n  }\n'
     );
     expect(revision).toMatch(
-      /return this\._transaction\.model\.\$transaction\(async \(tx\) => \{\s*await assertContentStudioSourceVersionsNotPending\(tx, \{\s*organizationId: input\.organizationId,\s*sourceVersionIds: input\.sourceVersionIds,\s*\}\);\s*const \{ count \} = await tx\.contentPackage\.updateMany\(/
+      /return this\._transaction\.model\.\$transaction\(async \(tx\) => \{\s*await assertContentStudioSourceVersionsExistAndNotPending\(tx, \{\s*organizationId: input\.organizationId,\s*sourceVersionIds: input\.sourceVersionIds,\s*\}\);\s*const \{ count \} = await tx\.contentPackage\.updateMany\(/
     );
     const operation = between(
       r1q('operations'),
@@ -4943,7 +5079,7 @@ describe('P8-R1Q retention quarantine', () => {
       /const sourceVersionIds = \(input\.context\.sources \?\? \[\]\)\.map\(\s*\(source\) => source\.versionId\s*\);/
     );
     expect(operation).toMatch(
-      /return this\._transaction\.model\.\$transaction\(async \(tx\) => \{\s*await assertContentStudioSourceVersionsNotPending\(tx, \{\s*organizationId: input\.organizationId,\s*sourceVersionIds,\s*\}\);\s*return create\(tx\);\s*\}\);/
+      /return this\._transaction\.model\.\$transaction\(async \(tx\) => \{\s*await assertContentStudioSourceVersionsExistAndNotPending\(tx, \{\s*organizationId: input\.organizationId,\s*sourceVersionIds,\s*\}\);\s*return create\(tx\);\s*\}\);/
     );
     // the service gives every version the draft's evidence names, for
     // both writes, and answers a held one with its own 409
@@ -4960,22 +5096,24 @@ describe('P8-R1Q retention quarantine', () => {
   });
 
   it('R1Q-5 the writer check: the distinct ids, none read for none, one read of the organization, never per version', () => {
+    // P8-R1C: one count of the versions still there and held for nothing,
+    // against the number of distinct ids (W1, R1C-14)
     const check = between(
       r1q('repository'),
-      'export const assertContentStudioSourceVersionsNotPending = async (',
+      'export const assertContentStudioSourceVersionsExistAndNotPending = async (',
       '\n};\n'
     );
     expect(check).toMatch(
       /const ids = \[\.\.\.new Set\(input\.sourceVersionIds\)\];/
     );
     expect(check).toMatch(/if \(!ids\.length\) \{\s*return;\s*\}/);
-    expect(check.match(/\.(\w+)\(/g)).toEqual(['.findFirst(']);
+    expect(check.match(/\.(\w+)\(/g)).toEqual(['.count(']);
     expect(check).toMatch(
-      /where: \{\s*organizationId: input\.organizationId,\s*sourceVersionId: \{ in: ids \},\s*\}/
+      /where: \{\s*organizationId: input\.organizationId,\s*id: \{ in: ids \},\s*retentionPending: \{ is: null \},\s*\}/
     );
     expect(check).not.toMatch(/for \(|\.map\(|\.forEach\(|Promise\.all/);
     expect(check).toMatch(
-      /if \(pending\) \{\s*throw new ContentStudioSourceVersionRetentionPendingError\(\);\s*\}/
+      /if \(available !== ids\.length\) \{\s*throw new ContentStudioSourceVersionRetentionPendingError\(\);\s*\}/
     );
   });
 
@@ -5030,7 +5168,7 @@ describe('P8-R1Q retention quarantine', () => {
       '\n  }\n\n'
     );
     expect(evaluate).toMatch(
-      /return this\._contentStudioSourceRetentionRepository\.readSnapshot\(\s*async \(reads\) => \{\s*if \(dryRun && \(await reads\.findPending\(organizationId\)\)\) \{\s*throw new ContentStudioSourceRetentionDryRunError\(\s*'RETENTION_DRY_RUN_QUARANTINE_ACTIVE'\s*\);\s*\}\s*const versionCount = await reads\.countVersions\(organizationId\);/
+      /return this\._contentStudioSourceRetentionRepository\.readSnapshot\(\s*async \(reads\) => \{\s*if \(pending === 'refuse' && \(await reads\.findPending\(organizationId\)\)\) \{\s*throw new ContentStudioSourceRetentionDryRunError\(\s*'RETENTION_DRY_RUN_QUARANTINE_ACTIVE'\s*\);\s*\}\s*if \(typeof pending === 'object'\) \{[\s\S]*?\}\s*const versionCount = await reads\.countVersions\(organizationId\);/
     );
     expect(
       between(
@@ -5047,8 +5185,10 @@ describe('P8-R1Q retention quarantine', () => {
   });
 
   it('R1Q-10 internal only: no route, controller, DTO, frontend, workflow or activity reaches the quarantine', () => {
+    // P8-R1C: and the retention execution, which holds its plan's
+    // candidates (R1C-2)
     expect(users(/quarantine|Quarantine/).sort()).toEqual(
-      [R1Q.pure, R1Q.repository, R1Q.service].sort()
+      [R1Q.pure, R1Q.repository, R1Q.service, ...RETENTION_EXECUTION].sort()
     );
     expect(
       users(/RetentionPending|retentionPending|RETENTION_PENDING/).filter(
@@ -5059,7 +5199,7 @@ describe('P8-R1Q retention quarantine', () => {
       users(
         /quarantineSourceVersions|releaseSourceVersionQuarantine|listSourceVersionQuarantine/
       )
-    ).toEqual([R1Q.service]);
+    ).toEqual([R1Q.service, RETENTION_EXECUTION[1]].sort());
     expect(r1q('controller')).not.toMatch(/quarantine|pending|retention/i);
     expect(
       r1q('controller').match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
@@ -5067,6 +5207,8 @@ describe('P8-R1Q retention quarantine', () => {
   });
 
   it('R1Q-11 no command but the read-only dry run: no quarantine, release or execution command', () => {
+    // P8-R1C: but the retention execution's three commands, in a file of
+    // their own (R1C-2); still no quarantine or release command
     const commands = walk(path.join(REPO_ROOT, 'apps/commands/src'));
     expect(
       commands
@@ -5076,16 +5218,23 @@ describe('P8-R1Q retention quarantine', () => {
           )
         )
         .map((file) => path.relative(REPO_ROOT, file))
-    ).toEqual([]);
+    ).toEqual([
+      'apps/commands/src/tasks/content.studio.retention.execution.ts',
+    ]);
     const tasks = commands.flatMap((file) =>
       [...fs.readFileSync(file, 'utf8').matchAll(/command: '([\w:-]+)'/g)].map(
         (m) => m[1]
       )
     );
-    expect(tasks.filter((task) => /^content-studio:/.test(task))).toEqual([
+    expect(
+      tasks.filter((task) => /^content-studio:/.test(task)).sort()
+    ).toEqual([
       // the page-change backfill of P8-04B1, which writes no version
       'content-studio:backfill-page-changes',
+      'content-studio:retention-cancel',
       'content-studio:retention-dry-run',
+      'content-studio:retention-execute',
+      'content-studio:retention-prepare',
     ]);
   });
 
@@ -5096,7 +5245,8 @@ describe('P8-R1Q retention quarantine', () => {
           `contentStudioSourceVersionRetentionPending\\.(delete|deleteMany)\\(`
         )
       )
-    ).toEqual([R1Q.repository]);
+      // P8-R1C: and the removal of a batch, its held rows first (R1C-8)
+    ).toEqual([R1Q.repository, RETENTION_REMOVAL[0]].sort());
     const release = between(
       r1q('repository'),
       '  releaseQuarantine(input: {',
@@ -5181,12 +5331,675 @@ describe('P8-R1Q retention quarantine', () => {
         ),
       ]).toEqual([key, null]);
     }
+    // P8-R1C: and the preflight of prepare, which needs the wait to fit
+    // before the plan ends (R1C-6)
     expect(
       users(/CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_WAIT_MS/)
-    ).toEqual([R1Q.pure]);
-    // no automatic release, expiry or cleanup of held rows
+    ).toEqual([R1Q.pure, RETENTION_EXECUTION[1]]);
+    // no automatic release, expiry or cleanup of held rows (P8-R1C: the
+    // execution releases its own plan's when it ends, R1C-20)
     expect(
       users(/releaseQuarantine\(|releaseSourceVersionQuarantine\(/).sort()
-    ).toEqual([R1Q.repository, R1Q.service].sort());
+    ).toEqual([R1Q.repository, R1Q.service, RETENTION_EXECUTION[1]].sort());
+  });
+});
+
+// The retention execution (P8-R1C), pinned: the one removal of a source
+// version there is, by an operator only, of a reviewed plan made again with
+// the same hash, held, waited for and checked again; every writer of a new
+// reference checks in one statement that its versions are still there and
+// held for nothing (W1); a batch removes its held rows, its versions and
+// records its items in one transaction, every count checked; no force, skip,
+// resume or size from outside, no route, schedule or agent. Its behavior is
+// covered by source.retention.spec.ts, the repository specs and the
+// PostgreSQL execution and command suites
+describe('P8-R1C retention execution', () => {
+  const PRISMA =
+    'libraries/nestjs-libraries/src/database/prisma/content-studio';
+  const R1C = {
+    pure: `${SOURCES}/source.retention.ts`,
+    retention: `${PRISMA}/content-studio.source-retention.service.ts`,
+    retentionRepository: `${PRISMA}/content-studio.source-retention.repository.ts`,
+    repository: RETENTION_EXECUTION[0],
+    service: RETENTION_EXECUTION[1],
+    packages: `${PRISMA}/content-studio.repository.ts`,
+    operations: `${PRISMA}/content-studio.ai-operation.repository.ts`,
+    module: 'libraries/nestjs-libraries/src/database/prisma/database.module.ts',
+    controller: 'apps/backend/src/api/routes/content-studio.controller.ts',
+  };
+  const r1c = (key: keyof typeof R1C) => CODE.get(R1C[key])!;
+  const COMMAND =
+    'apps/commands/src/tasks/content.studio.retention.execution.ts';
+  const command = code(COMMAND);
+  const RUNBOOK = 'apps/commands/src/tasks/content.studio.retention.md';
+  const EXECUTION_MODELS_NAMES = [
+    'ContentStudioSourceVersionRetentionExecution',
+    'ContentStudioSourceVersionRetentionExecutionItem',
+    'ContentStudioSourceVersionRetentionExecutionLock',
+  ];
+  const remove = () =>
+    between(
+      r1c('repository'),
+      '  deleteQuarantinedSourceVersionsForRetention(input: {',
+      '\n  }\n'
+    );
+
+  it('R1C-1 one removal of a source version: deleteMany of held versions by organization and id, in the retention execution repository only', () => {
+    expect(users(/contentStudioSourceVersion\.(delete|deleteMany)\(/)).toEqual(
+      RETENTION_REMOVAL
+    );
+    expect(
+      r1c('repository').match(
+        /contentStudioSourceVersion\.(delete|deleteMany)\(/g
+      )
+    ).toEqual(['contentStudioSourceVersion.deleteMany(']);
+    expect(remove()).toMatch(
+      /const removed = await tx\.contentStudioSourceVersion\.deleteMany\(\{\s*where: \{\s*organizationId: input\.organizationId,\s*id: \{ in: ids \},\s*\},\s*\}\);/
+    );
+    // and nothing that would remove one some other way, or by any other name
+    expect(users(/sourceVersions?:\s*\{\s*(delete|deleteMany)/i)).toEqual([]);
+    expect(
+      users(
+        /\b(deleteSourceVersions?|removeSourceVersions?|deleteVersions?|purgeVersions?)\b/
+      )
+    ).toEqual([]);
+    expect(
+      users(/deleteQuarantinedSourceVersionsForRetention\(/).sort()
+    ).toEqual([R1C.repository, R1C.service].sort());
+    expect(
+      r1c('service').match(/deleteQuarantinedSourceVersionsForRetention\(/g)
+    ).toHaveLength(1);
+  });
+
+  it('R1C-2 an operator command only: no route, controller, frontend, orchestrator, MCP, chat or agent reaches the execution', () => {
+    expect(
+      users(
+        /ContentStudioSourceRetentionExecution(Service|Repository)|retention-(prepare|execute|cancel)/
+      ).sort()
+    ).toEqual([R1C.module, R1C.repository, R1C.service].sort());
+    expect(
+      PRODUCTION.filter(
+        (file) =>
+          /^(apps\/(backend|orchestrator|frontend)\/|libraries\/nestjs-libraries\/src\/(chat|agent|mcp)\/|libraries\/helpers\/)/.test(
+            file
+          ) && /retention|Retention|quarantine/.test(CODE.get(file)!)
+      )
+    ).toEqual([]);
+    expect(r1c('controller')).not.toMatch(/retention|prepare|quarantine/i);
+    expect(
+      r1c('controller').match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
+    ).toHaveLength(149);
+    expect(command.match(/command: '([\w:-]+)'/g)).toEqual([
+      "command: 'content-studio:retention-prepare'",
+      "command: 'content-studio:retention-execute'",
+      "command: 'content-studio:retention-cancel'",
+    ]);
+    expect(code(COMMANDS.module)).toMatch(
+      /import \{ ContentStudioRetentionExecution \} from '\.\/tasks\/content\.studio\.retention\.execution';/
+    );
+    // no Hermes, no CompanyOS: nothing of them anywhere near it
+    for (const file of [...RETENTION_EXECUTION, COMMAND]) {
+      expect([
+        file,
+        code(file).match(/hermes|companyos|company-os|mcp/i),
+      ]).toEqual([file, null]);
+    }
+  });
+
+  it('R1C-3/R1C-17 no force, skip, resume, size or limit from outside: exactly these options', () => {
+    expect(command.match(/name: '([\w-]+)'/g)).toEqual([
+      "name: 'plan'",
+      "name: 'organization'",
+      "name: 'confirm'",
+      "name: 'json'",
+      "name: 'execution'",
+      "name: 'backup-confirmed'",
+      "name: 'confirm'",
+      "name: 'json'",
+      "name: 'execution'",
+      "name: 'confirm'",
+      "name: 'json'",
+    ]);
+    for (const text of [command, r1c('service'), r1c('repository')]) {
+      expect(text).not.toMatch(
+        /force|skip-?wait|skip-?recheck|batch-?size|max-?candidates|resume|ignore-?blocked|skipWait|skipRecheck|batchSize|maxCandidates|ignoreBlocked/i
+      );
+    }
+    expect(CONTENT_STUDIO_SOURCE_VERSION_RETENTION_DELETE_BATCH_SIZE).toBe(100);
+    // the batches are the default size, never another
+    expect(r1c('service')).toMatch(
+      /const batches = batchContentStudioSourceVersionRetentionCandidates\(\s*items\.map\(\(item\) => \(\{ \.\.\.item, id: item\.sourceVersionId \}\)\)\s*\);/
+    );
+    expect(r1c('service')).not.toMatch(/DELETE_BATCH_SIZE/);
+    // every command needs its confirmation; execute the backup's too
+    expect(command.match(/if \(confirm !== true\) \{/g)).toHaveLength(3);
+    expect(command.match(/if \(backupConfirmed !== true\) \{/g)).toHaveLength(
+      1
+    );
+    expect(command.indexOf('if (backupConfirmed !== true) {')).toBeLessThan(
+      command.indexOf('.execute({')
+    );
+  });
+
+  it('R1C-4/R1C-18 compact_repeats only, 10,000 candidates at most, no source held back', () => {
+    const parse = between(
+      r1c('pure'),
+      'export function parseContentStudioSourceVersionRetentionPlan(',
+      '\n}\n'
+    );
+    expect(parse).toMatch(/report\.policy\.mode !== 'compact_repeats'/);
+    expect(parse).toMatch(
+      /candidates\.length >\s*CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_MAX_CANDIDATES/
+    );
+    expect(parse).toMatch(
+      /if \(report\.blockedSources\.length\) \{\s*throw new ContentStudioSourceVersionRetentionExecutionError\(\s*'RETENTION_EXECUTION_BLOCKED_SOURCES'/
+    );
+    expect(parse).toMatch(
+      /entry\.candidateReason !==\s*CONTENT_STUDIO_SOURCE_VERSION_RETENTION_CANDIDATE_REASON/
+    );
+    expect(
+      CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_MAX_CANDIDATES
+    ).toBe(10_000);
+    expect([...CONTENT_STUDIO_SOURCE_VERSION_RETENTION_MODES]).toEqual([
+      'compact_repeats',
+    ]);
+    expect(
+      CONTENT_STUDIO_SOURCE_VERSION_RETENTION_EXECUTION_FORMAT_VERSION
+    ).toBe(1);
+  });
+
+  it("R1C-5 the plan's own hash first, then the dry run made again at its time with the same hash, before anything is held", () => {
+    const parse = between(
+      r1c('pure'),
+      'export function parseContentStudioSourceVersionRetentionPlan(',
+      '\n}\n'
+    );
+    expect(parse).toMatch(
+      /contentStudioSourceVersionRetentionDryRunHash\(\{\s*organizationId,\s*evaluationNow,\s*validUntil,\s*policy,\s*candidates,\s*blockedSources: \[\],\s*\}\) !== report\.dryRunHash/
+    );
+    const prepare = between(r1c('service'), '  async prepare(', '\n  }\n\n');
+    const order = [
+      'parseContentStudioSourceVersionRetentionPlan(',
+      '.createExecution(',
+      '.evaluateRetentionPlan(',
+      'if (replayed !== plan.planHash) {',
+      '.quarantineSourceVersions(',
+      '.listSourceVersionQuarantine(',
+      'contentStudioSourceVersionRetentionReadyAt(',
+      '.markPrepared(',
+    ].map((call) => [call, prepare.indexOf(call)] as const);
+    for (const [call, at] of order) {
+      expect([call, at > -1]).toEqual([call, true]);
+    }
+    expect(order.map(([, at]) => at)).toEqual(
+      [...order.map(([, at]) => at)].sort((a, b) => a - b)
+    );
+    // made again at the plan's time, with the plan's policy
+    expect(prepare).toMatch(
+      /evaluateRetentionPlan\(\{\s*organizationId: plan\.organizationId,\s*now: plan\.evaluationNow,\s*policy: plan\.policy,\s*\}\)/
+    );
+    // the replay is the report's own derivation, without measuring
+    const replay = between(
+      r1c('retention'),
+      '  async evaluateRetentionPlan(',
+      '\n  }\n'
+    );
+    expect(replay).toMatch(/return planContentStudioSourceVersionRetention\(/);
+    expect(replay).not.toMatch(/listVersionContents|logicalContentBytes/);
+    expect(
+      between(
+        r1c('pure'),
+        'export function buildContentStudioSourceVersionRetentionDryRun(',
+        '\n}\n'
+      )
+    ).toMatch(/planContentStudioSourceVersionRetention\(input\)/);
+  });
+
+  it('R1C-6 ready a minute after the LAST hold; the wait and the end of the plan are checked at every step', () => {
+    const readyAt = between(
+      r1c('pure'),
+      'export function contentStudioSourceVersionRetentionReadyAt(',
+      '\n}\n'
+    );
+    expect(readyAt).toMatch(
+      /Math\.max\(\.\.\.pendingAt\.map\(\(time\) => time\.getTime\(\)\)\) \+\s*CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_WAIT_MS/
+    );
+    expect(readyAt).not.toMatch(/Math\.min/);
+    const service = r1c('service');
+    expect(service).toMatch(
+      /contentStudioSourceVersionRetentionReadyAt\(\s*held\.map\(\(row\) => row\.pendingAt\)\s*\)/
+    );
+    // each hold at its own time
+    expect(service).toMatch(
+      /planHash: plan\.planHash,\s*now: input\.clock\(\),/
+    );
+    // prepare: the wait fits before the plan ends; ready before it ends
+    expect(service).toMatch(
+      /now\.getTime\(\) \+\s*CONTENT_STUDIO_SOURCE_VERSION_RETENTION_QUARANTINE_WAIT_MS <\s*plan\.validUntil\.getTime\(\)/
+    );
+    expect(service).toMatch(
+      /if \(!\(readyAt\.getTime\(\) < plan\.validUntil\.getTime\(\)\)\) \{/
+    );
+    // execute: not before readyAt, not at or after the end, at start and
+    // again before the recheck
+    expect(service).toMatch(
+      /if \(now\.getTime\(\) < execution\.readyAt\.getTime\(\)\) \{\s*return this\.report\(execution\.id, 'not_ready'/
+    );
+    expect(service).toMatch(
+      /if \(!\(now\.getTime\(\) < execution\.planValidUntil\.getTime\(\)\)\) \{/
+    );
+    expect(service).toMatch(
+      /if \(!\(recheckNow\.getTime\(\) < execution\.planValidUntil\.getTime\(\)\)\) \{/
+    );
+  });
+
+  it("R1C-7 execute rechecks every candidate in one snapshot, at both times, with the held rows exactly the plan's, before the first removal", () => {
+    const execute = between(r1c('service'), '  async execute(', '\n  }\n\n');
+    expect(execute.indexOf('.startExecuting(')).toBeLessThan(
+      execute.indexOf('.recheckRetentionPlan(')
+    );
+    expect(execute.indexOf('.recheckRetentionPlan(')).toBeLessThan(
+      execute.indexOf('this.removeBatch(')
+    );
+    expect(execute).toMatch(
+      /planEvaluationNow: execution\.planEvaluationNow,\s*now: recheckNow,/
+    );
+    const recheck = between(
+      r1c('retention'),
+      '  async recheckRetentionPlan(',
+      '\n  }\n'
+    );
+    expect(recheck).toMatch(
+      /\[input\.planEvaluationNow, input\.now\]\.map\(\(now\) => \(\{/
+    );
+    expect(recheck).toMatch(
+      /candidateIds\.every\(\(ids\) => ids\.has\(candidate\.id\)\)/
+    );
+    expect(recheck).toMatch(
+      /simulateContentStudioSourcePageChangeStateAfterRetention\(\{\s*source,\s*versions,\s*candidateIds: removed,/
+    );
+    expect(recheck).toMatch(
+      /version\.versionNumber !== candidate\.versionNumber \|\|\s*version\.contentHash !== candidate\.contentHash/
+    );
+    expect(recheck).toMatch(
+      /heldIds: new Set\(input\.candidates\.map\(\(candidate\) => candidate\.id\)\),/
+    );
+    expect(recheck).toMatch(
+      /if \(found !== input\.candidates\.length\) \{\s*throw recheckFailed\('CANDIDATE_CHANGED'\);/
+    );
+    // the full dry run hash is not asked for after the wait: captures since
+    // may add candidates, never remove one (PGX-X13/X14)
+    expect(recheck).not.toMatch(
+      /dryRunHash|planContentStudioSourceVersionRetention/
+    );
+    // the one engine: the evaluation and simulation of the dry run
+    expect(
+      recheck.match(/evaluateContentStudioSourceVersionRetention\(/g)
+    ).toHaveLength(1);
+    // the held rows of the organization are exactly the plan's
+    expect(
+      between(r1c('retention'), '  private evaluate(', '\n  }\n\n')
+    ).toMatch(
+      /const held = await reads\.listPending\(organizationId\);\s*if \(\s*held\.length !== pending\.heldIds\.size \|\|\s*held\.some\(\s*\(row\) =>\s*row\.planHash !== pending\.planHash \|\|\s*!pending\.heldIds\.has\(row\.sourceVersionId\)\s*\)\s*\) \{\s*throw recheckFailed\('PENDING_MISMATCH'\);/
+    );
+    // a failed recheck stops before anything is removed: the whole plan
+    expect(execute).toMatch(
+      /\} catch \(err\) \{\s*return this\.stop\(\s*executing,\s*'RETENTION_EXECUTION_RECHECK_FAILED',/
+    );
+  });
+
+  it("R1C-8/R1C-9 a batch: its held rows, its versions and its items in one transaction, in this order, every count the batch's", () => {
+    const body = remove();
+    const order = [
+      'tx.contentStudioSourceVersionRetentionExecution.findFirst(',
+      'tx.contentStudioSourceVersionRetentionExecutionLock.findFirst(',
+      'tx.contentStudioSourceVersionRetentionExecutionItem.findMany(',
+      'tx.contentStudioSourceVersionRetentionPending.count(',
+      'tx.contentStudioSourceVersion.findMany(',
+      'tx.contentStudioSource.findMany(',
+      'tx.contentStudioSourceVersionRetentionPending.deleteMany(',
+      'tx.contentStudioSourceVersion.deleteMany(',
+      'tx.contentStudioSourceVersionRetentionExecutionItem.updateMany(',
+      'tx.contentStudioSourceVersionRetentionExecution.updateMany(',
+    ];
+    expect([...body.matchAll(/(tx\.\w+\.\w+\()/g)].map((m) => m[1])).toEqual(
+      order
+    );
+    expect(body.match(/\$transaction\(/g)).toHaveLength(1);
+    expect(body).toMatch(/\}, WRITE_TRANSACTION\);$/);
+    expect(r1c('repository')).toMatch(
+      /const WRITE_TRANSACTION = \{ maxWait: 5_000, timeout: 30_000 \};/
+    );
+    // ReadCommitted, the database's default: no isolation level of its own
+    expect(body).not.toMatch(/isolationLevel/);
+    for (const check of [
+      'if (!execution || !lock) {',
+      'if (items.length !== size) {',
+      'if (held !== size) {',
+      'versions.length !== size ||',
+      'version.sourceId !== item.sourceId ||',
+      'version.versionNumber !== item.versionNumber ||',
+      'version.contentHash !== item.contentHash',
+      '!(item.versionNumber < (latest.get(item.sourceId) ?? 0))',
+      'if (released.count !== size) {',
+      'if (removed.count !== size) {',
+      'if (recorded.count !== size) {',
+      'if (counted.count !== 1) {',
+    ]) {
+      expect([check, body.includes(check)]).toEqual([check, true]);
+    }
+    expect(body).toMatch(
+      /data: \{\s*status: 'deleted',\s*batchNumber: input\.batchNumber,\s*deletedAt: input\.deletedAt,\s*\}/
+    );
+    expect(body).toMatch(
+      /data: \{\s*deletedCount: \{ increment: size \},\s*batchCount: \{ increment: 1 \},\s*\}/
+    );
+    // the held rows of this plan and organization, by id
+    expect(body).toMatch(
+      /contentStudioSourceVersionRetentionPending\.deleteMany\(\{\s*where: \{\s*organizationId: input\.organizationId,\s*planHash: input\.planHash,\s*sourceVersionId: \{ in: ids \},/
+    );
+  });
+
+  it('R1C-10/R1C-11/R1C-15 the ledger, its items and the lock: additive, exactly these fields, Restrict everywhere, no content', () => {
+    expect(fields(EXECUTION_MODELS_NAMES[0])).toEqual([
+      'id String',
+      'organizationId String',
+      'planHash String',
+      'policyMode String',
+      'policyOlderThan DateTime',
+      'planEvaluationNow DateTime',
+      'planValidUntil DateTime',
+      'dryRunFormatVersion Int',
+      'protectionVersion Int',
+      'policyVersion Int',
+      'executionFormatVersion Int',
+      'status String',
+      'plannedCount Int',
+      'sourceCount Int',
+      'deletedCount Int',
+      'batchCount Int',
+      'errorCode String?',
+      'integrityCheck String?',
+      'hostname String?',
+      'backupConfirmedAt DateTime?',
+      'quarantinedAt DateTime?',
+      'readyAt DateTime?',
+      'executionStartedAt DateTime?',
+      'finishedAt DateTime?',
+      'createdAt DateTime',
+      'updatedAt DateTime',
+      'organization Organization',
+      'items ContentStudioSourceVersionRetentionExecutionItem[]',
+      'lock ContentStudioSourceVersionRetentionExecutionLock?',
+    ]);
+    expect(fields(EXECUTION_MODELS_NAMES[1])).toEqual([
+      'id String',
+      'organizationId String',
+      'executionId String',
+      'sourceVersionId String',
+      'sourceId String',
+      'versionNumber Int',
+      'contentHash String',
+      'status String',
+      'batchNumber Int?',
+      'deletedAt DateTime?',
+      'organization Organization',
+      'execution ContentStudioSourceVersionRetentionExecution',
+    ]);
+    expect(fields(EXECUTION_MODELS_NAMES[2])).toEqual([
+      'id String',
+      'organizationId String',
+      'executionId String',
+      'acquiredAt DateTime',
+      'organization Organization',
+      'execution ContentStudioSourceVersionRetentionExecution',
+    ]);
+    const constraints = (name: string) =>
+      model(name)
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith('@@'));
+    // a plan once per organization; one active execution per organization
+    expect(constraints(EXECUTION_MODELS_NAMES[0])).toEqual([
+      '@@unique([organizationId, planHash])',
+      '@@unique([id, organizationId])',
+      '@@index([organizationId, createdAt])',
+    ]);
+    expect(constraints(EXECUTION_MODELS_NAMES[1])).toEqual([
+      '@@unique([executionId, sourceVersionId])',
+      '@@index([organizationId, sourceVersionId])',
+    ]);
+    expect(model(EXECUTION_MODELS_NAMES[2])).toMatch(
+      /\n\s*organizationId\s+String\s+@unique\n\s*executionId\s+String\s+@unique\n/
+    );
+    for (const name of EXECUTION_MODELS_NAMES) {
+      const block = model(name);
+      // every relation Restrict both ways; no key onto a version
+      expect([name, block.match(/@relation\(/g)!.length]).toEqual([
+        name,
+        block.match(/onDelete: Restrict, onUpdate: Restrict\)/g)!.length,
+      ]);
+      expect(block).not.toMatch(/Cascade|SetNull|NoAction|SetDefault/);
+      expect(block).not.toMatch(
+        /ContentStudioSourceVersion\s|ContentStudioSource\s/
+      );
+      // ids, hashes, counts, times and statuses: no content, title, URL,
+      // quote, context, prompt or user
+      expect([
+        name,
+        block.match(
+          /\b(content|title|url|Url|quote|context|prompt|draft|userId|createdById|operator)\b/
+        ),
+      ]).toEqual([name, null]);
+    }
+    // the one Cascade of the schema is the one before it, an update of a
+    // package key; nothing removes in cascade
+    expect(schema.match(/Cascade/g)).toEqual(['Cascade']);
+    expect(schema).not.toMatch(/onDelete: Cascade/);
+    // additive: without its three models and three relations, the schema
+    // is the P8-R1Q schema (a753d9a6...) but for the alignment of the
+    // Organization fields: every other model and field as it was
+    expect(
+      createHash('sha256')
+        .update(beforeExecution(schema).replace(/\s+/g, ' '))
+        .digest('hex')
+    ).toBe('4f4ff8d2c6f8234db224dcc9913efda055a9f842060f5a34183bcd4d120aa550');
+    expect(
+      model('Organization').match(
+        /contentStudioRetentionExecution(s|Items|Lock)\s+ContentStudioSourceVersionRetentionExecution\w*(\[\]|\?)/g
+      )
+    ).toHaveLength(3);
+    expect(fields('ContentStudioSourceVersion')).toHaveLength(23);
+  });
+
+  it('R1C-12/R1C-13 a version is never changed or renumbered; no raw SQL', () => {
+    expect(
+      users(/contentStudioSourceVersion\.(update|updateMany|upsert)\(/)
+    ).toEqual([]);
+    expect(
+      users(/sourceVersions?:\s*\{\s*(update|updateMany|upsert)/i)
+    ).toEqual([]);
+    for (const text of [
+      r1c('repository'),
+      r1c('service'),
+      r1c('retention'),
+      r1c('retentionRepository'),
+      command,
+    ]) {
+      expect(text).not.toMatch(
+        /\$queryRaw|\$executeRaw|Prisma\.sql|pg_advisory|FOR UPDATE|versionNumber: \{\s*(decrement|increment)/
+      );
+    }
+    // a version's number is the source's latest + 1, never a count
+    expect(
+      between(
+        CODE.get(`${PRISMA}/content-studio.source.repository.ts`)!,
+        '  appendVersionWithCompareAndSwap(input: {',
+        '\n  }\n'
+      )
+    ).toMatch(/versionNumber: input\.expectedLatestVersionNumber \+ 1,/);
+  });
+
+  it('R1C-14 W1: every writer of a new reference counts, in its transaction and before its write, the versions still there and held for nothing', () => {
+    const check = between(
+      r1c('retentionRepository'),
+      'export const assertContentStudioSourceVersionsExistAndNotPending = async (',
+      '\n};\n'
+    );
+    expect(check.match(/\.(\w+)\(/g)).toEqual(['.count(']);
+    expect(check).toMatch(
+      /tx\.contentStudioSourceVersion\.count\(\{\s*where: \{\s*organizationId: input\.organizationId,\s*id: \{ in: ids \},\s*retentionPending: \{ is: null \},\s*\},\s*\}\)/
+    );
+    expect(check).toMatch(/if \(available !== ids\.length\) \{/);
+    // never a version found first and its held row checked after (that
+    // order lets a removal in between through: PGX-W1-NEG)
+    expect(check).not.toMatch(
+      /findFirst|findMany|findUnique|RetentionPending\./
+    );
+    expect(
+      users(
+        /assertContentStudioSourceVersionsExistAndNotPending\(tx, \{/
+      ).sort()
+    ).toEqual([R1C.packages, R1C.operations].sort());
+    expect(
+      CODE.get(R1C.packages)!.match(
+        /\$transaction\(async \(tx\) => \{\s*await assertContentStudioSourceVersionsExistAndNotPending\(tx, \{/g
+      )
+    ).toHaveLength(2);
+    expect(
+      CODE.get(R1C.operations)!.match(
+        /\$transaction\(async \(tx\) => \{\s*await assertContentStudioSourceVersionsExistAndNotPending\(tx, \{/g
+      )
+    ).toHaveLength(1);
+    // the same fixed 409 for held and gone
+    expect(CODE.get(`${PRISMA}/content-studio.ai-writing.service.ts`)!).toMatch(
+      /SOURCE_VERSION_RETENTION_PENDING: \(\) =>\s*fail\(\s*409,\s*'CS_SOURCE_VERSION_RETENTION_PENDING',\s*'This source version is temporarily unavailable for new references'\s*\),/
+    );
+    expect(users(/SOURCE_VERSION_MISSING|RETENTION_MISSING/)).toEqual([]);
+  });
+
+  it('R1C-16/R1C-19 no schedule, Temporal, cron, backup or Coolify: an operator runs it, with a backup made beforehand', () => {
+    for (const text of [command, r1c('service'), r1c('repository')]) {
+      expect(text).not.toMatch(
+        /@Cron|Interval\(|setInterval|setTimeout|sleep\(|temporal|workflow|coolify|pg_dump|pg_restore|child_process|spawn\(|execSync|exec\(/i
+      );
+    }
+    expect(
+      PRODUCTION.filter(
+        (file) =>
+          file.startsWith('apps/orchestrator/') &&
+          /retention|Retention/.test(CODE.get(file)!)
+      )
+    ).toEqual([]);
+    expect(raw('package.json')).not.toMatch(/retention/i);
+    // the backup is the operator's word, never checked or made here
+    expect(command).toMatch(
+      /const NO_BACKUP =\s*'This command does not create or verify your database backup\.';/
+    );
+    expect(command.match(/\bfs\.(\w+)\(/g)).toEqual([
+      'fs.statSync(',
+      'fs.readFileSync(',
+    ]);
+    expect(command).toMatch(
+      /file\.size > CONTENT_STUDIO_SOURCE_VERSION_RETENTION_PLAN_MAX_BYTES/
+    );
+    expect(command.indexOf('fs.statSync(')).toBeLessThan(
+      command.indexOf('fs.readFileSync(')
+    );
+  });
+
+  it('R1C-20 cancel releases and ends: it never removes a version; an execution ends with its lock in one transaction', () => {
+    const cancel = between(r1c('service'), '  async cancel(', '\n  }\n\n');
+    expect(cancel).not.toMatch(/deleteQuarantined|removeBatch|deleteMany/);
+    expect(cancel).toMatch(/if \(!\(await this\.release\(execution\)\)\) \{/);
+    const finish = between(
+      r1c('repository'),
+      '  finishExecution(input: {',
+      '\n  }\n'
+    );
+    expect(finish.match(/\$transaction\(/g)).toHaveLength(1);
+    expect(finish).toMatch(
+      /where: \{\s*id: input\.id,\s*organizationId: input\.organizationId,\s*status: \{ in: \[\.\.\.input\.from\] \},\s*deletedCount: input\.deletedCount,\s*\}/
+    );
+    expect(finish).toMatch(
+      /contentStudioSourceVersionRetentionExecutionLock\.deleteMany\(\{\s*where: \{\s*organizationId: input\.organizationId,\s*executionId: input\.id,\s*\},\s*\}\)/
+    );
+    expect(finish).toMatch(/if \(count !== 1 \|\| unlocked\.count !== 1\) \{/);
+    // the lock is removed nowhere else; held rows that cannot be released
+    // keep it (CLEANUP_REQUIRED)
+    expect(
+      r1c('repository').match(
+        /contentStudioSourceVersionRetentionExecutionLock\.(delete|deleteMany)\(/g
+      )
+    ).toEqual(['contentStudioSourceVersionRetentionExecutionLock.deleteMany(']);
+    const service = r1c('service');
+    expect(service.match(/'cleanup_required'/g)).toHaveLength(4);
+    expect(service).toMatch(
+      /if \(!\(await this\.release\(executing\)\)\) \{\s*return this\.report\(executing\.id, 'cleanup_required'/
+    );
+    // statuses move by compare-and-swap only
+    expect(
+      between(r1c('repository'), '  markPrepared(input: {', '\n  }\n')
+    ).toMatch(/status: 'preparing',/);
+    expect(
+      between(r1c('repository'), '  startExecuting(input: {', '\n  }\n')
+    ).toMatch(
+      /status: 'prepared',\s*\},\s*data: \{\s*status: 'executing',\s*backupConfirmedAt: input\.now,/
+    );
+  });
+
+  it('R1C-21 a write conflict is tried again from the start, 3 times in all; any other failure is read back, never tried again, and stops', () => {
+    const service = r1c('service');
+    expect(service).toMatch(/const BATCH_TRANSACTION_ATTEMPTS = 3;/);
+    expect(service).toMatch(
+      /const isWriteConflict = \(err: unknown\) =>\s*err instanceof Prisma\.PrismaClientKnownRequestError && err\.code === 'P2034';/
+    );
+    const batch = between(service, '  private async removeBatch(', '\n  }\n\n');
+    expect(batch).toMatch(
+      /if \(isWriteConflict\(err\) && attempt < BATCH_TRANSACTION_ATTEMPTS\) \{\s*continue;\s*\}/
+    );
+    expect(batch.match(/continue;/g)).toHaveLength(1);
+    expect(batch).toMatch(/\.countState\(\{/);
+    // every outcome after a failure is a failure: the execution stops
+    expect(batch.match(/return \{ failure: null \};/g)).toHaveLength(1);
+    const execute = between(service, '  async execute(', '\n  }\n\n');
+    expect(execute).toMatch(/if \(removed\.failure\) \{\s*return this\.stop\(/);
+  });
+
+  it('R1C-22 each source after its last batch, and the whole organization at the end; a failed check is never repaired', () => {
+    const execute = between(r1c('service'), '  async execute(', '\n  }\n\n');
+    expect(execute).toMatch(
+      /if \(remaining\.get\(sourceId\) !== 0\) \{\s*continue;\s*\}\s*const failure = await this\.checkSource\(/
+    );
+    expect(execute).toMatch(
+      /state\.deleted === ids\.length &&\s*state\.versions === 0 &&\s*state\.held === 0 &&\s*\(await this\.organizationIntact\(executing, input\.clock\(\)\)\)/
+    );
+    expect(
+      between(r1c('service'), '  private async organizationIntact(', '\n  }\n')
+    ).toMatch(/\.computeProtectionMap\(\{/);
+    expect(r1c('service')).not.toMatch(/backfillPageChanges|repair|fix[A-Z]/);
+  });
+
+  it('R1C-23 the runbook: backup before the dry run, review, prepare, wait, execute, inspect, cancel, restore', () => {
+    const runbook = raw(RUNBOOK);
+    for (const step of [
+      'content-studio:retention-dry-run',
+      'content-studio:retention-prepare',
+      'content-studio:retention-execute',
+      'content-studio:retention-cancel',
+      '--backup-confirmed',
+      'chmod 600',
+      "jq '.organizationId, .candidateSummary, .blockedSources, .dryRunHash'",
+      "jq '.candidates[:20]'",
+      'validUntil',
+      'readyAt',
+      '30 days',
+      'restore',
+      'VACUUM FULL',
+      'logicalContentBytes',
+    ]) {
+      expect([step, runbook.includes(step)]).toEqual([step, true]);
+    }
+    expect(runbook).toMatch(/exit code/i);
   });
 });

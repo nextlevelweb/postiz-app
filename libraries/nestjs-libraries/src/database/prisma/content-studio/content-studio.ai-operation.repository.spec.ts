@@ -63,9 +63,10 @@ const setup = () => {
       ([key, value]) => value === undefined || row[key] === value
     );
   const tx = {
-    // P8-R1Q: whether a source version the context names is held
-    contentStudioSourceVersionRetentionPending: {
-      findFirst: jest.fn().mockResolvedValue(null),
+    // P8-R1Q/P8-R1C: how many source versions the context names are still
+    // there and held for nothing (both, by default)
+    contentStudioSourceVersion: {
+      count: jest.fn().mockResolvedValue(2),
     },
     contentStudioAIOperation: {
       create: jest.fn().mockResolvedValue({ id: OPERATION }),
@@ -208,26 +209,23 @@ describe('ContentStudioAIOperationRepository: operations', () => {
     },
   };
 
-  it('Q27 P8-R1Q an operation naming source versions: the held check and the create in one transaction, the check first, of the organization', async () => {
+  it('Q27 P8-R1Q/P8-R1C an operation naming source versions: the check (still there, held for nothing) and the create in one transaction, the check first, of the organization', async () => {
     const { repository, operation, transaction, tx } = setup();
     await expect(repository.createRunningOperation(sourced)).resolves.toEqual({
       id: OPERATION,
     });
     expect(transaction.$transaction).toHaveBeenCalledTimes(1);
-    expect(
-      tx.contentStudioSourceVersionRetentionPending.findFirst
-    ).toHaveBeenCalledWith({
+    expect(tx.contentStudioSourceVersion.count).toHaveBeenCalledWith({
       where: {
         organizationId: ORG,
-        sourceVersionId: {
+        id: {
           in: sourced.context.sources.map((source) => source.versionId),
         },
+        retentionPending: { is: null },
       },
-      select: { id: true },
     });
     expect(
-      tx.contentStudioSourceVersionRetentionPending.findFirst.mock
-        .invocationCallOrder[0]
+      tx.contentStudioSourceVersion.count.mock.invocationCallOrder[0]
     ).toBeLessThan(
       tx.contentStudioAIOperation.create.mock.invocationCallOrder[0]
     );
@@ -238,25 +236,23 @@ describe('ContentStudioAIOperationRepository: operations', () => {
     expect(operation.create).not.toHaveBeenCalled();
   });
 
-  it('Q28/Q29 P8-R1Q a held source version: no operation is created', async () => {
-    const { repository, operation, tx } = setup();
-    tx.contentStudioSourceVersionRetentionPending.findFirst.mockResolvedValue({
-      id: 'pending',
-    });
-    await expect(
-      repository.createRunningOperation(sourced)
-    ).rejects.toBeInstanceOf(ContentStudioSourceVersionRetentionPendingError);
-    expect(tx.contentStudioAIOperation.create).not.toHaveBeenCalled();
-    expect(operation.create).not.toHaveBeenCalled();
+  it('Q28/Q29 P8-R1Q/P8-R1C a source version held or gone, any one of them: no operation is created', async () => {
+    for (const available of [0, 1]) {
+      const { repository, operation, tx } = setup();
+      tx.contentStudioSourceVersion.count.mockResolvedValue(available);
+      await expect(
+        repository.createRunningOperation(sourced)
+      ).rejects.toBeInstanceOf(ContentStudioSourceVersionRetentionPendingError);
+      expect(tx.contentStudioAIOperation.create).not.toHaveBeenCalled();
+      expect(operation.create).not.toHaveBeenCalled();
+    }
   });
 
   it('Q6 P8-R1Q an operation naming no source version is created as before: no transaction, no held check', async () => {
     const { repository, transaction, tx } = setup();
     await repository.createRunningOperation(createInput);
     expect(transaction.$transaction).not.toHaveBeenCalled();
-    expect(
-      tx.contentStudioSourceVersionRetentionPending.findFirst
-    ).not.toHaveBeenCalled();
+    expect(tx.contentStudioSourceVersion.count).not.toHaveBeenCalled();
   });
 
   it('OR4/OR5 reads an operation of the organization only', async () => {
