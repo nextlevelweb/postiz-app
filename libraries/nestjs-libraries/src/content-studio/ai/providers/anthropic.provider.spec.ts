@@ -393,13 +393,16 @@ describe('Anthropic adapter: generateText', () => {
       sdk
     ).generateText(textRequest({ temperature: 0.3 }));
 
-    expect(create).toHaveBeenCalledWith({
-      model: 'claude-opus-5-5',
-      max_tokens: 500,
-      system: 'You write social posts.',
-      messages: [{ role: 'user', content: 'Write a post about spring.' }],
-      temperature: 0.3,
-    });
+    expect(create).toHaveBeenCalledWith(
+      {
+        model: 'claude-opus-5-5',
+        max_tokens: 500,
+        system: 'You write social posts.',
+        messages: [{ role: 'user', content: 'Write a post about spring.' }],
+        temperature: 0.3,
+      },
+      { timeout: 30000 }
+    );
     expect(list).not.toHaveBeenCalled();
     expect(result).toEqual({
       text: 'Spring is here',
@@ -426,20 +429,20 @@ describe('Anthropic adapter: generateText', () => {
 
   it('AA23/AA34 posts to /v1/messages through the real SDK', async () => {
     const { sdk, requests } = realSdk(() =>
-      json(200, message({ model: 'claude-haiku-5-5' }), {
+      json(200, message({ model: 'claude-haiku-4-5-20251001' }), {
         'request-id': 'req_real_1',
       })
     );
     const result = await createAnthropicProviderAdapter(
       CREDENTIAL,
       sdk
-    ).generateText(textRequest({ model: 'claude-haiku-5-5' }));
+    ).generateText(textRequest({ model: 'claude-haiku-4-5-20251001' }));
 
     expect(requests.map((r) => [r.init.method, r.url])).toEqual([
       ['POST', 'https://api.anthropic.com/v1/messages'],
     ]);
     expect(JSON.parse(String(requests[0].init.body))).toEqual({
-      model: 'claude-haiku-5-5',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 500,
       system: 'You write social posts.',
       messages: [{ role: 'user', content: 'Write a post about spring.' }],
@@ -636,7 +639,7 @@ describe('Anthropic adapter: generateText', () => {
     for (const model of [
       'claude-opus-5-5',
       'claude-sonnet-5-5',
-      'claude-haiku-5-5',
+      'claude-haiku-4-5-20251001',
     ]) {
       const { sdk } = fakeSdk({});
       const err = await providerError(
@@ -683,5 +686,128 @@ describe('Anthropic adapter source', () => {
     expect(text).toContain(
       "const ANTHROPIC_BASE_URL = 'https://api.anthropic.com';"
     );
+  });
+});
+
+// UX review 02: a key that is not scoped to a workspace (the real failure of
+// the first local setup: every call answered 400 asking for the
+// anthropic-workspace-id header)
+describe('Anthropic adapter: workspace, model check and timeout', () => {
+  const WORKSPACE = 'wrkspc_01TestWorkspace';
+  const workspaceError = () =>
+    json(400, {
+      type: 'error',
+      error: {
+        type: 'invalid_request_error',
+        message: `This API key is not scoped to a workspace, so this request must include the anthropic-workspace-id header with the ID of the workspace to use. ${MARKER}`,
+      },
+    });
+
+  it('AW1 sends the workspace id of the connection on every request, and none without one', async () => {
+    const { sdk, requests } = realSdk((url) =>
+      url.endsWith('/v1/messages')
+        ? json(200, message(), { 'request-id': 'req_ok_2' })
+        : json(200, MODEL_LIST)
+    );
+    const adapter = createAnthropicProviderAdapter(
+      { apiKey: MARKER, workspaceId: WORKSPACE },
+      sdk
+    );
+    await adapter.validateConnection();
+    await adapter.generateText(textRequest());
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(
+        new Headers(request.init.headers).get('anthropic-workspace-id')
+      ).toBe(WORKSPACE);
+    }
+
+    const plain = realSdk(() => json(200, MODEL_LIST));
+    await createAnthropicProviderAdapter(
+      CREDENTIAL,
+      plain.sdk
+    ).validateConnection();
+    expect(
+      new Headers(plain.requests[0].init.headers).get('anthropic-workspace-id')
+    ).toBeNull();
+  });
+
+  it('AW2 tells a key that needs a workspace apart from any other rejected request, without the message', async () => {
+    const { sdk } = realSdk(() => workspaceError());
+    const adapter = createAnthropicProviderAdapter(CREDENTIAL, sdk);
+    await expect(
+      adapter.validateConnection('claude-opus-5-5')
+    ).resolves.toEqual({
+      ok: false,
+      code: 'WORKSPACE_REQUIRED',
+    });
+    const err = await providerError(adapter.generateText(textRequest()));
+    expect(err.code).toBe('WORKSPACE_REQUIRED');
+    expect(err.httpStatus).toBe(400);
+    expect(rendered(err)).not.toMatch(/scoped|workspace-id/);
+
+    const other = realSdk(() =>
+      json(400, {
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'max_tokens: too large',
+        },
+      })
+    );
+    const rejected = await providerError(
+      createAnthropicProviderAdapter(CREDENTIAL, other.sdk).generateText(
+        textRequest()
+      )
+    );
+    expect(rejected.code).toBe('REQUEST_REJECTED');
+  });
+
+  it('AW3 checks the connection model by reading it, and a model the key cannot use is MODEL_UNAVAILABLE', async () => {
+    const ok = realSdk(() =>
+      json(200, {
+        type: 'model',
+        id: 'claude-opus-5-5',
+        display_name: 'Claude Opus 5.5',
+        created_at: '2026-01-01T00:00:00Z',
+      })
+    );
+    await expect(
+      createAnthropicProviderAdapter(CREDENTIAL, ok.sdk).validateConnection(
+        'claude-opus-5-5'
+      )
+    ).resolves.toEqual({ ok: true });
+    expect(ok.requests.map((r) => r.url)).toEqual([
+      'https://api.anthropic.com/v1/models/claude-opus-5-5',
+    ]);
+    expect(ok.requests[0].init.method).toBe('GET');
+
+    const missing = realSdk(() =>
+      json(404, {
+        type: 'error',
+        error: { type: 'not_found_error', message: 'model: claude-x' },
+      })
+    );
+    await expect(
+      createAnthropicProviderAdapter(
+        CREDENTIAL,
+        missing.sdk
+      ).validateConnection('claude-opus-5-5')
+    ).resolves.toEqual({ ok: false, code: 'MODEL_UNAVAILABLE' });
+  });
+
+  it('AW4 waits longer only when the request asks, and never more than the cap', async () => {
+    for (const [timeoutMs, expected] of [
+      [undefined, 30_000],
+      [10_000, 30_000],
+      [150_000, 150_000],
+      [999_999, 180_000],
+    ] as const) {
+      const { sdk, create } = fakeSdk({});
+      await createAnthropicProviderAdapter(CREDENTIAL, sdk).generateText(
+        textRequest(timeoutMs === undefined ? {} : { timeoutMs })
+      );
+      expect(create.mock.calls[0][1]).toEqual({ timeout: expected });
+    }
   });
 });

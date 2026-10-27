@@ -2,6 +2,7 @@ import { ContentStudioAIProviderErrorCode } from '@gitroom/nestjs-libraries/cont
 
 const PROVIDER_MESSAGES: Record<ContentStudioAIProviderErrorCode, string> = {
   AUTH_FAILED: 'The AI provider did not accept the credential',
+  WORKSPACE_REQUIRED: 'The AI provider needs a workspace for this credential',
   QUOTA_EXCEEDED: 'The AI provider account has no quota or credit left',
   RATE_LIMITED: 'The AI provider is rate limiting this connection',
   PROVIDER_UNAVAILABLE: 'The AI provider is not available',

@@ -21,21 +21,45 @@ export const AI_API_KEY_MAX = 512;
 // it was given
 const API_KEY = /^[\x21-\x7e]+$/;
 
-const apiKeyCredential = z
+const apiKey = z
+  .string()
+  .min(AI_API_KEY_MIN)
+  .max(AI_API_KEY_MAX)
+  .regex(API_KEY);
+
+const apiKeyCredential = z.object({ apiKey }).strict();
+
+// An Anthropic key that is not scoped to a workspace (a personal or service
+// account key) must name the workspace on every request, in the
+// anthropic-workspace-id header. The id is the Console's workspace id
+// (wrkspc_...); it is not secret, but it is kept sealed with the key it
+// belongs to
+export const AI_WORKSPACE_ID_MAX = 128;
+const WORKSPACE_ID = /^wrkspc_[A-Za-z0-9_-]+$/;
+const anthropicCredential = z
   .object({
-    apiKey: z.string().min(AI_API_KEY_MIN).max(AI_API_KEY_MAX).regex(API_KEY),
+    apiKey,
+    workspaceId: z
+      .string()
+      .max(AI_WORKSPACE_ID_MAX)
+      .regex(WORKSPACE_ID)
+      .optional(),
   })
   .strict();
 
-export type ContentStudioAICredential = z.output<typeof apiKeyCredential>;
+export interface ContentStudioAICredential {
+  apiKey: string;
+  // Anthropic only
+  workspaceId?: string;
+}
 
 const CREDENTIAL_SCHEMAS: Record<
   ContentStudioAIProvider,
-  typeof apiKeyCredential
+  typeof apiKeyCredential | typeof anthropicCredential
 > = {
   openai: apiKeyCredential,
   openrouter: apiKeyCredential,
-  anthropic: apiKeyCredential,
+  anthropic: anthropicCredential,
 };
 
 export type ContentStudioAICredentialErrorCode =
@@ -75,18 +99,17 @@ export interface ContentStudioAIModelInfo {
   };
 }
 
+export type ContentStudioAICredentialField =
+  | { name: 'apiKey'; label: string; secret: true; required: true }
+  | { name: 'workspaceId'; label: string; secret: false; required: false };
+
 // What the settings screen may know about a provider: names, the fields to
 // ask for and the curated models. No endpoint, SDK option, environment name,
 // example key or price
 export interface ContentStudioAIProviderInfo {
   provider: ContentStudioAIProvider;
   displayName: string;
-  credentialFields: Array<{
-    name: 'apiKey';
-    label: string;
-    secret: true;
-    required: true;
-  }>;
+  credentialFields: ContentStudioAICredentialField[];
   defaultModel: string;
   models: ContentStudioAIModelInfo[];
 }
@@ -98,7 +121,7 @@ const DISPLAY_NAMES: Record<ContentStudioAIProvider, string> = {
 };
 
 // The only models a connection may use, by the exact id of their provider,
-// as documented by OpenAI, OpenRouter and Anthropic (checked 2026-10). A model belongs to
+// as documented by OpenAI, OpenRouter and Anthropic (checked 2026-10-27). A model belongs to
 // the provider it is listed under: an OpenAI id is not an OpenRouter id. No
 // discovery and no user supplied ids
 const MODELS: Record<
@@ -149,9 +172,10 @@ const MODELS: Record<
       label: 'Claude Sonnet 5.5',
       capabilities: { text: true, structuredOutput: false },
     },
+    // there is no Haiku 5.5: Haiku 4.5 is the current small model
     {
-      id: 'claude-haiku-5-5',
-      label: 'Claude Haiku 5.5',
+      id: 'claude-haiku-4-5-20251001',
+      label: 'Claude Haiku 4.5',
       capabilities: { text: true, structuredOutput: false },
     },
   ],
@@ -173,14 +197,28 @@ const copyModel = (model: ContentStudioAIModelInfo) => ({
   },
 });
 
+const credentialFields = (
+  provider: ContentStudioAIProvider
+): ContentStudioAICredentialField[] => [
+  { name: 'apiKey', label: 'API key', secret: true, required: true },
+  ...(provider === 'anthropic'
+    ? [
+        {
+          name: 'workspaceId' as const,
+          label: 'Workspace ID',
+          secret: false as const,
+          required: false as const,
+        },
+      ]
+    : []),
+];
+
 const providerInfo = (
   provider: ContentStudioAIProvider
 ): ContentStudioAIProviderInfo => ({
   provider,
   displayName: DISPLAY_NAMES[provider],
-  credentialFields: [
-    { name: 'apiKey', label: 'API key', secret: true, required: true },
-  ],
+  credentialFields: credentialFields(provider),
   defaultModel: DEFAULT_MODELS[provider],
   models: MODELS[provider].map(copyModel),
 });
@@ -208,7 +246,7 @@ export function parseContentStudioAICredential(
   if (!result.success) {
     throw new ContentStudioAICredentialError('INVALID');
   }
-  return result.data;
+  return result.data as ContentStudioAICredential;
 }
 
 export const getContentStudioAIProvider = (

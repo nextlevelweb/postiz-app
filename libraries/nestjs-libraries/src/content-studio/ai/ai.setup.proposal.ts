@@ -165,6 +165,16 @@ const name = (value: string, max: number) => {
   return value;
 };
 
+// A model without JSON output (Claude through the pinned SDK) sometimes
+// wraps the whole answer in one Markdown code fence despite the prompt. Only
+// that exact shape is unwrapped: text before or after the fence, or a second
+// fence, still makes the answer invalid
+const JSON_FENCE = /^```(?:json)?[ \t]*\n([\s\S]*?)\n```$/;
+export const withoutJsonFence = (raw: string) => {
+  const fenced = raw.trim().match(JSON_FENCE);
+  return fenced && !fenced[1].includes('```') ? fenced[1] : raw;
+};
+
 // Strict about everything but list housekeeping; throws INVALID_RESPONSE.
 // The audiences are written for the language the setup asked for
 export function parseContentStudioAISetupProposal(
@@ -176,7 +186,7 @@ export function parseContentStudioAISetupProposal(
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(withoutJsonFence(raw));
   } catch {
     throw invalidResponse();
   }

@@ -5,6 +5,7 @@ import { ContentStudioAIConnectionRepository } from '@gitroom/nestjs-libraries/d
 import {
   ContentStudioAICredentialError,
   getContentStudioAIDefaultModel,
+  getContentStudioAIModel,
   isContentStudioAIModelSupported,
   isContentStudioAIProvider,
   listContentStudioAIProviders,
@@ -416,7 +417,13 @@ export class ContentStudioAIConnectionService {
       throw fromResolutionError(err);
     }
 
-    const result = await resolved.adapter.validateConnection();
+    // the model the connection's AI calls use: its own while its provider
+    // still offers it, else the provider's default (as for every AI call)
+    const result = await resolved.adapter.validateConnection(
+      getContentStudioAIModel(current.provider, current.defaultModel)
+        ? (current.defaultModel as string)
+        : getContentStudioAIDefaultModel(resolved.provider)
+    );
     // `in` narrows without strictNullChecks too (the backend build has it off)
     const code = !result.ok && 'code' in result ? result.code : null;
     const { count } =

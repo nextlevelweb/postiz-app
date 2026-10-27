@@ -1,4 +1,4 @@
-import { HttpException, Injectable } from '@nestjs/common';
+import { HttpException, Injectable, Logger } from '@nestjs/common';
 import { ContentStudioAIConnectionRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.repository';
 import {
   assertComplete,
@@ -26,6 +26,7 @@ import {
   ContentStudioAISetupProposalV1,
   parseContentStudioAISetupProposal,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.setup.proposal';
+import { ContentStudioAIProviderError } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.error';
 
 // Fixed messages only: never the company information, a prompt, a provider
 // message or an id
@@ -52,6 +53,9 @@ const LANGUAGE_MAX = 35;
 const WEBSITE = /^https?:\/\/[^\s/$.?#][^\s]*$/i;
 // a whole profile set in one answer
 const SETUP_MAX_OUTPUT_TOKENS = 8192;
+// a whole profile set takes a large model well over the 30 seconds a
+// writing call may take
+export const SETUP_TIMEOUT_MS = 150_000;
 
 // What the user typed, as the controller passes it on
 export interface ContentStudioAISetupRequest {
@@ -75,6 +79,8 @@ export interface ContentStudioAISetupRequest {
 // The operation is recorded for the organization, with hashes only
 @Injectable()
 export class ContentStudioAISetupService {
+  private _logger = new Logger(ContentStudioAISetupService.name);
+
   constructor(
     private _contentStudioAIConnectionRepository: ContentStudioAIConnectionRepository,
     private _contentStudioAIExecutionService: ContentStudioAIExecutionService
@@ -145,6 +151,7 @@ export class ContentStudioAISetupService {
                   }
                 : { type: 'text' },
               maxOutputTokens: SETUP_MAX_OUTPUT_TOKENS,
+              timeoutMs: SETUP_TIMEOUT_MS,
             },
           },
           {
@@ -158,6 +165,17 @@ export class ContentStudioAISetupService {
           }
         ));
     } catch (err) {
+      // what is needed to tell why a real call failed, and nothing else: no
+      // key, prompt, company information or provider message
+      if (err instanceof ContentStudioAIProviderError) {
+        this._logger.warn(
+          `setup proposal failed: provider=${
+            connection.provider
+          } model=${model} code=${err.code} httpStatus=${
+            err.httpStatus ?? '-'
+          } providerRequestId=${err.providerRequestId ?? '-'}`
+        );
+      }
       throw fromAIError(err);
     }
 

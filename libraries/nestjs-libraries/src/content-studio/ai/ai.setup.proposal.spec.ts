@@ -156,10 +156,33 @@ describe('setup proposal (AI draft of the guided setup)', () => {
 
   it.each([
     ['not JSON', 'Here is your profile: {'],
-    ['JSON in a code fence', '```json\n{}\n```'],
+    ['an empty object in a code fence', '```json\n{}\n```'],
+    [
+      'text around a fenced answer',
+      `Here it is:\n\`\`\`json\n${JSON.stringify(answer())}\n\`\`\``,
+    ],
+    [
+      'two fences',
+      `\`\`\`json\n${JSON.stringify(answer())}\n\`\`\`\n\`\`\`json\n{}\n\`\`\``,
+    ],
     ['an array', '[]'],
   ])('refuses %s', (_label, raw) => {
     refused(() => parseContentStudioAISetupProposal(raw, 'nl'));
+  });
+
+  // UX review 02: Claude without JSON output may wrap the whole answer in
+  // one fence; that exact shape is read, nothing else is
+  it.each([
+    ['```json', `\`\`\`json\n${JSON.stringify(answer())}\n\`\`\``],
+    ['``` without a language', `\`\`\`\n${JSON.stringify(answer())}\n\`\`\``],
+    [
+      'a fence with outer blank lines',
+      `\n\`\`\`json\n${JSON.stringify(answer(), null, 2)}\n\`\`\`\n`,
+    ],
+  ])('reads a whole answer in one code fence (%s)', (_label, raw) => {
+    expect(parseContentStudioAISetupProposal(raw, 'nl')).toEqual(
+      parse(answer())
+    );
   });
 
   it('refuses unknown keys, missing parts and values outside the schema', () => {

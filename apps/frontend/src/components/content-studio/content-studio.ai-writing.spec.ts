@@ -456,7 +456,7 @@ const PROVIDERS = [
     defaultModel: 'claude-opus-5-5',
     models: [
       model('claude-opus-5-5', 'Claude Opus 5.5'),
-      model('claude-haiku-5-5', 'Claude Haiku 5.5'),
+      model('claude-haiku-4-5-20251001', 'Claude Haiku 4.5'),
     ],
   },
 ];
@@ -768,7 +768,7 @@ describe('AI writing: availability', () => {
     await settle();
     expect(optionsOf('Model').map(([id]) => id)).toEqual([
       'claude-opus-5-5',
-      'claude-haiku-5-5',
+      'claude-haiku-4-5-20251001',
     ]);
     expect(
       (
@@ -1052,7 +1052,7 @@ describe('AI writing: item actions', () => {
     await openItem('Follow-up 1');
     choose('AI connection', '45555555-5555-4555-8555-555555555555');
     await settle();
-    choose('Model', 'claude-haiku-5-5');
+    choose('Model', 'claude-haiku-4-5-20251001');
     choose('Writing Profile', WRITING);
     choose('Audience Profile', AUDIENCE);
     choose('Expertise Profile', EXPERTISE);
@@ -1065,7 +1065,7 @@ describe('AI writing: item actions', () => {
       operation: 'rewrite_item',
       itemId: 'f1',
       connectionId: '45555555-5555-4555-8555-555555555555',
-      model: 'claude-haiku-5-5',
+      model: 'claude-haiku-4-5-20251001',
       writingProfileId: WRITING,
       editorialPolicy: true,
       audienceProfileId: AUDIENCE,
@@ -1376,7 +1376,7 @@ describe('AI writing: errors', () => {
     [
       'FE10',
       'CS_AI_AUTH_FAILED',
-      'Authentication failed. Replace the API key and try again.',
+      "We couldn't use this API key. Check the key and try again.",
     ],
     [
       'FE11',

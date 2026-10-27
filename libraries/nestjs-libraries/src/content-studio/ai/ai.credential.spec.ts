@@ -212,6 +212,41 @@ describe('sealing and opening AI connection credentials', () => {
       });
     });
 
+    it('CR6 seals and opens the optional workspace id with the key; an older envelope without it still opens', () => {
+      const credential = { apiKey: MARKER, workspaceId: 'wrkspc_01Abc' };
+      const envelope = seal(ORG_A, CONN_A, 'anthropic', credential);
+      expect(envelope).not.toContain('wrkspc_');
+      expect(open(envelope, ORG_A, CONN_A, 'anthropic')).toEqual(credential);
+      expect(
+        mockKeyring.box?.open(
+          envelope,
+          aiConnectionSecretContext(ORG_A, CONN_A)
+        )
+      ).toBe(
+        `{"apiKey":${JSON.stringify(
+          MARKER
+        )},"v":1,"workspaceId":"wrkspc_01Abc"}`
+      );
+      // a key alone, as every envelope before the workspace id was sealed
+      expect(
+        open(seal(ORG_A, CONN_A, 'anthropic'), ORG_A, CONN_A, 'anthropic')
+      ).toEqual({ apiKey: MARKER });
+    });
+
+    it('CR7 refuses a workspace id that is not one, and any workspace id for another provider', () => {
+      for (const [provider, credential] of [
+        ['anthropic', { apiKey: MARKER, workspaceId: 'workspace 1' }],
+        ['anthropic', { apiKey: MARKER, workspaceId: 'wrkspc_' }],
+        ['anthropic', { apiKey: MARKER, workspaceId: '' }],
+        ['openai', { apiKey: MARKER, workspaceId: 'wrkspc_01Abc' }],
+        ['openrouter', { apiKey: MARKER, workspaceId: 'wrkspc_01Abc' }],
+      ] as const) {
+        const err = failure(() => seal(ORG_A, CONN_A, provider, credential));
+        expect(err.code).toBe('INVALID');
+        expect(rendered(err)).not.toContain(MARKER);
+      }
+    });
+
     it('CR3 does not open for another organization or connection', () => {
       const envelope = seal(ORG_A, CONN_A, 'anthropic');
       for (const [organizationId, connectionId] of [

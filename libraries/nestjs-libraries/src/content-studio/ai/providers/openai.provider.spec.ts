@@ -245,6 +245,32 @@ describe('OpenAI adapter: validateConnection', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  // UX review 02: the connection's own model is what its AI calls use
+  it('OA11b reads the connection model, and a model the key cannot use is MODEL_UNAVAILABLE', async () => {
+    const { sdk, requests } = realSdk(() =>
+      json(200, { id: 'gpt-6.1-sol', object: 'model', owned_by: 'openai' })
+    );
+    await expect(
+      createOpenAIProviderAdapter(CREDENTIAL, sdk).validateConnection(
+        'gpt-6.1-sol'
+      )
+    ).resolves.toEqual({ ok: true });
+    expect(requests.map((r) => [r.init.method, r.url])).toEqual([
+      ['GET', 'https://api.openai.com/v1/models/gpt-6.1-sol'],
+    ]);
+
+    const missing = realSdk(() =>
+      json(404, {
+        error: { message: 'The model does not exist', code: 'model_not_found' },
+      })
+    );
+    await expect(
+      createOpenAIProviderAdapter(CREDENTIAL, missing.sdk).validateConnection(
+        'gpt-6.1-sol'
+      )
+    ).resolves.toEqual({ ok: false, code: 'MODEL_UNAVAILABLE' });
+  });
+
   it('OA11 sends one authenticated GET /v1/models through the real SDK', async () => {
     const { sdk, requests } = realSdk(() => json(200, { data: [] }));
     await createOpenAIProviderAdapter(CREDENTIAL, sdk).validateConnection();
@@ -380,15 +406,18 @@ describe('OpenAI adapter: generateText', () => {
       sdk
     ).generateText(textRequest({ temperature: 0.4 }));
 
-    expect(create).toHaveBeenCalledWith({
-      model: 'gpt-6.1-sol',
-      messages: [
-        { role: 'system', content: 'You write social posts.' },
-        { role: 'user', content: 'Write a post about spring.' },
-      ],
-      max_completion_tokens: 500,
-      temperature: 0.4,
-    });
+    expect(create).toHaveBeenCalledWith(
+      {
+        model: 'gpt-6.1-sol',
+        messages: [
+          { role: 'system', content: 'You write social posts.' },
+          { role: 'user', content: 'Write a post about spring.' },
+        ],
+        max_completion_tokens: 500,
+        temperature: 0.4,
+      },
+      { timeout: 30000 }
+    );
     expect(list).not.toHaveBeenCalled();
     expect(result).toEqual({
       text: 'Hello there',

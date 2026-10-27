@@ -8,6 +8,9 @@ import { ContentStudioAIProvider } from '@gitroom/nestjs-libraries/content-studi
 // provider's own message, body or headers
 export type ContentStudioAIProviderErrorCode =
   | 'AUTH_FAILED'
+  // the key is valid but must name a workspace (an Anthropic key that is not
+  // scoped to one): the connection needs its workspace id
+  | 'WORKSPACE_REQUIRED'
   | 'QUOTA_EXCEEDED'
   | 'RATE_LIMITED'
   | 'PROVIDER_UNAVAILABLE'
@@ -33,7 +36,23 @@ export interface ContentStudioAITextRequest {
   maxOutputTokens: number;
   // sent only when given: not every model accepts it
   temperature?: number;
+  // a longer wait than the adapter's default for a request known to produce
+  // a long answer, at most AI_REQUEST_TIMEOUT_MAX_MS
+  timeoutMs?: number;
 }
+
+export const AI_REQUEST_TIMEOUT_MAX_MS = 180_000;
+
+// The adapter's own timeout unless the request asks for a longer one; never
+// more than AI_REQUEST_TIMEOUT_MAX_MS
+export const contentStudioAIRequestTimeout = (
+  request: Pick<ContentStudioAITextRequest, 'timeoutMs'>,
+  adapterDefault: number
+) =>
+  Number.isSafeInteger(request.timeoutMs) &&
+  (request.timeoutMs as number) > adapterDefault
+    ? Math.min(request.timeoutMs as number, AI_REQUEST_TIMEOUT_MAX_MS)
+    : adapterDefault;
 
 // Only what the provider reported; nothing is estimated
 export interface ContentStudioAITextUsage {
@@ -68,8 +87,12 @@ export type ContentStudioAIConnectionValidationResult =
 export interface ContentStudioAIProviderAdapter {
   readonly provider: ContentStudioAIProvider;
   // never throws for a provider failure: an admin asks whether the
-  // connection works, and the answer is the normalized code
-  validateConnection(): Promise<ContentStudioAIConnectionValidationResult>;
+  // connection works, and the answer is the normalized code. Given a model,
+  // the provider is asked about that model where it can answer for it
+  // (MODEL_UNAVAILABLE when it cannot be used); nothing is generated
+  validateConnection(
+    model?: string
+  ): Promise<ContentStudioAIConnectionValidationResult>;
   // throws ContentStudioAIProviderError
   generateText(
     request: ContentStudioAITextRequest

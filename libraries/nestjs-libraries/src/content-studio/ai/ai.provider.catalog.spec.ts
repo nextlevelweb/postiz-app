@@ -183,9 +183,25 @@ describe('Content Studio AI provider catalog: public metadata', () => {
         'defaultModel',
         'models',
       ]);
-      expect(info.credentialFields).toEqual([
-        { name: 'apiKey', label: 'API key', secret: true, required: true },
-      ]);
+      expect(info.credentialFields[0]).toEqual({
+        name: 'apiKey',
+        label: 'API key',
+        secret: true,
+        required: true,
+      });
+      // only Anthropic asks for more: an optional workspace id
+      expect(info.credentialFields.slice(1)).toEqual(
+        info.provider === 'anthropic'
+          ? [
+              {
+                name: 'workspaceId',
+                label: 'Workspace ID',
+                secret: false,
+                required: false,
+              },
+            ]
+          : []
+      );
     }
   });
 
@@ -206,10 +222,16 @@ describe('Content Studio AI provider catalog: public metadata', () => {
     }
   });
 
-  it('P10/AC13 describes Anthropic with the API key field only, like the others', () => {
+  it('P10/AC13 describes Anthropic with the API key and an optional workspace id', () => {
     const anthropic = getContentStudioAIProvider('anthropic');
     expect(anthropic?.credentialFields).toEqual([
       { name: 'apiKey', label: 'API key', secret: true, required: true },
+      {
+        name: 'workspaceId',
+        label: 'Workspace ID',
+        secret: false,
+        required: false,
+      },
     ]);
     expect(JSON.stringify(anthropic)).not.toMatch(
       /sk-ant|ANTHROPIC_|authToken|x-api-key|anthropic-version|baseURL|https?:/i
@@ -336,7 +358,7 @@ describe('Content Studio AI provider catalog: models', () => {
     ['openai', ['gpt-6.1-sol'], false],
     ['anthropic', 'claude-opus-5-5', true],
     ['anthropic', 'claude-sonnet-5-5', true],
-    ['anthropic', 'claude-haiku-5-5', true],
+    ['anthropic', 'claude-haiku-4-5-20251001', true],
     // AC7: anything that is not exactly an Anthropic catalog id
     ['anthropic', 'claude-opus-5', false],
     ['anthropic', 'claude-fable-5-1', false],
@@ -401,8 +423,8 @@ describe('Content Studio AI provider catalog: Anthropic', () => {
         capabilities: { text: true, structuredOutput: false },
       },
       {
-        id: 'claude-haiku-5-5',
-        label: 'Claude Haiku 5.5',
+        id: 'claude-haiku-4-5-20251001',
+        label: 'Claude Haiku 4.5',
         capabilities: { text: true, structuredOutput: false },
       },
     ]);

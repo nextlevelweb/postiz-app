@@ -224,7 +224,12 @@ export const aiWritingErrorMessage = (
     case 'CS_AI_AUTH_FAILED':
       return t(
         'content_studio_ai_test_auth_failed',
-        'Authentication failed. Replace the API key and try again.'
+        "We couldn't use this API key. Check the key and try again."
+      );
+    case 'CS_AI_WORKSPACE_REQUIRED':
+      return t(
+        'content_studio_ai_test_workspace',
+        'This Anthropic key is not tied to a workspace. Add the workspace ID (it starts with wrkspc_) with Replace key, or use a key created inside a workspace.'
       );
     case 'CS_AI_RATE_LIMITED':
       return t(

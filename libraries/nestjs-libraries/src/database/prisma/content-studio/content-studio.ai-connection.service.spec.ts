@@ -1057,6 +1057,22 @@ describe('ContentStudioAIConnectionService: test connection', () => {
       (call) => (call as unknown as [Record<string, unknown>])[0]
     );
 
+  // UX review 02: the test asks about the model the connection's AI calls
+  // use, so "Ready" means that model works too
+  it('CTS16 tests the connection model while the catalog offers it, else the provider default', async () => {
+    for (const [stored, asked] of [
+      ['gpt-6-luna', 'gpt-6-luna'],
+      ['gpt-retired', 'gpt-6.1-sol'],
+    ]) {
+      const { repository, adapter, service } = setup();
+      repository.getConnectionForOrganization.mockImplementation(async () =>
+        row({ defaultModel: stored })
+      );
+      await service.testConnection(ADMIN, ID);
+      expect(adapter.validateConnection).toHaveBeenCalledWith(asked);
+    }
+  });
+
   it('CTS1/CTS2/CTS8/CTS13 lets managers test and records a valid result', async () => {
     for (const who of [ADMIN, SUPERADMIN]) {
       const { repository, resolver, adapter, service } = setup();
@@ -1069,6 +1085,8 @@ describe('ContentStudioAIConnectionService: test connection', () => {
         connectionId: ID,
       });
       expect(adapter.validateConnection).toHaveBeenCalledTimes(1);
+      // no model of its own: the provider default its AI calls use
+      expect(adapter.validateConnection).toHaveBeenCalledWith('gpt-6.1-sol');
       expect(recorded(repository)).toEqual([
         {
           organizationId: ORG,
@@ -1242,6 +1260,8 @@ describe('ContentStudioAIConnectionService: test connection', () => {
     ['CTS12', 'TIMEOUT'],
     ['', 'QUOTA_EXCEEDED'],
     ['', 'INVALID_RESPONSE'],
+    ['CTS14', 'WORKSPACE_REQUIRED'],
+    ['CTS15', 'MODEL_UNAVAILABLE'],
   ] as const)(
     '%s answers { ok: false, %s } and records it as invalid',
     async (_id, code) => {
@@ -1361,8 +1381,8 @@ describe('ContentStudioAIConnectionService: Anthropic connections', () => {
 
   it('AS3 accepts a Claude model of the catalog', async () => {
     const { repository, service } = setup();
-    await createAnthropic(service, 'claude-haiku-5-5');
-    expect(created(repository).defaultModel).toBe('claude-haiku-5-5');
+    await createAnthropic(service, 'claude-haiku-4-5-20251001');
+    expect(created(repository).defaultModel).toBe('claude-haiku-4-5-20251001');
   });
 
   it.each([
@@ -1478,7 +1498,7 @@ describe('ContentStudioAIConnectionService: Anthropic connections', () => {
       models: [
         { id: 'claude-opus-5-5' },
         { id: 'claude-sonnet-5-5' },
-        { id: 'claude-haiku-5-5' },
+        { id: 'claude-haiku-4-5-20251001' },
       ],
     });
   });

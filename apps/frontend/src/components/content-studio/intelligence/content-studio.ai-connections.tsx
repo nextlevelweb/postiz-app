@@ -1,6 +1,7 @@
 'use client';
 
 import { FC, FormEvent, ReactNode, useEffect, useId, useState } from 'react';
+import clsx from 'clsx';
 import { Button } from '@gitroom/react/form/button';
 import { Input } from '@gitroom/react/form/input';
 import { useToaster } from '@gitroom/react/toaster/toaster';
@@ -17,10 +18,12 @@ import {
 import {
   AI_CONNECTION_NAME_MAX,
   aiConnectionErrorMessage,
+  aiConnectionHealth,
   aiTestResultMessage,
   aiValidationCodeMessage,
   ContentStudioAIConnection,
   ContentStudioAIProviderInfo,
+  isRetiredAIModel,
   useContentStudioAIConnectionActions,
   useContentStudioAIConnections,
   useContentStudioAIProviders,
@@ -68,6 +71,81 @@ const ApiKeyInput: FC<{
   );
 };
 
+// Only for a provider that asks for it (Anthropic): the workspace an
+// unscoped key works in. Not secret, but it travels with the key
+const WorkspaceIdInput: FC<{
+  value: string;
+  onChange: (next: string) => void;
+}> = ({ value, onChange }) => {
+  const t = useT();
+  return (
+    <div className="flex flex-col gap-[6px]">
+      <Input
+        label="Workspace ID (optional)"
+        translationKey="content_studio_ai_workspace_id"
+        name="workspaceId"
+        aria-label={t(
+          'content_studio_ai_workspace_id',
+          'Workspace ID (optional)'
+        )}
+        autoComplete="off"
+        spellCheck={false}
+        disableForm={true}
+        removeError={true}
+        placeholder="wrkspc_…"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <div className="text-[12px] text-textItemBlur">
+        {t(
+          'content_studio_ai_workspace_id_hint',
+          'Only for an Anthropic key that is not tied to one workspace. You find the ID in the Claude Console under Settings, Workspaces.'
+        )}
+      </div>
+    </div>
+  );
+};
+
+const asksWorkspace = (provider: ContentStudioAIProviderInfo | undefined) =>
+  !!provider?.credentialFields.some((field) => field.name === 'workspaceId');
+
+// The state of a connection as a short label: Ready only after a test of the
+// key and its model succeeded; Testing… while one runs
+export const AIConnectionHealthBadge: FC<{
+  connection: ContentStudioAIConnection;
+  testing?: boolean;
+}> = ({ connection, testing }) => {
+  const t = useT();
+  const health = aiConnectionHealth(connection);
+  const [label, tone] = testing
+    ? [t('content_studio_ai_health_testing', 'Testing…'), 'muted']
+    : connection.disabled
+    ? [t('content_studio_ai_status_disabled', 'Disabled'), 'muted']
+    : health === 'ready'
+    ? [t('content_studio_ai_health_ready', 'Ready'), 'ok']
+    : health === 'attention'
+    ? [t('content_studio_ai_health_attention', 'Needs attention'), 'warn']
+    : [
+        t('content_studio_ai_health_connected', 'Connected, not tested yet'),
+        'muted',
+      ];
+  return (
+    <span
+      className={clsx(
+        'inline-flex items-center gap-[6px] px-[8px] py-[1px] rounded-full border text-[12px] font-[600]',
+        tone === 'ok' && 'border-green-600/50 text-green-600',
+        tone === 'warn' && 'border-red-500/60 text-red-400',
+        tone === 'muted' && 'border-newTableBorder text-textItemBlur'
+      )}
+    >
+      <span aria-hidden="true">
+        {testing ? '…' : tone === 'ok' ? '✓' : tone === 'warn' ? '!' : '•'}
+      </span>
+      {label}
+    </span>
+  );
+};
+
 // A new connection: the provider, its key, a model from the provider's
 // catalog and an optional name (the provider's name when left blank). The
 // key is sent once and then cleared; leaving the form drops it. Used in the
@@ -75,13 +153,22 @@ const ApiKeyInput: FC<{
 export const AIConnectionCreateForm: FC<{
   providers: ContentStudioAIProviderInfo[];
   onCancel: () => void;
-  // after the connection is saved and the list reloaded
-  onCreated: () => void;
+  // after the connection is saved, tested and the list reloaded
+  onCreated: (created: ContentStudioAIConnection) => void;
   // where the fields and the buttons go; the dialog keeps the buttons in
   // view while the fields scroll
   layout?: (form: ReactNode, buttons: ReactNode) => ReactNode;
   onDirtyChange?: (dirty: boolean) => void;
-}> = ({ providers, onCancel, onCreated, layout, onDirtyChange }) => {
+  // false where the page tests the new connection itself (setup assistant)
+  testAfterCreate?: boolean;
+}> = ({
+  providers,
+  onCancel,
+  onCreated,
+  layout,
+  onDirtyChange,
+  testAfterCreate = true,
+}) => {
   const formId = useId();
   const t = useT();
   const toaster = useToaster();
@@ -90,9 +177,11 @@ export const AIConnectionCreateForm: FC<{
   const [provider, setProvider] = useState(providers[0]?.provider ?? '');
   const [model, setModel] = useState(providers[0]?.defaultModel ?? '');
   const [apiKey, setApiKey] = useState('');
+  const [workspaceId, setWorkspaceId] = useState('');
   const { busy, run } = useSingleFlight();
   const info = providers.find((entry) => entry.provider === provider);
-  const dirty = !!apiKey || !!name.trim();
+  const workspace = asksWorkspace(info);
+  const dirty = !!apiKey || !!name.trim() || !!workspaceId.trim();
   useEffect(() => {
     onDirtyChange?.(dirty);
   }, [dirty]);
@@ -103,25 +192,38 @@ export const AIConnectionCreateForm: FC<{
   const submit = (e: FormEvent) => {
     e.preventDefault();
     run('create', async () => {
+      let created: ContentStudioAIConnection;
       try {
-        await actions.createConnection(
+        created = await actions.createConnection(
           {
             name: name.trim() || info?.displayName || provider,
             provider,
             defaultModel: model,
           },
-          apiKey
+          apiKey,
+          workspace ? workspaceId : undefined
         );
         setApiKey('');
-        toaster.show(
-          t('content_studio_ai_created', 'AI connection created.'),
-          'success'
-        );
-        onCreated();
       } catch (err) {
         // the key stays in this open form only, to correct and send again
         toaster.show(aiConnectionErrorMessage(t, err), 'warning');
+        return;
       }
+      // a saved key is not yet a working one: it is tested right away, so
+      // the list shows Ready or Needs attention
+      const result = testAfterCreate
+        ? await actions.testConnection(created.id).catch(() => null)
+        : null;
+      toaster.show(
+        result && !result.ok
+          ? `${t(
+              'content_studio_ai_created_attention',
+              'AI connection saved, but it does not work yet.'
+            )} ${aiTestResultMessage(t, result)}`
+          : t('content_studio_ai_created', 'AI connection created.'),
+        result && !result.ok ? 'warning' : 'success'
+      );
+      onCreated(created);
     });
   };
 
@@ -167,6 +269,9 @@ export const AIConnectionCreateForm: FC<{
           )}
         </div>
       </div>
+      {workspace && (
+        <WorkspaceIdInput value={workspaceId} onChange={setWorkspaceId} />
+      )}
       <ChoiceField
         label={t('content_studio_ai_model', 'Model')}
         hint={t(
@@ -259,8 +364,15 @@ const EditConnection: FC<{
   const toaster = useToaster();
   const actions = useContentStudioAIConnectionActions();
   const [name, setName] = useState(connection.name);
-  const initialModel = connection.defaultModel ?? provider?.defaultModel ?? '';
-  const [model, setModel] = useState(initialModel);
+  // a model the catalog no longer offers cannot be kept: the recommended one
+  // is proposed instead, and saving it is a change
+  const retired = isRetiredAIModel(connection, provider);
+  const initialModel = retired
+    ? ''
+    : connection.defaultModel ?? provider?.defaultModel ?? '';
+  const [model, setModel] = useState(
+    retired ? provider?.defaultModel ?? '' : initialModel
+  );
   const { busy, run } = useSingleFlight();
   const release = useContentStudioDialogGuard(
     name !== connection.name || model !== initialModel
@@ -305,6 +417,14 @@ const EditConnection: FC<{
         </div>
         <div>{provider?.displayName ?? connection.provider}</div>
       </div>
+      {retired && (
+        <div role="status" className="text-[13px] text-red-400">
+          {t(
+            'content_studio_ai_model_retired_choose',
+            'The previously selected model is no longer available. Choose another.'
+          )}
+        </div>
+      )}
       <ChoiceField
         label={t('content_studio_ai_default_model', 'Default model')}
         value={model}
@@ -331,14 +451,17 @@ const EditConnection: FC<{
 // the server never sends it, and nothing here asks for it
 const ReplaceKey: FC<{
   connection: ContentStudioAIConnection;
+  provider: ContentStudioAIProviderInfo | undefined;
   close: () => void;
-}> = ({ connection, close }) => {
+}> = ({ connection, provider, close }) => {
   const t = useT();
   const toaster = useToaster();
   const actions = useContentStudioAIConnectionActions();
   const [apiKey, setApiKey] = useState('');
+  const [workspaceId, setWorkspaceId] = useState('');
+  const workspace = asksWorkspace(provider);
   const { busy, run } = useSingleFlight();
-  const release = useContentStudioDialogGuard(!!apiKey);
+  const release = useContentStudioDialogGuard(!!apiKey || !!workspaceId);
 
   const cancel = () => close();
 
@@ -346,17 +469,31 @@ const ReplaceKey: FC<{
     e.preventDefault();
     run('replace', async () => {
       try {
-        await actions.replaceCredential(connection.id, apiKey);
-        setApiKey('');
-        toaster.show(
-          t('content_studio_ai_key_replaced', 'API key replaced.'),
-          'success'
+        await actions.replaceCredential(
+          connection.id,
+          apiKey,
+          workspace ? workspaceId : undefined
         );
-        release();
-        close();
+        setApiKey('');
       } catch (err) {
         toaster.show(aiConnectionErrorMessage(t, err), 'warning');
+        return;
       }
+      // tested right away, as a new connection is
+      const result = await actions
+        .testConnection(connection.id)
+        .catch(() => null);
+      toaster.show(
+        result && !result.ok
+          ? `${t(
+              'content_studio_ai_key_replaced_attention',
+              'API key replaced, but the connection does not work yet.'
+            )} ${aiTestResultMessage(t, result)}`
+          : t('content_studio_ai_key_replaced', 'API key replaced.'),
+        result && !result.ok ? 'warning' : 'success'
+      );
+      release();
+      close();
     });
   };
 
@@ -369,6 +506,9 @@ const ReplaceKey: FC<{
         )}
       </div>
       <ApiKeyInput value={apiKey} onChange={setApiKey} />
+      {workspace && (
+        <WorkspaceIdInput value={workspaceId} onChange={setWorkspaceId} />
+      )}
       <div className="flex flex-wrap gap-[8px] justify-end">
         <Button secondary onClick={cancel}>
           {t('cancel', 'Cancel')}
@@ -382,24 +522,6 @@ const ReplaceKey: FC<{
         </Button>
       </div>
     </form>
-  );
-};
-
-const ValidationStatus: FC<{ connection: ContentStudioAIConnection }> = ({
-  connection,
-}) => {
-  const t = useT();
-  if (!connection.lastValidationStatus) {
-    return <span>{t('content_studio_ai_not_tested', 'Not tested')}</span>;
-  }
-  if (connection.lastValidationStatus === 'valid') {
-    return <span>{t('content_studio_ai_working', 'Working')}</span>;
-  }
-  return (
-    <span>
-      {t('content_studio_ai_failed', 'Failed')}:{' '}
-      {aiValidationCodeMessage(t, connection.lastValidationCode)}
-    </span>
   );
 };
 
@@ -441,7 +563,11 @@ export const AIConnectionsSection: FC = () => {
         connection.name
       }`,
       children: (close: () => void) => (
-        <ReplaceKey connection={connection} close={close} />
+        <ReplaceKey
+          connection={connection}
+          provider={providerOf(connection.provider)}
+          close={close}
+        />
       ),
     });
 
@@ -600,16 +726,10 @@ export const AIConnectionsSection: FC = () => {
                         t('content_studio_ai_no_model', 'No default model')}
                     </span>
                     <span>
-                      {connection.disabled
-                        ? t('content_studio_ai_status_disabled', 'Disabled')
-                        : t('content_studio_ai_status_enabled', 'Enabled')}
-                    </span>
-                    <span>
                       {connection.credentialPresent
                         ? t('content_studio_ai_key_stored', 'API key stored')
                         : t('content_studio_ai_key_missing', 'No API key')}
                     </span>
-                    <ValidationStatus connection={connection} />
                     {!!connection.lastValidatedAt && (
                       <span>
                         {t('content_studio_ai_tested_at', 'Tested')}{' '}
@@ -617,6 +737,28 @@ export const AIConnectionsSection: FC = () => {
                       </span>
                     )}
                   </div>
+                  <div className="flex flex-wrap items-center gap-[8px] pt-[4px]">
+                    <AIConnectionHealthBadge
+                      connection={connection}
+                      testing={busy === connection.id}
+                    />
+                    {aiConnectionHealth(connection) === 'attention' && (
+                      <span className="text-[13px] text-red-400">
+                        {aiValidationCodeMessage(
+                          t,
+                          connection.lastValidationCode
+                        )}
+                      </span>
+                    )}
+                  </div>
+                  {isRetiredAIModel(connection, provider) && (
+                    <div role="status" className="text-[13px] text-red-400">
+                      {t(
+                        'content_studio_ai_model_retired',
+                        'The previously selected model is no longer available. Choose another with Edit; until then the recommended model is used.'
+                      )}
+                    </div>
+                  )}
                 </div>
                 {canManage && (
                   <div className="flex flex-wrap gap-[8px]">

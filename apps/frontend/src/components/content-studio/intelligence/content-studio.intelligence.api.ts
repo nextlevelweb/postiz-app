@@ -63,6 +63,40 @@ export const AI_CONNECTION_NAME_MAX = 100;
 const connectionPath = (id: string) =>
   `${AI_CONNECTIONS_PATH}/${encodeURIComponent(id)}`;
 
+// The credential as the server takes it: the key, and for an Anthropic key
+// that is not scoped to a workspace, the workspace id. A blank id is left out
+export const aiCredential = (apiKey: string, workspaceId?: string) =>
+  workspaceId?.trim()
+    ? { apiKey, workspaceId: workspaceId.trim() }
+    : { apiKey };
+
+// What the AI connections and the setup assistant show about a connection:
+// Ready only after a test of the key and the model succeeded. A connection
+// that was never tested is only connected; one whose last test failed needs
+// attention
+export type ContentStudioAIConnectionHealth =
+  | 'ready'
+  | 'attention'
+  | 'untested';
+export const aiConnectionHealth = (
+  connection: Pick<ContentStudioAIConnection, 'lastValidationStatus'>
+): ContentStudioAIConnectionHealth =>
+  connection.lastValidationStatus === 'valid'
+    ? 'ready'
+    : connection.lastValidationStatus
+    ? 'attention'
+    : 'untested';
+
+// A model the provider's catalog no longer offers (its calls then use the
+// provider's recommended model until another is chosen)
+export const isRetiredAIModel = (
+  connection: Pick<ContentStudioAIConnection, 'defaultModel'>,
+  provider: ContentStudioAIProviderInfo | undefined
+) =>
+  !!connection.defaultModel &&
+  !!provider &&
+  !provider.models.some((model) => model.id === connection.defaultModel);
+
 export const useContentStudioAIProviders = () => {
   const fetch = useFetch();
   const load = useCallback(
@@ -91,20 +125,27 @@ export const useContentStudioAIConnectionActions = () => {
 
   return useMemo(
     () => ({
+      // the new connection, so it can be tested right away
       createConnection: async (
         input: { name: string; provider: string; defaultModel: string },
-        apiKey: string
+        apiKey: string,
+        workspaceId?: string
       ) => {
-        await request<ContentStudioAIConnection>(fetch, AI_CONNECTIONS_PATH, {
-          method: 'POST',
-          body: JSON.stringify({
-            name: input.name,
-            provider: input.provider,
-            credential: { apiKey },
-            defaultModel: input.defaultModel,
-          }),
-        });
+        const created = await request<ContentStudioAIConnection>(
+          fetch,
+          AI_CONNECTIONS_PATH,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              name: input.name,
+              provider: input.provider,
+              credential: aiCredential(apiKey, workspaceId),
+              defaultModel: input.defaultModel,
+            }),
+          }
+        );
         await refresh();
+        return created;
       },
       updateConnection: async (
         id: string,
@@ -116,11 +157,20 @@ export const useContentStudioAIConnectionActions = () => {
         });
         await refresh();
       },
-      replaceCredential: async (id: string, apiKey: string) => {
+      replaceCredential: async (
+        id: string,
+        apiKey: string,
+        workspaceId?: string
+      ) => {
         await request<ContentStudioAIConnection>(
           fetch,
           `${connectionPath(id)}/credential`,
-          { method: 'PUT', body: JSON.stringify({ credential: { apiKey } }) }
+          {
+            method: 'PUT',
+            body: JSON.stringify({
+              credential: aiCredential(apiKey, workspaceId),
+            }),
+          }
         );
         await refresh();
       },
@@ -478,7 +528,12 @@ export const aiValidationCodeMessage = (t: Translate, code: string | null) => {
     case 'AUTH_FAILED':
       return t(
         'content_studio_ai_test_auth_failed',
-        'Authentication failed. Replace the API key and try again.'
+        "We couldn't use this API key. Check the key and try again."
+      );
+    case 'WORKSPACE_REQUIRED':
+      return t(
+        'content_studio_ai_test_workspace',
+        'This Anthropic key is not tied to a workspace. Add the workspace ID (it starts with wrkspc_) with Replace key, or use a key created inside a workspace.'
       );
     case 'RATE_LIMITED':
       return t(
@@ -503,7 +558,7 @@ export const aiValidationCodeMessage = (t: Translate, code: string | null) => {
     case 'MODEL_UNAVAILABLE':
       return t(
         'content_studio_ai_test_model',
-        'The provider could not use the configured model.'
+        'This model is not available for this connection. Choose another model with Edit.'
       );
     case 'INVALID_RESPONSE':
       return t(
@@ -513,7 +568,7 @@ export const aiValidationCodeMessage = (t: Translate, code: string | null) => {
     case 'REQUEST_REJECTED':
       return t(
         'content_studio_ai_test_rejected',
-        'The provider rejected the validation request.'
+        'The provider refused the request. Check the API key and the model, then test again.'
       );
     case 'CONTENT_REJECTED':
       return t(

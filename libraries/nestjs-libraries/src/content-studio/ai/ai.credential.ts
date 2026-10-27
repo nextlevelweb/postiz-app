@@ -60,13 +60,13 @@ export function sealContentStudioAICredential(
     input.organizationId,
     input.connectionId
   );
-  const { apiKey } = parseContentStudioAICredential(
+  const credential = parseContentStudioAICredential(
     input.provider,
     input.credential
   );
   try {
     return secretBox.seal(
-      canonicalJson({ v: PAYLOAD_VERSION, apiKey }),
+      canonicalJson({ v: PAYLOAD_VERSION, ...credential }),
       context
     );
   } catch (err) {

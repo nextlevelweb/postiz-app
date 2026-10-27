@@ -475,7 +475,14 @@ describe('Brand & AI: source surface', () => {
       }
     }
     const api = sources['content-studio.intelligence.api.ts'];
-    expect(api.match(/credential: \{ apiKey \}/g)).toHaveLength(2);
+    // the key reaches a request body through aiCredential only, twice: a new
+    // connection and a replaced key
+    expect(
+      api.match(/credential: aiCredential\(apiKey, workspaceId\)/g)
+    ).toHaveLength(2);
+    expect(api).toMatch(
+      /export const aiCredential = \(apiKey: string, workspaceId\?: string\) =>/
+    );
     expect(api).not.toMatch(/createContext|zustand|redux|useSWRMutation/);
   });
 

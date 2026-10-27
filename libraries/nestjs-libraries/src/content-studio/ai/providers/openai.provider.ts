@@ -23,6 +23,7 @@ import {
   ContentStudioAITextRequest,
   ContentStudioAITextResult,
   ContentStudioAITextUsage,
+  contentStudioAIRequestTimeout,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.types';
 
 // Fixed, never configurable and never read from the environment
@@ -192,7 +193,9 @@ export async function createContentStudioChatCompletion(
   let requestId: unknown;
   try {
     const { data, request_id } = await createClient()
-      .chat.completions.create(body)
+      .chat.completions.create(body, {
+        timeout: contentStudioAIRequestTimeout(request, OPENAI_TIMEOUT_MS),
+      })
       .withResponse();
     completion = data;
     requestId = request_id;
@@ -239,10 +242,16 @@ export function createOpenAIProviderAdapter(
 ): ContentStudioAIProviderAdapter {
   return {
     provider: 'openai',
-    // Listing models needs a valid key and generates nothing
-    async validateConnection() {
+    // Reading one model (or, without one, listing them) needs a valid key
+    // and generates nothing; a model the key cannot use is a 404
+    async validateConnection(model?: string) {
       try {
-        await openAIClient(credential, sdk).models.list();
+        const client = openAIClient(credential, sdk);
+        if (model) {
+          await client.models.retrieve(model);
+        } else {
+          await client.models.list();
+        }
         return { ok: true };
       } catch (err) {
         return toValidationFailure(err);

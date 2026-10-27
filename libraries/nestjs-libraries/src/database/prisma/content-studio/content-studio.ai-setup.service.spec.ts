@@ -1,16 +1,22 @@
 import { inspect } from 'util';
-import { HttpException } from '@nestjs/common';
+import { HttpException, Logger } from '@nestjs/common';
 import { ContentStudioRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.repository';
 import { ContentStudioAIConnectionRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.repository';
 import { ContentStudioAIOperationRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-operation.repository';
-import { ContentStudioAISetupService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-setup.service';
+import {
+  ContentStudioAISetupService,
+  SETUP_TIMEOUT_MS,
+} from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-setup.service';
 import { ContentStudioAIExecutionService } from '@gitroom/nestjs-libraries/content-studio/ai/ai.execution.service';
 import { ContentStudioAIProviderResolver } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.resolver';
 import {
   ContentStudioAIProviderError,
   ContentStudioAIResolutionError,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.error';
-import { ContentStudioAITextRequest } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.types';
+import {
+  AI_REQUEST_TIMEOUT_MAX_MS,
+  ContentStudioAITextRequest,
+} from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.types';
 import {
   CONTENT_STUDIO_AI_SETUP_PROMPT_VERSION,
   CONTENT_STUDIO_AI_SETUP_SCHEMA_NAME,
@@ -327,6 +333,49 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
       })
     );
     expect(body(err).code).toBe('CS_AI_AUTH_FAILED');
+  });
+
+  // UX review 02: the real first call failed (an Anthropic key without a
+  // workspace); every such failure has its own code and a safe log line
+  it('maps a key that needs a workspace to its own code and logs only safe diagnostics', async () => {
+    const ctx = build({ provider: 'anthropic' });
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    ctx.adapter.generateText.mockRejectedValueOnce(
+      new ContentStudioAIProviderError('WORKSPACE_REQUIRED', {
+        httpStatus: 400,
+        providerRequestId: 'req_1',
+      })
+    );
+    const err = await failure(() =>
+      ctx.service.proposeSetup({
+        organizationId: ORG,
+        userId: USER,
+        request: request(),
+      })
+    );
+    expect(body(err).code).toBe('CS_AI_WORKSPACE_REQUIRED');
+    expect(warn).toHaveBeenCalledWith(
+      'setup proposal failed: provider=anthropic model=claude-opus-5-5 code=WORKSPACE_REQUIRED httpStatus=400 providerRequestId=req_1'
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(KEY);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(COMPANY);
+    warn.mockRestore();
+  });
+
+  it('gives the provider longer than a writing call: a whole profile set is a long answer', async () => {
+    const ctx = build();
+    await ctx.service.proposeSetup({
+      organizationId: ORG,
+      userId: USER,
+      request: request(),
+    });
+    expect(ctx.adapter.generateText.mock.calls[0][0].timeoutMs).toBe(
+      SETUP_TIMEOUT_MS
+    );
+    expect(SETUP_TIMEOUT_MS).toBeGreaterThan(30_000);
+    expect(SETUP_TIMEOUT_MS).toBeLessThanOrEqual(AI_REQUEST_TIMEOUT_MAX_MS);
   });
 
   it('refuses an answer cut off at the output limit', async () => {

@@ -55,6 +55,7 @@ export function createOpenRouterProviderAdapter(
 ): ContentStudioAIProviderAdapter {
   return {
     provider: 'openrouter',
+    // the model list is public, so only the key is checked
     async validateConnection() {
       try {
         const record = await openRouterClient(credential, sdk).get<unknown>(

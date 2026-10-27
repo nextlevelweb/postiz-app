@@ -20,6 +20,7 @@ import {
   ContentStudioAITextRequest,
   ContentStudioAITextResult,
   ContentStudioAITextUsage,
+  contentStudioAIRequestTimeout,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.types';
 
 // The Claude API. Fixed, never configurable and never read from the
@@ -52,6 +53,28 @@ const anthropicClient = (
     timeout: ANTHROPIC_TIMEOUT_MS,
   });
 
+// A key that is not scoped to a workspace names the connection's workspace
+// on every request; any other key sends no such header
+const workspaceHeaders = (credential: ContentStudioAICredential) =>
+  credential.workspaceId
+    ? { headers: { 'anthropic-workspace-id': credential.workspaceId } }
+    : {};
+
+// Anthropic answers a key that is not scoped to a workspace, used without
+// the anthropic-workspace-id header, with 400 invalid_request_error. The
+// message is only looked at here, never kept
+const needsWorkspace = (err: InstanceType<typeof APIError>) => {
+  const body = err.error as
+    | { error?: { type?: unknown; message?: unknown } }
+    | undefined;
+  return (
+    err.status === 400 &&
+    body?.error?.type === 'invalid_request_error' &&
+    typeof body.error.message === 'string' &&
+    body.error.message.includes('anthropic-workspace-id')
+  );
+};
+
 // Any failure of an Anthropic SDK call as a provider error: the status, the
 // request-id header and Retry-After are kept, the provider's message, body
 // and the rest of the headers never are
@@ -66,7 +89,9 @@ export function toContentStudioAnthropicProviderError(
   }
   if (err instanceof APIError && !(err instanceof APIUserAbortError)) {
     return new ContentStudioAIProviderError(
-      contentStudioAIErrorCodeForStatus(err.status),
+      needsWorkspace(err)
+        ? 'WORKSPACE_REQUIRED'
+        : contentStudioAIErrorCodeForStatus(err.status),
       {
         httpStatus: err.status,
         providerRequestId: err.requestID,
@@ -134,7 +159,8 @@ export function toContentStudioAnthropicUsage(
 // thinking, tool use and any other block is left out
 async function createAnthropicMessage(
   createClient: () => Anthropic,
-  request: ContentStudioAITextRequest
+  request: ContentStudioAITextRequest,
+  credential: ContentStudioAICredential
 ): Promise<ContentStudioAITextResult> {
   const model = getContentStudioAIModel('anthropic', request.model);
   if (!model) {
@@ -162,7 +188,10 @@ async function createAnthropicMessage(
   let requestId: unknown;
   try {
     const { data, request_id } = await createClient()
-      .messages.create(body)
+      .messages.create(body, {
+        timeout: contentStudioAIRequestTimeout(request, ANTHROPIC_TIMEOUT_MS),
+        ...workspaceHeaders(credential),
+      })
       .withResponse();
     message = data;
     requestId = request_id;
@@ -208,10 +237,17 @@ export function createAnthropicProviderAdapter(
 ): ContentStudioAIProviderAdapter {
   return {
     provider: 'anthropic',
-    // Listing models needs a valid key and generates nothing
-    async validateConnection() {
+    // Reading one model (or, without one, listing them) needs a valid key
+    // and generates nothing; a model the key cannot use is a 404
+    async validateConnection(model?: string) {
       try {
-        await anthropicClient(credential, sdk).models.list();
+        const client = anthropicClient(credential, sdk);
+        const options = workspaceHeaders(credential);
+        if (model) {
+          await client.models.retrieve(model, {}, options);
+        } else {
+          await client.models.list({}, options);
+        }
         return { ok: true };
       } catch (err) {
         return {
@@ -223,7 +259,8 @@ export function createAnthropicProviderAdapter(
     async generateText(request) {
       return createAnthropicMessage(
         () => anthropicClient(credential, sdk),
-        request
+        request,
+        credential
       );
     },
   };

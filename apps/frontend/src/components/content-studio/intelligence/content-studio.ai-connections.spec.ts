@@ -218,6 +218,12 @@ const providers = [
     displayName: 'Anthropic',
     credentialFields: [
       { name: 'apiKey', label: 'API key', secret: true, required: true },
+      {
+        name: 'workspaceId',
+        label: 'Workspace ID',
+        secret: false,
+        required: false,
+      },
     ],
     defaultModel: 'claude-opus-5-5',
     models: [
@@ -227,8 +233,8 @@ const providers = [
         capabilities: { text: true, structuredOutput: false },
       },
       {
-        id: 'claude-haiku-5-5',
-        label: 'Claude Haiku 5.5',
+        id: 'claude-haiku-4-5-20251001',
+        label: 'Claude Haiku 4.5',
         capabilities: { text: true, structuredOutput: false },
       },
     ],
@@ -334,7 +340,7 @@ beforeEach(() => {
     connection(C1, 'Main OpenAI'),
     connection(C2, 'Old Claude', {
       provider: 'anthropic',
-      defaultModel: 'claude-haiku-5-5',
+      defaultModel: 'claude-haiku-4-5-20251001',
       disabled: true,
       lastValidatedAt: '2026-10-02T10:00:00.000Z',
       lastValidationStatus: 'invalid',
@@ -427,9 +433,10 @@ describe('AI connections: list and roles', () => {
     const row = screen.getByText('Main OpenAI').closest('li') as HTMLElement;
     expect(row.textContent).toContain('OpenAI');
     expect(row.textContent).toContain('GPT-6.1 Sol');
-    expect(row.textContent).toContain('Enabled');
     expect(row.textContent).toContain('API key stored');
-    expect(row.textContent).toContain('Not tested');
+    // UX review 02: a saved key is only connected until a test passed
+    expect(row.textContent).toContain('Connected, not tested yet');
+    expect(row.textContent).not.toContain('Ready');
     expect(document.body.textContent).not.toMatch(
       /sealed|organizationId|baseURL/i
     );
@@ -478,9 +485,9 @@ describe('AI connections: list and roles', () => {
     const row = screen.getByText('Old Claude').closest('li') as HTMLElement;
     expect(row.textContent).toContain('Disabled');
     expect(row.textContent).toContain('Anthropic');
-    expect(row.textContent).toContain('Claude Haiku 5.5');
+    expect(row.textContent).toContain('Claude Haiku 4.5');
     expect(row.textContent).toContain(
-      'Failed: Authentication failed. Replace the API key and try again.'
+      "We couldn't use this API key. Check the key and try again."
     );
     expect(row.textContent).not.toContain('AUTH_FAILED');
     expect((button('Test Old Claude') as HTMLButtonElement).disabled).toBe(
@@ -515,14 +522,15 @@ describe('AI connections: create', () => {
     expect(model.value).toBe('claude-opus-5-5');
     expect(Array.from(model.options).map((o) => o.value)).toEqual([
       'claude-opus-5-5',
-      'claude-haiku-5-5',
+      'claude-haiku-4-5-20251001',
     ]);
-    // the model is a choice only: the one text box is the optional name
+    // the model is a choice only: the text boxes are Anthropic's optional
+    // workspace id and the optional name
     expect(
       within(modal)
         .getAllByRole('textbox')
         .map((box) => box.getAttribute('aria-label'))
-    ).toEqual(['Connection name (optional)']);
+    ).toEqual(['Workspace ID (optional)', 'Connection name (optional)']);
   });
 
   it('AI10/AI11/AI12 sends exactly the form with the key, then clears it and reloads the list', async () => {
@@ -549,6 +557,12 @@ describe('AI connections: create', () => {
           credential: { apiKey: SECRET },
           defaultModel: 'gpt-6-luna',
         },
+      },
+      // UX review 02: a new connection is tested right away
+      {
+        method: 'POST',
+        url: '/content-studio/ai/connections/33333333-3333-4333-8333-333333333333/test',
+        body: undefined,
       },
     ]);
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -672,6 +686,12 @@ describe('AI connections: edit, key, lifecycle', () => {
         url: `/content-studio/ai/connections/${C1}/credential`,
         body: { credential: { apiKey: SECRET } },
       },
+      // tested again with the new key
+      {
+        method: 'POST',
+        url: `/content-studio/ai/connections/${C1}/test`,
+        body: undefined,
+      },
     ]);
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(toasts()).toEqual(['API key replaced.']);
@@ -759,7 +779,7 @@ describe('AI connections: test', () => {
     [
       'TC2',
       { ok: false, code: 'AUTH_FAILED' },
-      'Authentication failed. Replace the API key and try again.',
+      "We couldn't use this API key. Check the key and try again.",
     ],
     [
       'TC3',
@@ -784,7 +804,7 @@ describe('AI connections: test', () => {
     [
       'TC7',
       { ok: false, code: 'MODEL_UNAVAILABLE' },
-      'The provider could not use the configured model.',
+      'This model is not available for this connection. Choose another model with Edit.',
     ],
     [
       'TC8',
@@ -794,7 +814,7 @@ describe('AI connections: test', () => {
     [
       'TC8b',
       { ok: false, code: 'REQUEST_REJECTED' },
-      'The provider rejected the validation request.',
+      'The provider refused the request. Check the API key and the model, then test again.',
     ],
     [
       'TC9',
@@ -825,6 +845,99 @@ describe('AI connections: test', () => {
       requests('GET', '/content-studio/ai/connections').length
     ).toBeGreaterThan(listLoads);
     const row = screen.getByText('Main OpenAI').closest('li') as HTMLElement;
-    await waitFor(() => expect(row.textContent).toContain('Working'));
+    await waitFor(() => expect(row.textContent).toContain('Ready'));
+  });
+});
+
+// UX review 02: Lambert's Anthropic key was valid but not scoped to a
+// workspace, so every call was refused; a connection now says whether it
+// works, and an Anthropic one can name its workspace
+describe('AI connections: health and Anthropic workspaces (review 02)', () => {
+  it('AH1 an Anthropic connection can name its workspace; other providers are not asked', async () => {
+    await open();
+    const modal = openCreate();
+    expect(
+      within(modal).queryByLabelText('Workspace ID (optional)')
+    ).toBeNull();
+    fireEvent.change(field('Provider', modal), {
+      target: { value: 'anthropic' },
+    });
+    type(field('API key', modal), SECRET);
+    type(field('Workspace ID (optional)', modal), ' wrkspc_01Team ');
+    fireEvent.click(button('Connect', modal));
+    await flush();
+    expect(requests('POST', '/content-studio/ai/connections')[0].body).toEqual({
+      name: 'Anthropic',
+      provider: 'anthropic',
+      credential: { apiKey: SECRET, workspaceId: 'wrkspc_01Team' },
+      defaultModel: 'claude-opus-5-5',
+    });
+    expectNoSecretAnywhere();
+  });
+
+  it('AH2 a key replaced on an Anthropic connection can carry the workspace id', async () => {
+    await open();
+    fireEvent.click(button('Replace key Old Claude'));
+    const modal = dialog('Replace key: Old Claude');
+    type(field('API key', modal), SECRET);
+    type(field('Workspace ID (optional)', modal), 'wrkspc_01Team');
+    fireEvent.click(button('Replace key', modal));
+    await flush();
+    expect(writes()[0]).toEqual({
+      method: 'PUT',
+      url: `/content-studio/ai/connections/${C2}/credential`,
+      body: { credential: { apiKey: SECRET, workspaceId: 'wrkspc_01Team' } },
+    });
+  });
+
+  it('AH3 Ready only after a passed test; a failed one needs attention, in words', async () => {
+    connections = [
+      connection(C1, 'Main OpenAI', {
+        lastValidatedAt: '2026-10-27T10:00:00.000Z',
+        lastValidationStatus: 'valid',
+      }),
+      connection(C2, 'Team Claude', {
+        provider: 'anthropic',
+        defaultModel: 'claude-opus-5-5',
+        lastValidatedAt: '2026-10-27T10:00:00.000Z',
+        lastValidationStatus: 'invalid',
+        lastValidationCode: 'WORKSPACE_REQUIRED',
+      }),
+    ];
+    await open();
+    const ready = screen.getByText('Main OpenAI').closest('li') as HTMLElement;
+    expect(ready.textContent).toContain('Ready');
+    const attention = screen
+      .getByText('Team Claude')
+      .closest('li') as HTMLElement;
+    expect(attention.textContent).toContain('Needs attention');
+    expect(attention.textContent).toContain(
+      'This Anthropic key is not tied to a workspace.'
+    );
+    expect(attention.textContent).not.toContain('WORKSPACE_REQUIRED');
+  });
+
+  it('AH4 a model the catalog no longer offers is named, and Edit proposes the recommended one', async () => {
+    connections = [
+      connection(C1, 'Main OpenAI', { defaultModel: 'gpt-retired-model' }),
+    ];
+    await open();
+    expect(
+      screen.getByText(/The previously selected model is no longer available/)
+    ).toBeTruthy();
+    fireEvent.click(button('Edit Main OpenAI'));
+    const modal = dialog('Edit: Main OpenAI');
+    expect(
+      within(modal).getByText(
+        'The previously selected model is no longer available. Choose another.'
+      )
+    ).toBeTruthy();
+    expect(field('Default model', modal).value).toBe('gpt-6.1-sol');
+    fireEvent.click(button('Save', modal));
+    await flush();
+    expect(writes()[0].body).toEqual({
+      name: 'Main OpenAI',
+      defaultModel: 'gpt-6.1-sol',
+    });
   });
 });

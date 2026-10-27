@@ -13,6 +13,7 @@ import {
   safeProviderRequestId,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.error';
 import {
+  AI_REQUEST_TIMEOUT_MAX_MS,
   ContentStudioAIFinishReason,
   ContentStudioAITextRequest,
   ContentStudioAITextResult,
@@ -131,6 +132,10 @@ function isTextRequest(
     (request.temperature === undefined ||
       (typeof request.temperature === 'number' &&
         Number.isFinite(request.temperature))) &&
+    (request.timeoutMs === undefined ||
+      (Number.isSafeInteger(request.timeoutMs) &&
+        (request.timeoutMs as number) >= 1 &&
+        (request.timeoutMs as number) <= AI_REQUEST_TIMEOUT_MAX_MS)) &&
     isRecord(output) &&
     (output.type === 'text' ||
       (output.type === 'json' &&

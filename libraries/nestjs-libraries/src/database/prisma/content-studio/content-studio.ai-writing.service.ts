@@ -225,6 +225,11 @@ const PROVIDER_FAILURES: Record<
     'CS_AI_AUTH_FAILED',
     'The AI provider did not accept the API key of this connection.',
   ],
+  WORKSPACE_REQUIRED: [
+    502,
+    'CS_AI_WORKSPACE_REQUIRED',
+    'The AI provider needs the workspace ID of this connection.',
+  ],
   QUOTA_EXCEEDED: [
     502,
     'CS_AI_QUOTA_EXCEEDED',

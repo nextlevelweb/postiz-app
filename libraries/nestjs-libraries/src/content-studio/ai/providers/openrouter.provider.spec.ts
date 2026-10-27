@@ -324,14 +324,17 @@ describe('OpenRouter adapter: generateText', () => {
       sdk
     ).generateText(textRequest());
 
-    expect(create).toHaveBeenCalledWith({
-      model: 'google/gemini-3.8-flash',
-      messages: [
-        { role: 'system', content: 'You write social posts.' },
-        { role: 'user', content: 'Write a post about spring.' },
-      ],
-      max_completion_tokens: 300,
-    });
+    expect(create).toHaveBeenCalledWith(
+      {
+        model: 'google/gemini-3.8-flash',
+        messages: [
+          { role: 'system', content: 'You write social posts.' },
+          { role: 'user', content: 'Write a post about spring.' },
+        ],
+        max_completion_tokens: 300,
+      },
+      { timeout: 30000 }
+    );
     expect(result).toEqual({
       text: 'Spring is here',
       finishReason: 'length',
