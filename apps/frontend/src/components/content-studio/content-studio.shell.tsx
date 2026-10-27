@@ -58,6 +58,10 @@ export const contentStudioSectionOf = (
       )
   )?.key ?? 'home';
 
+// Short names for what each section holds today (UX review 02): Knowledge
+// is the web pages and feeds AI writes from (the routes keep their /sources
+// path), Radar what those feeds found and what changed on followed pages,
+// Approvals the review and approval queue. The page subtitles say more
 export const useContentStudioSectionLabels = (): Record<
   ContentStudioSection,
   string
@@ -65,10 +69,10 @@ export const useContentStudioSectionLabels = (): Record<
   const t = useT();
   return {
     home: t('content_studio_nav_home', 'Home'),
-    sources: t('content_studio_sources', 'Sources'),
-    radar: t('content_studio_research', 'Research'),
+    sources: t('content_studio_sources', 'Knowledge'),
+    radar: t('content_studio_research', 'Radar'),
     creative: t('content_studio_creative_studio', 'Creative Studio'),
-    reviews: t('content_studio_nav_reviews', 'Reviews'),
+    reviews: t('content_studio_nav_reviews', 'Approvals'),
     brand: t('content_studio_brand_ai', 'Brand & AI'),
   };
 };

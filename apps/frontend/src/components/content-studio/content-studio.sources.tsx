@@ -864,14 +864,14 @@ export const ContentStudioSources: FC = () => {
 
   return (
     <ContentStudioPage
-      title={t('content_studio_sources', 'Sources')}
+      title={t('content_studio_sources', 'Knowledge')}
       description={t(
         'content_studio_sources_subtitle',
-        'Web pages and feeds you write from. Content Studio captures them, so AI writing can quote and cite them.'
+        'Add the websites and feeds you want Content Studio to learn from. AI writing can quote them and show where each quote came from.'
       )}
       help={t(
         'content_studio_sources_note',
-        'Captured source material is stored with version history and provenance. Sources are not automatically fact-checked.'
+        'Nothing here is fact-checked automatically: check what you publish.'
       )}
       actions={
         <Button onClick={addSource}>

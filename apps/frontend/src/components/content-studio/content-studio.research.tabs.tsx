@@ -46,7 +46,7 @@ export const ContentStudioResearchTabs: FC = () => {
       </div>
       <div
         role="tablist"
-        aria-label={t('content_studio_research', 'Research')}
+        aria-label={t('content_studio_research', 'Radar')}
         className="flex gap-[8px] overflow-x-auto px-[20px] pt-[16px] mobile:px-[12px] mobile:pt-[12px] shrink-0"
       >
         {RESEARCH_TABS.map((key) => (

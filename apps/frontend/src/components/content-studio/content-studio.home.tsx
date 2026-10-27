@@ -42,18 +42,18 @@ const SectionCards: FC = () => {
   const cards = [
     {
       href: '/content-studio/sources',
-      title: t('content_studio_sources', 'Sources'),
+      title: t('content_studio_sources', 'Knowledge'),
       text: t(
         'content_studio_sources_card',
-        'Save web pages and feeds you want to write from. Each capture keeps its version and origin.'
+        'The websites and feeds Content Studio writes from.'
       ),
     },
     {
       href: RADAR_PAGE,
-      title: t('content_studio_research', 'Research'),
+      title: t('content_studio_research', 'Radar'),
       text: t(
         'content_studio_radar_card',
-        'New articles your feeds found, and what changed on pages you follow. Pick one and turn it into content.'
+        'New articles from your feeds and changes on pages you follow. Turn one into a post.'
       ),
     },
     {
@@ -61,15 +61,15 @@ const SectionCards: FC = () => {
       title: t('content_studio_creative_studio', 'Creative Studio'),
       text: t(
         'content_studio_creative_card',
-        'Make on-brand visuals from templates and render them for your posts.'
+        'Design on-brand images for your posts: from a template or blank, with your text, images and brand.'
       ),
     },
     {
       href: REVIEW_QUEUE_PAGE,
-      title: t('content_studio_review_queue', 'Review & Approval'),
+      title: t('content_studio_review_queue', 'Approvals'),
       text: t(
         'content_studio_reviews_card',
-        'Ask colleagues to review a version and approve it before it is used.'
+        'Let colleagues review and approve a post or design before it is used.'
       ),
     },
   ];

@@ -1039,7 +1039,7 @@ export const ContentStudioSourceDetail: FC<{ sourceId: string }> = ({
           <ContentStudioBreadcrumbs
             crumbs={[
               {
-                label: t('content_studio_sources', 'Sources'),
+                label: t('content_studio_sources', 'Knowledge'),
                 href: SOURCE_LIBRARY_PATH,
               },
               { label: source.name },

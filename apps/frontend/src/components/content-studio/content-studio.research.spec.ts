@@ -561,7 +561,7 @@ describe('News Radar: empty, loading and error', () => {
     expect(screen.getByText('Add a feed to see what it finds.')).toBeTruthy();
     expect(
       screen
-        .getAllByRole('link', { name: 'Sources' })
+        .getAllByRole('link', { name: 'Knowledge' })
         .every((l) => l.getAttribute('href') === '/content-studio/sources')
     ).toBe(true);
     expect(screen.queryByRole('button', { name: 'Show all time' })).toBeNull();
@@ -645,7 +645,7 @@ describe('News Radar: surface', () => {
   it('FE1 the Content Studio navigation links to Research next to Sources; the top menu keeps one Content Studio entry', () => {
     const shell = code('content-studio.shell.tsx');
     expect(shell).toContain("href: '/content-studio/research'");
-    expect(shell).toContain("t('content_studio_research', 'Research')");
+    expect(shell).toContain("t('content_studio_research', 'Radar')");
     expect(shell.indexOf("href: '/content-studio/research'")).toBeGreaterThan(
       shell.indexOf("href: '/content-studio/sources'")
     );

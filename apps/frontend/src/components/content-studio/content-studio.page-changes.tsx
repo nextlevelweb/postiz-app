@@ -150,7 +150,7 @@ export const ContentStudioPageChanges: FC = () => {
         </Button>
       )}
       <Link href={SOURCE_LIBRARY_PATH} className={linkClass}>
-        {t('content_studio_sources', 'Sources')}
+        {t('content_studio_sources', 'Knowledge')}
       </Link>
     </>
   );
@@ -169,7 +169,7 @@ export const ContentStudioPageChanges: FC = () => {
       )}
       actions={
         <Link href={SOURCE_LIBRARY_PATH} className={linkClass}>
-          {t('content_studio_sources', 'Sources')}
+          {t('content_studio_sources', 'Knowledge')}
         </Link>
       }
     >

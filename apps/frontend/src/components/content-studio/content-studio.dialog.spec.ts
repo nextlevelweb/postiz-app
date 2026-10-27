@@ -309,10 +309,10 @@ describe('Dialogs and navigation', () => {
     const links = screen.getAllByRole('link');
     expect(links.map((link) => link.textContent)).toEqual([
       'Home',
-      'Sources',
-      'Research',
+      'Knowledge',
+      'Radar',
       'Creative Studio',
-      'Reviews',
+      'Approvals',
       'Brand & AI',
     ]);
     expect(

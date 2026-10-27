@@ -229,10 +229,10 @@ export const ContentStudioReviewQueue: FC = () => {
 
   return (
     <ContentStudioPage
-      title={t('content_studio_review_queue', 'Review & Approval')}
+      title={t('content_studio_review_queue', 'Approvals')}
       description={t(
         'content_studio_review_queue_subtitle',
-        'Find the reviews and approvals that need attention. Each one opens at its exact version.'
+        'Content waiting for a colleague to review or approve it, and what you asked others to check. Each one opens at the exact version.'
       )}
       help={t(
         'content_studio_review_queue_help',

@@ -123,7 +123,7 @@ export const ContentStudioResearch: FC = () => {
             )}
           </div>
           <Link href={SOURCE_LIBRARY_PATH} className={linkClass}>
-            {t('content_studio_sources', 'Sources')}
+            {t('content_studio_sources', 'Knowledge')}
           </Link>
         </>
       );
@@ -167,7 +167,7 @@ export const ContentStudioResearch: FC = () => {
           )}
         </div>
         <Link href={SOURCE_LIBRARY_PATH} className={linkClass}>
-          {t('content_studio_sources', 'Sources')}
+          {t('content_studio_sources', 'Knowledge')}
         </Link>
       </>
     );

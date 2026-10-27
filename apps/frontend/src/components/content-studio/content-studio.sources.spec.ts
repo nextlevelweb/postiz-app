@@ -514,7 +514,7 @@ describe('Source Library: list', () => {
     expect(gets('/content-studio/sources').map((c) => c.url)).toEqual([
       '/content-studio/sources?page=1&archived=false',
     ]);
-    expect(screen.getByRole('heading', { name: 'Sources' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Knowledge' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Alpha' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Beta' })).toBeTruthy();
   });
@@ -672,12 +672,12 @@ describe('Source Library: list', () => {
     await renderList();
     expect(
       screen.getByText(
-        'Web pages and feeds you write from. Content Studio captures them, so AI writing can quote and cite them.'
+        'Add the websites and feeds you want Content Studio to learn from. AI writing can quote them and show where each quote came from.'
       )
     ).toBeTruthy();
     expect(
       screen.getByText(
-        'Captured source material is stored with version history and provenance. Sources are not automatically fact-checked.'
+        'Nothing here is fact-checked automatically: check what you publish.'
       )
     ).toBeTruthy();
     // the way back: the Content Studio navigation, Home first
@@ -813,7 +813,7 @@ describe('Source Library: add a source', () => {
       'POST /content-studio/sources',
     ]);
     // the page stays on the list
-    expect(screen.getByRole('heading', { name: 'Sources' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Knowledge' })).toBeTruthy();
   });
 
   it('SC-UI10 a duplicate shows fixed text and keeps the dialog open as typed', async () => {
@@ -1371,7 +1371,7 @@ describe('Source Library: source page', () => {
     expect(screen.getByText('Web page')).toBeTruthy();
     expect(screen.getAllByText('Version 2').length).toBeGreaterThan(0);
     expect(
-      screen.getByRole('link', { name: 'Sources' }).getAttribute('href')
+      screen.getByRole('link', { name: 'Knowledge' }).getAttribute('href')
     ).toBe('/content-studio/sources');
   });
 
@@ -2063,7 +2063,7 @@ describe('Source Library: source surface', () => {
   it('6 is linked from the Content Studio navigation and home, not added to the main menu', () => {
     const shell = readFileSync(join(dir, 'content-studio.shell.tsx'), 'utf8');
     expect(shell).toContain("href: '/content-studio/sources'");
-    expect(shell).toContain("t('content_studio_sources', 'Sources')");
+    expect(shell).toContain("t('content_studio_sources', 'Knowledge')");
     const home = readFileSync(join(dir, 'content-studio.home.tsx'), 'utf8');
     expect(home).toContain("href: '/content-studio/sources'");
     const menu = readFileSync(join(dir, '../layout/top.menu.tsx'), 'utf8');
@@ -2132,7 +2132,7 @@ describe('Source Library: source surface', () => {
   it('PV-UI1/PV-UI2/PV-UI3/PV-UI4/M18-M21 no verified, trusted, accurate or reliable claim', () => {
     // the three sentences that say what a source is not
     const NEGATIVE = [
-      'Captured source material is stored with version history and provenance. Sources are not automatically fact-checked.',
+      'Nothing here is fact-checked automatically: check what you publish.',
       'This records what was captured and when. It does not independently verify whether the source is factually correct.',
       'These hashes identify the captured response and the extracted text. They do not show whether the content is true.',
     ];
