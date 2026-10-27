@@ -7,6 +7,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@gitroom/react/form/button';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
+import { ContentStudioBreadcrumbs } from '@gitroom/frontend/components/content-studio/content-studio.shell';
 import { ContentStudioPager } from '@gitroom/frontend/components/content-studio/content-studio.package.list';
 import { formatDate } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
 import { ContentStudioDiscoveryRow } from '@gitroom/frontend/components/content-studio/content-studio.discovery.row';
@@ -1035,12 +1036,15 @@ export const ContentStudioSourceDetail: FC<{ sourceId: string }> = ({
     <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col gap-[20px] min-w-0">
       <div className="flex flex-wrap items-start gap-[12px]">
         <div className="flex flex-col gap-[6px] flex-1 min-w-[200px]">
-          <Link
-            href={SOURCE_LIBRARY_PATH}
-            className="text-[13px] text-textItemBlur hover:underline"
-          >
-            {t('content_studio_sources', 'Sources')}
-          </Link>
+          <ContentStudioBreadcrumbs
+            crumbs={[
+              {
+                label: t('content_studio_sources', 'Sources'),
+                href: SOURCE_LIBRARY_PATH,
+              },
+              { label: source.name },
+            ]}
+          />
           <h1 className="text-[20px] font-[600] break-words">{source.name}</h1>
           <SourceUrl url={source.canonicalUrl} className="text-[14px]" />
           <div className="flex flex-wrap gap-x-[16px] gap-y-[4px] text-[12px] text-textItemBlur">

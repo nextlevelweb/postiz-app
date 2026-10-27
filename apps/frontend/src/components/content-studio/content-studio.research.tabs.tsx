@@ -6,6 +6,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { ContentStudioResearch } from '@gitroom/frontend/components/content-studio/content-studio.research';
 import { ContentStudioPageChanges } from '@gitroom/frontend/components/content-studio/content-studio.page-changes';
+import { ContentStudioNav } from '@gitroom/frontend/components/content-studio/content-studio.shell';
 
 // The tab lives in the URL (?tab=), so a reload or the back button keeps it.
 // No tab (or anything else) is News Radar, as the page always was; each tab
@@ -40,10 +41,13 @@ export const ContentStudioResearchTabs: FC = () => {
 
   return (
     <div className="bg-newBgColorInner flex flex-1 flex-col min-w-0">
+      <div className="flex flex-col px-[20px] pt-[20px] mobile:px-[12px] mobile:pt-[12px]">
+        <ContentStudioNav />
+      </div>
       <div
         role="tablist"
         aria-label={t('content_studio_research', 'Research')}
-        className="flex gap-[8px] overflow-x-auto px-[20px] pt-[20px] mobile:px-[12px] mobile:pt-[12px] shrink-0"
+        className="flex gap-[8px] overflow-x-auto px-[20px] pt-[16px] mobile:px-[12px] mobile:pt-[12px] shrink-0"
       >
         {RESEARCH_TABS.map((key) => (
           <button

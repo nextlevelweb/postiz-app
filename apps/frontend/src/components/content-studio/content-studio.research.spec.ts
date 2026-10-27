@@ -52,6 +52,7 @@ jest.mock('next/navigation', () => {
   };
 });
 jest.mock('@gitroom/frontend/components/layout/new-modal', () => ({
+  useModalCloseGuard: () => undefined,
   useModals: () => ({
     openModal: jest.fn(),
     closeAll: jest.fn(),
@@ -234,7 +235,9 @@ describe('News Radar: page and filters', () => {
     await renderRadar();
     expect(screen.getByRole('heading', { name: 'News Radar' })).toBeTruthy();
     expect(
-      screen.getByText('Recent pages discovered by your feeds.')
+      screen.getByText(
+        'New pages your feed sources found. Pick one and use it in content: AI writing then works from that page.'
+      )
     ).toBeTruthy();
     expect(radarQueries()).toEqual([{ page: '1', since: '7d' }]);
     expect(pressed('7 days')).toBe('true');
@@ -639,15 +642,15 @@ describe('News Radar: surface', () => {
     'utf8'
   );
 
-  it('FE1 Content Studio home links to News Radar next to Sources; the top menu keeps one Content Studio entry', () => {
-    const home = code('content-studio.home.tsx');
-    expect(home).toContain('href={RADAR_PAGE}');
-    expect(home).toContain("{t('content_studio_news_radar', 'News Radar')}");
-    expect(home.indexOf('href={RADAR_PAGE}')).toBeGreaterThan(
-      home.indexOf('href="/content-studio/sources"')
+  it('FE1 the Content Studio navigation links to Research next to Sources; the top menu keeps one Content Studio entry', () => {
+    const shell = code('content-studio.shell.tsx');
+    expect(shell).toContain("href: '/content-studio/research'");
+    expect(shell).toContain("t('content_studio_research', 'Research')");
+    expect(shell.indexOf("href: '/content-studio/research'")).toBeGreaterThan(
+      shell.indexOf("href: '/content-studio/sources'")
     );
-    expect(home.indexOf('href={RADAR_PAGE}')).toBeLessThan(
-      home.indexOf('href="/content-studio/designs"')
+    expect(shell.indexOf("href: '/content-studio/research'")).toBeLessThan(
+      shell.indexOf("href: '/content-studio/designs'")
     );
     expect(code('content-studio.research.api.ts')).toContain(
       "export const RADAR_PAGE = '/content-studio/research';"
@@ -667,7 +670,6 @@ describe('News Radar: surface', () => {
       radar.matchAll(/['"`](\/content-studio[^'"`$]*)/g)
     ).map((m) => m[1]);
     expect([...new Set(urls)].sort()).toEqual([
-      '/content-studio',
       '/content-studio/discoveries',
       '/content-studio/research',
     ]);

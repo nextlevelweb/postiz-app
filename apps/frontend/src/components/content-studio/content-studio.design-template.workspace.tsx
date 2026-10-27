@@ -7,6 +7,7 @@ import { Button } from '@gitroom/react/form/button';
 import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
+import { ContentStudioBreadcrumbs } from '@gitroom/frontend/components/content-studio/content-studio.shell';
 import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import { formatDate } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
 import {
@@ -748,21 +749,21 @@ export const ContentStudioDesignTemplateWorkspace: FC<{
     <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col gap-[20px] min-w-0">
       <div className="flex flex-wrap items-start gap-[12px]">
         <div className="flex flex-col gap-[6px] flex-1 min-w-[200px]">
-          <Link
-            href={TEMPLATE_LIBRARY_PATH}
-            className="text-[13px] text-textItemBlur hover:underline"
-            onClick={async (event) => {
-              if (!editor.state) {
-                return;
-              }
-              event.preventDefault();
-              if (await leaveEdit()) {
-                router.push(TEMPLATE_LIBRARY_PATH);
-              }
-            }}
-          >
-            {t('content_studio_templates', 'Templates')}
-          </Link>
+          <ContentStudioBreadcrumbs
+            crumbs={[
+              {
+                label: t('content_studio_creative_studio', 'Creative Studio'),
+                href: '/content-studio/designs',
+              },
+              {
+                label: t('content_studio_templates', 'Templates'),
+                href: TEMPLATE_LIBRARY_PATH,
+              },
+              { label: template.name },
+            ]}
+            onLeave={async () => !editor.state || (await leaveEdit())}
+            navigate={(href) => router.push(href)}
+          />
           <h1 className="text-[20px] font-[600] break-words">
             {template.name}
           </h1>

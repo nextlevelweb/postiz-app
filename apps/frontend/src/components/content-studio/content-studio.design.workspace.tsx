@@ -18,6 +18,10 @@ import { useToaster } from '@gitroom/react/toaster/toaster';
 import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
+import {
+  ContentStudioBreadcrumbs,
+  ContentStudioLoading,
+} from '@gitroom/frontend/components/content-studio/content-studio.shell';
 import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import { ContentStudioPager } from '@gitroom/frontend/components/content-studio/content-studio.package.list';
 import { formatDate } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
@@ -1491,7 +1495,17 @@ export const ContentStudioDesignWorkspace: FC<{
     );
   }
   if (!detail.data || !currentRevision) {
-    return <LoadingComponent />;
+    return (
+      <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col min-w-0">
+        <ContentStudioLoading
+          label={t('content_studio_design_opening', 'Opening design…')}
+          detail={t(
+            'content_studio_design_opening_hint',
+            'Loading the design and its pages.'
+          )}
+        />
+      </div>
+    );
   }
   if (!currentDocument) {
     return (
@@ -1594,21 +1608,17 @@ export const ContentStudioDesignWorkspace: FC<{
     <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col gap-[20px] min-w-0">
       <div className="flex flex-wrap items-start gap-[12px]">
         <div className="flex flex-col gap-[6px] flex-1 min-w-[200px]">
-          <Link
-            href={DESIGN_LIBRARY_PATH}
-            className="text-[13px] text-textItemBlur hover:underline"
-            onClick={async (event) => {
-              if (!editor.state) {
-                return;
-              }
-              event.preventDefault();
-              if (await leaveEdit()) {
-                router.push(DESIGN_LIBRARY_PATH);
-              }
-            }}
-          >
-            {t('content_studio_creative_studio', 'Creative Studio')}
-          </Link>
+          <ContentStudioBreadcrumbs
+            crumbs={[
+              {
+                label: t('content_studio_creative_studio', 'Creative Studio'),
+                href: DESIGN_LIBRARY_PATH,
+              },
+              { label: design.name },
+            ]}
+            onLeave={async () => !editor.state || (await leaveEdit())}
+            navigate={(href) => router.push(href)}
+          />
           <h1 className="text-[20px] font-[600] break-words">{design.name}</h1>
           <div className="flex flex-wrap gap-x-[16px] gap-y-[4px] text-[12px] text-textItemBlur">
             <DesignStatus design={design} />

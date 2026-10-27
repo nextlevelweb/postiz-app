@@ -10,6 +10,8 @@ import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
+import { ContentStudioPage } from '@gitroom/frontend/components/content-studio/content-studio.shell';
+import { useContentStudioDialogGuard } from '@gitroom/frontend/components/content-studio/content-studio.dialog';
 import { ContentStudioPager } from '@gitroom/frontend/components/content-studio/content-studio.package.list';
 import { useSingleFlight } from '@gitroom/frontend/components/content-studio/content-studio.projects.modal';
 import { formatDate } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
@@ -153,6 +155,8 @@ const AddSourceForm: FC<{ close: () => void }> = ({ close }) => {
   const [urlInvalid, setUrlInvalid] = useState(false);
   const { busy, run } = useSingleFlight();
   const address = url.trim();
+  // a typed name or address is not dropped by a click outside or Escape
+  const release = useContentStudioDialogGuard(!!name.trim() || !!address);
 
   const submit = useCallback(
     async (e: FormEvent) => {
@@ -173,6 +177,7 @@ const AddSourceForm: FC<{ close: () => void }> = ({ close }) => {
             t('content_studio_source_added', 'Source added.'),
             'success'
           );
+          release();
           close();
         } catch (err) {
           // the input stays as typed, to correct and try again
@@ -180,7 +185,7 @@ const AddSourceForm: FC<{ close: () => void }> = ({ close }) => {
         }
       });
     },
-    [kind, name, address, run, createSource, toaster, close, t]
+    [kind, name, address, run, createSource, toaster, close, t, release]
   );
 
   const kinds: Array<[ContentStudioSourceKind, string, string]> = [
@@ -858,38 +863,22 @@ export const ContentStudioSources: FC = () => {
   );
 
   return (
-    <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col gap-[16px] min-w-0">
-      <div className="flex flex-wrap items-center gap-[12px]">
-        <div className="flex flex-col gap-[4px] flex-1 min-w-[200px]">
-          <h1 className="text-[20px] font-[600]">
-            {t('content_studio_sources', 'Sources')}
-          </h1>
-          <div className="text-textItemBlur">
-            {t(
-              'content_studio_sources_subtitle',
-              'Save web sources for use as reference material in Content Studio.'
-            )}
-          </div>
-          <div className="text-[13px] text-textItemBlur">
-            {t(
-              'content_studio_sources_note',
-              'Captured source material is stored with version history and provenance. Sources are not automatically fact-checked.'
-            )}
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-[8px]">
-          <Link
-            href="/content-studio"
-            className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
-          >
-            {t('content_studio', 'Content Studio')}
-          </Link>
-          <Button onClick={addSource}>
-            {t('content_studio_add_source', 'Add source')}
-          </Button>
-        </div>
-      </div>
-
+    <ContentStudioPage
+      title={t('content_studio_sources', 'Sources')}
+      description={t(
+        'content_studio_sources_subtitle',
+        'Web pages and feeds you write from. Content Studio captures them, so AI writing can quote and cite them.'
+      )}
+      help={t(
+        'content_studio_sources_note',
+        'Captured source material is stored with version history and provenance. Sources are not automatically fact-checked.'
+      )}
+      actions={
+        <Button onClick={addSource}>
+          {t('content_studio_add_source', 'Add source')}
+        </Button>
+      }
+    >
       <div
         role="group"
         aria-label={t('content_studio_status', 'Status')}
@@ -968,7 +957,7 @@ export const ContentStudioSources: FC = () => {
               <div className="text-textItemBlur">
                 {t(
                   'content_studio_no_sources_hint',
-                  'Add a URL and capture it before using it as reference material.'
+                  'Add the address of a page you want to write about, such as your own website, a blog post or a news feed. Content Studio captures its text so AI writing can use and cite it.'
                 )}
               </div>
               <Button onClick={addSource}>
@@ -998,6 +987,6 @@ export const ContentStudioSources: FC = () => {
           )}
         </>
       )}
-    </div>
+    </ContentStudioPage>
   );
 };

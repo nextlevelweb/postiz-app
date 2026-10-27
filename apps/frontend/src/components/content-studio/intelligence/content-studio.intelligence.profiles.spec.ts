@@ -70,6 +70,7 @@ const mockModals = {
 let modalId = 0;
 const mockOpenModal = jest.fn();
 jest.mock('@gitroom/frontend/components/layout/new-modal', () => ({
+  useModalCloseGuard: () => undefined,
   useModals: () => ({
     openModal: mockOpenModal,
     closeAll: () => mockModals.set([]),
@@ -176,6 +177,12 @@ const renderPage = (href = '/content-studio/intelligence') => {
 };
 const dialog = (title: string | RegExp) =>
   screen.getByRole('dialog', { name: title });
+// the in-page profile editor
+const editor = (title: string | RegExp) =>
+  screen.findByRole('region', { name: title });
+// actions sit at the top and the bottom of an editor: the first of them
+const first = (name: string | RegExp, root: HTMLElement = document.body) =>
+  within(root).getAllByRole('button', { name })[0];
 const button = (name: string | RegExp, root: HTMLElement = document.body) =>
   within(root).getByRole('button', { name });
 const queryButton = (
@@ -579,7 +586,7 @@ describe.each(KINDS)('Named profiles: $tab', (kind) => {
   it('WF6/WF7/AF11/XF11 edits over the loaded version and saves a new one', async () => {
     await openTab(kind.tab, kind.active);
     fireEvent.click(button(`Edit ${kind.active}`));
-    const modal = dialog(kind.active);
+    const modal = await editor(kind.active);
     await within(modal).findByText(`Version ${kind.latestRevision}`);
     const list =
       kind.tab === 'writing'
@@ -588,16 +595,22 @@ describe.each(KINDS)('Named profiles: $tab', (kind) => {
         ? 'Goals'
         : 'Subjects';
     addEntry(modal, list, 'Added entry');
-    fireEvent.click(button('Save', modal));
+    fireEvent.click(first('Save', modal));
     await flush();
     const [save] = requests('POST', `${kind.base}/`);
     expect(save.url).toBe(`${kind.base}/${store[kind.base][0].id}/revisions`);
     expect(save.body.baseRevisionNumber).toBe(kind.latestRevision);
     expect(save.body.content.schemaVersion).toBe(1);
     expect(toasts()).toEqual(['Saved as a new version.']);
-    // the next save goes over the new version
-    addEntry(modal, list, 'Another entry');
-    fireEvent.click(button('Save', modal));
+    // Save returns to the list; the next edit goes over the new version
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: kind.active })).toBeNull()
+    );
+    fireEvent.click(button(`Edit ${kind.active}`));
+    const again = await editor(kind.active);
+    await within(again).findByText(`Version ${kind.latestRevision + 1}`);
+    addEntry(again, list, 'Another entry');
+    fireEvent.click(first('Save', again));
     await flush();
     expect(requests('POST', `${kind.base}/`)[1].body.baseRevisionNumber).toBe(
       kind.latestRevision + 1
@@ -607,9 +620,9 @@ describe.each(KINDS)('Named profiles: $tab', (kind) => {
   it('WF8 says when there is nothing new to save', async () => {
     await openTab(kind.tab, kind.active);
     fireEvent.click(button(`Edit ${kind.active}`));
-    const modal = dialog(kind.active);
+    const modal = await editor(kind.active);
     await within(modal).findByText(`Version ${kind.latestRevision}`);
-    fireEvent.click(button('Save', modal));
+    fireEvent.click(first('Save', modal));
     await flush();
     expect(toasts()).toEqual(['No content changes to save.']);
   });
@@ -617,7 +630,7 @@ describe.each(KINDS)('Named profiles: $tab', (kind) => {
   it('WF9/WF10 shows a conflict and never saves again by itself; Reload loads the latest version', async () => {
     await openTab(kind.tab, kind.active);
     fireEvent.click(button(`Edit ${kind.active}`));
-    const modal = dialog(kind.active);
+    const modal = await editor(kind.active);
     await within(modal).findByText(`Version ${kind.latestRevision}`);
     // someone else saves meanwhile
     const target = store[kind.base][0];
@@ -625,20 +638,20 @@ describe.each(KINDS)('Named profiles: $tab', (kind) => {
       ...target.revisions,
       revision(target.revisions.length + 1, kind.content()),
     ];
-    fireEvent.click(button('Save', modal));
+    fireEvent.click(first('Save', modal));
     await flush();
     expect(within(modal).getByRole('alert').textContent).toContain(
       'This profile changed elsewhere. Reload the latest version before saving.'
     );
     expect(requests('POST', `${kind.base}/`)).toHaveLength(1);
-    expect((button('Save', modal) as HTMLButtonElement).disabled).toBe(true);
+    expect((first('Save', modal) as HTMLButtonElement).disabled).toBe(true);
     expect(toasts()).toEqual([]);
 
     fireEvent.click(button('Reload latest', modal));
     await flush();
     expect(within(modal).queryByRole('alert')).toBeNull();
     await within(modal).findByText(`Version ${kind.latestRevision + 1}`);
-    fireEvent.click(button('Save', modal));
+    fireEvent.click(first('Save', modal));
     await flush();
     expect(requests('POST', `${kind.base}/`)).toHaveLength(2);
     expect(requests('POST', `${kind.base}/`)[1].body.baseRevisionNumber).toBe(
@@ -646,13 +659,13 @@ describe.each(KINDS)('Named profiles: $tab', (kind) => {
     );
   });
 
-  it('WF11 renames with its own request, making no version', async () => {
+  it('WF11 a name change alone is one rename request, making no version', async () => {
     await openTab(kind.tab, kind.active);
     fireEvent.click(button(`Edit ${kind.active}`));
-    const modal = dialog(kind.active);
+    const modal = await editor(kind.active);
     await within(modal).findByText(`Version ${kind.latestRevision}`);
     type(field('Name', modal), '  Renamed profile ');
-    fireEvent.click(button('Save name', modal));
+    fireEvent.click(first('Save', modal));
     await flush();
     expect(writes()).toEqual([
       {
@@ -693,7 +706,7 @@ describe.each(KINDS)('Named profiles: $tab', (kind) => {
     fireEvent.click(button('Archived'));
     await screen.findByText(kind.archived);
     fireEvent.click(button(`View ${kind.archived}`));
-    const modal = dialog(kind.archived);
+    const modal = await editor(kind.archived);
     await within(modal).findByText(
       'This profile is archived. Restore it to edit it.'
     );
@@ -706,14 +719,14 @@ describe.each(KINDS)('Named profiles: $tab', (kind) => {
 
   it('WF3/AF2/XF2 lets an ordinary member create, and refuses safely', async () => {
     await openTab(kind.tab, kind.active);
-    fireEvent.click(button(kind.create));
-    const modal = dialog(kind.create);
+    fireEvent.click(first(kind.create));
+    const modal = await editor(kind.create);
     type(field('Name', modal), 'Fresh');
     override = (method, url) =>
       method === 'POST' && url === kind.base
         ? reply(400, { msg: MARKER, code: 'CS_PROFILE_TOO_LARGE' })
         : undefined;
-    fireEvent.click(button('Create profile', modal));
+    fireEvent.click(first('Save', modal));
     await flush();
     expect(toasts()).toEqual([
       'This is too long to save. Shorten some fields and try again.',
@@ -721,9 +734,11 @@ describe.each(KINDS)('Named profiles: $tab', (kind) => {
     // the form stays as typed
     expect(field('Name', modal).value).toBe('Fresh');
     override = () => undefined;
-    fireEvent.click(button('Create profile', modal));
+    fireEvent.click(first('Save', modal));
     await flush();
-    expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: kind.create })).toBeNull()
+    );
     expect(toasts()[1]).toBe('Profile created.');
     expect(await screen.findByText('Fresh')).toBeTruthy();
   });
@@ -731,7 +746,7 @@ describe.each(KINDS)('Named profiles: $tab', (kind) => {
   it('WF19/AF16/XF18 has no AI, default, import or checking action', async () => {
     await openTab(kind.tab, kind.active);
     fireEvent.click(button(`Edit ${kind.active}`));
-    const modal = dialog(kind.active);
+    const modal = await editor(kind.active);
     await within(modal).findByText(`Version ${kind.latestRevision}`);
     expect(actionLabels().filter((l) => FORBIDDEN_ACTIONS.test(l))).toEqual([]);
   });
@@ -740,8 +755,8 @@ describe.each(KINDS)('Named profiles: $tab', (kind) => {
 describe('Writing profile form', () => {
   it('WF4/WF5 builds Writing DNA v1 from the structured fields', async () => {
     await openTab('writing', 'Brand voice');
-    fireEvent.click(button('New writing profile'));
-    const modal = dialog('New writing profile');
+    fireEvent.click(first('New writing profile'));
+    const modal = await editor('New writing profile');
     type(field('Name', modal), 'Calm voice');
     type(field('Voice', modal), '  Calm.\nClear. ');
     addEntry(modal, 'Tone tags', ' calm ');
@@ -757,7 +772,7 @@ describe('Writing profile form', () => {
     addEntry(modal, "Don't", 'No jargon.');
     fireEvent.click(button('Add example', modal));
     type(field('Example 1', modal), 'Hi there.');
-    fireEvent.click(button('Create profile', modal));
+    fireEvent.click(first('Save', modal));
     await flush();
     expect(
       requests('POST', '/content-studio/writing-profiles')[0].body
@@ -779,8 +794,8 @@ describe('Writing profile form', () => {
 
   it('WF18 allows at most five examples', async () => {
     await openTab('writing', 'Brand voice');
-    fireEvent.click(button('New writing profile'));
-    const modal = dialog('New writing profile');
+    fireEvent.click(first('New writing profile'));
+    const modal = await editor('New writing profile');
     for (let i = 0; i < 5; i++) {
       fireEvent.click(button('Add example', modal));
     }
@@ -797,8 +812,8 @@ describe('Writing profile form', () => {
 describe('Audience profile form', () => {
   it('AF3-AF10 builds Audience v1, with optional tone and locale', async () => {
     await openTab('audiences', 'SME owners');
-    fireEvent.click(button('New audience profile'));
-    const modal = dialog('New audience profile');
+    fireEvent.click(first('New audience profile'));
+    const modal = await editor('New audience profile');
     const level = field(
       'Knowledge level',
       modal
@@ -821,7 +836,7 @@ describe('Audience profile form', () => {
     addEntry(modal, 'Goals', 'Ship faster');
     addEntry(modal, 'Pain points', 'Flaky tests');
     addEntry(modal, 'Objections', 'Too much hype');
-    fireEvent.click(button('Create profile', modal));
+    fireEvent.click(first('Save', modal));
     await flush();
     expect(
       requests('POST', '/content-studio/audience-profiles')[0].body
@@ -843,8 +858,8 @@ describe('Audience profile form', () => {
 
   it('AF14/AF15 has no demographic, targeting or upload control', async () => {
     await openTab('audiences', 'SME owners');
-    fireEvent.click(button('New audience profile'));
-    const modal = dialog('New audience profile');
+    fireEvent.click(first('New audience profile'));
+    const modal = await editor('New audience profile');
     const labels = [
       ...within(modal).queryAllByRole('textbox'),
       ...within(modal).queryAllByRole('combobox'),
@@ -859,8 +874,8 @@ describe('Audience profile form', () => {
 describe('Expertise profile form', () => {
   it('XF3-XF10 builds Expertise v1 with stances in the order entered', async () => {
     await openTab('expertise', 'Tax expertise');
-    fireEvent.click(button('New expertise profile'));
-    const modal = dialog('New expertise profile');
+    fireEvent.click(first('New expertise profile'));
+    const modal = await editor('New expertise profile');
     expect(modal.textContent).toContain(
       'Expertise profiles are organization-provided context. They are not automatically verified facts.'
     );
@@ -877,7 +892,7 @@ describe('Expertise profile form', () => {
     type(field('Evidence expectations', modal), 'Cite primary sources.');
     addEntry(modal, 'Avoid topics', 'Politics');
     type(field('Confidence boundaries', modal), 'Label forecasts.');
-    fireEvent.click(button('Create profile', modal));
+    fireEvent.click(first('Save', modal));
     await flush();
     expect(
       requests('POST', '/content-studio/expertise-profiles')[0].body
@@ -902,7 +917,7 @@ describe('Expertise profile form', () => {
   it('XF14-XF17 shows no verified badge, source, citation or grounding control', async () => {
     await openTab('expertise', 'Tax expertise');
     fireEvent.click(button('Edit Tax expertise'));
-    const modal = dialog('Tax expertise');
+    const modal = await editor('Tax expertise');
     await within(modal).findByText('Version 1');
     // each piece of text on its own: the one mention of verification is
     // the note that says the content is not verified
@@ -943,7 +958,7 @@ describe('Editorial policy', () => {
     expect((button('History') as HTMLButtonElement).disabled).toBe(true);
     addEntry(document.body, 'Principles', 'Be useful.');
     type(field('Compliance notes'), 'Add the risk notice.');
-    fireEvent.click(button('Save policy'));
+    fireEvent.click(first('Save policy'));
     await flush();
     expect(writes()).toEqual([
       {
@@ -971,11 +986,11 @@ describe('Editorial policy', () => {
     policy = [revision(1, policyContent()), revision(2, policyContent())];
     await openTab('editorial', 'Version 2');
     expect(screen.getByText('Politics')).toBeTruthy();
-    fireEvent.click(button('Save policy'));
+    fireEvent.click(first('Save policy'));
     await flush();
     expect(toasts()).toEqual(['No policy changes to save.']);
     addEntry(document.body, 'Claim rules', 'Cite numbers.');
-    fireEvent.click(button('Save policy'));
+    fireEvent.click(first('Save policy'));
     await flush();
     expect(
       requests('POST', '/content-studio/editorial-policy/revisions').map(
@@ -990,12 +1005,12 @@ describe('Editorial policy', () => {
     await openTab('editorial', 'Version 1');
     policy = [...policy, revision(2, policyContent())];
     addEntry(document.body, 'Claim rules', 'Cite numbers.');
-    fireEvent.click(button('Save policy'));
+    fireEvent.click(first('Save policy'));
     await flush();
     expect(screen.getByRole('alert').textContent).toContain(
       'The editorial policy changed elsewhere. Reload the latest version before saving.'
     );
-    expect((button('Save policy') as HTMLButtonElement).disabled).toBe(true);
+    expect((first('Save policy') as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(button('Reload latest'));
     expect(await screen.findByText('Version 2')).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
@@ -1081,7 +1096,7 @@ describe('Editorial policy: approval before handoff (P5-07)', () => {
     fireEvent.click(toggle());
     expect(toggle().checked).toBe(true);
     expect(document.body.textContent).toContain(ON_HINT);
-    fireEvent.click(button('Save policy'));
+    fireEvent.click(first('Save policy'));
     await flush();
     expect(saved()).toEqual([
       {
@@ -1105,7 +1120,7 @@ describe('Editorial policy: approval before handoff (P5-07)', () => {
     await openTab('editorial', 'Version 1');
     expect(toggle().checked).toBe(true);
     fireEvent.click(toggle());
-    fireEvent.click(button('Save policy'));
+    fireEvent.click(first('Save policy'));
     await flush();
     const [body] = saved();
     expect(body.content).toEqual(policyContent());

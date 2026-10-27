@@ -299,22 +299,31 @@ describe('Brand & AI page', () => {
       mockUser.mockReturnValue({ orgId: 'org', tier: 'PRO', role });
       renderPage('/content-studio/intelligence?tab=writing');
       expect(await screen.findByText('No writing profiles yet.')).toBeTruthy();
-      expect(queryButton('New writing profile')).not.toBeNull();
+      expect(
+        screen.queryAllByRole('button', { name: 'New writing profile' }).length
+      ).toBeGreaterThan(0);
       await flush();
       cleanup();
       renderPage('/content-studio/intelligence?tab=audiences');
       await screen.findByText('No audience profiles yet.');
-      expect(queryButton('New audience profile')).not.toBeNull();
+      expect(
+        screen.queryAllByRole('button', { name: 'New audience profile' }).length
+      ).toBeGreaterThan(0);
       await flush();
       cleanup();
       renderPage('/content-studio/intelligence?tab=expertise');
       await screen.findByText('No expertise profiles yet.');
-      expect(queryButton('New expertise profile')).not.toBeNull();
+      expect(
+        screen.queryAllByRole('button', { name: 'New expertise profile' })
+          .length
+      ).toBeGreaterThan(0);
       await flush();
       cleanup();
       renderPage('/content-studio/intelligence?tab=editorial');
       await screen.findByText('No editorial policy saved yet.');
-      expect(queryButton('Save policy')).not.toBeNull();
+      expect(
+        screen.queryAllByRole('button', { name: 'Save policy' }).length
+      ).toBeGreaterThan(0);
       expect(field('Compliance notes').disabled).toBe(false);
     }
   );
@@ -343,16 +352,16 @@ describe('Brand & AI page', () => {
 describe('Brand & AI: routes and navigation', () => {
   const app = join(__dirname, '../../../app/(app)/(site)/content-studio');
 
-  it('PG8 has a thin /content-studio/intelligence page, linked from the Content Studio home', () => {
+  it('PG8 has a thin /content-studio/intelligence page, linked from the Content Studio navigation', () => {
     const page = readFileSync(join(app, 'intelligence/page.tsx'), 'utf8');
     expect(page).toContain('return <ContentStudioIntelligence />;');
     expect(page).not.toMatch(/fetch|useSWR|apiKey/);
-    const home = readFileSync(
-      join(__dirname, '../content-studio.home.tsx'),
+    const shell = readFileSync(
+      join(__dirname, '../content-studio.shell.tsx'),
       'utf8'
     );
-    expect(home).toContain('href="/content-studio/intelligence"');
-    expect(home).toContain("t('content_studio_brand_ai', 'Brand & AI')");
+    expect(shell).toContain("href: '/content-studio/intelligence'");
+    expect(shell).toContain("t('content_studio_brand_ai', 'Brand & AI')");
   });
 
   it('keeps the one Content Studio menu entry, active on Brand & AI', () => {

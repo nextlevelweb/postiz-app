@@ -20,6 +20,7 @@ import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
+import { ContentStudioPage } from '@gitroom/frontend/components/content-studio/content-studio.shell';
 import { ContentStudioPager } from '@gitroom/frontend/components/content-studio/content-studio.package.list';
 import { useSingleFlight } from '@gitroom/frontend/components/content-studio/content-studio.projects.modal';
 import {
@@ -1379,32 +1380,25 @@ export const ContentStudioDesignTemplates: FC = () => {
   );
 
   return (
-    <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col gap-[16px] min-w-0">
-      <div className="flex flex-wrap items-center gap-[12px]">
-        <div className="flex flex-col gap-[4px] flex-1 min-w-[200px]">
-          <h1 className="text-[20px] font-[600]">
-            {t('content_studio_templates', 'Templates')}
-          </h1>
-          <div className="text-textItemBlur">
-            {t(
-              'content_studio_templates_subtitle',
-              'Start new designs from built-in or saved templates.'
-            )}
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-[8px]">
-          <Link
-            href={DESIGN_LIBRARY_PATH}
-            className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
-          >
-            {t('content_studio_creative_studio', 'Creative Studio')}
-          </Link>
-          <Button onClick={newTemplate}>
-            {t('content_studio_create_template', 'Create template')}
-          </Button>
-        </div>
-      </div>
-
+    <ContentStudioPage
+      crumbs={[
+        {
+          label: t('content_studio_creative_studio', 'Creative Studio'),
+          href: DESIGN_LIBRARY_PATH,
+        },
+        { label: t('content_studio_templates', 'Templates') },
+      ]}
+      title={t('content_studio_templates', 'Templates')}
+      description={t(
+        'content_studio_templates_subtitle',
+        'Start new designs from built-in or saved templates.'
+      )}
+      actions={
+        <Button onClick={newTemplate}>
+          {t('content_studio_create_template', 'Create template')}
+        </Button>
+      }
+    >
       <div
         role="group"
         aria-label={t('content_studio_status', 'Status')}
@@ -1529,6 +1523,6 @@ export const ContentStudioDesignTemplates: FC = () => {
           </section>
         </>
       )}
-    </div>
+    </ContentStudioPage>
   );
 };

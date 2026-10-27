@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { Button } from '@gitroom/react/form/button';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
+import { ContentStudioPage } from '@gitroom/frontend/components/content-studio/content-studio.shell';
 import { ContentStudioPager } from '@gitroom/frontend/components/content-studio/content-studio.package.list';
 import { ContentStudioDiscoveryRow } from '@gitroom/frontend/components/content-studio/content-studio.discovery.row';
 import { useContentStudioSources } from '@gitroom/frontend/components/content-studio/content-studio.sources.api';
@@ -173,35 +174,23 @@ export const ContentStudioResearch: FC = () => {
   };
 
   return (
-    <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col gap-[16px] min-w-0">
-      <div className="flex flex-wrap items-center gap-[12px]">
-        <div className="flex flex-col gap-[4px] flex-1 min-w-[200px]">
-          <h1 className="text-[20px] font-[600]">
-            {t('content_studio_news_radar', 'News Radar')}
-          </h1>
-          <div className="text-textItemBlur">
-            {t(
-              'content_studio_radar_subtitle',
-              'Recent pages discovered by your feeds.'
-            )}
-          </div>
-          <div className="text-[13px] text-textItemBlur">
-            {t(
-              'content_studio_radar_note',
-              'Found is when a feed first listed a page; Published is the date the feed gave it.'
-            )}
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-[8px]">
-          <Link href="/content-studio" className={linkClass}>
-            {t('content_studio', 'Content Studio')}
-          </Link>
-          <Link href={SOURCE_LIBRARY_PATH} className={linkClass}>
-            {t('content_studio_sources', 'Sources')}
-          </Link>
-        </div>
-      </div>
-
+    <ContentStudioPage
+      nav={false}
+      title={t('content_studio_news_radar', 'News Radar')}
+      description={t(
+        'content_studio_radar_subtitle',
+        'New pages your feed sources found. Pick one and use it in content: AI writing then works from that page.'
+      )}
+      help={t(
+        'content_studio_radar_note',
+        'Found is when a feed first listed a page; Published is the date the feed gave it.'
+      )}
+      actions={
+        <Link href={SOURCE_LIBRARY_PATH} className={linkClass}>
+          {t('content_studio_radar_manage_feeds', 'Manage feeds')}
+        </Link>
+      }
+    >
       <div className="flex flex-wrap items-end gap-[12px]">
         <div
           role="group"
@@ -318,6 +307,6 @@ export const ContentStudioResearch: FC = () => {
           )}
         </>
       )}
-    </div>
+    </ContentStudioPage>
   );
 };

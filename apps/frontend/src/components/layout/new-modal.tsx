@@ -10,6 +10,7 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
 } from 'react';
 import { Button } from '@gitroom/react/form/button';
 import { useHotkeys } from 'react-hotkeys-hook';
@@ -66,7 +67,31 @@ const useModalStore = create<State>((set) => ({
   closeAll: () => set({ modalManager: [] }),
 }));
 
-const CurrentModalContext = createContext({ id: '' });
+// A modal's content may register one close guard: asked before the modal
+// closes by the backdrop, Escape, the close button or the close() it was
+// given, it answers whether closing may go on (e.g. after confirming that
+// unsaved changes are discarded). Modals without a guard close as before
+type ModalCloseGuard = () => boolean | Promise<boolean>;
+
+const CurrentModalContext = createContext<{
+  id: string;
+  setCloseGuard?: (guard: ModalCloseGuard | null) => void;
+}>({ id: '' });
+
+// Registers the guard of the modal this component is rendered in, for as
+// long as it is mounted. Outside a modal it does nothing
+export const useModalCloseGuard = (guard: ModalCloseGuard) => {
+  const { setCloseGuard } = useContext(CurrentModalContext);
+  const latest = useRef(guard);
+  latest.current = guard;
+  useEffect(() => {
+    if (!setCloseGuard) {
+      return;
+    }
+    setCloseGuard(() => latest.current());
+    return () => setCloseGuard(null);
+  }, [setCloseGuard]);
+};
 
 interface ModalManagerInterface extends ModalManagerStoreInterface {
   closeCurrent(): void;
@@ -106,7 +131,18 @@ export const Component: FC<{
   modal: { id: string } & OpenModalInterface;
 }> = memo(({ isLast, modal, closeModal, zIndex }) => {
   const decision = useDecisionModal();
+  const closeGuard = useRef<ModalCloseGuard | null>(null);
+  const setCloseGuard = useCallback((guard: ModalCloseGuard | null) => {
+    closeGuard.current = guard;
+  }, []);
+  const contextValue = useMemo(
+    () => ({ id: modal.id, setCloseGuard }),
+    [modal.id, setCloseGuard]
+  );
   const closeModalFunction = useCallback(async () => {
+    if (closeGuard.current && !(await closeGuard.current())) {
+      return;
+    }
     if (modal.askClose) {
       const open = await decision.open();
       if (!open) {
@@ -177,7 +213,7 @@ export const Component: FC<{
   }
 
   return (
-    <CurrentModalContext.Provider value={{ id: modal.id }}>
+    <CurrentModalContext.Provider value={contextValue}>
       <div
         onClick={closeModalFunction}
         style={{ zIndex }}

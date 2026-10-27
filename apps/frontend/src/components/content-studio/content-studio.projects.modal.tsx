@@ -215,7 +215,13 @@ export const ContentStudioProjectsModal: FC = () => {
   );
 
   return (
-    <div className="flex flex-col gap-[24px] min-w-0">
+    <div className="flex flex-col gap-[24px] min-w-0 sm:w-[560px] max-w-full">
+      <div className="text-[14px] text-textItemBlur">
+        {t(
+          'content_studio_projects_intro',
+          'A project groups packages, for example per campaign, client or topic, so you can filter the package list on it. Choose the project when you create a package. Archiving a project keeps its packages.'
+        )}
+      </div>
       <form onSubmit={create} className="flex flex-wrap items-end gap-[8px]">
         <div className="flex-1 min-w-[160px]">
           <Input
@@ -247,7 +253,10 @@ export const ContentStudioProjectsModal: FC = () => {
           <div>{t('loading', 'Loading')}</div>
         ) : !activeProjects?.length ? (
           <div className="text-textItemBlur">
-            {t('content_studio_no_projects', 'No projects yet.')}
+            {t(
+              'content_studio_no_projects',
+              'No projects yet. Create one above, e.g. "Spring campaign".'
+            )}
           </div>
         ) : (
           activeProjects.map((project) => (

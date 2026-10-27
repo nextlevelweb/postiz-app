@@ -12,6 +12,7 @@ import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
 import {
   ContentStudioProject,
   ContentStudioRequestError,
+  packagePath,
   useContentStudioFilters,
   useContentStudioPackages,
   useContentStudioProjects,
@@ -24,9 +25,73 @@ import { CreateContentStudioPackageModal } from '@gitroom/frontend/components/co
 import { ContentStudioProjectsModal } from '@gitroom/frontend/components/content-studio/content-studio.projects.modal';
 import { REVIEW_QUEUE_PAGE } from '@gitroom/frontend/components/content-studio/content-studio.reviews.api';
 import { RADAR_PAGE } from '@gitroom/frontend/components/content-studio/content-studio.research.api';
+import {
+  ContentStudioLinkPending,
+  ContentStudioPage,
+} from '@gitroom/frontend/components/content-studio/content-studio.shell';
+import { ContentStudioDialogLayout } from '@gitroom/frontend/components/content-studio/content-studio.dialog';
 
-// The Content Studio home: packages of the organization, filtered by project
-// and archive state on the server, one summary page at a time
+// What each other part of Content Studio is for, in one line
+const SectionCards: FC = () => {
+  const t = useT();
+  const cards = [
+    {
+      href: '/content-studio/sources',
+      title: t('content_studio_sources', 'Sources'),
+      text: t(
+        'content_studio_sources_card',
+        'Save web pages and feeds you want to write from. Each capture keeps its version and origin.'
+      ),
+    },
+    {
+      href: RADAR_PAGE,
+      title: t('content_studio_research', 'Research'),
+      text: t(
+        'content_studio_radar_card',
+        'New articles your feeds found, and what changed on pages you follow. Pick one and turn it into content.'
+      ),
+    },
+    {
+      href: '/content-studio/designs',
+      title: t('content_studio_creative_studio', 'Creative Studio'),
+      text: t(
+        'content_studio_creative_card',
+        'Make on-brand visuals from templates and render them for your posts.'
+      ),
+    },
+    {
+      href: REVIEW_QUEUE_PAGE,
+      title: t('content_studio_review_queue', 'Review & Approval'),
+      text: t(
+        'content_studio_reviews_card',
+        'Ask colleagues to review a version and approve it before it is used.'
+      ),
+    },
+  ];
+  return (
+    <ul className="grid grid-cols-1 tablet:grid-cols-2 xl:grid-cols-4 gap-[12px]">
+      {cards.map((card) => (
+        <li key={card.href}>
+          <Link
+            href={card.href}
+            className="flex flex-col gap-[4px] h-full p-[16px] rounded-[12px] border border-newTableBorder hover:border-[var(--brand-primary,#612ad5)] transition-colors"
+          >
+            <span className="flex items-center gap-[8px] font-[600]">
+              {card.title}
+              <ContentStudioLinkPending label={card.title} />
+            </span>
+            <span className="text-[13px] text-textItemBlur">{card.text}</span>
+          </Link>
+        </li>
+      ))}
+    </ul>
+  );
+};
+
+// The Content Studio home. Until setup is done (or hidden) it leads with the
+// setup assistant; then with creating content and what was worked on last.
+// Below: the packages of the organization, filtered by project and archive
+// state on the server, one summary page at a time
 export const ContentStudioHome: FC = () => {
   const t = useT();
   const modals = useModals();
@@ -97,7 +162,11 @@ export const ContentStudioHome: FC = () => {
   const manageProjects = useCallback(() => {
     modals.openModal({
       title: t('content_studio_manage_projects', 'Manage projects'),
-      children: <ContentStudioProjectsModal />,
+      children: (
+        <ContentStudioDialogLayout>
+          <ContentStudioProjectsModal />
+        </ContentStudioDialogLayout>
+      ),
     });
   }, [modals, t]);
 
@@ -110,60 +179,63 @@ export const ContentStudioHome: FC = () => {
       )
     : t(
         'content_studio_no_packages',
-        'Create your first Content Studio package.'
+        'No content yet. A package is one post or thread: start one and let AI draft it with you.'
       );
 
+  const latest =
+    !filters.archived && !filters.projectId && filters.page === 1
+      ? packages.data?.results[0]
+      : undefined;
+
   return (
-    <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col gap-[16px] min-w-0">
-      <div className="flex flex-wrap items-center gap-[12px]">
-        <div className="flex-1 min-w-[200px] text-textItemBlur">
-          {t(
-            'content_studio_subtitle',
-            'Prepare post content in packages, then use it in a post.'
-          )}
+    <ContentStudioPage
+      title={t('content_studio', 'Content Studio')}
+      description={t(
+        'content_studio_subtitle',
+        'Turn your sources, research and expertise into on-brand posts: AI drafts them with you, Creative Studio makes the visuals, and colleagues review before you publish.'
+      )}
+      actions={
+        <Button onClick={newPackage}>
+          {t('content_studio_new_package', 'New package')}
+        </Button>
+      }
+    >
+      {!!latest && (
+        <div className="flex flex-wrap items-center gap-[12px] p-[16px] rounded-[12px] bg-newBgLineColor">
+          <div className="flex flex-col gap-[2px] flex-1 min-w-[200px]">
+            <span className="text-[12px] text-textItemBlur">
+              {t(
+                'content_studio_continue_latest',
+                'Continue where you left off'
+              )}
+            </span>
+            <span className="font-[600] break-words">
+              {`${t('content_studio_last_edited', 'Last edited')}: ${
+                latest.name
+              }`}
+            </span>
+          </div>
+          <Link
+            href={packagePath(latest.id)}
+            aria-label={`${t('content_studio_continue', 'Continue')}: ${
+              latest.name
+            }`}
+            className="h-[40px] px-[24px] flex items-center rounded-full bg-[var(--brand-primary,#612ad5)] text-[var(--brand-action-text,#fff)]"
+          >
+            {t('content_studio_continue', 'Continue')}
+          </Link>
         </div>
-        <div className="flex flex-wrap gap-[8px]">
-          <Link
-            href="/content-studio/sources"
-            className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
-          >
-            {t('content_studio_sources', 'Sources')}
-          </Link>
-          <Link
-            href={RADAR_PAGE}
-            className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
-          >
-            {t('content_studio_news_radar', 'News Radar')}
-          </Link>
-          <Link
-            href="/content-studio/designs"
-            title={t(
-              'content_studio_creative_studio_hint',
-              'Create and render reusable visual designs.'
-            )}
-            className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
-          >
-            {t('content_studio_creative_studio', 'Creative Studio')}
-          </Link>
-          <Link
-            href={REVIEW_QUEUE_PAGE}
-            className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
-          >
-            {t('content_studio_review_queue', 'Review & Approval')}
-          </Link>
-          <Link
-            href="/content-studio/intelligence"
-            className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
-          >
-            {t('content_studio_brand_ai', 'Brand & AI')}
-          </Link>
-          <Button secondary onClick={manageProjects}>
-            {t('content_studio_manage_projects', 'Manage projects')}
-          </Button>
-          <Button onClick={newPackage}>
-            {t('content_studio_new_package', 'New package')}
-          </Button>
-        </div>
+      )}
+
+      <SectionCards />
+
+      <div className="flex flex-wrap items-center gap-[12px] pt-[8px]">
+        <h2 className="flex-1 min-w-[200px] text-[18px] font-[600]">
+          {t('content_studio_your_content', 'Your content')}
+        </h2>
+        <Button secondary onClick={manageProjects}>
+          {t('content_studio_manage_projects', 'Manage projects')}
+        </Button>
       </div>
 
       <div className="flex flex-wrap items-end gap-[12px]">
@@ -232,8 +304,8 @@ export const ContentStudioHome: FC = () => {
       ) : !packages.data ? (
         <LoadingComponent />
       ) : !packages.data.results.length ? (
-        <div className="flex flex-col items-center gap-[12px] py-[40px]">
-          <div>{empty}</div>
+        <div className="flex flex-col items-center gap-[12px] py-[40px] text-center">
+          <div className="max-w-[520px]">{empty}</div>
           {!filters.archived && (
             <Button onClick={newPackage}>
               {t('content_studio_new_package', 'New package')}
@@ -256,6 +328,6 @@ export const ContentStudioHome: FC = () => {
           )}
         </>
       )}
-    </div>
+    </ContentStudioPage>
   );
 };

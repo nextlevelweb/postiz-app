@@ -547,6 +547,20 @@ export const ContentStudioDesignCanvas: FC<{
             style={{ top: horizontal }}
           />
         )}
+        {/* the editor loads on first use: say so until it is there */}
+        {!controller && !unavailable && (
+          <div
+            role="status"
+            data-canvas="preparing"
+            className="absolute top-[12px] start-[12px] flex items-center gap-[8px] px-[12px] py-[6px] rounded-full bg-newBgColorInner border border-newTableBorder text-[13px] pointer-events-none"
+          >
+            <span
+              aria-hidden="true"
+              className="w-[12px] h-[12px] rounded-full border-2 border-current border-t-transparent animate-spin"
+            />
+            {t('content_studio_design_canvas_preparing', 'Preparing canvas…')}
+          </div>
+        )}
         {(panKey || panning) && (
           <div
             data-canvas="pan"

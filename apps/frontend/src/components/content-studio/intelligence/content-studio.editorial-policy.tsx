@@ -16,9 +16,14 @@ import {
   useContentStudioEditorialPolicyActions,
 } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.api';
 import {
+  ContentStudioDialogLayout,
+  useUnsavedChangesWarning,
+} from '@gitroom/frontend/components/content-studio/content-studio.dialog';
+import {
   ConflictNotice,
   ContentStudioContentForm,
   ContentStudioRevisionHistory,
+  EditorActions,
   FieldGroup,
   LongTextField,
   StringListEditor,
@@ -157,15 +162,22 @@ export const EditorialPolicySection: FC = () => {
   const [content, setContent] = useState<EditorialPolicyContent>(
     emptyEditorialPolicyContent
   );
+  const [savedContent, setSavedContent] = useState<EditorialPolicyContent>(
+    emptyEditorialPolicyContent
+  );
   const [baseRevision, setBaseRevision] = useState(0);
   const [conflict, setConflict] = useState(false);
   const { busy, run } = useSingleFlight();
+  const dirty =
+    loaded && JSON.stringify(content) !== JSON.stringify(savedContent);
+  useUnsavedChangesWarning(dirty);
 
   const seed = useCallback(
     (data: ContentStudioEditorialPolicyState<EditorialPolicyContent>) => {
-      setContent(
-        data.currentRevision?.content ?? emptyEditorialPolicyContent()
-      );
+      const current =
+        data.currentRevision?.content ?? emptyEditorialPolicyContent();
+      setContent(current);
+      setSavedContent(current);
       setBaseRevision(data.latestRevisionNumber);
       setConflict(false);
       setLoaded(true);
@@ -184,6 +196,7 @@ export const EditorialPolicySection: FC = () => {
       try {
         const result = await actions.saveRevision(baseRevision, content);
         setBaseRevision(result.latestRevisionNumber);
+        setSavedContent(content);
         toaster.show(
           result.created
             ? t('content_studio_policy_saved', 'Editorial policy saved.')
@@ -214,10 +227,12 @@ export const EditorialPolicySection: FC = () => {
     modals.openModal({
       title: t('content_studio_policy_history', 'Editorial policy history'),
       children: (
-        <ContentStudioRevisionHistory
-          base={EDITORIAL_POLICY_PATH}
-          Form={EditorialPolicyForm}
-        />
+        <ContentStudioDialogLayout>
+          <ContentStudioRevisionHistory
+            base={EDITORIAL_POLICY_PATH}
+            Form={EditorialPolicyForm}
+          />
+        </ContentStudioDialogLayout>
       ),
     });
 
@@ -249,6 +264,13 @@ export const EditorialPolicySection: FC = () => {
         <Button secondary disabled={!baseRevision} onClick={openHistory}>
           {t('content_studio_history', 'History')}
         </Button>
+        <Button
+          loading={busy === 'save'}
+          disabled={!!busy || conflict}
+          onClick={save}
+        >
+          {t('content_studio_save_policy', 'Save policy')}
+        </Button>
       </div>
       {conflict && (
         <ConflictNotice
@@ -261,7 +283,7 @@ export const EditorialPolicySection: FC = () => {
         />
       )}
       <EditorialPolicyForm value={content} onChange={setContent} />
-      <div className="flex justify-end">
+      <EditorActions>
         <Button
           loading={busy === 'save'}
           disabled={!!busy || conflict}
@@ -269,7 +291,7 @@ export const EditorialPolicySection: FC = () => {
         >
           {t('content_studio_save_policy', 'Save policy')}
         </Button>
-      </div>
+      </EditorActions>
     </div>
   );
 };

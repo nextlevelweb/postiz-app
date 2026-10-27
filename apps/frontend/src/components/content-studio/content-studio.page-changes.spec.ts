@@ -56,6 +56,7 @@ jest.mock('next/navigation', () => {
   };
 });
 jest.mock('@gitroom/frontend/components/layout/new-modal', () => ({
+  useModalCloseGuard: () => undefined,
   useModals: () => ({
     openModal: jest.fn(),
     closeAll: jest.fn(),
@@ -427,7 +428,6 @@ describe('Changes code', () => {
       own.matchAll(/['"`](\/content-studio[^'"`$]*)/g)
     ).map((m) => m[1]);
     expect([...new Set(urls)].sort()).toEqual([
-      '/content-studio',
       '/content-studio/source-changes',
     ]);
     // one SWR call in its own hook

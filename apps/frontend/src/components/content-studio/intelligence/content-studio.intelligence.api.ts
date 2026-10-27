@@ -220,7 +220,7 @@ export const profilesListPath = (
   archived: boolean,
   page: number
 ) => `${base}?page=${page}&archived=${archived}`;
-const profilePath = (base: ContentStudioProfilesPath, id: string) =>
+export const profilePath = (base: ContentStudioProfilesPath, id: string) =>
   `${base}/${encodeURIComponent(id)}`;
 
 // One summary page: the content is loaded only for the profile opened

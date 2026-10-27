@@ -17,6 +17,7 @@ import {
   useContentStudioProjects,
 } from '@gitroom/frontend/components/content-studio/content-studio.api';
 import { isContentStudioSourceUsable } from '@gitroom/frontend/components/content-studio/content-studio.sources.api';
+import { useContentStudioDialogGuard } from '@gitroom/frontend/components/content-studio/content-studio.dialog';
 
 // A new package, optionally in an active project. A blank name is left to the
 // server ("Untitled package"). On success the package opens; with research
@@ -41,6 +42,7 @@ export const CreateContentStudioPackageModal: FC<{
   const [saving, setSaving] = useState(false);
   // set at once, so a second click before the rerender sends nothing
   const submitting = useRef(false);
+  const release = useContentStudioDialogGuard(!!name.trim());
 
   const submit = useCallback(
     async (e: FormEvent) => {
@@ -58,6 +60,7 @@ export const CreateContentStudioPackageModal: FC<{
             ? selectedProject
             : undefined,
         });
+        release();
         close();
         router.push(
           sourceIds?.length
@@ -78,11 +81,21 @@ export const CreateContentStudioPackageModal: FC<{
       close,
       router,
       sourceIds,
+      release,
     ]
   );
 
   return (
-    <form onSubmit={submit} className="flex flex-col gap-[16px] min-w-0">
+    <form
+      onSubmit={submit}
+      className="flex flex-col gap-[16px] min-w-0 sm:w-[520px] max-w-full"
+    >
+      <div className="text-[14px] text-textItemBlur">
+        {t(
+          'content_studio_package_intro',
+          'A package is one piece of content, a post or a thread, with its saved versions, until you use it in a post.'
+        )}
+      </div>
       <Input
         label="Name"
         translationKey="content_studio_package_name"
@@ -95,22 +108,36 @@ export const CreateContentStudioPackageModal: FC<{
         onChange={(e) => setName(e.target.value)}
         autoFocus
       />
-      <Select
-        label="Project"
-        translationKey="content_studio_project"
-        name="projectId"
-        aria-label={t('content_studio_project', 'Project')}
-        disableForm={true}
-        value={selectedProject}
-        onChange={(e) => setSelectedProject(e.target.value)}
-      >
-        <option value="">{t('content_studio_no_project', 'No project')}</option>
-        {activeProjects?.map((project) => (
-          <option key={project.id} value={project.id}>
-            {project.name}
+      <div className="flex flex-col gap-[4px]">
+        <Select
+          label="Project (optional)"
+          translationKey="content_studio_project_optional"
+          name="projectId"
+          aria-label={t(
+            'content_studio_project_optional',
+            'Project (optional)'
+          )}
+          disableForm={true}
+          hideErrors={true}
+          value={selectedProject}
+          onChange={(e) => setSelectedProject(e.target.value)}
+        >
+          <option value="">
+            {t('content_studio_no_project', 'No project')}
           </option>
-        ))}
-      </Select>
+          {activeProjects?.map((project) => (
+            <option key={project.id} value={project.id}>
+              {project.name}
+            </option>
+          ))}
+        </Select>
+        <div className="text-[12px] text-textItemBlur">
+          {t(
+            'content_studio_project_hint',
+            'Group this package with others of the same campaign or topic, so you can filter on it later. You can leave it empty.'
+          )}
+        </div>
+      </div>
       <div className="flex gap-[8px] justify-end">
         <Button type="button" secondary onClick={close}>
           {t('cancel', 'Cancel')}

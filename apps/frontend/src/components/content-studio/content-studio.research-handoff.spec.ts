@@ -75,6 +75,7 @@ const mockOpenModal = jest.fn((params: Omit<MockModal, 'id'>) =>
   mockModals.set([...mockModals.list, { ...params, id: `m-${++modalId}` }])
 );
 jest.mock('@gitroom/frontend/components/layout/new-modal', () => ({
+  useModalCloseGuard: () => undefined,
   useModals: () => ({
     openModal: mockOpenModal,
     closeAll: () => mockModals.set([]),

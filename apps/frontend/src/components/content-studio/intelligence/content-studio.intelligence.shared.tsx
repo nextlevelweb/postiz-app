@@ -2,6 +2,7 @@
 
 import { FC, ReactNode, useCallback, useEffect, useState } from 'react';
 import clsx from 'clsx';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import dayjs from 'dayjs';
 import { Button } from '@gitroom/react/form/button';
 import { Input } from '@gitroom/react/form/input';
@@ -12,6 +13,11 @@ import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
 import { ContentStudioPager } from '@gitroom/frontend/components/content-studio/content-studio.package.list';
 import { useSingleFlight } from '@gitroom/frontend/components/content-studio/content-studio.projects.modal';
+import {
+  ContentStudioDialogLayout,
+  useConfirmDiscardChanges,
+  useUnsavedChangesWarning,
+} from '@gitroom/frontend/components/content-studio/content-studio.dialog';
 import {
   ContentStudioProfileKind,
   ContentStudioProfileRevisionSummary,
@@ -51,9 +57,39 @@ export const FieldGroup: FC<{
   </fieldset>
 );
 
-// A list of short texts: added one at a time, removed by row, kept in order.
-// The server checks the limits and refuses duplicates; nothing is trimmed or
-// cut here beyond the outer spaces of a new entry
+// Splits pasted or typed text into entries: one per line, and per semicolon;
+// per comma too for lists of single words or short phrases. Blank pieces are
+// left out; nothing else is changed but the outer spaces
+export const splitListEntries = (text: string, commas: boolean) =>
+  text
+    .split(commas ? /[\r\n;,]+/ : /[\r\n;]+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+// The entries to add to a list: new ones only, in order, up to its limit
+export const addListEntries = (
+  values: string[],
+  entries: string[],
+  max: number
+) => {
+  const next = [...values];
+  for (const entry of entries) {
+    if (next.length >= max) {
+      break;
+    }
+    if (!next.includes(entry)) {
+      next.push(entry);
+    }
+  }
+  return next;
+};
+
+// A list of short texts, kept in order. Enter adds what was typed; a pasted
+// list (one entry per line) adds every entry at once; and what is still in
+// the field when it loses focus (a click on Save included) is added too, so
+// a typed entry is never lost. The server checks the limits and refuses
+// duplicates; nothing is cut here beyond the outer spaces of an entry.
+// chips shows short entries (tags, words) side by side
 export const StringListEditor: FC<{
   label: string;
   hint?: string;
@@ -61,17 +97,41 @@ export const StringListEditor: FC<{
   max: number;
   onChange: (next: string[]) => void;
   disabled?: boolean;
-}> = ({ label, hint, values, max, onChange, disabled }) => {
+  chips?: boolean;
+  // more under an entry, such as the reason a word is avoided
+  renderDetail?: (value: string) => ReactNode;
+}> = ({
+  label,
+  hint,
+  values,
+  max,
+  onChange,
+  disabled,
+  chips,
+  renderDetail,
+}) => {
   const t = useT();
   const [draft, setDraft] = useState('');
-  const add = useCallback(() => {
-    const entry = draft.trim();
-    if (!entry || values.length >= max) {
-      return;
-    }
-    onChange([...values, entry]);
-    setDraft('');
-  }, [draft, values, max, onChange]);
+  const full = values.length >= max;
+
+  const add = useCallback(
+    (text: string) => {
+      const entries = splitListEntries(text, !!chips);
+      if (!entries.length) {
+        setDraft('');
+        return;
+      }
+      const next = addListEntries(values, entries, max);
+      if (next.length !== values.length) {
+        onChange(next);
+      }
+      setDraft('');
+    },
+    [values, max, onChange, chips]
+  );
+
+  const remove = (index: number) =>
+    onChange(values.filter((_, other) => other !== index));
 
   return (
     <FieldGroup label={label} hint={hint}>
@@ -79,62 +139,114 @@ export const StringListEditor: FC<{
         <div className="text-[14px] text-textItemBlur">
           {t('content_studio_list_empty', 'None yet.')}
         </div>
-      ) : (
-        <ul className="flex flex-col gap-[6px]">
+      ) : chips && !renderDetail ? (
+        <ul className="flex flex-wrap gap-[6px]">
           {values.map((value, index) => (
             <li
               key={`${index}-${value}`}
-              className="flex items-start gap-[8px] border border-newTableBorder rounded-[8px] px-[12px] py-[8px]"
+              className="flex items-center gap-[6px] max-w-full border border-newTableBorder rounded-full ps-[12px] pe-[6px] py-[4px] text-[14px]"
             >
-              <span className="flex-1 min-w-0 whitespace-pre-wrap break-words">
-                {value}
-              </span>
+              <span className="min-w-0 break-words">{value}</span>
               {!disabled && (
                 <button
                   type="button"
-                  className="text-[13px] underline shrink-0"
+                  className="w-[22px] h-[22px] shrink-0 flex items-center justify-center rounded-full hover:bg-boxFocused"
                   aria-label={`${t(
                     'content_studio_remove_entry',
                     'Remove'
-                  )} ${label} ${index + 1}`}
-                  onClick={() =>
-                    onChange(values.filter((_, other) => other !== index))
-                  }
+                  )} ${value}`}
+                  onClick={() => remove(index)}
                 >
-                  {t('content_studio_remove_entry', 'Remove')}
+                  <span aria-hidden="true">{'\u00d7'}</span>
                 </button>
               )}
             </li>
           ))}
         </ul>
+      ) : (
+        <ul className="flex flex-col gap-[6px]">
+          {values.map((value, index) => (
+            <li
+              key={`${index}-${value}`}
+              className="flex flex-col gap-[4px] border border-newTableBorder rounded-[8px] px-[12px] py-[8px]"
+            >
+              <div className="flex items-start gap-[8px]">
+                <span className="flex-1 min-w-0 whitespace-pre-wrap break-words">
+                  {value}
+                </span>
+                {!disabled && (
+                  <button
+                    type="button"
+                    className="text-[13px] underline shrink-0"
+                    aria-label={`${t(
+                      'content_studio_remove_entry',
+                      'Remove'
+                    )} ${value}`}
+                    onClick={() => remove(index)}
+                  >
+                    {t('content_studio_remove_entry', 'Remove')}
+                  </button>
+                )}
+              </div>
+              {renderDetail?.(value)}
+            </li>
+          ))}
+        </ul>
       )}
       {!disabled && (
-        <div className="flex flex-wrap items-center gap-[8px]">
-          <div className="flex-1 min-w-[160px]">
-            <Input
-              label=""
-              name={`new-${label}`}
-              aria-label={`${t('content_studio_new_entry', 'New')} ${label}`}
-              disableForm={true}
-              removeError={true}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  add();
+        <div className="flex flex-col gap-[4px]">
+          <div className="flex flex-wrap items-center gap-[8px]">
+            <div className="flex-1 min-w-[160px]">
+              <Input
+                label=""
+                name={`new-${label}`}
+                aria-label={`${t('content_studio_new_entry', 'New')} ${label}`}
+                disableForm={true}
+                removeError={true}
+                value={draft}
+                disabled={full}
+                placeholder={
+                  full
+                    ? t('content_studio_list_full', 'This list is full.')
+                    : t(
+                        'content_studio_list_placeholder',
+                        'Type and press Enter'
+                      )
                 }
-              }}
-            />
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    add(draft);
+                  }
+                }}
+                onPaste={(e) => {
+                  const pasted = e.clipboardData.getData('text');
+                  // one plain entry is pasted into the field as usual
+                  if (splitListEntries(pasted, !!chips).length > 1) {
+                    e.preventDefault();
+                    add(`${draft}\n${pasted}`);
+                  }
+                }}
+                onBlur={() => add(draft)}
+              />
+            </div>
+            <Button
+              secondary
+              aria-label={`${t('content_studio_add_entry', 'Add')} ${label}`}
+              disabled={!draft.trim() || full}
+              onClick={() => add(draft)}
+            >
+              {t('content_studio_add_entry', 'Add')}
+            </Button>
           </div>
-          <Button
-            secondary
-            aria-label={`${t('content_studio_add_entry', 'Add')} ${label}`}
-            disabled={!draft.trim() || values.length >= max}
-            onClick={add}
-          >
-            {t('content_studio_add_entry', 'Add')}
-          </Button>
+          <div className="text-[12px] text-textItemBlur">
+            {t(
+              'content_studio_list_input_hint',
+              'Press Enter to add. Paste a list to add every line at once.'
+            )}{' '}
+            {values.length}/{max}
+          </div>
         </div>
       )}
     </FieldGroup>
@@ -338,6 +450,11 @@ export const ContentStudioRevisionHistory = <C,>({
   );
 };
 
+// The query parameter of the open editor: new, or the id of a profile
+export const PROFILE_PARAM = 'profile';
+const PROFILE_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // What one kind of named profile (writing, audience, expertise) needs from
 // the shared list and editor
 export interface NamedProfileConfig<C> {
@@ -349,6 +466,10 @@ export interface NamedProfileConfig<C> {
     empty: string;
     emptyArchived: string;
     content: string;
+    // the way back from the editor to the list
+    back: string;
+    // what a profile of this kind is for, on the empty list
+    emptyHint?: string;
   };
   empty: () => C;
   Form: ContentStudioContentForm<C>;
@@ -378,7 +499,46 @@ const ProfileNameField: FC<{
   );
 };
 
-// A new profile: its name and first content, saved together as version 1
+// The actions at the end of an in-page editor. The same actions sit in its
+// header, so Save is in reach at the top and at the bottom of a long form
+export const EditorActions: FC<{ children: ReactNode }> = ({ children }) => (
+  <div className="pt-[16px] border-t border-newTableBorder flex flex-wrap items-center justify-end gap-[8px]">
+    {children}
+  </div>
+);
+
+// The top of an in-page editor: the way back to the list, what is edited and
+// its actions
+const EditorHeader: FC<{
+  backLabel: string;
+  onBack: () => void;
+  title: string;
+  meta?: ReactNode;
+  actions?: ReactNode;
+}> = ({ backLabel, onBack, title, meta, actions }) => (
+  <div className="flex flex-col gap-[6px]">
+    <button
+      type="button"
+      className="w-fit text-[13px] text-textItemBlur hover:underline hover:text-newTextColor"
+      onClick={onBack}
+    >
+      {'\u2190'} {backLabel}
+    </button>
+    <div className="flex flex-wrap items-center gap-[8px]">
+      <h2 className="flex-1 min-w-[200px] text-[18px] font-[600] break-words">
+        {title}
+      </h2>
+      {meta}
+      {!!actions && <div className="flex flex-wrap gap-[8px]">{actions}</div>}
+    </div>
+  </div>
+);
+
+const sameJson = (a: unknown, b: unknown) =>
+  JSON.stringify(a) === JSON.stringify(b);
+
+// A new profile, on its own page: its name and first content, saved together
+// as version 1. Save returns to the list
 const CreateProfile = <C,>({
   config,
   close,
@@ -389,14 +549,26 @@ const CreateProfile = <C,>({
   const t = useT();
   const toaster = useToaster();
   const actions = useContentStudioProfileActions(config.base);
+  const confirmDiscard = useConfirmDiscardChanges();
   const [name, setName] = useState('');
-  const [content, setContent] = useState<C>(config.empty);
+  const [initial] = useState<C>(config.empty);
+  const [content, setContent] = useState<C>(initial);
+  const [saved, setSaved] = useState(false);
   const { busy, run } = useSingleFlight();
+  const dirty = !saved && (!!name.trim() || !sameJson(content, initial));
+  useUnsavedChangesWarning(dirty);
+
+  const cancel = async () => {
+    if (!dirty || (await confirmDiscard())) {
+      close();
+    }
+  };
 
   const create = () =>
     run('create', async () => {
       try {
         await actions.createProfile(name.trim(), content);
+        setSaved(true);
         toaster.show(
           t('content_studio_profile_created', 'Profile created.'),
           'success'
@@ -408,48 +580,76 @@ const CreateProfile = <C,>({
       }
     });
 
+  const buttons = (
+    <>
+      <Button secondary onClick={cancel}>
+        {t('cancel', 'Cancel')}
+      </Button>
+      <Button
+        loading={busy === 'create'}
+        disabled={!!busy || !name.trim()}
+        onClick={create}
+      >
+        {t('content_studio_save_profile', 'Save')}
+      </Button>
+    </>
+  );
+
   return (
-    <div className="flex flex-col gap-[16px] min-w-0">
+    <section
+      aria-label={config.labels.newProfile}
+      className="flex flex-col gap-[20px] min-w-0"
+    >
+      <EditorHeader
+        backLabel={config.labels.back}
+        onBack={cancel}
+        title={config.labels.newProfile}
+        actions={buttons}
+      />
       {!!config.note && (
         <div className="text-[13px] text-textItemBlur">{config.note}</div>
       )}
       <ProfileNameField value={name} onChange={setName} />
       <config.Form value={content} onChange={setContent} />
-      <div className="flex flex-wrap gap-[8px] justify-end">
-        <Button secondary onClick={close}>
-          {t('cancel', 'Cancel')}
-        </Button>
-        <Button
-          loading={busy === 'create'}
-          disabled={!!busy || !name.trim()}
-          onClick={create}
-        >
-          {t('content_studio_create_profile', 'Create profile')}
-        </Button>
-      </div>
-    </div>
+      <EditorActions>
+        {!name.trim() && (
+          <span className="text-[13px] text-textItemBlur me-auto">
+            {t(
+              'content_studio_profile_name_required',
+              'Give the profile a name to save it.'
+            )}
+          </span>
+        )}
+        {buttons}
+      </EditorActions>
+    </section>
   );
 };
 
-// An existing profile. The name and the content are saved separately: a
-// rename is not a version, and each save is its own request. Content is
-// saved over the version it was loaded from; if the profile changed since,
-// the save is refused and the latest version has to be loaded first
+// An existing profile, on its own page. One Save stores what changed: a new
+// name (a rename is not a version) and new content (a new version over the
+// one it was loaded from), then returns to the list. If the profile changed
+// elsewhere since, the content is refused and the latest version has to be
+// loaded first
 const EditProfile = <C,>({
   config,
   id,
+  close,
 }: {
   config: NamedProfileConfig<C>;
   id: string;
+  close: () => void;
 }) => {
   const t = useT();
   const toaster = useToaster();
   const actions = useContentStudioProfileActions(config.base);
   const detail = useContentStudioProfile<C>(config.base, id);
+  const confirmDiscard = useConfirmDiscardChanges();
   const [loaded, setLoaded] = useState(false);
   const [name, setName] = useState('');
   const [savedName, setSavedName] = useState('');
   const [content, setContent] = useState<C | null>(null);
+  const [savedContent, setSavedContent] = useState<C | null>(null);
   const [baseRevision, setBaseRevision] = useState(0);
   const [conflict, setConflict] = useState(false);
   const { busy, run } = useSingleFlight();
@@ -458,6 +658,7 @@ const EditProfile = <C,>({
     setName(data.name);
     setSavedName(data.name);
     setContent(data.currentRevision.content);
+    setSavedContent(data.currentRevision.content);
     setBaseRevision(data.currentRevision.revisionNumber);
     setConflict(false);
     setLoaded(true);
@@ -470,41 +671,51 @@ const EditProfile = <C,>({
     }
   }, [detail.data, loaded, seed]);
 
-  const failed = (err: unknown) => {
-    if (isRevisionConflict(err)) {
-      setConflict(true);
-      return;
+  const nameChanged = !!name.trim() && name.trim() !== savedName;
+  const contentChanged = !sameJson(content, savedContent);
+  const dirty = loaded && (nameChanged || contentChanged);
+  useUnsavedChangesWarning(dirty);
+
+  const cancel = async () => {
+    if (!dirty || (await confirmDiscard())) {
+      close();
     }
-    toaster.show(profileErrorMessage(t, config.kind, err), 'warning');
   };
 
-  const rename = () =>
-    run('name', async () => {
-      try {
-        await actions.renameProfile(id, name.trim());
-        setSavedName(name.trim());
-        toaster.show(t('content_studio_name_saved', 'Name saved.'), 'success');
-      } catch (err) {
-        failed(err);
-      }
-    });
-
   const save = () =>
-    run('content', async () => {
+    run('save', async () => {
       if (!content) {
         return;
       }
       try {
-        const result = await actions.saveRevision(id, baseRevision, content);
-        setBaseRevision(result.revision.revisionNumber);
+        let saved = false;
+        if (nameChanged) {
+          await actions.renameProfile(id, name.trim());
+          setSavedName(name.trim());
+        }
+        // a rename alone makes no version; otherwise the server compares
+        // the content with the latest version, and refuses a stale one
+        if (contentChanged || !nameChanged) {
+          const result = await actions.saveRevision(id, baseRevision, content);
+          setBaseRevision(result.revision.revisionNumber);
+          setSavedContent(content);
+          saved = result.created;
+        }
         toaster.show(
-          result.created
+          saved
             ? t('content_studio_profile_saved', 'Saved as a new version.')
+            : nameChanged
+            ? t('content_studio_name_saved', 'Name saved.')
             : t('content_studio_no_changes', 'No content changes to save.'),
           'success'
         );
+        close();
       } catch (err) {
-        failed(err);
+        if (isRevisionConflict(err)) {
+          setConflict(true);
+          return;
+        }
+        toaster.show(profileErrorMessage(t, config.kind, err), 'warning');
       }
     });
 
@@ -517,15 +728,58 @@ const EditProfile = <C,>({
     });
 
   if (detail.error && !loaded) {
-    return <div>{profileErrorMessage(t, config.kind, detail.error)}</div>;
+    return (
+      <div className="flex flex-col gap-[16px]">
+        <EditorHeader
+          backLabel={config.labels.back}
+          onBack={close}
+          title={config.labels.content}
+        />
+        <div role="alert">
+          {profileErrorMessage(t, config.kind, detail.error)}
+        </div>
+      </div>
+    );
   }
   if (!loaded || !content || !detail.data) {
     return <LoadingComponent width={40} height={40} />;
   }
 
   const archived = !!detail.data.archivedAt;
+  const buttons = archived ? (
+    <Button secondary onClick={close}>
+      {config.labels.back}
+    </Button>
+  ) : (
+    <>
+      <Button secondary onClick={cancel}>
+        {t('cancel', 'Cancel')}
+      </Button>
+      <Button
+        loading={busy === 'save'}
+        disabled={!!busy || conflict || !name.trim()}
+        onClick={save}
+      >
+        {t('content_studio_save_profile', 'Save')}
+      </Button>
+    </>
+  );
   return (
-    <div className="flex flex-col gap-[20px] min-w-0">
+    <section
+      aria-label={savedName}
+      className="flex flex-col gap-[20px] min-w-0"
+    >
+      <EditorHeader
+        backLabel={config.labels.back}
+        onBack={cancel}
+        title={savedName}
+        meta={
+          <span className="text-[12px] text-textItemBlur">
+            {t('content_studio_revision', 'Version')} {baseRevision}
+          </span>
+        }
+        actions={buttons}
+      />
       {archived && (
         <div className="border border-newTableBorder rounded-[8px] p-[12px]">
           {t(
@@ -537,60 +791,20 @@ const EditProfile = <C,>({
       {!!config.note && (
         <div className="text-[13px] text-textItemBlur">{config.note}</div>
       )}
-      <section className="flex flex-wrap items-end gap-[8px]">
-        <div className="flex-1 min-w-[200px]">
-          <ProfileNameField
-            value={name}
-            onChange={setName}
-            disabled={archived}
-          />
-        </div>
-        {!archived && (
-          <Button
-            secondary
-            loading={busy === 'name'}
-            disabled={!!busy || !name.trim() || name.trim() === savedName}
-            onClick={rename}
-          >
-            {t('content_studio_save_name', 'Save name')}
-          </Button>
-        )}
-      </section>
-      <section className="flex flex-col gap-[16px]">
-        <div className="flex flex-wrap items-center gap-[8px]">
-          <h3 className="flex-1 font-[600]">{config.labels.content}</h3>
-          <span className="text-[12px] text-textItemBlur">
-            {t('content_studio_revision', 'Version')} {baseRevision}
-          </span>
-        </div>
-        {conflict && (
-          <ConflictNotice
-            message={t(
-              'content_studio_profile_conflict',
-              'This profile changed elsewhere. Reload the latest version before saving.'
-            )}
-            busy={busy === 'reload'}
-            onReload={reload}
-          />
-        )}
-        <config.Form
-          value={content}
-          onChange={setContent}
-          disabled={archived}
+      <ProfileNameField value={name} onChange={setName} disabled={archived} />
+      {conflict && (
+        <ConflictNotice
+          message={t(
+            'content_studio_profile_conflict',
+            'This profile changed elsewhere. Reload the latest version before saving.'
+          )}
+          busy={busy === 'reload'}
+          onReload={reload}
         />
-        {!archived && (
-          <div className="flex justify-end">
-            <Button
-              loading={busy === 'content'}
-              disabled={!!busy || conflict}
-              onClick={save}
-            >
-              {t('content_studio_save_profile', 'Save')}
-            </Button>
-          </div>
-        )}
-      </section>
-    </div>
+      )}
+      <config.Form value={content} onChange={setContent} disabled={archived} />
+      <EditorActions>{buttons}</EditorActions>
+    </section>
   );
 };
 
@@ -618,27 +832,37 @@ export const NamedProfilesSection = <C,>({
     }
   }, [pages, page]);
 
-  const openCreate = () =>
-    modals.openModal({
-      title: config.labels.newProfile,
-      children: (close: () => void) => (
-        <CreateProfile config={config} close={close} />
-      ),
-    });
-  const openEditor = (profile: ContentStudioProfileSummary) =>
-    modals.openModal({
-      title: profile.name,
-      children: <EditProfile config={config} id={profile.id} />,
-    });
+  // the editor is a page of its own (?profile=new or ?profile=<id>), so it
+  // has room, survives a reload and the back button leaves it
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const editing = searchParams.get(PROFILE_PARAM);
+  const goTo = useCallback(
+    (profile: string | null) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (profile) {
+        params.set(PROFILE_PARAM, profile);
+      } else {
+        params.delete(PROFILE_PARAM);
+      }
+      router.replace(`${pathname}?${params.toString()}`, { scroll: true });
+    },
+    [router, pathname, searchParams]
+  );
+  const openCreate = () => goTo('new');
+  const openEditor = (profile: ContentStudioProfileSummary) => goTo(profile.id);
   const openHistory = (profile: ContentStudioProfileSummary) =>
     modals.openModal({
       title: `${t('content_studio_history', 'History')}: ${profile.name}`,
       children: (
-        <ContentStudioRevisionHistory
-          base={config.base}
-          id={profile.id}
-          Form={config.Form}
-        />
+        <ContentStudioDialogLayout>
+          <ContentStudioRevisionHistory
+            base={config.base}
+            id={profile.id}
+            Form={config.Form}
+          />
+        </ContentStudioDialogLayout>
       ),
     });
 
@@ -682,6 +906,20 @@ export const NamedProfilesSection = <C,>({
       }
     });
 
+  if (editing === 'new') {
+    return <CreateProfile config={config} close={() => goTo(null)} />;
+  }
+  if (editing && PROFILE_ID.test(editing)) {
+    return (
+      <EditProfile
+        key={editing}
+        config={config}
+        id={editing}
+        close={() => goTo(null)}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-col gap-[16px] min-w-0">
       {!!config.note && (
@@ -724,8 +962,18 @@ export const NamedProfilesSection = <C,>({
       ) : !list.data ? (
         <LoadingComponent />
       ) : !list.data.results.length ? (
-        <div className="py-[24px] text-center">
-          {archived ? config.labels.emptyArchived : config.labels.empty}
+        <div className="flex flex-col items-center gap-[12px] py-[32px] text-center">
+          <div className="font-[600]">
+            {archived ? config.labels.emptyArchived : config.labels.empty}
+          </div>
+          {!archived && !!config.labels.emptyHint && (
+            <div className="max-w-[520px] text-[14px] text-textItemBlur">
+              {config.labels.emptyHint}
+            </div>
+          )}
+          {!archived && (
+            <Button onClick={openCreate}>{config.labels.newProfile}</Button>
+          )}
         </div>
       ) : (
         <>

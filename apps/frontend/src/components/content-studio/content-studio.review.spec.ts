@@ -65,6 +65,7 @@ jest.mock('next/navigation', () => {
 });
 const mockOpenModal = jest.fn();
 jest.mock('@gitroom/frontend/components/layout/new-modal', () => ({
+  useModalCloseGuard: () => undefined,
   useModals: () => ({
     openModal: mockOpenModal,
     closeAll: jest.fn(),
@@ -2676,7 +2677,12 @@ describe('Review & Approval queue (P5-06)', () => {
 
   it('FQ1 Content Studio links to Review & Approval, a page of its own', async () => {
     await show(h(ContentStudioHome));
-    const link = screen.getByRole('link', { name: 'Review & Approval' });
+    // in the Content Studio navigation and on the home page
+    const nav = screen.getByRole('navigation', { name: 'Content Studio' });
+    expect(
+      within(nav).getByRole('link', { name: 'Reviews' }).getAttribute('href')
+    ).toBe('/content-studio/reviews');
+    const link = screen.getByRole('link', { name: /^Review & Approval/ });
     expect(link.getAttribute('href')).toBe('/content-studio/reviews');
     const page = readFileSync(
       join(__dirname, '../../app/(app)/(site)/content-studio/reviews/page.tsx'),

@@ -217,6 +217,11 @@ export const ExpertiseProfilesSection: FC = () => {
             'No archived expertise profiles.'
           ),
           content: t('content_studio_expertise', 'Expertise'),
+          back: t('content_studio_expertise_back', 'Expertise profiles'),
+          emptyHint: t(
+            'content_studio_expertise_empty_hint',
+            'An expertise profile tells the AI what you can speak about with authority, your point of view and where to stay careful.'
+          ),
         },
         empty: emptyExpertiseProfileContent,
         Form: ExpertiseProfileForm,

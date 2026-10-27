@@ -39,6 +39,7 @@ jest.mock('next/link', () => {
 });
 const mockPush = jest.fn();
 jest.mock('next/navigation', () => ({
+  usePathname: () => '/content-studio',
   useRouter: () => ({ push: mockPush, replace: jest.fn() }),
 }));
 
@@ -59,6 +60,7 @@ const mockModals = {
 let modalId = 0;
 const mockOpenModal = jest.fn();
 jest.mock('@gitroom/frontend/components/layout/new-modal', () => ({
+  useModalCloseGuard: () => undefined,
   useModals: () => ({
     openModal: mockOpenModal,
     closeAll: () => mockModals.set([]),
@@ -714,7 +716,9 @@ describe('Creative Studio: Design Library', () => {
       screen.getByRole('heading', { name: 'Creative Studio' })
     ).toBeTruthy();
     expect(
-      screen.getByText('Create and render reusable visual designs.')
+      screen.getByText(
+        'On-brand visuals for your posts: start from a template, edit on the canvas and render images to your media library.'
+      )
     ).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Empty one' })).toBeTruthy();
     expect(screen.queryByRole('link', { name: 'Old design' })).toBeNull();
@@ -2238,12 +2242,14 @@ describe('Creative Studio: frontend boundaries', () => {
     ...ROUTES.map((file) => [file, readFileSync(join(routes, file), 'utf8')]),
   ] as const;
 
-  it('65/4 the Content Studio home links to Creative Studio; the top menu keeps one Content Studio entry', () => {
-    const home = readFileSync(join(dir, 'content-studio.home.tsx'), 'utf8');
-    expect(home).toContain('href="/content-studio/designs"');
-    expect(home).toContain(
+  it('65/4 the Content Studio navigation and home link to Creative Studio; the top menu keeps one Content Studio entry', () => {
+    const shell = readFileSync(join(dir, 'content-studio.shell.tsx'), 'utf8');
+    expect(shell).toContain("href: '/content-studio/designs'");
+    expect(shell).toContain(
       "t('content_studio_creative_studio', 'Creative Studio')"
     );
+    const home = readFileSync(join(dir, 'content-studio.home.tsx'), 'utf8');
+    expect(home).toContain("href: '/content-studio/designs'");
     const menu = readFileSync(join(dir, '../layout/top.menu.tsx'), 'utf8');
     expect(menu.match(/path: '\/content-studio/g)).toHaveLength(1);
   });

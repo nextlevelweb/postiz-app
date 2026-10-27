@@ -206,9 +206,11 @@ jest.mock('next/link', () => {
   };
 });
 jest.mock('next/navigation', () => ({
+  usePathname: () => '/content-studio',
   useRouter: () => ({ push: jest.fn(), replace: jest.fn() }),
 }));
 jest.mock('@gitroom/frontend/components/layout/new-modal', () => ({
+  useModalCloseGuard: () => undefined,
   useModals: () => ({
     openModal: jest.fn(),
     closeAll: jest.fn(),

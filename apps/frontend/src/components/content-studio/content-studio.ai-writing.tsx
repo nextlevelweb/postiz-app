@@ -471,6 +471,7 @@ export const ContentStudioAIWritingDialog: FC<{
           <Link
             href="/content-studio/intelligence?tab=ai"
             className="underline"
+            onClick={close}
           >
             {t('content_studio_brand_ai', 'Brand & AI')}
           </Link>

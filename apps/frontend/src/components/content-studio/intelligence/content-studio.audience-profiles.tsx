@@ -151,6 +151,11 @@ export const AudienceProfilesSection: FC = () => {
             'No archived audience profiles.'
           ),
           content: t('content_studio_audience', 'Audience'),
+          back: t('content_studio_audience_back', 'Audiences'),
+          emptyHint: t(
+            'content_studio_audience_empty_hint',
+            'An audience describes who you write for: their role, goals, problems and doubts. Content Studio uses it to make posts relevant.'
+          ),
         },
         empty: emptyAudienceProfileContent,
         Form: AudienceProfileForm,

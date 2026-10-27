@@ -242,7 +242,7 @@ export const brandKitRevisionPath = (revisionId: string) =>
   `/content-studio/brand-kit/revisions/${encodeURIComponent(revisionId)}`;
 const mediaStatusPath = (id: string) =>
   `/media/${encodeURIComponent(id)}/status`;
-const BRAND_KIT_PATH = '/content-studio/brand-kit';
+export const BRAND_KIT_PATH = '/content-studio/brand-kit';
 const brandKitRevisionsPath = (page: number) =>
   `${BRAND_KIT_PATH}/revisions?page=${page}`;
 const mediaLibraryPath = (page: number, search: string) => {

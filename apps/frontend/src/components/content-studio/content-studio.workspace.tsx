@@ -9,6 +9,7 @@ import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
+import { ContentStudioBreadcrumbs } from '@gitroom/frontend/components/content-studio/content-studio.shell';
 import {
   ContentStudioDraft,
   ContentStudioHandoffCreateResult,
@@ -705,10 +706,8 @@ export const ContentStudioWorkspace: FC<{
 
   return (
     <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col gap-[16px] min-w-0">
+      <ContentStudioBreadcrumbs crumbs={[{ label: meta.name }]} />
       <div className="flex flex-wrap items-center gap-[12px]">
-        <Link href="/content-studio" className="hover:underline">
-          {t('content_studio_back', 'Back to Content Studio')}
-        </Link>
         <h2 className="flex-1 min-w-[200px] text-[20px] font-[600] break-words">
           {meta.name}
         </h2>

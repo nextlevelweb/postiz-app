@@ -73,6 +73,7 @@ const mockModals = {
 let modalId = 0;
 const mockOpenModal = jest.fn();
 jest.mock('@gitroom/frontend/components/layout/new-modal', () => ({
+  useModalCloseGuard: () => undefined,
   useModals: () => ({
     openModal: mockOpenModal,
     closeAll: () => mockModals.set([]),
@@ -333,7 +334,10 @@ describe('Content Studio home: loading the list', () => {
     renderHome();
     await loaded();
     await flush();
-    const rows = screen.getAllByRole('listitem');
+    // the package rows, not the setup checklist above them
+    const rows = screen
+      .getAllByRole('listitem')
+      .filter((row) => row.textContent?.includes('Draft version'));
     const text = rows.map((row) => row.textContent);
 
     expect(text[0]).toContain('Spring launch');
@@ -526,7 +530,9 @@ describe('Content Studio home: filters (URL state)', () => {
   it('an empty result past page 1 goes back to page 1', async () => {
     packageList = { pages: 0, results: [] };
     renderHome('/content-studio?page=2');
-    await screen.findByText('Create your first Content Studio package.');
+    await screen.findByText(
+      'No content yet. A package is one post or thread: start one and let AI draft it with you.'
+    );
     await flush();
     expect(mockUrl.params.get('page')).toBeNull();
   });
@@ -546,7 +552,11 @@ describe('Content Studio home: filters (URL state)', () => {
 
 describe('Content Studio home: empty, loading and error states', () => {
   it.each([
-    ['', 'Create your first Content Studio package.', true],
+    [
+      '',
+      'No content yet. A package is one post or thread: start one and let AI draft it with you.',
+      true,
+    ],
     [`project=${P_ALPHA}`, 'No active packages in this project.', true],
     ['archived=true', 'No archived packages.', false],
   ])('empty list (%s)', async (query, text, offersCreate) => {
@@ -606,9 +616,12 @@ describe('Content Studio home: create a package', () => {
     fireEvent.change(within(modal).getByRole('textbox', { name: 'Name' }), {
       target: { value: '  Autumn launch  ' },
     });
-    fireEvent.change(within(modal).getByRole('combobox', { name: 'Project' }), {
-      target: { value: P_BETA },
-    });
+    fireEvent.change(
+      within(modal).getByRole('combobox', { name: 'Project (optional)' }),
+      {
+        target: { value: P_BETA },
+      }
+    );
     submit(modal);
     await flush();
 
@@ -628,7 +641,7 @@ describe('Content Studio home: create a package', () => {
   it('CP3/CP5 offers no project or active projects only', async () => {
     const modal = await openCreate();
     const options = within(
-      within(modal).getByRole('combobox', { name: 'Project' })
+      within(modal).getByRole('combobox', { name: 'Project (optional)' })
     )
       .getAllByRole('option')
       .map((o) => [o.getAttribute('value'), o.textContent]);
@@ -652,7 +665,7 @@ describe('Content Studio home: create a package', () => {
       `/content-studio?project=${P_OLD}&archived=true`
     );
     const select = within(modal).getByRole('combobox', {
-      name: 'Project',
+      name: 'Project (optional)',
     }) as HTMLSelectElement;
     const forged = document.createElement('option');
     forged.value = P_OLD;
@@ -970,7 +983,17 @@ describe('Content Studio: every request', () => {
     fireEvent.click(button('Restore Old project', modal));
     await flush();
 
-    for (const call of calls()) {
+    // the setup card only reads what is set up, without ids
+    const all = calls();
+    const setupReads = all.filter((call) =>
+      /^\/content-studio\/(ai\/providers|ai\/connections|brand-kit|writing-profiles|audience-profiles|expertise-profiles|editorial-policy|sources)(\?|$)/.test(
+        call.url
+      )
+    );
+    for (const call of setupReads) {
+      expect(call.method).toBe('GET');
+    }
+    for (const call of all.filter((c) => !setupReads.includes(c))) {
       expect(['GET', 'POST', 'PATCH']).toContain(call.method);
       expect(call.url).toMatch(
         /^\/content-studio\/(projects|packages)(\?|\/|$)/

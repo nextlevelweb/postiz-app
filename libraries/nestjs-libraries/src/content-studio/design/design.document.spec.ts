@@ -1500,6 +1500,8 @@ describe('Design Document P4-02 persistence boundary', () => {
       `${CS}/content-studio.home.tsx`,
       // P5-06: the link of a review to its exact design revision only
       `${CS}/content-studio.reviews.api.ts`,
+      // the Content Studio navigation: the link to Creative Studio only
+      `${CS}/content-studio.shell.tsx`,
     ]);
     const creativeStudio = frontend.filter((f) =>
       /content-studio\.designs?[.a-z]*\.tsx?$|\/designs\//.test(f)

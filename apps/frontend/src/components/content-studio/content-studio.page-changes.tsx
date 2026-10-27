@@ -8,6 +8,7 @@ import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
 import { ContentStudioPager } from '@gitroom/frontend/components/content-studio/content-studio.package.list';
 import { formatDate } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
+import { ContentStudioPage } from '@gitroom/frontend/components/content-studio/content-studio.shell';
 import { contentStudioSourceHost } from '@gitroom/frontend/components/content-studio/content-studio.sources.api';
 import {
   SOURCE_LIBRARY_PATH,
@@ -155,35 +156,23 @@ export const ContentStudioPageChanges: FC = () => {
   );
 
   return (
-    <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col gap-[16px] min-w-0">
-      <div className="flex flex-wrap items-center gap-[12px]">
-        <div className="flex flex-col gap-[4px] flex-1 min-w-[200px]">
-          <h1 className="text-[20px] font-[600]">
-            {t('content_studio_changes', 'Changes')}
-          </h1>
-          <div className="text-textItemBlur">
-            {t(
-              'content_studio_changes_subtitle',
-              'Pages whose content or title changed between two captures.'
-            )}
-          </div>
-          <div className="text-[13px] text-textItemBlur">
-            {t(
-              'content_studio_changes_note',
-              'A change is found when a page is captured again: by its feed or by Refresh.'
-            )}
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-[8px]">
-          <Link href="/content-studio" className={linkClass}>
-            {t('content_studio', 'Content Studio')}
-          </Link>
-          <Link href={SOURCE_LIBRARY_PATH} className={linkClass}>
-            {t('content_studio_sources', 'Sources')}
-          </Link>
-        </div>
-      </div>
-
+    <ContentStudioPage
+      nav={false}
+      title={t('content_studio_changes', 'Changes')}
+      description={t(
+        'content_studio_changes_subtitle',
+        'Pages whose content or title changed between two captures.'
+      )}
+      help={t(
+        'content_studio_changes_note',
+        'A change is found when a page is captured again: by its feed or by Refresh.'
+      )}
+      actions={
+        <Link href={SOURCE_LIBRARY_PATH} className={linkClass}>
+          {t('content_studio_sources', 'Sources')}
+        </Link>
+      }
+    >
       <div
         role="group"
         aria-label={t('content_studio_changes_window', 'Changed in')}
@@ -247,6 +236,6 @@ export const ContentStudioPageChanges: FC = () => {
           )}
         </>
       )}
-    </div>
+    </ContentStudioPage>
   );
 };

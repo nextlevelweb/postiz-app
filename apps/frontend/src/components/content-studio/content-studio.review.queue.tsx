@@ -7,6 +7,7 @@ import Link from 'next/link';
 import { Button } from '@gitroom/react/form/button';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
+import { ContentStudioPage } from '@gitroom/frontend/components/content-studio/content-studio.shell';
 import { CONTENT_STUDIO_REVIEW_QUEUE_SEARCH_MAX } from '@gitroom/nestjs-libraries/content-studio/review/review.approval';
 import type { ContentStudioReviewQueue as Queue } from '@gitroom/nestjs-libraries/content-studio/review/review.approval';
 import type { ContentStudioReviewTargetType } from '@gitroom/nestjs-libraries/content-studio/review/review.state';
@@ -227,27 +228,17 @@ export const ContentStudioReviewQueue: FC = () => {
       : t('content_studio_review_queue_empty_all', 'No reviews yet.');
 
   return (
-    <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col gap-[16px] min-w-0">
-      <div className="flex flex-wrap items-center gap-[12px]">
-        <div className="flex flex-col gap-[4px] flex-1 min-w-[200px]">
-          <h1 className="text-[20px] font-[600]">
-            {t('content_studio_review_queue', 'Review & Approval')}
-          </h1>
-          <div className="text-textItemBlur">
-            {t(
-              'content_studio_review_queue_subtitle',
-              'Find the reviews and approvals that need attention. Each one opens at its exact version.'
-            )}
-          </div>
-        </div>
-        <Link
-          href="/content-studio"
-          className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
-        >
-          {t('content_studio', 'Content Studio')}
-        </Link>
-      </div>
-
+    <ContentStudioPage
+      title={t('content_studio_review_queue', 'Review & Approval')}
+      description={t(
+        'content_studio_review_queue_subtitle',
+        'Find the reviews and approvals that need attention. Each one opens at its exact version.'
+      )}
+      help={t(
+        'content_studio_review_queue_help',
+        'Ask for a review from a package or a design: colleagues comment, request changes or approve that exact version.'
+      )}
+    >
       <div
         role="group"
         aria-label={t('content_studio_review_queue_filter', 'Review state')}
@@ -350,6 +341,6 @@ export const ContentStudioReviewQueue: FC = () => {
           )}
         </>
       )}
-    </div>
+    </ContentStudioPage>
   );
 };

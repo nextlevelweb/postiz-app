@@ -70,6 +70,7 @@ const mockModals = {
 let modalId = 0;
 const mockOpenModal = jest.fn();
 jest.mock('@gitroom/frontend/components/layout/new-modal', () => ({
+  useModalCloseGuard: () => undefined,
   useModals: () => ({
     openModal: mockOpenModal,
     closeAll: () => mockModals.set([]),
@@ -414,7 +415,7 @@ const openCreate = () => {
   return dialog('Add AI connection');
 };
 const fillCreate = (modal: HTMLElement) => {
-  type(field('Name', modal), 'Team OpenAI');
+  type(field('Connection name (optional)', modal), 'Team OpenAI');
   type(field('API key', modal), SECRET);
 };
 
@@ -499,7 +500,7 @@ describe('AI connections: create', () => {
     await open();
     const modal = openCreate();
     const provider = field('Provider', modal) as unknown as HTMLSelectElement;
-    const model = field('Default model', modal) as unknown as HTMLSelectElement;
+    const model = field('Model', modal) as unknown as HTMLSelectElement;
     expect(Array.from(provider.options).map((o) => o.textContent)).toEqual([
       'OpenAI',
       'Anthropic',
@@ -516,12 +517,12 @@ describe('AI connections: create', () => {
       'claude-opus-5-5',
       'claude-haiku-5-5',
     ]);
-    // the model is a choice only: the one text box is the name
+    // the model is a choice only: the one text box is the optional name
     expect(
       within(modal)
         .getAllByRole('textbox')
         .map((box) => box.getAttribute('aria-label'))
-    ).toEqual(['Name']);
+    ).toEqual(['Connection name (optional)']);
   });
 
   it('AI10/AI11/AI12 sends exactly the form with the key, then clears it and reloads the list', async () => {
@@ -531,11 +532,11 @@ describe('AI connections: create', () => {
     expect(key.type).toBe('password');
     expect(key.getAttribute('autocomplete')).toBe('new-password');
     fillCreate(modal);
-    fireEvent.change(field('Default model', modal), {
+    fireEvent.change(field('Model', modal), {
       target: { value: 'gpt-6-luna' },
     });
     const listLoads = requests('GET', '/content-studio/ai/connections').length;
-    fireEvent.click(button('Add AI connection', modal));
+    fireEvent.click(button('Connect', modal));
     await flush();
 
     expect(requests('POST', '/content-studio/ai/connections')).toEqual([
@@ -583,7 +584,7 @@ describe('AI connections: create', () => {
         : undefined;
     const modal = openCreate();
     fillCreate(modal);
-    fireEvent.click(button('Add AI connection', modal));
+    fireEvent.click(button('Connect', modal));
     await flush();
 
     expect(toasts()).toEqual(['The API key is invalid.']);
@@ -619,7 +620,7 @@ describe('AI connections: create', () => {
         : undefined;
     const modal = openCreate();
     fillCreate(modal);
-    fireEvent.click(button('Add AI connection', modal));
+    fireEvent.click(button('Connect', modal));
     await flush();
     expect(toasts()).toEqual([text]);
   });

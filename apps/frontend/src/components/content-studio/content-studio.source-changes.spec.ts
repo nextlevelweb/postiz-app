@@ -30,6 +30,7 @@ jest.mock('next/link', () => {
   };
 });
 jest.mock('@gitroom/frontend/components/layout/new-modal', () => ({
+  useModalCloseGuard: () => undefined,
   useModals: () => ({
     openModal: jest.fn(),
     closeAll: jest.fn(),
@@ -283,9 +284,11 @@ describe('Source detail: what changed', () => {
 
   it('FE11/FE12/FE13/FE14 added and removed blocks in order, kept runs collapsed, plain text only', async () => {
     const view = await openCurrentChanges().then(() => document.body);
-    const items = within(view.querySelector('ol') as HTMLElement).getAllByRole(
-      'listitem'
-    );
+    // the changes list, not the breadcrumb list of the navigation
+    const changes = Array.from(view.querySelectorAll('ol')).find(
+      (list) => !list.closest('nav')
+    ) as HTMLElement;
+    const items = within(changes).getAllByRole('listitem');
     expect(items.map((item) => item.textContent)).toEqual([
       '12 unchanged blocks',
       'RemovedOld price: 10 EUR.',
@@ -406,7 +409,11 @@ describe('Source detail: what changed', () => {
       screen.getByText('No earlier different capture to compare with.')
     ).toBeTruthy();
     expect(screen.queryByText(/blocks added/)).toBeNull();
-    expect(document.querySelector('ol')).toBeNull();
+    expect(
+      Array.from(document.querySelectorAll('ol')).filter(
+        (list) => !list.closest('nav')
+      )
+    ).toEqual([]);
   });
 
   it('a repeat after a change states both: the repeat, then what its run changed', async () => {

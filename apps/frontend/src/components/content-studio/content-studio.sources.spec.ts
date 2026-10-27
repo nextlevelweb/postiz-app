@@ -54,6 +54,7 @@ const mockModals = {
 let modalId = 0;
 const mockOpenModal = jest.fn();
 jest.mock('@gitroom/frontend/components/layout/new-modal', () => ({
+  useModalCloseGuard: () => undefined,
   useModals: () => ({
     openModal: mockOpenModal,
     closeAll: () => mockModals.set([]),
@@ -627,7 +628,7 @@ describe('Source Library: list', () => {
     expect(screen.getByText('No sources yet.')).toBeTruthy();
     expect(
       screen.getByText(
-        'Add a URL and capture it before using it as reference material.'
+        'Add the address of a page you want to write about, such as your own website, a blog post or a news feed. Content Studio captures its text so AI writing can use and cite it.'
       )
     ).toBeTruthy();
     expect(screen.getAllByRole('button', { name: 'Add source' })).toHaveLength(
@@ -671,7 +672,7 @@ describe('Source Library: list', () => {
     await renderList();
     expect(
       screen.getByText(
-        'Save web sources for use as reference material in Content Studio.'
+        'Web pages and feeds you write from. Content Studio captures them, so AI writing can quote and cite them.'
       )
     ).toBeTruthy();
     expect(
@@ -679,8 +680,9 @@ describe('Source Library: list', () => {
         'Captured source material is stored with version history and provenance. Sources are not automatically fact-checked.'
       )
     ).toBeTruthy();
+    // the way back: the Content Studio navigation, Home first
     expect(
-      screen.getByRole('link', { name: 'Content Studio' }).getAttribute('href')
+      screen.getByRole('link', { name: 'Home' }).getAttribute('href')
     ).toBe('/content-studio');
   });
 });
@@ -2058,10 +2060,12 @@ describe('Source Library: source surface', () => {
     }
   });
 
-  it('6 is linked from the Content Studio home, not added to the main menu', () => {
+  it('6 is linked from the Content Studio navigation and home, not added to the main menu', () => {
+    const shell = readFileSync(join(dir, 'content-studio.shell.tsx'), 'utf8');
+    expect(shell).toContain("href: '/content-studio/sources'");
+    expect(shell).toContain("t('content_studio_sources', 'Sources')");
     const home = readFileSync(join(dir, 'content-studio.home.tsx'), 'utf8');
-    expect(home).toContain('href="/content-studio/sources"');
-    expect(home).toContain("t('content_studio_sources', 'Sources')");
+    expect(home).toContain("href: '/content-studio/sources'");
     const menu = readFileSync(join(dir, '../layout/top.menu.tsx'), 'utf8');
     expect(menu).not.toMatch(/content-studio\/(sources|research|radar|news)/i);
   });
