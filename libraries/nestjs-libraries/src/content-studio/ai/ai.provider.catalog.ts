@@ -8,6 +8,7 @@ export const CONTENT_STUDIO_AI_PROVIDERS = [
   'openai',
   'openrouter',
   'anthropic',
+  'codex',
 ] as const;
 
 export type ContentStudioAIProvider =
@@ -48,18 +49,24 @@ const anthropicCredential = z
   .strict();
 
 export interface ContentStudioAICredential {
+  // not for Codex: its credential is empty and its adapter takes none
   apiKey: string;
   // Anthropic only
   workspaceId?: string;
 }
 
+// The Codex CLI uses its own sign-in on the server (codex login): a Codex
+// connection takes no key, so nothing secret is stored for it
+const noCredential = z.object({}).strict();
+
 const CREDENTIAL_SCHEMAS: Record<
   ContentStudioAIProvider,
-  typeof apiKeyCredential | typeof anthropicCredential
+  typeof apiKeyCredential | typeof anthropicCredential | typeof noCredential
 > = {
   openai: apiKeyCredential,
   openrouter: apiKeyCredential,
   anthropic: anthropicCredential,
+  codex: noCredential,
 };
 
 export type ContentStudioAICredentialErrorCode =
@@ -118,6 +125,7 @@ const DISPLAY_NAMES: Record<ContentStudioAIProvider, string> = {
   openai: 'OpenAI',
   openrouter: 'OpenRouter',
   anthropic: 'Anthropic',
+  codex: 'Codex (ChatGPT sign-in)',
 };
 
 // The only models a connection may use, by the exact id of their provider,
@@ -179,6 +187,20 @@ const MODELS: Record<
       capabilities: { text: true, structuredOutput: false },
     },
   ],
+  // as `codex debug models` lists them for a ChatGPT sign-in (checked
+  // 2026-10-29); codex exec takes a JSON schema for the final answer
+  codex: [
+    {
+      id: 'gpt-6.1-sol',
+      label: 'GPT-6.1 Sol',
+      capabilities: { text: true, structuredOutput: true },
+    },
+    {
+      id: 'gpt-6.1-terra',
+      label: 'GPT-6.1 Terra',
+      capabilities: { text: true, structuredOutput: true },
+    },
+  ],
 };
 
 // The model a new connection gets when none is chosen. For Anthropic that is
@@ -188,6 +210,7 @@ const DEFAULT_MODELS: Record<ContentStudioAIProvider, string> = {
   openai: 'gpt-6.1-sol',
   openrouter: 'openai/gpt-6.1-sol',
   anthropic: 'claude-sonnet-5-5',
+  codex: 'gpt-6.1-sol',
 };
 
 const copyModel = (model: ContentStudioAIModelInfo) => ({
@@ -202,7 +225,16 @@ const copyModel = (model: ContentStudioAIModelInfo) => ({
 const credentialFields = (
   provider: ContentStudioAIProvider
 ): ContentStudioAICredentialField[] => [
-  { name: 'apiKey', label: 'API key', secret: true, required: true },
+  ...(provider === 'codex'
+    ? []
+    : [
+        {
+          name: 'apiKey' as const,
+          label: 'API key',
+          secret: true as const,
+          required: true as const,
+        },
+      ]),
   ...(provider === 'anthropic'
     ? [
         {

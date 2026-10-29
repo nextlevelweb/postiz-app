@@ -1636,15 +1636,22 @@ describe('Content Studio architecture guard', () => {
     });
 
     it('holds every provider adapter to one explicit SDK client', () => {
+      // the Codex adapter runs the codex CLI and has no SDK client at all
+      const codex =
+        'libraries/nestjs-libraries/src/content-studio/ai/providers/codex.provider.ts';
       const adapters = files
         .map((file) => relativePath(REPO_ROOT, file))
         .filter((file) => PROVIDER_ADAPTER_FILE.test(file));
       expect(adapters).toEqual([
         'libraries/nestjs-libraries/src/content-studio/ai/providers/anthropic.provider.ts',
+        codex,
         'libraries/nestjs-libraries/src/content-studio/ai/providers/openai.provider.ts',
         'libraries/nestjs-libraries/src/content-studio/ai/providers/openrouter.provider.ts',
       ]);
-      for (const file of adapters) {
+      const codexText = fs.readFileSync(path.join(REPO_ROOT, codex), 'utf8');
+      expect(codexText).not.toMatch(/from '(openai|@anthropic-ai)/);
+      expect(rules(codexText, path.join(REPO_ROOT, codex))).toEqual([]);
+      for (const file of adapters.filter((entry) => entry !== codex)) {
         const text = fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
         const source = ts.createSourceFile(
           file,

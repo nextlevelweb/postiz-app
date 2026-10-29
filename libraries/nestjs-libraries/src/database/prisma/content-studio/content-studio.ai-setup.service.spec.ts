@@ -461,7 +461,7 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
       audience: 'Growing SMEs',
     });
     expect(sent.prompt).toContain('language with the tag nl.');
-    expect(CONTENT_STUDIO_AI_SETUP_PROMPT_VERSION).toBe('cs-setup-v2');
+    expect(CONTENT_STUDIO_AI_SETUP_PROMPT_VERSION).toBe('cs-setup-v3');
 
     const without = build();
     await without.service.proposeSetup({

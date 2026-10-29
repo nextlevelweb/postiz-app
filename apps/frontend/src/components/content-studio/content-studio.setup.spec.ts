@@ -126,7 +126,9 @@ const PROVIDERS = [
   {
     provider: 'openai',
     displayName: 'OpenAI',
-    credentialFields: [],
+    credentialFields: [
+      { name: 'apiKey', label: 'API key', secret: true, required: true },
+    ],
     defaultModel: 'gpt-6.1-sol',
     models: [
       {

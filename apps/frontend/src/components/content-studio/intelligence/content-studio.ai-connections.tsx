@@ -109,6 +109,10 @@ const WorkspaceIdInput: FC<{
 const asksWorkspace = (provider: ContentStudioAIProviderInfo | undefined) =>
   !!provider?.credentialFields.some((field) => field.name === 'workspaceId');
 
+// false for a provider that signs in on its own (Codex): no key to give
+const asksKey = (provider: ContentStudioAIProviderInfo | undefined) =>
+  !!provider?.credentialFields.some((field) => field.name === 'apiKey');
+
 // The state of a connection as a short label: Ready only after a test of the
 // key and its model succeeded; Testing… while one runs
 export const AIConnectionHealthBadge: FC<{
@@ -181,6 +185,7 @@ export const AIConnectionCreateForm: FC<{
   const { busy, run } = useSingleFlight();
   const info = providers.find((entry) => entry.provider === provider);
   const workspace = asksWorkspace(info);
+  const key = asksKey(info);
   const dirty = !!apiKey || !!name.trim() || !!workspaceId.trim();
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -200,7 +205,7 @@ export const AIConnectionCreateForm: FC<{
             provider,
             defaultModel: model,
           },
-          apiKey,
+          key ? apiKey : '',
           workspace ? workspaceId : undefined
         );
         setApiKey('');
@@ -236,7 +241,7 @@ export const AIConnectionCreateForm: FC<{
         type="submit"
         form={formId}
         loading={busy === 'create'}
-        disabled={!!busy || !provider || !model || !apiKey}
+        disabled={!!busy || !provider || !model || (key && !apiKey)}
       >
         {t('content_studio_ai_connect', 'Connect')}
       </Button>
@@ -260,15 +265,17 @@ export const AIConnectionCreateForm: FC<{
           );
         }}
       />
-      <div className="flex flex-col gap-[6px]">
-        <ApiKeyInput value={apiKey} onChange={setApiKey} />
-        <div className="text-[12px] text-textItemBlur">
-          {t(
-            'content_studio_ai_key_hint',
-            'Create an API key in your provider account and paste it here. It is stored encrypted and is never shown again.'
-          )}
+      {key && (
+        <div className="flex flex-col gap-[6px]">
+          <ApiKeyInput value={apiKey} onChange={setApiKey} />
+          <div className="text-[12px] text-textItemBlur">
+            {t(
+              'content_studio_ai_key_hint',
+              'Create an API key in your provider account and paste it here. It is stored encrypted and is never shown again.'
+            )}
+          </div>
         </div>
-      </div>
+      )}
       {workspace && (
         <WorkspaceIdInput value={workspaceId} onChange={setWorkspaceId} />
       )}
@@ -793,18 +800,20 @@ export const AIConnectionsSection: FC = () => {
                       </Button>
                     </div>
                     <div className="flex flex-wrap items-center gap-x-[16px] gap-y-[4px] text-[13px]">
-                      <button
-                        type="button"
-                        className={QUIET_ACTION}
-                        disabled={!!busy}
-                        aria-label={`${t(
-                          'content_studio_ai_replace_key',
-                          'Replace key'
-                        )} ${connection.name}`}
-                        onClick={() => openReplaceKey(connection)}
-                      >
-                        {t('content_studio_ai_replace_key', 'Replace key')}
-                      </button>
+                      {asksKey(providerOf(connection.provider)) && (
+                        <button
+                          type="button"
+                          className={QUIET_ACTION}
+                          disabled={!!busy}
+                          aria-label={`${t(
+                            'content_studio_ai_replace_key',
+                            'Replace key'
+                          )} ${connection.name}`}
+                          onClick={() => openReplaceKey(connection)}
+                        >
+                          {t('content_studio_ai_replace_key', 'Replace key')}
+                        </button>
+                      )}
                       {connection.disabled ? (
                         <button
                           type="button"

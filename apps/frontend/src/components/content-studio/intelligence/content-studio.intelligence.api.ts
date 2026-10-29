@@ -64,9 +64,12 @@ const connectionPath = (id: string) =>
   `${AI_CONNECTIONS_PATH}/${encodeURIComponent(id)}`;
 
 // The credential as the server takes it: the key, and for an Anthropic key
-// that is not scoped to a workspace, the workspace id. A blank id is left out
+// that is not scoped to a workspace, the workspace id. A blank id is left out;
+// a provider without a key (Codex) gets an empty credential
 export const aiCredential = (apiKey: string, workspaceId?: string) =>
-  workspaceId?.trim()
+  !apiKey
+    ? {}
+    : workspaceId?.trim()
     ? { apiKey, workspaceId: workspaceId.trim() }
     : { apiKey };
 

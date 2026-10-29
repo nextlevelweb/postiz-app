@@ -488,7 +488,7 @@ describe('AI connection surface so far', () => {
     ]);
   });
 
-  it('has the OpenAI, OpenRouter and Anthropic adapters only', () => {
+  it('has the OpenAI, OpenRouter, Anthropic and Codex adapters only', () => {
     const providers = fs
       .readdirSync(
         path.join(
@@ -499,6 +499,7 @@ describe('AI connection surface so far', () => {
       .filter((file) => !/\.spec\.ts$/.test(file));
     expect(providers.sort()).toEqual([
       'anthropic.provider.ts',
+      'codex.provider.ts',
       'openai.provider.ts',
       'openrouter.provider.ts',
     ]);

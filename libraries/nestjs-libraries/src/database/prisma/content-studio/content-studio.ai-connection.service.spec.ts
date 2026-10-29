@@ -583,6 +583,7 @@ describe('ContentStudioAIConnectionService: read', () => {
       'openai',
       'openrouter',
       'anthropic',
+      'codex',
     ]);
     expect(
       Object.values(repository).every((fn) => fn.mock.calls.length === 0)

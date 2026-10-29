@@ -192,6 +192,7 @@ const type = (element: HTMLElement, value: string) =>
 const SECRET = 'sk-content-studio-test-secret-123';
 const C1 = '11111111-1111-4111-8111-111111111111';
 const C2 = '22222222-2222-4222-8222-222222222222';
+const C3 = '44444444-4444-4444-8444-444444444444';
 const providers = [
   {
     provider: 'openai',
@@ -892,6 +893,51 @@ describe('AI connections: health and Anthropic workspaces (review 02)', () => {
       defaultModel: 'claude-opus-5-5',
     });
     expectNoSecretAnywhere();
+  });
+
+  it('a provider that signs in on its own (Codex) asks for no key and sends an empty credential', async () => {
+    providers.push({
+      provider: 'codex',
+      displayName: 'Codex (ChatGPT sign-in)',
+      credentialFields: [],
+      defaultModel: 'gpt-6.1-sol',
+      models: [
+        {
+          id: 'gpt-6.1-sol',
+          label: 'GPT-6.1 Sol',
+          capabilities: { text: true, structuredOutput: true },
+        },
+      ],
+    } as (typeof providers)[number]);
+    try {
+      connections = [
+        ...connections,
+        connection(C3, 'Codex', {
+          provider: 'codex',
+          defaultModel: 'gpt-6.1-sol',
+        }),
+      ];
+      await open();
+      expect(queryButton('Replace key Main OpenAI')).toBeTruthy();
+      expect(queryButton('Replace key Codex')).toBeNull();
+      const modal = openCreate();
+      fireEvent.change(field('Provider', modal), {
+        target: { value: 'codex' },
+      });
+      expect(within(modal).queryByLabelText('API key')).toBeNull();
+      fireEvent.click(button('Connect', modal));
+      await flush();
+      expect(
+        requests('POST', '/content-studio/ai/connections')[0].body
+      ).toEqual({
+        name: 'Codex (ChatGPT sign-in)',
+        provider: 'codex',
+        credential: {},
+        defaultModel: 'gpt-6.1-sol',
+      });
+    } finally {
+      providers.pop();
+    }
   });
 
   it('AH2 a key replaced on an Anthropic connection can carry the workspace id', async () => {

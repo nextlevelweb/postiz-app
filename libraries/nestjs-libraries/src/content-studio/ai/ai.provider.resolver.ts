@@ -12,6 +12,7 @@ import { ContentStudioAIProviderAdapter } from '@gitroom/nestjs-libraries/conten
 import { createOpenAIProviderAdapter } from '@gitroom/nestjs-libraries/content-studio/ai/providers/openai.provider';
 import { createOpenRouterProviderAdapter } from '@gitroom/nestjs-libraries/content-studio/ai/providers/openrouter.provider';
 import { createAnthropicProviderAdapter } from '@gitroom/nestjs-libraries/content-studio/ai/providers/anthropic.provider';
+import { createCodexProviderAdapter } from '@gitroom/nestjs-libraries/content-studio/ai/providers/codex.provider';
 
 // Organization and connection ids are Prisma uuid() values; anything else
 // cannot exist
@@ -36,6 +37,9 @@ function createAdapter(
       return createOpenRouterProviderAdapter(credential);
     case 'anthropic':
       return createAnthropicProviderAdapter(credential);
+    // no key: Codex uses its own sign-in on the server
+    case 'codex':
+      return createCodexProviderAdapter();
     default:
       throw new ContentStudioAIResolutionError('PROVIDER_UNSUPPORTED');
   }

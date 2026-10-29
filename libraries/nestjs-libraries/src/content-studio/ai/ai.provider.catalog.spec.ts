@@ -35,15 +35,17 @@ const refusal = (provider: unknown, input: unknown) => {
 };
 
 describe('Content Studio AI provider catalog', () => {
-  it('PC1/PC2/AC1 supports openai, openrouter and anthropic', () => {
+  it('PC1/PC2/AC1 supports openai, openrouter, anthropic and codex', () => {
     expect(CONTENT_STUDIO_AI_PROVIDERS).toEqual([
       'openai',
       'openrouter',
       'anthropic',
+      'codex',
     ]);
     expect(isContentStudioAIProvider('openai')).toBe(true);
     expect(isContentStudioAIProvider('openrouter')).toBe(true);
     expect(isContentStudioAIProvider('anthropic')).toBe(true);
+    expect(isContentStudioAIProvider('codex')).toBe(true);
   });
 
   it.each([
@@ -67,26 +69,27 @@ describe('Content Studio AI provider catalog', () => {
     expect((err as ContentStudioAICredentialError).code).toBe('INVALID');
   });
 
-  it.each(CONTENT_STUDIO_AI_PROVIDERS.map((provider) => [provider]))(
-    'PC5 accepts a key exactly as given for %s',
-    (provider) => {
-      for (const apiKey of [
-        MARKER,
-        'sk-test_ABC-123.xyz',
-        'x'.repeat(AI_API_KEY_MIN),
-        'y'.repeat(AI_API_KEY_MAX),
-        // every printable ASCII character but the space
-        Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i)).join(
-          ''
-        ),
-        'no-vendor-prefix-at-all',
-      ]) {
-        expect(parseContentStudioAICredential(provider, { apiKey })).toEqual({
-          apiKey,
-        });
-      }
+  it.each(
+    CONTENT_STUDIO_AI_PROVIDERS.filter((provider) => provider !== 'codex').map(
+      (provider) => [provider]
+    )
+  )('PC5 accepts a key exactly as given for %s', (provider) => {
+    for (const apiKey of [
+      MARKER,
+      'sk-test_ABC-123.xyz',
+      'x'.repeat(AI_API_KEY_MIN),
+      'y'.repeat(AI_API_KEY_MAX),
+      // every printable ASCII character but the space
+      Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i)).join(
+        ''
+      ),
+      'no-vendor-prefix-at-all',
+    ]) {
+      expect(parseContentStudioAICredential(provider, { apiKey })).toEqual({
+        apiKey,
+      });
     }
-  );
+  });
 
   it.each([
     ['PC6 too short', 'x'.repeat(AI_API_KEY_MIN - 1)],
@@ -123,6 +126,15 @@ describe('Content Studio AI provider catalog', () => {
     expect((err as ContentStudioAICredentialError).code).toBe('INVALID');
   });
 
+  it('a Codex connection takes no credential: an empty one only', () => {
+    expect(parseContentStudioAICredential('codex', {})).toEqual({});
+    for (const input of [{ apiKey: MARKER }, { token: MARKER }, null, MARKER]) {
+      const err = refusal('codex', input);
+      expect((err as ContentStudioAICredentialError).code).toBe('INVALID');
+      expect(rendered(err)).not.toContain(MARKER);
+    }
+  });
+
   it('PC13 never repeats the refused key or any part of it', () => {
     for (const input of [
       { apiKey: `${MARKER} ` },
@@ -155,7 +167,7 @@ describe('Content Studio AI provider catalog', () => {
 
   it('PC14 lists provider ids only, no credential values or defaults', () => {
     expect(JSON.stringify(CONTENT_STUDIO_AI_PROVIDERS)).toBe(
-      '["openai","openrouter","anthropic"]'
+      '["openai","openrouter","anthropic","codex"]'
     );
   });
 });
@@ -171,11 +183,15 @@ describe('Content Studio AI provider catalog: public metadata', () => {
       ['openai', 'OpenAI'],
       ['openrouter', 'OpenRouter'],
       ['anthropic', 'Anthropic'],
+      ['codex', 'Codex (ChatGPT sign-in)'],
     ]);
   });
 
   it('P4/P5 describes the API key field, the default model and the models only', () => {
-    for (const info of listContentStudioAIProviders()) {
+    expect(getContentStudioAIProvider('codex')?.credentialFields).toEqual([]);
+    for (const info of listContentStudioAIProviders().filter(
+      (entry) => entry.provider !== 'codex'
+    )) {
       expect(Object.keys(info)).toEqual([
         'provider',
         'displayName',
