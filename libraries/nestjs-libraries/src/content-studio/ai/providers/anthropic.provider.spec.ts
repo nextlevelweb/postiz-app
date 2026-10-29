@@ -764,13 +764,15 @@ describe('Anthropic adapter: workspace, model check and timeout', () => {
   });
 
   it('AW3 checks the connection model by reading it, and a model the key cannot use is MODEL_UNAVAILABLE', async () => {
-    const ok = realSdk(() =>
-      json(200, {
-        type: 'model',
-        id: 'claude-opus-5-5',
-        display_name: 'Claude Opus 5.5',
-        created_at: '2026-01-01T00:00:00Z',
-      })
+    const ok = realSdk((url) =>
+      url.endsWith('/v1/messages')
+        ? json(200, message({ content: [{ type: 'text', text: 'OK' }] }))
+        : json(200, {
+            type: 'model',
+            id: 'claude-opus-5-5',
+            display_name: 'Claude Opus 5.5',
+            created_at: '2026-01-01T00:00:00Z',
+          })
     );
     await expect(
       createAnthropicProviderAdapter(CREDENTIAL, ok.sdk).validateConnection(
@@ -779,6 +781,7 @@ describe('Anthropic adapter: workspace, model check and timeout', () => {
     ).resolves.toEqual({ ok: true });
     expect(ok.requests.map((r) => r.url)).toEqual([
       'https://api.anthropic.com/v1/models/claude-opus-5-5',
+      'https://api.anthropic.com/v1/messages',
     ]);
     expect(ok.requests[0].init.method).toBe('GET');
 
@@ -809,5 +812,82 @@ describe('Anthropic adapter: workspace, model check and timeout', () => {
       );
       expect(create.mock.calls[0][1]).toEqual({ timeout: expected });
     }
+  });
+
+  // UX review 03: the connection tested Ready (the model could be read), but
+  // every draft failed: the organization had no API credit, which Anthropic
+  // only says when asked to generate
+  const creditError = () =>
+    json(400, {
+      type: 'error',
+      error: {
+        type: 'invalid_request_error',
+        message: `Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits. ${MARKER}`,
+      },
+      request_id: 'req_credit_1',
+    });
+
+  it('AW5 tests a connection with one answer of a single token, with the workspace, after reading the model', async () => {
+    const { sdk, requests } = realSdk((url) =>
+      url.endsWith('/v1/messages')
+        ? json(200, message({ content: [{ type: 'text', text: 'OK' }] }))
+        : json(200, { type: 'model', id: 'claude-sonnet-5-5' })
+    );
+    await expect(
+      createAnthropicProviderAdapter(
+        { apiKey: MARKER, workspaceId: WORKSPACE },
+        sdk
+      ).validateConnection('claude-sonnet-5-5')
+    ).resolves.toEqual({ ok: true });
+    expect(requests).toHaveLength(2);
+    const sent = JSON.parse(String(requests[1].init.body));
+    expect(sent).toEqual({
+      model: 'claude-sonnet-5-5',
+      max_tokens: 1,
+      messages: [{ role: 'user', content: 'Reply with OK.' }],
+    });
+    for (const request of requests) {
+      expect(
+        new Headers(request.init.headers).get('anthropic-workspace-id')
+      ).toBe(WORKSPACE);
+    }
+  });
+
+  it('AW6 tells an organization without API credit apart, in a test and in a generation, without the message', async () => {
+    const { sdk } = realSdk((url) =>
+      url.endsWith('/v1/messages')
+        ? creditError()
+        : json(200, { type: 'model', id: 'claude-opus-5-5' })
+    );
+    const adapter = createAnthropicProviderAdapter(CREDENTIAL, sdk);
+    await expect(
+      adapter.validateConnection('claude-opus-5-5')
+    ).resolves.toEqual({ ok: false, code: 'QUOTA_EXCEEDED' });
+    const err = await providerError(adapter.generateText(textRequest()));
+    expect(err.code).toBe('QUOTA_EXCEEDED');
+    expect(err.httpStatus).toBe(400);
+    expect(rendered(err)).not.toMatch(/credit balance|Plans/);
+  });
+
+  it('AW7 sends the setup request as a plain Messages request: no temperature, tools, beta header or JSON option', async () => {
+    const { sdk, requests } = realSdk(() =>
+      json(200, message(), { 'request-id': 'req_ok_3' })
+    );
+    const result = await createAnthropicProviderAdapter(
+      CREDENTIAL,
+      sdk
+    ).generateText(textRequest({ maxOutputTokens: 8192, timeoutMs: 150_000 }));
+    expect(result.text).toBe('Spring is here');
+    const sent = JSON.parse(String(requests[0].init.body));
+    expect(Object.keys(sent).sort()).toEqual([
+      'max_tokens',
+      'messages',
+      'model',
+      'system',
+    ]);
+    expect(sent.max_tokens).toBe(8192);
+    expect(
+      new Headers(requests[0].init.headers).get('anthropic-beta')
+    ).toBeNull();
   });
 });

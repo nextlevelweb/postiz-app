@@ -433,8 +433,10 @@ describe('Content Studio AI provider catalog: Anthropic', () => {
   it('AC4/AC5 defaults to Claude Opus 5.5, one of its unique models', () => {
     const anthropic = getContentStudioAIProvider('anthropic');
     const ids = anthropic?.models.map((model) => model.id) || [];
-    expect(getContentStudioAIDefaultModel('anthropic')).toBe('claude-opus-5-5');
-    expect(anthropic?.defaultModel).toBe('claude-opus-5-5');
+    expect(getContentStudioAIDefaultModel('anthropic')).toBe(
+      'claude-sonnet-5-5'
+    );
+    expect(anthropic?.defaultModel).toBe('claude-sonnet-5-5');
     expect(ids).toContain(anthropic?.defaultModel);
     expect(new Set(ids).size).toBe(ids.length);
   });
@@ -454,7 +456,7 @@ describe('Content Studio AI provider catalog: Anthropic', () => {
     first.defaultModel = 'changed';
     first.models.length = 0;
     expect(getContentStudioAIProvider('anthropic')?.defaultModel).toBe(
-      'claude-opus-5-5'
+      'claude-sonnet-5-5'
     );
     expect(
       getContentStudioAIModel('anthropic', 'claude-opus-5-5')?.capabilities

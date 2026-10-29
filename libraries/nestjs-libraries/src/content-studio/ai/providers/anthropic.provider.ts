@@ -60,10 +60,15 @@ const workspaceHeaders = (credential: ContentStudioAICredential) =>
     ? { headers: { 'anthropic-workspace-id': credential.workspaceId } }
     : {};
 
-// Anthropic answers a key that is not scoped to a workspace, used without
-// the anthropic-workspace-id header, with 400 invalid_request_error. The
-// message is only looked at here, never kept
-const needsWorkspace = (err: InstanceType<typeof APIError>) => {
+// A 400 invalid_request_error whose message mentions the text. Anthropic
+// gives two account problems no code of their own: a key that is not scoped
+// to a workspace, used without the anthropic-workspace-id header, and an
+// organization without API credit ("Your credit balance is too low to access
+// the Anthropic API"). The message is only looked at here, never kept
+const invalidRequestAbout = (
+  err: InstanceType<typeof APIError>,
+  text: string
+) => {
   const body = err.error as
     | { error?: { type?: unknown; message?: unknown } }
     | undefined;
@@ -71,9 +76,16 @@ const needsWorkspace = (err: InstanceType<typeof APIError>) => {
     err.status === 400 &&
     body?.error?.type === 'invalid_request_error' &&
     typeof body.error.message === 'string' &&
-    body.error.message.includes('anthropic-workspace-id')
+    body.error.message.includes(text)
   );
 };
+
+const anthropicErrorCode = (err: InstanceType<typeof APIError>) =>
+  invalidRequestAbout(err, 'anthropic-workspace-id')
+    ? 'WORKSPACE_REQUIRED'
+    : invalidRequestAbout(err, 'credit balance')
+    ? 'QUOTA_EXCEEDED'
+    : contentStudioAIErrorCodeForStatus(err.status);
 
 // Any failure of an Anthropic SDK call as a provider error: the status, the
 // request-id header and Retry-After are kept, the provider's message, body
@@ -88,18 +100,11 @@ export function toContentStudioAnthropicProviderError(
     return new ContentStudioAIProviderError('TIMEOUT');
   }
   if (err instanceof APIError && !(err instanceof APIUserAbortError)) {
-    return new ContentStudioAIProviderError(
-      needsWorkspace(err)
-        ? 'WORKSPACE_REQUIRED'
-        : contentStudioAIErrorCodeForStatus(err.status),
-      {
-        httpStatus: err.status,
-        providerRequestId: err.requestID,
-        retryAfterSeconds: safeRetryAfterSeconds(
-          err.headers?.get('retry-after')
-        ),
-      }
-    );
+    return new ContentStudioAIProviderError(anthropicErrorCode(err), {
+      httpStatus: err.status,
+      providerRequestId: err.requestID,
+      retryAfterSeconds: safeRetryAfterSeconds(err.headers?.get('retry-after')),
+    });
   }
   return new ContentStudioAIProviderError('PROVIDER_UNAVAILABLE');
 }
@@ -237,14 +242,25 @@ export function createAnthropicProviderAdapter(
 ): ContentStudioAIProviderAdapter {
   return {
     provider: 'anthropic',
-    // Reading one model (or, without one, listing them) needs a valid key
-    // and generates nothing; a model the key cannot use is a 404
+    // Without a model, listing the models: it needs a valid key and
+    // generates nothing. With one, reading that model (a model the key
+    // cannot use is a 404), then one answer of a single token: Anthropic
+    // reads models for an organization without API credit too, and only a
+    // generation says so. That answer costs a few tokens and is not kept
     async validateConnection(model?: string) {
       try {
         const client = anthropicClient(credential, sdk);
         const options = workspaceHeaders(credential);
         if (model) {
           await client.models.retrieve(model, {}, options);
+          await client.messages.create(
+            {
+              model,
+              max_tokens: 1,
+              messages: [{ role: 'user', content: 'Reply with OK.' }],
+            },
+            options
+          );
         } else {
           await client.models.list({}, options);
         }

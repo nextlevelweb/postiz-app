@@ -67,7 +67,8 @@ import {
 // website address is passed on as text only
 
 // A changed template gets a new version
-export const CONTENT_STUDIO_AI_SETUP_PROMPT_VERSION = 'cs-setup-v1';
+// v2: the company information has the tagline the user typed
+export const CONTENT_STUDIO_AI_SETUP_PROMPT_VERSION = 'cs-setup-v2';
 
 // UTF-8 bytes of the system prompt and the prompt together
 export const AI_SETUP_PROMPT_MAX_BYTES = 32_768;
@@ -76,10 +77,12 @@ export const SETUP_COMPANY_NAME_MAX = 200;
 export const SETUP_WEBSITE_MAX = 300;
 export const SETUP_DESCRIPTION_MAX = 2000;
 export const SETUP_NOTE_MAX = 500;
+export const SETUP_TAGLINE_MAX = BRAND_TAGLINE_MAX;
 
 // What the user typed, already checked by the service
 export interface ContentStudioAISetupInput {
   companyName: string;
+  tagline: string | null;
   website: string | null;
   description: string;
   goal: string | null;
@@ -160,6 +163,7 @@ const TASK = [
   '- Choose the perspective the company should write in. Use first_plural (we, us) for a team or company that speaks as itself, first_singular (I, me) for a single founder or professional, second (you) when posts address the reader throughout, third for a neutral, reporting style, and mixed only when posts should switch between these on purpose; then say in the voice which mix.',
   '- In avoid, give words that would make this company sound wrong, each with the reason and the better alternative.',
   '- Keep a term out of avoid when it is in prefer, and keep a subject or stance topic out of avoidTopics.',
+  '- When the company information has a tagline, return it unchanged as brand.tagline; otherwise write one.',
   '- Answer in exactly this shape, with every key:',
   SHAPE,
 ];
@@ -252,6 +256,7 @@ export function buildContentStudioAISetupPrompt(
 ): ContentStudioAISetupPrompt {
   const company = {
     name: input.companyName,
+    tagline: input.tagline,
     website: input.website,
     description: input.description,
     goal: input.goal,

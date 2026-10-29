@@ -181,11 +181,13 @@ const MODELS: Record<
   ],
 };
 
-// The model a new connection gets when none is chosen
+// The model a new connection gets when none is chosen. For Anthropic that is
+// Sonnet: a whole setup draft or a post is structured writing it does well,
+// faster and at a lower price than Opus, which stays available to choose
 const DEFAULT_MODELS: Record<ContentStudioAIProvider, string> = {
   openai: 'gpt-6.1-sol',
   openrouter: 'openai/gpt-6.1-sol',
-  anthropic: 'claude-opus-5-5',
+  anthropic: 'claude-sonnet-5-5',
 };
 
 const copyModel = (model: ContentStudioAIModelInfo) => ({

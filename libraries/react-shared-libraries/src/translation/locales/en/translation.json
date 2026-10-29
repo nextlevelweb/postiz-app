@@ -1001,7 +1001,7 @@
   "content_studio_ai_test_ok": "Connection works.",
   "content_studio_ai_test_auth_failed": "We couldn't use this API key. Check the key and try again.",
   "content_studio_ai_test_rate_limited": "The provider is rate limiting this connection. Try again later.",
-  "content_studio_ai_test_quota": "The provider reports that the account has no available quota or credits.",
+  "content_studio_ai_test_quota": "The key works, but the provider account has no API credit left, so nothing can be generated. Add credit in your provider account, then test again.",
   "content_studio_ai_test_unavailable": "The provider is temporarily unavailable.",
   "content_studio_ai_test_timeout": "The provider did not respond in time.",
   "content_studio_ai_test_model": "This model is not available for this connection. Choose another model with Edit.",

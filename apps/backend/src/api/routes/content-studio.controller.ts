@@ -555,6 +555,7 @@ export class ContentStudioController {
       request: {
         connectionId: body.connectionId,
         companyName: body.companyName,
+        tagline: body.tagline,
         website: body.website,
         description: body.description,
         goal: body.goal,

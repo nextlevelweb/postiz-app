@@ -20,6 +20,7 @@ import {
   SETUP_COMPANY_NAME_MAX,
   SETUP_DESCRIPTION_MAX,
   SETUP_NOTE_MAX,
+  SETUP_TAGLINE_MAX,
   SETUP_WEBSITE_MAX,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.setup.prompt';
 import {
@@ -27,6 +28,7 @@ import {
   parseContentStudioAISetupProposal,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.setup.proposal';
 import { ContentStudioAIProviderError } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.error';
+import { ContentStudioAIProviderErrorCode } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.types';
 
 // Fixed messages only: never the company information, a prompt, a provider
 // message or an id
@@ -53,6 +55,16 @@ const LANGUAGE_MAX = 35;
 const WEBSITE = /^https?:\/\/[^\s/$.?#][^\s]*$/i;
 // a whole profile set in one answer
 const SETUP_MAX_OUTPUT_TOKENS = 8192;
+// Provider answers about the connection or its account rather than this
+// request. Recorded on the connection as a failed test, so its status says
+// what to fix instead of staying Ready; a busy, slow or unavailable
+// provider is no reason to and leaves the status as it is
+const CONNECTION_FAILURES: ContentStudioAIProviderErrorCode[] = [
+  'AUTH_FAILED',
+  'WORKSPACE_REQUIRED',
+  'QUOTA_EXCEEDED',
+  'MODEL_UNAVAILABLE',
+];
 // a whole profile set takes a large model well over the 30 seconds a
 // writing call may take
 export const SETUP_TIMEOUT_MS = 150_000;
@@ -61,6 +73,7 @@ export const SETUP_TIMEOUT_MS = 150_000;
 export interface ContentStudioAISetupRequest {
   connectionId: unknown;
   companyName: unknown;
+  tagline?: unknown;
   website?: unknown;
   description: unknown;
   goal?: unknown;
@@ -175,6 +188,18 @@ export class ContentStudioAISetupService {
             err.httpStatus ?? '-'
           } providerRequestId=${err.providerRequestId ?? '-'}`
         );
+        if (CONNECTION_FAILURES.includes(err.code)) {
+          await this._contentStudioAIConnectionRepository
+            .setValidationResult({
+              organizationId: input.organizationId,
+              connectionId,
+              validatedAt: new Date(),
+              status: 'invalid',
+              code: err.code,
+            })
+            // the answer to the user is the provider failure either way
+            .catch(() => undefined);
+        }
       }
       throw fromAIError(err);
     }
@@ -231,6 +256,7 @@ export class ContentStudioAISetupService {
         SETUP_COMPANY_NAME_MAX,
         true
       ) as string,
+      tagline: this.text(request.tagline, SETUP_TAGLINE_MAX, false),
       website,
       description: this.text(
         request.description,

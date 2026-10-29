@@ -1372,7 +1372,7 @@ describe('ContentStudioAIConnectionService: Anthropic connections', () => {
     });
     expect(created(repository)).toMatchObject({
       provider: 'anthropic',
-      defaultModel: 'claude-opus-5-5',
+      defaultModel: 'claude-sonnet-5-5',
       sealedCredential: expect.stringMatching(/^sb1\.k1\./),
     });
     expect(Object.keys(result).sort()).toEqual(PUBLIC_FIELDS);
@@ -1494,7 +1494,7 @@ describe('ContentStudioAIConnectionService: Anthropic connections', () => {
       service.listProviders().find((p) => p.provider === 'anthropic')
     ).toMatchObject({
       displayName: 'Anthropic',
-      defaultModel: 'claude-opus-5-5',
+      defaultModel: 'claude-sonnet-5-5',
       models: [
         { id: 'claude-opus-5-5' },
         { id: 'claude-sonnet-5-5' },

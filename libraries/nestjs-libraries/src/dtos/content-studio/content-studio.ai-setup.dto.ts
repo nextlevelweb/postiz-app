@@ -3,6 +3,7 @@ import {
   SETUP_COMPANY_NAME_MAX,
   SETUP_DESCRIPTION_MAX,
   SETUP_NOTE_MAX,
+  SETUP_TAGLINE_MAX,
   SETUP_WEBSITE_MAX,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.setup.prompt';
 
@@ -18,6 +19,11 @@ export class ContentStudioAISetupProposalDto {
   @IsString()
   @MaxLength(SETUP_COMPANY_NAME_MAX)
   companyName: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(SETUP_TAGLINE_MAX)
+  tagline?: string | null;
 
   @IsOptional()
   @IsString()

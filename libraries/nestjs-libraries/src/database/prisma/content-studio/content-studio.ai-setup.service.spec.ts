@@ -105,6 +105,7 @@ const build = (
       async (organizationId: string, id: string) =>
         organizationId === ORG && id === CONNECTION ? { ...connection } : null
     ),
+    setValidationResult: jest.fn(async () => ({ count: 1 })),
   };
   const adapter = {
     provider,
@@ -236,7 +237,7 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
     });
     const [[text]] = anthropic.adapter.generateText.mock.calls;
     expect(text.output).toEqual({ type: 'text' });
-    expect(text.model).toBe('claude-opus-5-5');
+    expect(text.model).toBe('claude-sonnet-5-5');
   });
 
   it("uses the connection's own model, never one from the request", async () => {
@@ -357,11 +358,152 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
     );
     expect(body(err).code).toBe('CS_AI_WORKSPACE_REQUIRED');
     expect(warn).toHaveBeenCalledWith(
-      'setup proposal failed: provider=anthropic model=claude-opus-5-5 code=WORKSPACE_REQUIRED httpStatus=400 providerRequestId=req_1'
+      'setup proposal failed: provider=anthropic model=claude-sonnet-5-5 code=WORKSPACE_REQUIRED httpStatus=400 providerRequestId=req_1'
     );
     expect(JSON.stringify(warn.mock.calls)).not.toContain(KEY);
     expect(JSON.stringify(warn.mock.calls)).not.toContain(COMPANY);
     warn.mockRestore();
+  });
+
+  // UX review 03: the connection tested Ready, but every draft failed on an
+  // Anthropic organization without API credit. Such an answer now marks the
+  // connection, so its status says what to fix
+  it('SR1 records an account failure on the connection, never a busy or slow provider', async () => {
+    for (const code of [
+      'QUOTA_EXCEEDED',
+      'AUTH_FAILED',
+      'WORKSPACE_REQUIRED',
+      'MODEL_UNAVAILABLE',
+    ] as const) {
+      const ctx = build({ provider: 'anthropic' });
+      ctx.adapter.generateText.mockRejectedValueOnce(
+        new ContentStudioAIProviderError(code, { httpStatus: 400 })
+      );
+      const err = await failure(() =>
+        ctx.service.proposeSetup({
+          organizationId: ORG,
+          userId: USER,
+          request: request(),
+        })
+      );
+      expect(body(err).code).toBe(`CS_AI_${code}`);
+      expect(ctx.connections.setValidationResult).toHaveBeenCalledWith({
+        organizationId: ORG,
+        connectionId: CONNECTION,
+        validatedAt: expect.any(Date),
+        status: 'invalid',
+        code,
+      });
+    }
+    for (const code of [
+      'RATE_LIMITED',
+      'TIMEOUT',
+      'PROVIDER_UNAVAILABLE',
+      'REQUEST_REJECTED',
+      'INVALID_RESPONSE',
+    ] as const) {
+      const ctx = build({ provider: 'anthropic' });
+      ctx.adapter.generateText.mockRejectedValueOnce(
+        new ContentStudioAIProviderError(code)
+      );
+      await failure(() =>
+        ctx.service.proposeSetup({
+          organizationId: ORG,
+          userId: USER,
+          request: request(),
+        })
+      );
+      expect(ctx.connections.setValidationResult).not.toHaveBeenCalled();
+    }
+  });
+
+  it('SR2 answers the provider failure even when the connection cannot be marked', async () => {
+    const ctx = build({ provider: 'anthropic' });
+    ctx.connections.setValidationResult.mockRejectedValueOnce(
+      new Error('db down')
+    );
+    ctx.adapter.generateText.mockRejectedValueOnce(
+      new ContentStudioAIProviderError('QUOTA_EXCEEDED')
+    );
+    const err = await failure(() =>
+      ctx.service.proposeSetup({
+        organizationId: ORG,
+        userId: USER,
+        request: request(),
+      })
+    );
+    expect(body(err).code).toBe('CS_AI_QUOTA_EXCEEDED');
+  });
+
+  it('SR3 gives the AI the tagline the user typed, as company information', async () => {
+    const ctx = build();
+    await ctx.service.proposeSetup({
+      organizationId: ORG,
+      userId: USER,
+      request: request({
+        tagline: '  Strategy, websites and automation  ',
+        goal: 'More inbound leads',
+        audience: 'Growing SMEs',
+      }),
+    });
+    const [[sent]] = ctx.adapter.generateText.mock.calls;
+    const company = JSON.parse(
+      sent.prompt.slice(
+        sent.prompt.indexOf('{', sent.prompt.indexOf('## Company information'))
+      )
+    );
+    expect(company).toEqual({
+      name: COMPANY,
+      tagline: 'Strategy, websites and automation',
+      website: 'https://example.test',
+      description: 'We build websites for small businesses.',
+      goal: 'More inbound leads',
+      audience: 'Growing SMEs',
+    });
+    expect(sent.prompt).toContain('language with the tag nl.');
+    expect(CONTENT_STUDIO_AI_SETUP_PROMPT_VERSION).toBe('cs-setup-v2');
+
+    const without = build();
+    await without.service.proposeSetup({
+      organizationId: ORG,
+      userId: USER,
+      request: request(),
+    });
+    expect(without.adapter.generateText.mock.calls[0][0].prompt).toContain(
+      '"tagline": null'
+    );
+    const err = await failure(() =>
+      without.service.proposeSetup({
+        organizationId: ORG,
+        userId: USER,
+        request: request({ tagline: 'x'.repeat(301) }),
+      })
+    );
+    expect(body(err).code).toBe('CS_INVALID_REQUEST');
+  });
+
+  it('SR4 asks the provider again on every try, each a new operation', async () => {
+    const ctx = build({ provider: 'anthropic' });
+    ctx.adapter.generateText.mockRejectedValueOnce(
+      new ContentStudioAIProviderError('PROVIDER_UNAVAILABLE')
+    );
+    await failure(() =>
+      ctx.service.proposeSetup({
+        organizationId: ORG,
+        userId: USER,
+        request: request(),
+      })
+    );
+    const second = await ctx.service.proposeSetup({
+      organizationId: ORG,
+      userId: USER,
+      request: request(),
+    });
+    expect(second.proposal.brand.tagline).toBe('Websites that work');
+    expect(ctx.adapter.generateText).toHaveBeenCalledTimes(2);
+    expect(ctx.operations.createRunningOperation).toHaveBeenCalledTimes(2);
+    expect(ctx.operations.completeFailedWithUsage).toHaveBeenCalledTimes(1);
+    expect(ctx.operations.completeSucceededWithUsage).toHaveBeenCalledTimes(1);
   });
 
   it('gives the provider longer than a writing call: a whole profile set is a long answer', async () => {

@@ -543,7 +543,7 @@ export const aiValidationCodeMessage = (t: Translate, code: string | null) => {
     case 'QUOTA_EXCEEDED':
       return t(
         'content_studio_ai_test_quota',
-        'The provider reports that the account has no available quota or credits.'
+        'The key works, but the provider account has no API credit left, so nothing can be generated. Add credit in your provider account, then test again.'
       );
     case 'PROVIDER_UNAVAILABLE':
       return t(

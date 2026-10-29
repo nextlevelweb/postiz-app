@@ -789,7 +789,7 @@ describe('AI connections: test', () => {
     [
       'TC4',
       { ok: false, code: 'QUOTA_EXCEEDED' },
-      'The provider reports that the account has no available quota or credits.',
+      'The key works, but the provider account has no API credit left, so nothing can be generated. Add credit in your provider account, then test again.',
     ],
     [
       'TC5',
