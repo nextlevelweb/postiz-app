@@ -90,10 +90,33 @@ export const ContentStudioIntelligence: FC = () => {
         </Link>
       }
     >
+      {/* A phone has no room for six tabs: one choice of the section
+          instead, so none of them sits off screen */}
+      <label className="sm:hidden flex flex-col gap-[6px]">
+        <span className="text-[13px] text-textItemBlur">
+          {t('content_studio_brand_ai_section', 'Section')}
+        </span>
+        <select
+          className="bg-newBgColorInner h-[44px] px-[12px] border-newTableBorder border rounded-[8px] text-textColor text-[16px] font-[600]"
+          value={tab}
+          onChange={(event) => {
+            const next = parseIntelligenceTab(event.target.value);
+            if (next !== tab) {
+              select(next);
+            }
+          }}
+        >
+          {INTELLIGENCE_TABS.map((key) => (
+            <option key={key} value={key}>
+              {labels[key]}
+            </option>
+          ))}
+        </select>
+      </label>
       <div
         role="tablist"
         aria-label={t('content_studio_brand_ai', 'Brand & AI')}
-        className="flex gap-[8px] overflow-x-auto pb-[4px] shrink-0"
+        className="hidden sm:flex gap-[8px] overflow-x-auto pb-[4px] shrink-0"
       >
         {INTELLIGENCE_TABS.map((key) => (
           <button

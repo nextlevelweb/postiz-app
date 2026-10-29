@@ -254,6 +254,9 @@ const button = (name: string | RegExp, root: HTMLElement = document.body) =>
 
 beforeEach(() => {
   window.localStorage.clear();
+  // the setup of these organizations is not complete; "Finish later" was
+  // chosen on this device, so Home stays Home (first use is tested below)
+  window.localStorage.setItem('content-studio-setup-hidden:org', '1');
   mockModals.set([]);
   activeProjects = [project(P_ALPHA, 'Alpha'), project(P_BETA, 'Beta')];
   archivedProjects = [project(P_OLD, 'Old project', true)];
@@ -325,12 +328,11 @@ describe('Content Studio home: loading the list', () => {
     renderHome();
     await flush();
 
-    // UX review 02: until the list says whether there is content, the home
-    // page waits (it may open the setup assistant instead)
-    expect(screen.getByRole('status').textContent).toContain(
-      'Opening Content Studio…'
-    );
+    // UX review 03: whether setup opens no longer waits for the list; the
+    // home page is there and the list shows it is loading
+    expect(screen.getByRole('heading', { level: 1 })).toBeTruthy();
     expect(screen.queryByText('Spring launch')).toBeNull();
+    expect(screen.queryByText(/No content yet/)).toBeNull();
     await act(async () => release());
     await loaded();
   });
@@ -594,6 +596,7 @@ describe('Content Studio home: empty, loading and error states', () => {
 
 // UX review 02: a new organization lands in the setup assistant
 describe('Content Studio home: first use opens the setup assistant', () => {
+  beforeEach(() => window.localStorage.clear());
   afterEach(() => window.localStorage.clear());
 
   it('F1 an organization without content or setup goes straight to the assistant', async () => {
@@ -635,9 +638,20 @@ describe('Content Studio home: first use opens the setup assistant', () => {
     expect(screen.queryByText('Welcome to Content Studio')).toBeNull();
   });
 
-  it('F4 an organization with content and no assistant in progress gets Home', async () => {
+  // UX review 03: the phone did not open the assistant the computer did;
+  // the organization's own setup decides now, not this browser's draft
+  it('F4 an organization with content but an incomplete setup opens the assistant on a device without a draft', async () => {
     renderHome();
+    await waitFor(() =>
+      expect(mockRouter.replace).toHaveBeenCalledWith('/content-studio/setup')
+    );
+  });
+
+  it('F5 a filtered or paged home page is never sent to the assistant', async () => {
+    renderHome(`/content-studio?project=${P_ALPHA}`);
     await loaded();
+    renderHome('/content-studio?page=2');
+    await flush();
     expect(mockRouter.replace).not.toHaveBeenCalledWith(
       '/content-studio/setup'
     );
@@ -1165,5 +1179,57 @@ describe('Content Studio home: source surface', () => {
     expect(
       existsSync(join(dir, '../../app/(app)/(site)/content-studio/page.tsx'))
     ).toBe(true);
+  });
+});
+
+// UX review 03: on an iPhone Content Studio looked zoomed in. iOS Safari zooms
+// into a focused field under 16px and stays there; zooming is never turned
+// off to hide it
+describe('Content Studio: phones and tablets', () => {
+  const app = join(__dirname, '../../app');
+
+  it('M6 gives every field 16px on a touch or small screen while Content Studio is open, dialogs included', () => {
+    const css = readFileSync(join(app, 'global.scss'), 'utf8');
+    const rule = css.slice(
+      css.indexOf('@media (pointer: coarse), (max-width: 1025px)')
+    );
+    expect(rule).toMatch(
+      /^@media \(pointer: coarse\), \(max-width: 1025px\) \{/
+    );
+    for (const field of ['input:not', 'select', 'textarea']) {
+      expect(rule).toContain(`html.content-studio-open ${field}`);
+    }
+    expect(rule.slice(0, rule.indexOf('}'))).toContain('font-size: 16px');
+    const layout = readFileSync(
+      join(app, '(app)/(site)/content-studio/layout.tsx'),
+      'utf8'
+    );
+    expect(layout).toContain('<ContentStudioDocumentClass />');
+  });
+
+  it('M7 marks the document only while Content Studio is open', () => {
+    const { ContentStudioDocumentClass } = require('./content-studio.shell');
+    const { unmount } = render(h(ContentStudioDocumentClass));
+    expect(
+      document.documentElement.classList.contains('content-studio-open')
+    ).toBe(true);
+    unmount();
+    expect(
+      document.documentElement.classList.contains('content-studio-open')
+    ).toBe(false);
+  });
+
+  it('M8 never turns zooming off', () => {
+    const layouts = [
+      'layout.tsx',
+      '(app)/layout.tsx',
+      '(app)/(site)/layout.tsx',
+      '(app)/(site)/content-studio/layout.tsx',
+    ]
+      .map((file) => join(app, file))
+      .filter((file) => existsSync(file))
+      .map((file) => readFileSync(file, 'utf8'))
+      .join('\n');
+    expect(layouts).not.toMatch(/maximum-?scale|user-?scalable/i);
   });
 });

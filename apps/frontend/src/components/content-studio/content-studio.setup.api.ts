@@ -70,20 +70,18 @@ export const isUsableAIConnection = (
   providers.some((provider) => provider.provider === connection.provider);
 
 // Whether opening Content Studio should open the setup assistant instead of
-// the home page: never once everything is set up or after "Finish later" /
-// "Skip for now"; always while an unfinished assistant is kept; and for an
-// organization that has not really started (no content, at most one part
-// set up, such as only an AI connection)
+// the home page: as long as the organization's setup is not complete, on
+// every device, until "Finish later" or "Skip for now" was chosen there.
+// What is set up is the organization's own data, so a phone decides the same
+// as the computer the setup was started on (UX review 03: a rule that also
+// looked at existing content and at an unfinished assistant kept in this
+// browser opened it on the computer but not on the phone). A filtered or
+// paged home page was asked for on purpose and is never redirected
 export const shouldOpenContentStudioSetup = (input: {
   complete: boolean;
-  doneCount: number;
   hidden: boolean;
-  draft: boolean;
-  hasContent: boolean;
-}) =>
-  !input.complete &&
-  !input.hidden &&
-  (input.draft || (!input.hasContent && input.doneCount <= 1));
+  filtered: boolean;
+}) => !input.complete && !input.hidden && !input.filtered;
 
 export interface ContentStudioSetupStatus {
   loaded: boolean;
@@ -216,6 +214,7 @@ export interface ContentStudioSetupProposal {
 
 export interface ContentStudioSetupCompany {
   companyName: string;
+  tagline: string;
   website: string;
   description: string;
   goal: string;
@@ -272,6 +271,7 @@ export const useContentStudioSetupActions = () => {
           body: JSON.stringify({
             connectionId,
             companyName: company.companyName,
+            tagline: company.tagline?.trim() || null,
             website: company.website.trim() || null,
             description: company.description,
             goal: company.goal.trim() || null,

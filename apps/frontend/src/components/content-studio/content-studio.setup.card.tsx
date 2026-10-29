@@ -198,14 +198,12 @@ export const ContentStudioSetupCard: FC<{ hasContent: boolean }> = ({
   );
 };
 
-// A new organization opens Content Studio in the setup assistant, and an
-// unfinished assistant is picked up again; anyone who finished, skipped or
-// chose "Finish later" gets the home page. Decided once per visit, from the
-// organization's data and this browser's setup state. Until then nothing is
-// shown, so a new user never sees the home page flash by
-export const useContentStudioFirstUseSetup = (
-  hasContent: boolean | undefined
-) => {
+// Content Studio opens in the setup assistant until the organization's setup
+// is complete; anyone who finished, skipped or chose "Finish later" on this
+// device gets the home page. Decided once per visit, from the organization's
+// data and this device's choice. Until then nothing is shown, so the home
+// page never flashes by
+export const useContentStudioFirstUseSetup = (filtered: boolean) => {
   const router = useRouter();
   const user = useUser();
   const organizationId = user?.orgId || '';
@@ -219,20 +217,18 @@ export const useContentStudioFirstUseSetup = (
       setDecision('home');
       return;
     }
-    if (!status.loaded || hasContent === undefined) {
+    if (!status.loaded) {
       return;
     }
     const open = shouldOpenContentStudioSetup({
       complete: status.complete,
-      doneCount: status.doneCount,
       hidden: isContentStudioSetupHidden(organizationId),
-      draft: !!loadContentStudioSetupDraft(organizationId),
-      hasContent,
+      filtered,
     });
     setDecision(open ? 'setup' : 'home');
     if (open) {
       router.replace(CONTENT_STUDIO_SETUP_PATH);
     }
-  }, [decision, organizationId, status, hasContent, router]);
+  }, [decision, organizationId, status, filtered, router]);
   return decision;
 };

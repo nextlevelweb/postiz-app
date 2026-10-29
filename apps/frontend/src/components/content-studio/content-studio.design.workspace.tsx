@@ -1606,6 +1606,17 @@ export const ContentStudioDesignWorkspace: FC<{
 
   return (
     <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col gap-[20px] min-w-0">
+      {/* the canvas is made for a mouse and a wide screen: a phone can look
+          at a design, and is told where editing works well */}
+      <div
+        role="note"
+        className="sm:hidden p-[12px] rounded-[8px] bg-newBgLineColor text-[13px]"
+      >
+        {t(
+          'content_studio_design_small_screen',
+          'Creative Studio editing works best on a larger screen. You can look at this design here; open it on a computer or tablet to edit it.'
+        )}
+      </div>
       <div className="flex flex-wrap items-start gap-[12px]">
         <div className="flex flex-col gap-[6px] flex-1 min-w-[200px]">
           <ContentStudioBreadcrumbs

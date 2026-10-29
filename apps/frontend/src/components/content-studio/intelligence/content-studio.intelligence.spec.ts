@@ -294,6 +294,30 @@ describe('Brand & AI page', () => {
     }
   );
 
+  // UX review 03: six tabs do not fit a phone; there it is one choice
+  it('M1 a phone chooses the section from one list; wider screens keep the tabs', async () => {
+    renderPage();
+    const picker = screen.getByRole('combobox', {
+      name: 'Section',
+    }) as HTMLSelectElement;
+    expect(picker.closest('label')?.className).toMatch(/(^| )sm:hidden( |$)/);
+    expect(screen.getByRole('tablist').className).toMatch(
+      /(^| )hidden sm:flex( |$)/
+    );
+    expect(Array.from(picker.options).map((o) => o.textContent)).toEqual(
+      TABS.map(([, label]) => label)
+    );
+    expect(picker.value).toBe('ai');
+    fireEvent.change(picker, { target: { value: 'company' } });
+    await flush();
+    expect(mockRouter.replace).toHaveBeenLastCalledWith(
+      '/content-studio/intelligence?tab=company',
+      { scroll: false }
+    );
+    // never smaller than 16px: iOS would zoom into it
+    expect(picker.className).toContain('text-[16px]');
+  });
+
   it.each([['nonsense'], ['AI'], [''], ['apiKey'], ['writing%20x']])(
     'PG7 falls back to the first tab for ?tab=%s',
     async (tab) => {

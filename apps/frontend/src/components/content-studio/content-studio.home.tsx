@@ -192,16 +192,9 @@ export const ContentStudioHome: FC = () => {
       ? packages.data?.results[0]
       : undefined;
 
-  // only the plain list says whether there is content at all; a filtered or
-  // failed one never sends anyone to setup
-  const unfiltered =
-    !filters.archived && !filters.projectId && filters.page === 1;
+  // a filtered or paged list was asked for on purpose: never sent to setup
   const decision = useContentStudioFirstUseSetup(
-    !unfiltered || packages.error
-      ? true
-      : packages.data
-      ? !!packages.data.results.length
-      : undefined
+    !!filters.archived || !!filters.projectId || filters.page !== 1
   );
   if (decision !== 'home') {
     return (

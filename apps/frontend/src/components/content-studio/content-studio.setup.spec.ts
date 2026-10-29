@@ -574,6 +574,8 @@ describe('Setup assistant: the AI draft', () => {
     expect(asked[0].body).toEqual({
       connectionId: CONNECTION.id,
       companyName: 'Next Level Web',
+      // the Brand Kit's tagline, prefilled in step 2
+      tagline: 'Old line',
       website: 'https://nextlevelweb.example',
       description: 'We build websites for small shops.',
       goal: null,
@@ -617,7 +619,7 @@ describe('Setup assistant: the AI draft', () => {
     state.proposal = () => reply(502, { code: 'CS_AI_QUOTA_EXCEEDED' });
     await toProfile();
     expect(screen.getByRole('alert').textContent).toBe(
-      'Your AI provider account has no credit left.'
+      'Your OpenAI key works, but the OpenAI account has no API credit left, so no draft can be made. Add credit in your OpenAI account, then try again, or continue manually.'
     );
     fireEvent.click(button('Continue manually'));
     await flush();
@@ -719,7 +721,8 @@ describe('Setup assistant: save', () => {
     );
     expect(saved[0].body.content.identity).toEqual({
       brandName: 'Next Level Web',
-      tagline: 'Websites that bring in work',
+      // the Brand Kit's own tagline, kept in step 2, wins over the AI's
+      tagline: 'Old line',
       description: 'AI brand.',
     });
     expect(saved[2].body.baseRevisionNumber).toBe(3);
@@ -972,29 +975,17 @@ describe('Setup: when Content Studio opens the assistant (review 02)', () => {
   const {
     shouldOpenContentStudioSetup,
   } = require('./content-studio.setup.api');
-  const base = {
-    complete: false,
-    doneCount: 0,
-    hidden: false,
-    draft: false,
-    hasContent: false,
-  };
+  const base = { complete: false, hidden: false, filtered: false };
+  // UX review 03: the same on every device, from the organization's data
   it.each([
-    ['a completely new organization', {}, true],
-    ['one with only AI connected', { doneCount: 1 }, true],
+    ['a setup that is not complete', {}, true],
+    ['everything set up', { complete: true }, false],
     [
-      'an unfinished assistant',
-      { draft: true, doneCount: 4, hasContent: true },
-      true,
-    ],
-    ['everything set up', { complete: true, doneCount: 6 }, false],
-    [
-      'after Skip for now or Finish later',
-      { hidden: true, draft: true },
+      'after Skip for now or Finish later on this device',
+      { hidden: true },
       false,
     ],
-    ['an organization that already has content', { hasContent: true }, false],
-    ['one that set up several parts by hand', { doneCount: 3 }, false],
+    ['a filtered or paged home page', { filtered: true }, false],
   ])('%s', (_label, patch, expected) => {
     expect(shouldOpenContentStudioSetup({ ...base, ...patch })).toBe(expected);
   });
@@ -1021,5 +1012,199 @@ describe('Setup assistant: source surface', () => {
 
   it('keeps no key: the assistant itself never handles an API key', () => {
     expect(code).not.toMatch(/apiKey|credential:|API key:/);
+  });
+});
+
+describe('Setup assistant: real AI failures and retry (review 03)', () => {
+  const toDraft = async () => {
+    await show();
+    fireEvent.click(button('Next'));
+    await flush();
+    fillCompany();
+  };
+  const proposals = () =>
+    calls().filter((c) => c.url === '/content-studio/ai/setup/proposal');
+  const wait = (ms: number) =>
+    act(() => new Promise((resolve) => setTimeout(resolve, ms)));
+
+  it('W22 the tagline is asked in step 2, prefilled from the Brand Kit, sent to the AI and kept as typed', async () => {
+    await toDraft();
+    expect(field('Tagline (optional)').value).toBe('Old line');
+    type('Tagline (optional)', 'Strategy, websites and automation');
+    fireEvent.click(button('Draft my profile with AI'));
+    await flush();
+    expect(proposals()[0].body.tagline).toBe(
+      'Strategy, websites and automation'
+    );
+    expect(screen.getByText('Strategy, websites and automation')).toBeTruthy();
+    expect(screen.queryByText('Websites that bring in work')).toBeNull();
+  });
+
+  it('W23 an empty tagline is sent as none and the AI suggests one', async () => {
+    await toDraft();
+    type('Tagline (optional)', '   ');
+    fireEvent.click(button('Draft my profile with AI'));
+    await flush();
+    expect(proposals()[0].body.tagline).toBeNull();
+    expect(screen.getByText('Websites that bring in work')).toBeTruthy();
+  });
+
+  it('W24 an account without credit says so by provider name, and the connection list is read again', async () => {
+    state.proposal = () => reply(502, { code: 'CS_AI_QUOTA_EXCEEDED' });
+    await toDraft();
+    const listed = () =>
+      calls().filter(
+        (c) => c.method === 'GET' && c.url === '/content-studio/ai/connections'
+      ).length;
+    const before = listed();
+    fireEvent.click(button('Draft my profile with AI'));
+    await flush();
+    expect(screen.getByRole('alert').textContent).toBe(
+      'Your OpenAI key works, but the OpenAI account has no API credit left, so no draft can be made. Add credit in your OpenAI account, then try again, or continue manually.'
+    );
+    expect(listed()).toBeGreaterThan(before);
+    // the connection is the way on: Check AI connection leads
+    expect(button('Check AI connection').className).not.toMatch(/secondary/);
+    expect(button('Continue manually')).toBeTruthy();
+  });
+
+  it('W25 Try again visibly tries again: a new request, "Trying again…", and a repeat says so', async () => {
+    state.proposal = () => reply(503, { code: 'CS_AI_PROVIDER_UNAVAILABLE' });
+    await toDraft();
+    fireEvent.click(button('Draft my profile with AI'));
+    await flush();
+    expect(proposals()).toHaveLength(1);
+    expect(screen.queryByText(/Tried again just now/)).toBeNull();
+
+    fireEvent.click(button('Try again'));
+    // the old error is gone at once and the wait says it is a retry
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByText('Trying again…')).toBeTruthy();
+    await flush();
+    expect(proposals()).toHaveLength(2);
+    // still waiting: a refusal that comes back at once is shown a moment
+    expect(screen.getByText('Trying again…')).toBeTruthy();
+    await wait(700);
+    await flush();
+    expect(screen.getByRole('alert').textContent).toMatch(
+      /not available right now.*Tried again just now \(2 tries\): the same problem came back\./
+    );
+
+    // a different answer is a new message, not a repeat
+    state.proposal = () => reply(502, { code: 'CS_AI_INVALID_RESPONSE' });
+    fireEvent.click(button('Try again'));
+    await flush();
+    await wait(700);
+    await flush();
+    expect(proposals()).toHaveLength(3);
+    expect(screen.getByRole('alert').textContent).toBe(
+      'The AI answer could not be used. Try again.'
+    );
+    // and one that works shows the draft
+    state.proposal = () =>
+      reply(200, { operationId: 'op', proposal: PROPOSAL, ai: {} });
+    fireEvent.click(button('Try again'));
+    await flush();
+    expect(screen.getByText('AI voice.')).toBeTruthy();
+    expect(proposals()).toHaveLength(4);
+  });
+
+  it('W26 a request the provider could not accept names the provider and points at the model', async () => {
+    state.proposal = () => reply(502, { code: 'CS_AI_REQUEST_REJECTED' });
+    await toDraft();
+    fireEvent.click(button('Draft my profile with AI'));
+    await flush();
+    expect(screen.getByRole('alert').textContent).toBe(
+      'OpenAI could not accept the request Content Studio sent. Try again; if it keeps happening, choose another model under Check AI connection.'
+    );
+  });
+
+  it('W27 a draft kept before the tagline field opens with the Brand Kit tagline and its typed facts', async () => {
+    window.localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({
+        v: 1,
+        step: 2,
+        connectionId: CONNECTION.id,
+        manual: false,
+        company: {
+          companyName: 'Next Level Web',
+          website: 'https://nextlevelweb.nl',
+          description: 'Strategy, websites, marketing and automation.',
+          goal: 'Inbound leads',
+          audience: 'Growing SMEs',
+          language: 'nl',
+        },
+        source: null,
+        profile: null,
+        saved: {},
+      })
+    );
+    await show();
+    expect(field('Company name').value).toBe('Next Level Web');
+    expect(field('Tagline (optional)').value).toBe('Old line');
+    expect(field('What does your company do?').value).toBe(
+      'Strategy, websites, marketing and automation.'
+    );
+    expect(field('Main goal of your posts (optional)').value).toBe(
+      'Inbound leads'
+    );
+  });
+});
+
+describe('Setup assistant: phone layout (review 03)', () => {
+  it('M3 a phone shows "Step x of 4" over a bar of four parts instead of the labelled steps', async () => {
+    await show();
+    fireEvent.click(button('Next'));
+    await flush();
+    const bar = screen.getByTestId('setup-progress-bar');
+    expect(bar.getAttribute('aria-hidden')).toBe('true');
+    expect(bar.className).toMatch(/(^| )flex sm:hidden( |$)/);
+    const parts = Array.from(bar.children).map((part) =>
+      part.className.includes('bg-newTableBorder') ? 'todo' : 'done'
+    );
+    expect(parts).toEqual(['done', 'done', 'todo', 'todo']);
+    const steps = screen
+      .getByRole('navigation', { name: 'Setup steps' })
+      .querySelector('ol') as HTMLElement;
+    expect(steps.className).toMatch(/(^| )hidden sm:flex( |$)/);
+    expect(screen.getByText('Step 2 of 4')).toBeTruthy();
+  });
+
+  it('M4 website and language sit side by side only where both fit, and actions stack on a phone, the main one on top', async () => {
+    await show();
+    fireEvent.click(button('Next'));
+    await flush();
+    const grid = field('Website').closest('.grid') as HTMLElement;
+    expect(grid.className).toContain(
+      'grid-cols-[repeat(auto-fit,minmax(240px,1fr))]'
+    );
+    expect(grid.contains(field('Language of your posts'))).toBe(true);
+    const footer = button('Draft my profile with AI')
+      .parentElement as HTMLElement;
+    expect(footer.className).toMatch(/(^| )flex-col-reverse( |$)/);
+    expect(footer.className).toContain('sm:flex-row');
+    // the last button (the main one) comes first when reversed
+    expect(footer.lastElementChild?.textContent).toBe(
+      'Draft my profile with AI'
+    );
+
+    state.proposal = () => reply(502, { code: 'CS_AI_INVALID_RESPONSE' });
+    fillCompany();
+    fireEvent.click(button('Draft my profile with AI'));
+    await flush();
+    const actions = button('Continue manually').parentElement as HTMLElement;
+    expect(actions.className).toMatch(/(^| )flex-col( |$)/);
+    expect(actions.className).toContain('items-stretch');
+  });
+
+  it('M5 Finish later never wraps under the title', async () => {
+    await show();
+    const later = screen.getByRole('link', { name: 'Finish later' });
+    expect(later.className).toContain('shrink-0');
+    expect(later.className).toContain('whitespace-nowrap');
+    expect((later.parentElement as HTMLElement).className).not.toContain(
+      'flex-wrap'
+    );
   });
 });

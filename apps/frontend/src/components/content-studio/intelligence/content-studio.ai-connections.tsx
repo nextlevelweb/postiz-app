@@ -525,6 +525,10 @@ const ReplaceKey: FC<{
   );
 };
 
+// a secondary action of a connection: text, not a large button
+const QUIET_ACTION =
+  'h-[32px] underline-offset-2 hover:underline disabled:opacity-50 disabled:pointer-events-none';
+
 // The AI connections of the organization. Every member sees them; only
 // ADMIN and SUPERADMIN members get the controls that change them
 export const AIConnectionsSection: FC = () => {
@@ -761,74 +765,86 @@ export const AIConnectionsSection: FC = () => {
                   )}
                 </div>
                 {canManage && (
-                  <div className="flex flex-wrap gap-[8px]">
-                    <Button
-                      secondary
-                      loading={busy === connection.id}
-                      disabled={!!busy || connection.disabled}
-                      aria-label={`${t('content_studio_ai_test', 'Test')} ${
-                        connection.name
-                      }`}
-                      onClick={() => test(connection)}
-                    >
-                      {t('content_studio_ai_test', 'Test')}
-                    </Button>
-                    <Button
-                      secondary
-                      disabled={!!busy}
-                      aria-label={`${t('content_studio_ai_edit', 'Edit')} ${
-                        connection.name
-                      }`}
-                      onClick={() => openEdit(connection)}
-                    >
-                      {t('content_studio_ai_edit', 'Edit')}
-                    </Button>
-                    <Button
-                      secondary
-                      disabled={!!busy}
-                      aria-label={`${t(
-                        'content_studio_ai_replace_key',
-                        'Replace key'
-                      )} ${connection.name}`}
-                      onClick={() => openReplaceKey(connection)}
-                    >
-                      {t('content_studio_ai_replace_key', 'Replace key')}
-                    </Button>
-                    {connection.disabled ? (
+                  // Test and Edit are the everyday actions; the key, turning
+                  // the connection off and removing it are quieter text
+                  // buttons, each with its own name, never behind a menu
+                  <div className="flex flex-col gap-[8px] w-full sm:w-auto">
+                    <div className="flex flex-wrap gap-[8px]">
+                      <Button
+                        secondary
+                        loading={busy === connection.id}
+                        disabled={!!busy || connection.disabled}
+                        aria-label={`${t('content_studio_ai_test', 'Test')} ${
+                          connection.name
+                        }`}
+                        onClick={() => test(connection)}
+                      >
+                        {t('content_studio_ai_test', 'Test')}
+                      </Button>
                       <Button
                         secondary
                         disabled={!!busy}
-                        aria-label={`${t(
-                          'content_studio_ai_enable',
-                          'Enable'
-                        )} ${connection.name}`}
-                        onClick={() => enable(connection)}
+                        aria-label={`${t('content_studio_ai_edit', 'Edit')} ${
+                          connection.name
+                        }`}
+                        onClick={() => openEdit(connection)}
                       >
-                        {t('content_studio_ai_enable', 'Enable')}
+                        {t('content_studio_ai_edit', 'Edit')}
                       </Button>
-                    ) : (
-                      <Button
-                        secondary
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-[16px] gap-y-[4px] text-[13px]">
+                      <button
+                        type="button"
+                        className={QUIET_ACTION}
                         disabled={!!busy}
                         aria-label={`${t(
-                          'content_studio_ai_disable',
-                          'Disable'
+                          'content_studio_ai_replace_key',
+                          'Replace key'
                         )} ${connection.name}`}
-                        onClick={() => disable(connection)}
+                        onClick={() => openReplaceKey(connection)}
                       >
-                        {t('content_studio_ai_disable', 'Disable')}
-                      </Button>
-                    )}
-                    <Button
-                      secondary
-                      disabled={!!busy}
-                      aria-label={`${t('content_studio_ai_remove', 'Remove')} ${
-                        connection.name
-                      }`}
-                      onClick={() => remove(connection)}
-                    >
-                      {t('content_studio_ai_remove', 'Remove')}
-                    </Button>
+                        {t('content_studio_ai_replace_key', 'Replace key')}
+                      </button>
+                      {connection.disabled ? (
+                        <button
+                          type="button"
+                          className={QUIET_ACTION}
+                          disabled={!!busy}
+                          aria-label={`${t(
+                            'content_studio_ai_enable',
+                            'Enable'
+                          )} ${connection.name}`}
+                          onClick={() => enable(connection)}
+                        >
+                          {t('content_studio_ai_enable', 'Enable')}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className={QUIET_ACTION}
+                          disabled={!!busy}
+                          aria-label={`${t(
+                            'content_studio_ai_disable',
+                            'Disable'
+                          )} ${connection.name}`}
+                          onClick={() => disable(connection)}
+                        >
+                          {t('content_studio_ai_disable', 'Disable')}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className={clsx(QUIET_ACTION, 'text-red-400')}
+                        disabled={!!busy}
+                        aria-label={`${t(
+                          'content_studio_ai_remove',
+                          'Remove'
+                        )} ${connection.name}`}
+                        onClick={() => remove(connection)}
+                      >
+                        {t('content_studio_ai_remove', 'Remove')}
+                      </button>
+                    </div>
                   </div>
                 )}
               </li>

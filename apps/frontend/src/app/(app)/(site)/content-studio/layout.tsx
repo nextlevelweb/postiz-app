@@ -1,4 +1,5 @@
 import { ContentStudioCloseModalsOnNavigate } from '@gitroom/frontend/components/content-studio/content-studio.dialog';
+import { ContentStudioDocumentClass } from '@gitroom/frontend/components/content-studio/content-studio.shell';
 
 export default async function Layout({
   children,
@@ -8,6 +9,7 @@ export default async function Layout({
   return (
     <>
       <ContentStudioCloseModalsOnNavigate />
+      <ContentStudioDocumentClass />
       {children}
     </>
   );

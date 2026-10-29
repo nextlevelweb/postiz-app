@@ -262,8 +262,16 @@ export const StringListEditor: FC<{
 };
 
 // A long text, kept as typed: inner line breaks and spacing are content
-// The most an auto-growing text grows before it scrolls
+// The most an auto-growing text grows before it scrolls: 360px, and on a
+// short (phone) screen at most 40% of it, so what comes after stays in reach
 const AUTO_GROW_MAX_PX = 360;
+const autoGrowMax = () =>
+  typeof window === 'undefined' || !window.innerHeight
+    ? AUTO_GROW_MAX_PX
+    : Math.max(
+        120,
+        Math.min(AUTO_GROW_MAX_PX, Math.round(window.innerHeight * 0.4))
+      );
 
 export const LongTextField: FC<{
   label: string;
@@ -282,7 +290,9 @@ export const LongTextField: FC<{
       return;
     }
     area.style.height = 'auto';
-    area.style.height = `${Math.min(area.scrollHeight, AUTO_GROW_MAX_PX)}px`;
+    const max = autoGrowMax();
+    area.style.maxHeight = `${max}px`;
+    area.style.height = `${Math.min(area.scrollHeight, max)}px`;
   }, [autoGrow, value]);
   return (
     <FieldGroup label={label} hint={hint}>
@@ -291,7 +301,7 @@ export const LongTextField: FC<{
         aria-label={label}
         className={clsx(
           'bg-newBgColorInner min-h-[96px] p-[12px] outline-none border-newTableBorder border rounded-[8px] text-textColor text-[14px] leading-[1.5] disabled:opacity-60',
-          autoGrow ? 'resize-y max-h-[360px] overflow-y-auto' : undefined
+          autoGrow ? 'resize-y overflow-y-auto' : undefined
         )}
         rows={rows}
         value={value}

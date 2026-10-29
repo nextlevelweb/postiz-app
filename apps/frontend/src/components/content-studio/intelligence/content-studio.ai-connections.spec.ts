@@ -460,6 +460,25 @@ describe('AI connections: list and roles', () => {
     }
   );
 
+  // UX review 03: five large buttons were too heavy on a phone. Test and
+  // Edit stay buttons; the key, Disable and Remove are quieter text buttons,
+  // each still named, never hidden behind a menu
+  it('M2 keeps Test and Edit as buttons and the other actions as named text buttons', async () => {
+    await open('ADMIN');
+    for (const name of ['Test Main OpenAI', 'Edit Main OpenAI']) {
+      expect(button(name).className).toContain('rounded-full');
+    }
+    for (const name of [
+      'Replace key Main OpenAI',
+      'Disable Main OpenAI',
+      'Remove Main OpenAI',
+    ]) {
+      expect(button(name).className).not.toContain('rounded-full');
+      expect(button(name).className).toContain('h-[32px]');
+    }
+    expect(button('Remove Main OpenAI').className).toContain('text-red-400');
+  });
+
   it.each([['USER'], [null], ['none'], ['admin'], ['OWNER']])(
     'AI5/AI6 role %p sees the list read-only, with no control at all',
     async (role) => {

@@ -2179,7 +2179,7 @@
   "content_studio_setup_ai_error": "We couldn't generate suggestions right now.",
   "content_studio_setup_ai_error_connection": "This AI connection is not available. Choose another one in step 1.",
   "content_studio_setup_ai_error_key": "We couldn't use this API key. Check the key under Fix connection and try again.",
-  "content_studio_setup_ai_error_quota": "Your AI provider account has no credit left.",
+  "content_studio_setup_ai_error_quota": "Your {{provider}} key works, but the {{provider}} account has no API credit left, so no draft can be made. Add credit in your {{provider}} account, then try again, or continue manually.",
   "content_studio_setup_ai_error_rate": "The AI provider is busy. Wait a moment and try again.",
   "content_studio_setup_ai_ready": "AI is ready",
   "content_studio_setup_ai_title": "Connect AI",
@@ -2315,7 +2315,7 @@
   "content_studio_setup_ai_attention": "AI needs attention",
   "content_studio_setup_ai_error_invalid": "The AI answer could not be used. Try again.",
   "content_studio_setup_ai_error_model": "This model is not available for this connection. Choose another model under Fix connection.",
-  "content_studio_setup_ai_error_rejected": "The AI provider refused the request. Check the connection, then try again.",
+  "content_studio_setup_ai_error_rejected": "{{provider}} could not accept the request Content Studio sent. Try again; if it keeps happening, choose another model under Check AI connection.",
   "content_studio_setup_ai_error_timeout": "The AI provider took too long to answer. Try again; a faster model can help.",
   "content_studio_setup_ai_error_unavailable": "The AI provider is not available right now. Try again in a moment.",
   "content_studio_setup_ai_error_workspace": "This Anthropic key is not tied to a workspace. Add the workspace ID to the connection, or use a key created inside a workspace.",
@@ -2330,5 +2330,12 @@
   "content_studio_setup_progress_label": "Setup steps",
   "content_studio_setup_test_again": "Test again",
   "content_studio_setup_website_error": "Use a full URL, for example https://nextlevelweb.nl",
-  "content_studio_setup_website_label": "Website"
+  "content_studio_setup_website_label": "Website",
+  "content_studio_brand_ai_section": "Section",
+  "content_studio_design_small_screen": "Creative Studio editing works best on a larger screen. You can look at this design here; open it on a computer or tablet to edit it.",
+  "content_studio_setup_ai_provider": "The AI provider",
+  "content_studio_setup_retrying": "Trying again…",
+  "content_studio_setup_tagline": "Tagline (optional)",
+  "content_studio_setup_tagline_hint": "Your slogan or one line about what you stand for. AI keeps it as you wrote it; leave it empty and AI suggests one.",
+  "content_studio_setup_tried_again": "Tried again just now ({{count}} tries): the same problem came back."
 }

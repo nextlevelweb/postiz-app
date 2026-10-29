@@ -1,6 +1,6 @@
 'use client';
 
-import { FC, MouseEvent, ReactNode } from 'react';
+import { FC, MouseEvent, ReactNode, useEffect } from 'react';
 import clsx from 'clsx';
 import * as NextLink from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -107,6 +107,17 @@ export const ContentStudioLinkPending: FC<{ label: string }> = ({ label }) => {
   );
 };
 
+// Marks <html> while Content Studio is open, for its document-wide styles
+// (16px fields on touch screens, see global.scss)
+export const ContentStudioDocumentClass: FC = () => {
+  useEffect(() => {
+    document.documentElement.classList.add('content-studio-open');
+    return () =>
+      document.documentElement.classList.remove('content-studio-open');
+  }, []);
+  return null;
+};
+
 // The local navigation of every Content Studio list page
 export const ContentStudioNav: FC = () => {
   const t = useT();
@@ -116,7 +127,9 @@ export const ContentStudioNav: FC = () => {
   return (
     <nav
       aria-label={t('content_studio', 'Content Studio')}
-      className="flex gap-[4px] overflow-x-auto -mx-[4px] px-[4px] pb-[2px] shrink-0 border-b border-newTableBorder"
+      // on a phone the sections wrap onto a second line rather than run off
+      // the right edge; wider screens keep one row
+      className="flex flex-wrap sm:flex-nowrap gap-x-[2px] sm:gap-[4px] sm:overflow-x-auto -mx-[4px] px-[4px] pb-[2px] shrink-0 border-b border-newTableBorder"
     >
       {SECTIONS.map((section) => {
         const current = section.key === active;
@@ -126,7 +139,7 @@ export const ContentStudioNav: FC = () => {
             href={section.href}
             aria-current={current ? 'page' : undefined}
             className={clsx(
-              'shrink-0 whitespace-nowrap flex items-center gap-[6px] px-[12px] h-[40px] -mb-[1px] border-b-2 text-[14px]',
+              'shrink-0 whitespace-nowrap flex items-center gap-[6px] px-[10px] sm:px-[12px] h-[36px] sm:h-[40px] -mb-[1px] border-b-2 text-[14px]',
               current
                 ? 'border-[var(--brand-primary,#612ad5)] font-[600] text-newTextColor'
                 : 'border-transparent text-textItemBlur hover:text-newTextColor'
