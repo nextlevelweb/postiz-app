@@ -99,12 +99,29 @@ const FIRST_POST_TIMEOUT_MS = AI_REQUEST_TIMEOUT_MAX_MS;
 // what the feeds found this long ago is still worth looking at
 const FINDINGS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const STATES_READ = 20;
+// the drafts the user can go back to: every one made from the operations
+// read, newest first
+const ALTERNATIVES_MAX = 10;
 
 export interface ContentStudioFirstPostRequest {
   connectionId: unknown;
   mode: unknown;
   language?: unknown;
   name?: unknown;
+  // apply only: an earlier draft to put back into the post
+  draftOperationId?: unknown;
+}
+
+// One draft of the first post, kept on its operation: what "Try another
+// angle" or refined research made never replaces it, and it can be put back
+export interface ContentStudioFirstPostAlternative {
+  operationId: string;
+  completedAt: Date | null;
+  text: string;
+  // the research it was written from
+  research: ContentStudioFirstPostResearch | null;
+  // its text is the text of the post now
+  current: boolean;
 }
 
 interface Prepared {
@@ -186,6 +203,15 @@ export class ContentStudioActivationService {
       throw invalidRequest();
     }
     const name = this.text(request.name, NAME_MAX) ?? DEFAULT_NAME;
+    if (
+      request.draftOperationId !== undefined &&
+      request.draftOperationId !== null &&
+      (mode !== 'apply' ||
+        typeof request.draftOperationId !== 'string' ||
+        !UUID.test(request.draftOperationId))
+    ) {
+      throw invalidRequest();
+    }
 
     if (this._starting.has(input.organizationId)) {
       throw alreadyStarting();
@@ -236,11 +262,14 @@ export class ContentStudioActivationService {
         throw notStarted();
       }
       if (mode === 'apply') {
+        // the newest draft, or the earlier one asked for
         const draft = operations.find(
           (operation) =>
             operation.kind === 'first_post_draft' &&
             operation.packageId === usable.id &&
-            operation.status === 'succeeded'
+            operation.status === 'succeeded' &&
+            (typeof request.draftOperationId !== 'string' ||
+              operation.id === request.draftOperationId)
         );
         if (!draft) {
           throw notStarted();
@@ -256,6 +285,13 @@ export class ContentStudioActivationService {
       const prepared = await this.prepare(input, request, language);
       const { done } = await this.startDraft(prepared, usable.id, researched);
       return { packageId: usable.id, done };
+    }
+
+    // The first post exists: coming back to it (the setup assistant opened
+    // again, a second tab) never researches again. Another angle and refined
+    // research are asked for by name
+    if (mode === 'first' && usable && research) {
+      return { packageId: usable.id, done: Promise.resolve() };
     }
 
     const prepared = await this.prepare(input, request, language);
@@ -302,6 +338,7 @@ export class ContentStudioActivationService {
         packageId: null,
         research: null,
         draft: null,
+        alternatives: [],
         firstPost: { scheduled: false, published: false },
         activated: false,
       };
@@ -366,9 +403,51 @@ export class ContentStudioActivationService {
                 : {}),
             }
           : null,
+      alternatives: this.alternatives(operations, packageId, text),
       firstPost: { scheduled, published },
       activated: scheduled || published,
     };
+  }
+
+  // Every draft made for the package, newest first, each with the research
+  // it was written from: the research read next in that order, the one that
+  // started last before it
+  private alternatives(
+    operations: Awaited<
+      ReturnType<ContentStudioActivationService['operations']>
+    >,
+    packageId: string,
+    text: string
+  ): ContentStudioFirstPostAlternative[] {
+    const mine = operations.filter(
+      (operation) =>
+        operation.packageId === packageId && operation.status === 'succeeded'
+    );
+    return mine
+      .flatMap((draft, index) => {
+        if (draft.kind !== 'first_post_draft') {
+          return [];
+        }
+        const draftText =
+          (draft.result as unknown as ContentStudioFirstPostDraft | null)
+            ?.text ?? '';
+        const research = mine
+          .slice(index + 1)
+          .find((operation) => operation.kind === 'first_post_research');
+        return [
+          {
+            operationId: draft.id,
+            completedAt: draft.completedAt,
+            text: draftText,
+            research: research
+              ? (research.result as unknown as ContentStudioFirstPostResearch)
+              : null,
+            current: !!draftText && draftText === text,
+          },
+        ];
+      })
+      .filter((alternative) => !!alternative.text)
+      .slice(0, ALTERNATIVES_MAX);
   }
 
   private operations(organizationId: string) {

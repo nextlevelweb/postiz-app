@@ -10,6 +10,7 @@ import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import {
   ContentStudioRequestError,
+  packagePath,
   request,
   useContentStudioWorkspaceApi,
 } from '@gitroom/frontend/components/content-studio/content-studio.api';
@@ -49,7 +50,9 @@ import { StringListEditor } from '@gitroom/frontend/components/content-studio/in
 // publishes. Research and draft run on the server and are read back here,
 // so leaving the page, a reload or a phone that puts the browser away loses
 // nothing. When the subject misses the mark, "Try another angle" keeps the
-// research preferences and "Refine my research" changes them first. The
+// research preferences and "Refine my research" changes them first; every
+// draft made stays, and an earlier one can be put back. This page prepares
+// the post, the composer finishes it: there is no second editor here. The
 // first post is done once a post was scheduled or published after it went
 // to the composer: only then does the page say so
 
@@ -75,6 +78,17 @@ export interface ContentStudioFirstPostResearch {
   sourceBacked: boolean;
 }
 
+// A draft made for the first post, with the research it came from: kept
+// when another one is made
+export interface ContentStudioFirstPostAlternative {
+  operationId: string;
+  completedAt: string | null;
+  text: string;
+  research: ContentStudioFirstPostResearch | null;
+  // its text is the text of the post now
+  current: boolean;
+}
+
 type OperationState =
   | { operationId: string; status: 'running' | 'succeeded' }
   | { operationId: string; status: 'failed'; code: string };
@@ -94,6 +108,8 @@ export interface ContentStudioFirstPostState {
       })
     | null;
   draft: (OperationState & { applied?: boolean }) | null;
+  // newest first
+  alternatives?: ContentStudioFirstPostAlternative[];
   firstPost: { scheduled: boolean; published: boolean };
   activated: boolean;
 }
@@ -181,6 +197,8 @@ export const useContentStudioFirstPostActions = () => {
         mode: FirstPostMode;
         language?: string | null;
         name?: string | null;
+        // apply: the earlier draft to put back
+        draftOperationId?: string;
       }) => {
         const result = await request<{ packageId: string }>(
           fetch,
@@ -566,6 +584,9 @@ export const ContentStudioFirstPost: FC<{
   const policyActions = useContentStudioEditorialPolicyActions();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // the composer refused the post until it is approved: a review is asked
+  // for in the package, where approvals live
+  const [approvalNeeded, setApprovalNeeded] = useState(false);
   // ?refine=1 opens the refinement at once (the checklist links to it)
   const [refining, setRefining] = useState(
     () => searchParams.get('refine') === '1'
@@ -576,14 +597,18 @@ export const ContentStudioFirstPost: FC<{
   const startError = searchParams.get('error');
 
   const start = useCallback(
-    async (mode: FirstPostMode) => {
+    async (mode: FirstPostMode, draftOperationId?: string) => {
       if (!connection.connectionId) {
         return false;
       }
       setBusy(true);
       setError(null);
       try {
-        await actions.start({ connectionId: connection.connectionId, mode });
+        await actions.start({
+          connectionId: connection.connectionId,
+          mode,
+          ...(draftOperationId ? { draftOperationId } : {}),
+        });
         return true;
       } catch (err) {
         // started a moment ago (another tab, a double tap): follow that one
@@ -653,6 +678,7 @@ export const ContentStudioFirstPost: FC<{
     }
     setBusy(true);
     setError(null);
+    setApprovalNeeded(false);
     try {
       const revision = await workspace.createRevision(
         state.packageId,
@@ -670,12 +696,15 @@ export const ContentStudioFirstPost: FC<{
       );
     } catch (err) {
       setBusy(false);
-      setError(
+      const approval =
         err instanceof ContentStudioRequestError &&
-          err.code === 'CS_APPROVAL_REQUIRED'
+        err.code === 'CS_APPROVAL_REQUIRED';
+      setApprovalNeeded(approval);
+      setError(
+        approval
           ? t(
               'content_studio_first_post_approval',
-              'Your editorial policy asks for approval first. Open the post in the editor and ask for a review.'
+              'Your editorial policy asks for approval first. Ask for a review of this post, then schedule it.'
             )
           : t(
               'content_studio_first_post_handoff_error',
@@ -685,8 +714,12 @@ export const ContentStudioFirstPost: FC<{
     }
   }, [firstPost.data, router, t, workspace]);
 
+  // the way back is always on the page, never only the browser's Back
   const page = (children: ReactNode) => (
     <ContentStudioPage
+      crumbs={[
+        { label: t('content_studio_first_post_title', 'Your first post') },
+      ]}
       title={t('content_studio_first_post_title', 'Your first post')}
       description={t(
         'content_studio_first_post_subtitle',
@@ -731,8 +764,18 @@ export const ContentStudioFirstPost: FC<{
       className="p-[12px] rounded-[8px] border border-newTableBorder text-[14px]"
     >
       {error}
+      {approvalNeeded && !!state.packageId && (
+        <>
+          {' '}
+          <Link href={packagePath(state.packageId)} className="underline">
+            {t('content_studio_first_post_ask_review', 'Ask for a review')}
+          </Link>
+        </>
+      )}
     </div>
   );
+  const alternatives = state.alternatives ?? [];
+  const current = alternatives.find((alternative) => alternative.current);
   const noConnection = !connection.connectionId && (
     <div className="text-[14px]">
       {t(
@@ -744,36 +787,6 @@ export const ContentStudioFirstPost: FC<{
       </Link>
     </div>
   );
-  // "Not the direction you had in mind?": change what is searched for
-  const refineOffer = (
-    <section className="flex flex-col gap-[8px] p-[16px] rounded-[12px] bg-newTableBorder/30">
-      <h2 className="font-[600]">
-        {t(
-          'content_studio_first_post_refine_title',
-          'Not the direction you had in mind?'
-        )}
-      </h2>
-      <p className="text-[14px] text-textItemBlur">
-        {t(
-          'content_studio_first_post_refine_hint',
-          "Let's sharpen what Content Studio searches for so the next draft fits you better."
-        )}
-      </p>
-      <div>
-        <Button
-          secondary
-          disabled={busy || !connection.connectionId}
-          onClick={() => {
-            setRefineError(null);
-            setRefining(true);
-          }}
-        >
-          {t('content_studio_first_post_refine', 'Refine my research')}
-        </Button>
-      </div>
-    </section>
-  );
-
   if (refining) {
     return page(
       <ResearchRefineWizard
@@ -881,6 +894,14 @@ export const ContentStudioFirstPost: FC<{
             'This takes one to three minutes. You can switch to another app or leave this page: we keep working, and your post waits here.'
           )}
         </p>
+        {!!alternatives.length && (
+          <p className="text-[13px] text-textItemBlur">
+            {t(
+              'content_studio_first_post_wait_kept',
+              'Your earlier drafts stay available: you can go back to any of them.'
+            )}
+          </p>
+        )}
       </section>
     );
   }
@@ -989,11 +1010,15 @@ export const ContentStudioFirstPost: FC<{
     );
   }
 
-  // a draft made after the user changed the post: theirs stays until they
-  // choose the new one
+  // a draft made after the user changed the post by hand: theirs stays
+  // until they choose the new one (a draft they put back is no change)
   const newDraftWaiting =
-    state.draft?.status === 'succeeded' && state.draft.applied === false;
-  // ready: the draft, why, and what to do with it
+    state.draft?.status === 'succeeded' &&
+    state.draft.applied === false &&
+    !current;
+  // Ready: first the post itself and why its subject was chosen, then what
+  // to do with it, in order: finish it in the composer, another idea with
+  // the same focus, or a different focus. Every draft made stays below
   return page(
     <>
       {newDraftWaiting && (
@@ -1017,48 +1042,159 @@ export const ContentStudioFirstPost: FC<{
         </div>
       )}
       <section className="flex flex-col gap-[12px] p-[16px] rounded-[12px] border border-newTableBorder">
-        <div className="flex flex-wrap items-baseline gap-[8px] justify-between">
-          <h2 className="font-[600]">
-            {t('content_studio_first_post_draft', 'Your draft')}
-          </h2>
-          {!!state.packageId && (
-            <Link
-              href={`/content-studio/${state.packageId}`}
-              className="text-[13px] underline"
-            >
-              {t('content_studio_first_post_open_editor', 'Open in editor')}
-            </Link>
-          )}
-        </div>
+        <h2 className="font-[600]">
+          {t('content_studio_first_post_draft', 'Your draft')}
+        </h2>
         <div
           data-testid="first-post-text"
           className="text-[15px] whitespace-pre-wrap break-words"
         >
           {state.package?.text}
         </div>
-        {alert}
-        <div className="flex flex-col sm:flex-row sm:flex-wrap gap-[8px]">
-          <Button loading={busy} disabled={busy} onClick={schedule}>
-            {t('content_studio_first_post_schedule', 'Edit and schedule')}
-          </Button>
-          <Button
-            secondary
-            disabled={busy || !connection.connectionId}
-            onClick={() => start('angle')}
-          >
-            {t('content_studio_first_post_angle', 'Try another angle')}
-          </Button>
-        </div>
-        <p className="text-[12px] text-textItemBlur">
-          {t(
-            'content_studio_first_post_schedule_hint',
-            'Opens the post in the composer: choose your channels, edit if you like, and schedule or publish it there.'
-          )}
-        </p>
       </section>
-      {!!research && <FirstPostWhy research={research} />}
-      {refineOffer}
+      {/* the research of the draft that is in the post; only a post
+          changed by hand falls back to the latest research */}
+      {!!(current ? current.research : research) && (
+        <FirstPostWhy
+          research={
+            (current
+              ? current.research
+              : research) as ContentStudioFirstPostResearch
+          }
+        />
+      )}
+      {alert}
+      <div
+        data-testid="first-post-actions"
+        className="flex flex-col gap-[16px] pt-[4px]"
+      >
+        <div className="flex flex-col gap-[6px]">
+          <div className="flex flex-col sm:flex-row">
+            <Button loading={busy} disabled={busy} onClick={schedule}>
+              {t('content_studio_first_post_schedule', 'Review and schedule')}
+            </Button>
+          </div>
+          <p className="text-[13px] text-textItemBlur">
+            {t(
+              'content_studio_first_post_schedule_hint',
+              'Opens the post in the Postiz composer: choose your channels, make final edits and schedule or publish it there.'
+            )}
+          </p>
+        </div>
+        <div className="flex flex-col gap-[6px]">
+          <div className="flex flex-col sm:flex-row">
+            <Button
+              secondary
+              disabled={busy || !connection.connectionId}
+              onClick={() => start('angle')}
+            >
+              {t('content_studio_first_post_angle', 'Try another angle')}
+            </Button>
+          </div>
+          <p className="text-[13px] text-textItemBlur">
+            {t(
+              'content_studio_first_post_angle_hint',
+              'Keep the same research focus and create a different post idea. This draft stays available.'
+            )}
+          </p>
+        </div>
+        <div className="flex flex-col gap-[6px]">
+          <button
+            type="button"
+            disabled={busy || !connection.connectionId}
+            onClick={() => {
+              setRefineError(null);
+              setRefining(true);
+            }}
+            className="self-start min-h-[40px] text-[14px] font-[600] underline underline-offset-2 disabled:opacity-50"
+          >
+            {t('content_studio_first_post_refine', 'Refine my research')}
+          </button>
+          <p className="text-[13px] text-textItemBlur">
+            {t(
+              'content_studio_first_post_refine_hint',
+              'Change what Content Studio looks for before creating another draft.'
+            )}
+          </p>
+        </div>
+      </div>
+      {alternatives.length > 1 && (
+        <FirstPostDrafts
+          alternatives={alternatives}
+          disabled={busy || !connection.connectionId}
+          onUse={(operationId) => start('apply', operationId)}
+        />
+      )}
     </>
+  );
+};
+
+// Every draft made for the first post, newest first: the one in the post is
+// marked, any other can be read and put back. Nothing made is ever lost to
+// "Try another angle" or refined research
+export const FirstPostDrafts: FC<{
+  alternatives: ContentStudioFirstPostAlternative[];
+  disabled: boolean;
+  onUse: (operationId: string) => void;
+}> = ({ alternatives, disabled, onUse }) => {
+  const t = useT();
+  return (
+    <section
+      aria-labelledby="content-studio-first-post-drafts"
+      className="flex flex-col gap-[8px] pt-[8px] border-t border-newTableBorder"
+    >
+      <h2 id="content-studio-first-post-drafts" className="font-[600]">
+        {t('content_studio_first_post_drafts', 'Your drafts')}
+      </h2>
+      <ul className="flex flex-col gap-[8px]">
+        {alternatives.map((alternative, index) => (
+          <li
+            key={alternative.operationId}
+            data-current={alternative.current}
+            className="rounded-[12px] border border-newTableBorder"
+          >
+            <details className="group p-[12px]">
+              <summary className="cursor-pointer flex flex-wrap items-center gap-x-[8px] gap-y-[4px] min-h-[28px]">
+                <span className="font-[600]">
+                  {t('content_studio_first_post_draft_n', 'Draft {{number}}', {
+                    number: alternatives.length - index,
+                  })}
+                </span>
+                {!!alternative.research?.topic && (
+                  <span className="text-[14px] text-textItemBlur break-words min-w-0">
+                    {alternative.research.topic}
+                  </span>
+                )}
+                {alternative.current && (
+                  <span className="text-[12px] px-[8px] py-[1px] rounded-full border border-[var(--brand-primary,#612ad5)] text-[var(--brand-primary,#612ad5)]">
+                    {t('content_studio_first_post_in_post', 'In your post')}
+                  </span>
+                )}
+              </summary>
+              <div className="flex flex-col gap-[12px] pt-[12px]">
+                <div className="text-[14px] whitespace-pre-wrap break-words">
+                  {alternative.text}
+                </div>
+                {!alternative.current && (
+                  <div className="flex flex-col sm:flex-row">
+                    <Button
+                      secondary
+                      disabled={disabled}
+                      onClick={() => onUse(alternative.operationId)}
+                    >
+                      {t(
+                        'content_studio_first_post_use_draft',
+                        'Use this draft'
+                      )}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </details>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 };
 

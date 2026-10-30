@@ -6,7 +6,14 @@ import React, {
 } from 'react';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { act, cleanup, render, waitFor } from '@testing-library/react';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import { CalendarWeekProvider } from '@gitroom/frontend/components/launches/calendar.context';
@@ -138,6 +145,10 @@ jest.mock('@gitroom/react/toaster/toaster', () => ({
 }));
 jest.mock('@gitroom/react/translation/get.transation.service.client', () => ({
   useT: () => (_key: string, fallback: string) => fallback,
+}));
+const mockDeleteDialog = jest.fn();
+jest.mock('@gitroom/react/helpers/delete.dialog', () => ({
+  deleteDialog: (...args: unknown[]) => mockDeleteDialog(...args),
 }));
 
 // --- LaunchesComponent's other imports, as stubs ---
@@ -888,6 +899,45 @@ describe('ContentStudioHandoffOpener: closing the composer', () => {
     await flush();
     expect(mockRouter.push).toHaveBeenCalledWith('/content-studio/first-post');
     expect(mockRouter.replace).not.toHaveBeenCalled();
+  });
+
+  // activation review 02: the way back is on the screen, not only the
+  // browser's Back or the composer's close
+  it('N3/N4/N5 a first post handoff shows "Back to Content Studio", which asks, closes the composer and returns to the first post', async () => {
+    mockCloseAll.mockImplementation(() => mockModals.set([]));
+    const id = newId();
+    renderOpener(`/launches?handoff=${id}&return=first-post`);
+    await waitFor(() => expect(composerOpens()).toHaveLength(1));
+    const back = screen.getByRole('button', { name: /Back to Content Studio/ });
+    // not now: the composer stays
+    mockDeleteDialog.mockResolvedValueOnce(false);
+    fireEvent.click(back);
+    await flush();
+    expect(mockCloseAll).not.toHaveBeenCalled();
+    expect(mockRouter.push).not.toHaveBeenCalled();
+    // yes: closed, and back on the first post page
+    mockDeleteDialog.mockResolvedValueOnce(true);
+    fireEvent.click(back);
+    await flush();
+    expect(mockDeleteDialog.mock.calls[1][0]).toContain(
+      'your Content Studio draft stays as it is'
+    );
+    expect(mockCloseAll).toHaveBeenCalledTimes(1);
+    expect(mockRouter.push).toHaveBeenCalledWith('/content-studio/first-post');
+    // nothing was saved, scheduled or sent on the way
+    expect(
+      mockFetch.mock.calls.filter(([, init]) => init?.method === 'POST')
+    ).toEqual([]);
+    mockCloseAll.mockReset();
+  });
+
+  it('a handoff without a known return page has no Back bar of its own', async () => {
+    const id = newId();
+    renderOpener(`/launches?handoff=${id}&return=${encodeURIComponent('/x')}`);
+    await waitFor(() => expect(composerOpens()).toHaveLength(1));
+    expect(
+      screen.queryByRole('button', { name: /Back to Content Studio/ })
+    ).toBeNull();
   });
 
   it('an unknown return page is ignored: only the fixed list, never an address from the URL', async () => {

@@ -53,8 +53,9 @@ export class ContentStudioAISetupProposalDto {
 
 // Starting the first post (activation flow 01): the organization's AI
 // connection, what to do (see CONTENT_STUDIO_FIRST_POST_MODES), the language
-// of the post and the name of its package. Nothing of a profile, a
-// preference or a post: the server reads those from the organization
+// of the post, the name of its package and, to put an earlier draft back,
+// that draft's operation. Nothing of a profile, a preference or a post: the
+// server reads those from the organization
 export class StartContentStudioFirstPostDto {
   @IsUUID()
   connectionId: string;
@@ -71,4 +72,9 @@ export class StartContentStudioFirstPostDto {
   @IsString()
   @MaxLength(200)
   name?: string | null;
+
+  // apply only: an earlier draft of the first post to put back
+  @IsOptional()
+  @IsUUID()
+  draftOperationId?: string | null;
 }

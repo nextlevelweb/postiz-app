@@ -605,6 +605,7 @@ export class ContentStudioController {
           mode: body.mode,
           language: body.language,
           name: body.name,
+          draftOperationId: body.draftOperationId,
         },
       });
     return { packageId };

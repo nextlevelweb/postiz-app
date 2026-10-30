@@ -357,9 +357,6 @@ describe('First post: research and draft while the user waits or is away', () =>
     expect(source.getAttribute('href')).toBe('https://news.example/ai');
     expect(source.getAttribute('rel')).toContain('noopener');
     expect(within(why).getByText(/from your Radar/)).toBeTruthy();
-    expect(
-      screen.getByRole('link', { name: 'Open in editor' }).getAttribute('href')
-    ).toBe(`/content-studio/${PACKAGE}`);
   });
 
   it('says when no current source was found instead of presenting it as news', async () => {
@@ -379,9 +376,9 @@ describe('First post: research and draft while the user waits or is away', () =>
 });
 
 describe('First post: to the composer', () => {
-  it('ACT5 Edit and schedule hands exactly this draft to the real composer, which brings the user back', async () => {
+  it('ACT5/N2 Review and schedule hands exactly this draft to the real composer, which brings the user back', async () => {
     await show();
-    fireEvent.click(button('Edit and schedule'));
+    fireEvent.click(button('Review and schedule'));
     await flush();
     expect(
       posts(`/content-studio/packages/${PACKAGE}/revisions`)[0].body
@@ -401,11 +398,16 @@ describe('First post: to the composer', () => {
         : original(url, init)
     );
     await show();
-    fireEvent.click(button('Edit and schedule'));
+    fireEvent.click(button('Review and schedule'));
     await flush();
-    expect(screen.getByRole('alert').textContent).toContain(
-      'asks for approval first'
-    );
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toContain('asks for approval first');
+    // approvals live with the package: the one place it is linked
+    expect(
+      within(alert)
+        .getByRole('link', { name: 'Ask for a review' })
+        .getAttribute('href')
+    ).toBe(`/content-studio/${PACKAGE}`);
     expect(screen.getByTestId('first-post-text')).toBeTruthy();
   });
 });
@@ -424,7 +426,11 @@ describe('First post: when it misses the mark', () => {
 
   it('REF1/REF2/REF4 Refine my research asks four questions, each with why, saves them with the policy and researches again on the same page', async () => {
     await show();
-    expect(screen.getByText('Not the direction you had in mind?')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Change what Content Studio looks for before creating another draft.'
+      )
+    ).toBeTruthy();
     fireEvent.click(button('Refine my research'));
     await flush();
     expect(screen.getByText('Question 1 of 4')).toBeTruthy();
@@ -621,5 +627,162 @@ describe('First post: review hardening', () => {
     fireEvent.click(button('Try another angle'));
     await flush();
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
+
+// Activation review 02: one clear purpose, the post before the actions, and
+// every draft kept
+const ALTERNATIVE_NEW = {
+  operationId: '66666666-6666-4666-8666-666666666666',
+  completedAt: T0,
+  text: 'Eerste post over AI.',
+  research: RESEARCH,
+  current: true,
+};
+const ALTERNATIVE_OLD = {
+  operationId: '77777777-7777-4777-8777-777777777777',
+  completedAt: T0,
+  text: 'De oude versie die beter was.',
+  research: { ...RESEARCH, topic: 'Het oude onderwerp' },
+  current: false,
+};
+
+describe('First post: one clear purpose', () => {
+  it('N1 has no editor link: the composer is where the post is finished', async () => {
+    await show();
+    expect(screen.queryByRole('link', { name: /Open in editor/ })).toBeNull();
+    expect(
+      screen
+        .getAllByRole('link')
+        .some(
+          (link) => link.getAttribute('href') === `/content-studio/${PACKAGE}`
+        )
+    ).toBe(false);
+  });
+
+  it('N5 the way back is on the page: breadcrumbs to Content Studio and the section navigation', async () => {
+    await show();
+    const crumbs = screen.getByRole('navigation', { name: 'Breadcrumb' });
+    expect(
+      within(crumbs)
+        .getByRole('link', { name: 'Content Studio' })
+        .getAttribute('href')
+    ).toBe('/content-studio');
+    expect(
+      screen.getByRole('navigation', { name: 'Content Studio' })
+    ).toBeTruthy();
+  });
+
+  it('the post comes first, then why, then Review and schedule, Try another angle and Refine my research, in that order, each saying what it does', async () => {
+    await show();
+    const text = screen.getByTestId('first-post-text');
+    const why = screen.getByText('Why this topic?');
+    const actions = screen.getByTestId('first-post-actions');
+    const order = (a: Node, b: Node) =>
+      a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(order(text, why)).toBeTruthy();
+    expect(order(why, actions)).toBeTruthy();
+    expect(
+      within(actions)
+        .getAllByRole('button')
+        .map((b) => b.textContent)
+    ).toEqual([
+      'Review and schedule',
+      'Try another angle',
+      'Refine my research',
+    ]);
+    expect(
+      within(actions).getByText(
+        'Keep the same research focus and create a different post idea. This draft stays available.'
+      )
+    ).toBeTruthy();
+  });
+});
+
+describe('First post: earlier drafts are kept', () => {
+  it('P2/N4 a return from the composer shows the same post again, without starting anything', async () => {
+    mockParams = new URLSearchParams();
+    await show();
+    expect(screen.getByTestId('first-post-text').textContent).toBe(
+      'Eerste post over AI.'
+    );
+    expect(posts('/content-studio/activation/first-post')).toEqual([]);
+  });
+
+  it('P3 a ready first post opened again starts no research', async () => {
+    state.firstPost = ready({ alternatives: [ALTERNATIVE_NEW] });
+    await show();
+    await flush();
+    expect(
+      calls()
+        .filter((c) => c.url === '/content-studio/activation/first-post')
+        .every((c) => c.method === 'GET')
+    ).toBe(true);
+  });
+
+  it('P4/P5 the earlier draft stays listed and is put back on request, without AI', async () => {
+    state.firstPost = ready({
+      alternatives: [ALTERNATIVE_NEW, ALTERNATIVE_OLD],
+    });
+    await show();
+    const drafts = screen.getByRole('region', { name: 'Your drafts' });
+    const items = within(drafts).getAllByRole('listitem');
+    expect(items.map((item) => item.getAttribute('data-current'))).toEqual([
+      'true',
+      'false',
+    ]);
+    expect(within(items[0]).getByText('In your post')).toBeTruthy();
+    expect(within(items[1]).getByText('Draft 1')).toBeTruthy();
+    expect(within(items[1]).getByText('Het oude onderwerp')).toBeTruthy();
+    expect(
+      within(items[1]).getByText('De oude versie die beter was.')
+    ).toBeTruthy();
+    // the one in the post has nothing to put back
+    expect(within(items[0]).queryByRole('button')).toBeNull();
+    fireEvent.click(
+      within(items[1]).getByRole('button', { name: 'Use this draft' })
+    );
+    await flush();
+    expect(posts('/content-studio/activation/first-post')[0].body).toEqual({
+      connectionId: CONNECTION.id,
+      mode: 'apply',
+      draftOperationId: ALTERNATIVE_OLD.operationId,
+    });
+  });
+
+  it('P5 "Why this topic?" explains the draft that is in the post', async () => {
+    state.firstPost = ready({
+      alternatives: [
+        { ...ALTERNATIVE_NEW, current: false },
+        { ...ALTERNATIVE_OLD, text: 'Eerste post over AI.', current: true },
+      ],
+    });
+    await show();
+    const why = screen.getByText('Why this topic?').closest('details')!;
+    expect(within(why).getByText('Het oude onderwerp')).toBeTruthy();
+    // a draft the user put back is no change by hand: no "new draft" offer
+    expect(
+      screen.queryByRole('button', { name: 'Use the new draft' })
+    ).toBeNull();
+  });
+
+  it('P6 while another draft is made, the earlier ones are said to stay', async () => {
+    state.firstPost = ready({
+      research: { operationId: 'r2', status: 'running', completedAt: null },
+      draft: null,
+      alternatives: [ALTERNATIVE_NEW],
+    });
+    await show();
+    expect(
+      screen.getByText(
+        'Your earlier drafts stay available: you can go back to any of them.'
+      )
+    ).toBeTruthy();
+  });
+
+  it('a single draft shows no list to choose from', async () => {
+    state.firstPost = ready({ alternatives: [ALTERNATIVE_NEW] });
+    await show();
+    expect(screen.queryByRole('region', { name: 'Your drafts' })).toBeNull();
   });
 });

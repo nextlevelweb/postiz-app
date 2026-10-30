@@ -22,6 +22,7 @@ import { ContentStudioRequestError } from '@gitroom/frontend/components/content-
 import { CreateContentStudioPackageModal } from '@gitroom/frontend/components/content-studio/content-studio.package.modal';
 import {
   FIRST_POST_PAGE,
+  useContentStudioFirstPost,
   useContentStudioFirstPostActions,
 } from '@gitroom/frontend/components/content-studio/content-studio.first-post';
 import {
@@ -150,12 +151,69 @@ export interface SetupDraft {
   // continue without AI: the profile starts from what exists, or empty
   manual: boolean;
   company: ContentStudioSetupCompany;
-  // where the profile of step 3 came from
-  source: 'ai' | 'manual' | null;
+  // where the profile of step 3 came from: an AI draft, typed, or the
+  // profile the organization saved already
+  source: 'ai' | 'manual' | 'saved' | null;
   profile: SetupProfile | null;
   saved: SetupSaved;
   pending?: SetupPending | null;
+  // the saved setup this draft started from (contentStudioSavedSetupBase),
+  // when there was one: the draft is a revisit of exactly that setup
+  base?: string | null;
 }
+
+// What the organization saved through the setup, as one value: its company
+// description, writing, audience and expertise profiles and editorial
+// policy, each at its current version. Null while any of them is missing:
+// then the setup is not done. A save anywhere (here or under Brand & AI)
+// changes it
+export const contentStudioSavedSetupBase = (saved: {
+  brandKit: {
+    latestRevisionNumber: number;
+    description: string;
+  };
+  writing: { id: string; currentRevision: { revisionNumber: number } } | null;
+  audience: { id: string; currentRevision: { revisionNumber: number } } | null;
+  expertise: {
+    id: string;
+    currentRevision: { revisionNumber: number };
+  } | null;
+  policy: { latestRevisionNumber: number; hasRevision: boolean };
+}) => {
+  const { brandKit, writing, audience, expertise, policy } = saved;
+  if (
+    !brandKit.description.trim() ||
+    !writing ||
+    !audience ||
+    !expertise ||
+    !policy.hasRevision
+  ) {
+    return null;
+  }
+  return [
+    `b${brandKit.latestRevisionNumber}`,
+    ...[writing, audience, expertise].map(
+      (profile) => `${profile.id}:${profile.currentRevision.revisionNumber}`
+    ),
+    `p${policy.latestRevisionNumber}`,
+  ].join('|');
+};
+
+// Where the assistant opens. What the organization saved wins over what this
+// browser kept: once the setup is saved, a kept draft is continued only when
+// it is a revisit of exactly that saved setup (an earlier step opened on
+// purpose); any other one (left from before the setup was saved, or from
+// before a later change) is stale and dropped, and the assistant shows the
+// saved setup at step 4. Nothing is drafted by AI on the way
+export const chooseContentStudioSetupStart = (
+  kept: Pick<SetupDraft, 'v' | 'base'> | null,
+  savedBase: string | null
+): 'resume' | 'saved' | 'new' => {
+  if (savedBase) {
+    return kept?.v === 1 && kept.base === savedBase ? 'resume' : 'saved';
+  }
+  return kept?.v === 1 ? 'resume' : 'new';
+};
 
 export const LANGUAGES: Array<{ value: string; label: string }> = [
   { value: 'nl', label: 'Nederlands' },
@@ -565,15 +623,18 @@ const SuggestionCard: FC<{
   );
 };
 
-// "Show 4 more" / "Show less" under a list that is longer than it shows:
-// a real button, for touch and keyboard, that names the list it opens
+// "Show all" / "Show less" under a list that is longer than it shows: a
+// real button, for touch and keyboard, that names the list it opens. Not
+// "Show 4 more", which reads as if 4 would be added
 const ShowMore: FC<{
-  hidden: number;
   open: boolean;
   label?: string;
   onToggle: () => void;
-}> = ({ hidden, open, label, onToggle }) => {
+}> = ({ open, label, onToggle }) => {
   const t = useT();
+  // the name as it reads ("Don't", not "Don&#39;t"): React escapes the
+  // attribute itself
+  const values = { list: label, interpolation: { escapeValue: false } };
   return (
     <button
       type="button"
@@ -581,13 +642,15 @@ const ShowMore: FC<{
       aria-label={
         label
           ? open
-            ? t('content_studio_setup_show_less_of', 'Show less: {{list}}', {
-                list: label,
-              })
+            ? t(
+                'content_studio_setup_show_less_of',
+                'Show less: {{list}}',
+                values
+              )
             : t(
-                'content_studio_setup_show_more_of',
-                'Show {{count}} more: {{list}}',
-                { count: hidden, list: label }
+                'content_studio_setup_show_all_of',
+                'Show all: {{list}}',
+                values
               )
           : undefined
       }
@@ -596,9 +659,7 @@ const ShowMore: FC<{
     >
       {open
         ? t('content_studio_setup_show_less', 'Show less')
-        : t('content_studio_setup_show_more', 'Show {{count}} more', {
-            count: hidden,
-          })}
+        : t('content_studio_setup_show_all', 'Show all')}
     </button>
   );
 };
@@ -627,12 +688,7 @@ const Chips: FC<{ values: string[]; max?: number; label?: string }> = ({
         ))}
       </ul>
       {values.length > max && (
-        <ShowMore
-          hidden={values.length - max}
-          open={open}
-          label={label}
-          onToggle={() => setOpen(!open)}
-        />
+        <ShowMore open={open} label={label} onToggle={() => setOpen(!open)} />
       )}
     </div>
   );
@@ -658,12 +714,7 @@ const Bullets: FC<{ values: string[]; max?: number; label?: string }> = ({
         ))}
       </ul>
       {values.length > max && (
-        <ShowMore
-          hidden={values.length - max}
-          open={open}
-          label={label}
-          onToggle={() => setOpen(!open)}
-        />
+        <ShowMore open={open} label={label} onToggle={() => setOpen(!open)} />
       )}
     </div>
   );
@@ -720,6 +771,8 @@ export const ContentStudioSetupWizard: FC = () => {
   const policyActions = useContentStudioEditorialPolicyActions();
   const connectionActions = useContentStudioAIConnectionActions();
   const firstPostActions = useContentStudioFirstPostActions();
+  // a first post made before is opened again, never started again
+  const firstPostState = useContentStudioFirstPost();
   const router = useRouter();
 
   const [draft, setDraft] = useState<SetupDraft | null>(null);
@@ -835,8 +888,55 @@ export const ContentStudioSetupWizard: FC = () => {
           include: true,
         },
       };
+      const savedBase = contentStudioSavedSetupBase({
+        brandKit: {
+          latestRevisionNumber: brandKit.latestRevisionNumber,
+          description: kit?.identity?.description ?? '',
+        },
+        writing,
+        audience,
+        expertise,
+        policy: {
+          latestRevisionNumber: policy.latestRevisionNumber,
+          hasRevision: !!policy.currentRevision,
+        },
+      });
       const saved = loadContentStudioSetupDraft<SetupDraft>(organizationId);
-      if (saved?.v === 1) {
+      const choice = chooseContentStudioSetupStart(saved, savedBase);
+      const language =
+        [audience?.currentRevision.content.locale, i18next.resolvedLanguage]
+          .map((value) => value?.split('-')[0])
+          .find((value) => LANGUAGES.some((entry) => entry.value === value)) ??
+        'en';
+      if (choice === 'saved') {
+        // the saved setup, nothing left to save: step 4, with every earlier
+        // step done and open for a revisit
+        clearContentStudioSetupDraft(organizationId);
+        setDraft({
+          v: 1,
+          step: 4,
+          connectionId: null,
+          manual: false,
+          company: {
+            ...emptySetupCompany(language),
+            companyName: kit?.identity?.brandName ?? '',
+            tagline: kit?.identity?.tagline ?? '',
+            description: kit?.identity?.description ?? '',
+          },
+          source: 'saved',
+          profile: existing.current,
+          saved: {
+            brand: true,
+            writing: true,
+            audiences: [0],
+            expertise: true,
+            editorial: true,
+          },
+          base: savedBase,
+        });
+        return;
+      }
+      if (choice === 'resume' && saved) {
         // a draft kept before the tagline field starts from the Brand Kit's
         setDraft({
           ...saved,
@@ -853,11 +953,7 @@ export const ContentStudioSetupWizard: FC = () => {
         connectionId: null,
         manual: false,
         company: {
-          ...emptySetupCompany(
-            LANGUAGES.some((entry) => entry.value === i18next.resolvedLanguage)
-              ? (i18next.resolvedLanguage as string)
-              : 'en'
-          ),
+          ...emptySetupCompany(language),
           companyName: kit?.identity?.brandName ?? '',
           tagline: kit?.identity?.tagline ?? '',
           description: kit?.identity?.description ?? '',
@@ -897,10 +993,15 @@ export const ContentStudioSetupWizard: FC = () => {
     []
   );
 
+  // the one chosen in step 1, else one whose last test did not fail
   const connectionId =
     draft?.connectionId && usable.some((c) => c.id === draft.connectionId)
       ? draft.connectionId
-      : usable[0]?.id ?? null;
+      : (
+          usable.find(
+            (connection) => aiConnectionHealth(connection) !== 'attention'
+          ) ?? usable[0]
+        )?.id ?? null;
 
   // Waits for a started draft. A look that gets no answer from the server
   // (the page was put away, the network dropped) is simply made again: the
@@ -1292,6 +1393,13 @@ export const ContentStudioSetupWizard: FC = () => {
           return;
         }
         setLeaving(true);
+        if (
+          firstPostState.data?.package &&
+          !firstPostState.data.package.archived
+        ) {
+          router.push(FIRST_POST_PAGE);
+          return;
+        }
         let target = FIRST_POST_PAGE;
         try {
           await firstPostActions.start({
@@ -1332,6 +1440,7 @@ export const ContentStudioSetupWizard: FC = () => {
       t,
       connectionId,
       firstPostActions,
+      firstPostState.data?.package,
       router,
     ]
   );
@@ -1444,8 +1553,39 @@ export const ContentStudioSetupWizard: FC = () => {
   }
 
   const company = draft.company;
+  // A changed company name is saved again with the profile (its tagline
+  // and description go into the profile on Next); the language is not
+  // part of the Brand Kit
   const setCompany = (patch: Partial<ContentStudioSetupCompany>) =>
-    update({ company: { ...company, ...patch } });
+    update({
+      company: { ...company, ...patch },
+      ...('companyName' in patch
+        ? { saved: { ...draft.saved, brand: false } }
+        : {}),
+    });
+  // Next from step 2 with a profile: a tagline or description changed here
+  // is the profile's now, and is saved with it
+  const nextWithProfile = () => {
+    const profile = draft.profile;
+    const tagline = (company.tagline ?? '').trim();
+    const description = company.description.trim();
+    if (
+      profile &&
+      (tagline !== profile.brand.tagline ||
+        description !== profile.brand.description)
+    ) {
+      update({
+        step: 3,
+        profile: {
+          ...profile,
+          brand: { ...profile.brand, tagline, description },
+        },
+        saved: { ...draft.saved, brand: false },
+      });
+      return;
+    }
+    update({ step: 3 });
+  };
   const companyReady =
     !!company.companyName.trim() &&
     !!company.description.trim() &&
@@ -1469,13 +1609,17 @@ export const ContentStudioSetupWizard: FC = () => {
     !draft.manual &&
     (health === 'ready' || health === 'untested');
 
+  // a saved setup is only being looked at again: the way out is back, not
+  // "later"
   const finishLaterLink = (
     <Link
       href={CONTENT_STUDIO_HOME_PATH}
-      onClick={finishLater}
+      onClick={draft.base ? undefined : finishLater}
       className="shrink-0 whitespace-nowrap pt-[4px] text-[13px] text-textItemBlur hover:text-newTextColor hover:underline"
     >
-      {t('content_studio_setup_later', 'Finish later')}
+      {draft.base
+        ? t('content_studio_setup_back_to_studio', 'Back to Content Studio')
+        : t('content_studio_setup_later', 'Finish later')}
     </Link>
   );
 
@@ -1783,7 +1927,23 @@ export const ContentStudioSetupWizard: FC = () => {
             <Button secondary onClick={() => update({ step: 1 })}>
               {t('content_studio_setup_back', 'Back')}
             </Button>
-            {aiReady ? (
+            {draft.profile ? (
+              // a profile exists (saved, or drafted on this visit): Next goes
+              // on with it; a new AI draft is only made when asked for
+              <>
+                {aiReady && (
+                  <Button secondary disabled={!companyReady} onClick={generate}>
+                    {t(
+                      'content_studio_setup_draft_again_with_ai',
+                      'Draft a new profile with AI'
+                    )}
+                  </Button>
+                )}
+                <Button disabled={!companyReady} onClick={nextWithProfile}>
+                  {t('content_studio_setup_next', 'Next')}
+                </Button>
+              </>
+            ) : aiReady ? (
               <>
                 <Button
                   secondary
@@ -1813,7 +1973,10 @@ export const ContentStudioSetupWizard: FC = () => {
   // --- step 3: the content profile ---
   if (draft.step === 3) {
     const profile = draft.profile;
-    const ai = draft.source === 'ai' && !!connectionId;
+    // Regenerate is offered for a profile an AI drafted or one saved
+    // before; it runs only when pressed
+    const ai =
+      (draft.source === 'ai' || draft.source === 'saved') && !!connectionId;
     let body: ReactNode;
     if (generating) {
       body = (
@@ -1908,7 +2071,12 @@ export const ContentStudioSetupWizard: FC = () => {
       body = (
         <div className="flex flex-col gap-[16px]">
           <div className="text-[14px] text-textItemBlur">
-            {draft.source === 'ai'
+            {draft.source === 'saved'
+              ? t(
+                  'content_studio_setup_saved_profile',
+                  'This is your saved profile. Change what you like; nothing changes until you save, and Regenerate only runs when you press it.'
+                )
+              : draft.source === 'ai'
               ? t(
                   'content_studio_setup_ai_drafted',
                   'We drafted this from your company description. Check each part: keep it, edit it or leave it out.'
@@ -2341,30 +2509,44 @@ export const ContentStudioSetupWizard: FC = () => {
   // --- step 4: put the profile to work ---
   // Not another summary of step 3: the profile is used at once to research
   // a topic and write the first post. Saving (with its versions) happens on
-  // the way, quietly
+  // the way, quietly. A first post that exists already is opened, never
+  // researched again
   const profile = draft.profile as SetupProfile;
-  const parts = [
-    profile.brand.include &&
-      t('content_studio_setup_section_brand', 'Company description'),
-    profile.writing.include &&
-      t('content_studio_setup_section_writing', 'Writing style'),
-    profile.audiences.some((audience) => audience.include) &&
-      t('content_studio_setup_uses_audiences', 'Audiences'),
-    profile.expertise.include &&
-      t('content_studio_setup_section_expertise', 'Expertise'),
-    profile.editorial.include &&
-      t('content_studio_setup_section_editorial', 'Editorial rules'),
-  ].filter(Boolean) as string[];
-  const nothing = !parts.length;
+  const nothing = ![
+    profile.brand.include,
+    profile.writing.include,
+    profile.audiences.some((audience) => audience.include),
+    profile.expertise.include,
+    profile.editorial.include,
+  ].some(Boolean);
+  const unsaved =
+    (profile.brand.include && !draft.saved.brand) ||
+    (profile.writing.include && !draft.saved.writing) ||
+    profile.audiences.some(
+      (audience, index) =>
+        audience.include && !draft.saved.audiences?.includes(index)
+    ) ||
+    (profile.expertise.include && !draft.saved.expertise) ||
+    (profile.editorial.include && !draft.saved.editorial);
   // research and a draft need a working AI connection
   const withAI = !draft.manual && aiReady;
+  // an archived first post is gone: a new one is made
+  const hasFirstPost =
+    !!firstPostState.data?.package && !firstPostState.data.package.archived;
   if (leaving) {
     return shell(
       <ContentStudioLoading
-        label={t(
-          'content_studio_setup_starting_first_post',
-          'Starting your first post…'
-        )}
+        label={
+          hasFirstPost
+            ? t(
+                'content_studio_setup_opening_first_post',
+                'Opening your first post…'
+              )
+            : t(
+                'content_studio_setup_starting_first_post',
+                'Starting your first post…'
+              )
+        }
       />
     );
   }
@@ -2373,63 +2555,24 @@ export const ContentStudioSetupWizard: FC = () => {
       {header}
       <section className="flex flex-col gap-[16px]">
         <h2 className="text-[18px] font-[600]">
-          {withAI
-            ? t(
-                'content_studio_setup_first_post_title',
-                'Create your first post'
-              )
-            : t('content_studio_setup_save_title', 'Save your profile')}
+          {t('content_studio_setup_profile_ready', 'Your profile is ready!')}
         </h2>
         <p className="text-[15px] max-w-[620px]">
           {withAI
-            ? t(
-                'content_studio_setup_first_post_intro',
-                "Your profile is ready. Now let's put it to work: we research what is relevant for your audience right now and write your first post with it. You review it and decide when it goes out."
-              )
+            ? hasFirstPost
+              ? t(
+                  'content_studio_setup_first_post_exists',
+                  'Your first post is waiting for you. Review it, edit it and decide whether to schedule or publish it.'
+                )
+              : t(
+                  'content_studio_setup_first_post_intro',
+                  'Content Studio can now use your company profile, audience and expertise to research a relevant topic and create your first post. You can review it, edit it and decide whether to schedule it or publish it.'
+                )
             : t(
                 'content_studio_setup_save_intro',
                 'Your profile is ready to save. Every AI suggestion in Content Studio starts from it.'
               )}
         </p>
-        {!nothing && (
-          <div className="flex flex-col gap-[6px]">
-            <span className="text-[12px] text-textItemBlur">
-              {t('content_studio_setup_uses', 'Built on your')}
-            </span>
-            <ul className="flex flex-wrap gap-[6px]">
-              {parts.map((part) => (
-                <li
-                  key={part}
-                  className="px-[10px] py-[2px] rounded-full border border-newTableBorder text-[13px]"
-                >
-                  {part}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {withAI && (
-          <ol className="flex flex-col gap-[6px] text-[14px] list-decimal ps-[20px]">
-            <li>
-              {t(
-                'content_studio_setup_first_post_step_research',
-                'Research: a current topic that fits your audience and expertise'
-              )}
-            </li>
-            <li>
-              {t(
-                'content_studio_setup_first_post_step_draft',
-                'Draft: your first post, in your voice'
-              )}
-            </li>
-            <li>
-              {t(
-                'content_studio_setup_first_post_step_schedule',
-                'You: edit it, then schedule or publish'
-              )}
-            </li>
-          </ol>
-        )}
         {!!saveError && (
           <div
             role="alert"
@@ -2457,20 +2600,26 @@ export const ContentStudioSetupWizard: FC = () => {
           >
             {saveError
               ? t('content_studio_setup_save_again', 'Save again')
+              : withAI && hasFirstPost
+              ? unsaved
+                ? t(
+                    'content_studio_setup_save_open_first_post',
+                    'Save and open my first post'
+                  )
+                : t(
+                    'content_studio_setup_open_first_post',
+                    'Open my first post'
+                  )
               : withAI
               ? t(
                   'content_studio_setup_create_first_post',
                   'Create my first post'
                 )
-              : t('content_studio_setup_save', 'Save setup')}
+              : unsaved
+              ? t('content_studio_setup_save', 'Save setup')
+              : t('content_studio_done', 'Done')}
           </Button>
         </div>
-        <p className="text-[12px] text-textItemBlur">
-          {t(
-            'content_studio_setup_versions_hint',
-            'Saving never deletes anything: profiles you change keep their earlier versions under Brand & AI.'
-          )}
-        </p>
       </section>
     </>
   );

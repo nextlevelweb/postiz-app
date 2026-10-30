@@ -15,6 +15,7 @@ import {
   AddEditModalProps,
 } from '@gitroom/frontend/components/new-launch/add.edit.modal';
 import { useToaster } from '@gitroom/react/toaster/toaster';
+import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 dayjs.extend(utc);
 
@@ -34,6 +35,10 @@ const RETURN_PAGES: Record<string, string> = {
   // the first post (activation flow 01), which then sees what was scheduled
   'first-post': '/content-studio/first-post',
 };
+const returnPageOf = (page: string | null) =>
+  page && Object.prototype.hasOwnProperty.call(RETURN_PAGES, page)
+    ? RETURN_PAGES[page]
+    : undefined;
 
 // Removes `handoff` from the current URL, keeping every other parameter, and
 // only while the URL still names this handoff. A handoff that came with a
@@ -53,10 +58,7 @@ const useRemoveHandoffParam = () => {
       if (current.searchParams.get('handoff') !== handoffId) {
         return;
       }
-      const page = current.searchParams.get('return') ?? '';
-      const back = Object.prototype.hasOwnProperty.call(RETURN_PAGES, page)
-        ? RETURN_PAGES[page]
-        : undefined;
+      const back = returnPageOf(current.searchParams.get('return'));
       if (back) {
         router.push(back);
         return;
@@ -76,12 +78,17 @@ const useRemoveHandoffParam = () => {
 // The composer of one handoff. However it closes (Escape, its close button,
 // saving the post, closeAll) it unmounts, and that removes `handoff` from the
 // URL. Until then the URL keeps it, so a reload opens the same revision again.
-// Edits made in the composer are not kept over a reload
+// Edits made in the composer are not kept over a reload. A handoff with a
+// known return page has a visible way back to it above the composer, so
+// the browser's Back is never the only one
 const HandoffComposer: FC<AddEditModalProps & { handoffId: string }> = ({
   handoffId,
   ...props
 }) => {
   const removeHandoffParam = useRemoveHandoffParam();
+  const back = returnPageOf(useSearchParams().get('return'));
+  const modal = useModals();
+  const t = useT();
   const mounted = useRef(false);
   useEffect(() => {
     mounted.current = true;
@@ -101,7 +108,44 @@ const HandoffComposer: FC<AddEditModalProps & { handoffId: string }> = ({
     };
   }, []);
 
-  return <AddEditModal {...props} />;
+  // closing unmounts the composer, which goes back to the return page;
+  // only what was changed in the composer is left behind, the Content
+  // Studio draft stays as it was
+  const goBack = useCallback(async () => {
+    if (
+      await deleteDialog(
+        t(
+          'content_studio_handoff_back_confirm',
+          'Go back to Content Studio? Changes made here are not kept; your Content Studio draft stays as it is.'
+        ),
+        t('content_studio_handoff_back_yes', 'Go back')
+      )
+    ) {
+      modal.closeAll();
+    }
+  }, [modal, t]);
+
+  if (!back) {
+    return <AddEditModal {...props} />;
+  }
+  // the composer keeps its own layout: on a wide screen the way back sits
+  // in its top margin, on a phone (no margin) above it
+  return (
+    <div className="relative flex flex-1 w-full h-full min-w-0 mobile:block mobile:h-auto">
+      <div className="absolute top-[4px] start-[40px] z-[2] mobile:static mobile:px-[16px] mobile:pt-[8px] mobile:pb-[4px]">
+        <button
+          type="button"
+          data-testid="content-studio-handoff-back"
+          onClick={goBack}
+          className="min-h-[32px] px-[12px] rounded-full bg-newBgColorInner border border-newTableBorder flex items-center gap-[6px] text-[14px] font-[600] text-newTextColor hover:underline"
+        >
+          <span aria-hidden="true">{'←'}</span>
+          {t('content_studio_handoff_back', 'Back to Content Studio')}
+        </button>
+      </div>
+      <AddEditModal {...props} />
+    </div>
+  );
 };
 
 // Opens /launches?handoff=<id> in the existing composer, seeded with the

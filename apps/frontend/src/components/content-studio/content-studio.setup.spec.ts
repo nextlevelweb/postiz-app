@@ -224,6 +224,8 @@ let state: {
   // what a connection test answers
   test: () => { ok: true } | { ok: false; code: string };
   firstPost?: () => Reply;
+  // where the first post stands (GET), when one was made
+  firstPostRead?: () => Reply;
   fail?: (method: string, url: string) => Reply | undefined;
 };
 const BASES = [
@@ -258,6 +260,22 @@ const server = (
   // The server starts the draft and answers with its operation at once;
   // state.proposal is how that draft ends, read back below
   // the first post (activation flow 01) starts on the server
+  if (
+    method === 'GET' &&
+    pathname === '/content-studio/activation/first-post'
+  ) {
+    return (
+      state.firstPostRead?.() ??
+      reply(200, {
+        packageId: null,
+        research: null,
+        draft: null,
+        alternatives: [],
+        firstPost: { scheduled: false, published: false },
+        activated: false,
+      })
+    );
+  }
   if (
     method === 'POST' &&
     pathname === '/content-studio/activation/first-post'
@@ -1399,26 +1417,27 @@ describe('Setup assistant: step 4 creates the first post', () => {
     await flush();
   };
 
-  it('ACT1/ACT2 no second summary of profile names and versions: step 4 explains the first post', async () => {
+  it('ACT1/ACT2/C1-C5 step 4 is short: the profile is ready, Content Studio researches and writes the first post, the user decides', async () => {
     await toStep4();
     expect(screen.getByText('Step 4 of 4')).toBeTruthy();
+    // C3 a simple "your profile is ready"
     expect(
-      screen.getByRole('heading', { name: 'Create your first post' })
+      screen.getByRole('heading', { name: 'Your profile is ready!' })
     ).toBeTruthy();
-    expect(screen.queryByText('Review and save')).toBeNull();
+    // C4 who does what: Content Studio researches and creates, the user
+    // reviews and decides
     expect(
-      screen.queryByText(
-        'A new profile, or a new version of the profile with this name.'
+      screen.getByText(
+        'Content Studio can now use your company profile, audience and expertise to research a relevant topic and create your first post. You can review it, edit it and decide whether to schedule it or publish it.'
       )
-    ).toBeNull();
+    ).toBeTruthy();
+    // C1 no note about versions, C2 no "Built on your" chips, C5 no 1-2-3
+    // list repeating the intro
+    expect(screen.queryByText(/Saving never deletes anything/)).toBeNull();
+    expect(screen.queryByText('Built on your')).toBeNull();
+    expect(screen.queryByText(/^Research:|^Draft:|^You:/)).toBeNull();
+    expect(screen.queryByText('Review and save')).toBeNull();
     expect(screen.queryByText('Studio voice')).toBeNull();
-    expect(
-      screen.getByText(/we research what is relevant for your audience/)
-    ).toBeTruthy();
-    // versions are a quiet note, not the page
-    expect(
-      screen.getByText(/profiles you change keep their earlier versions/)
-    ).toBeTruthy();
     expect(button('Create my first post')).toBeTruthy();
   });
 
@@ -1427,7 +1446,8 @@ describe('Setup assistant: step 4 creates the first post', () => {
     fireEvent.click(button('Create my first post'));
     await flush();
     const started = calls().find(
-      (c) => c.url === '/content-studio/activation/first-post'
+      (c) =>
+        c.method === 'POST' && c.url === '/content-studio/activation/first-post'
     );
     expect(started?.body).toEqual({
       connectionId: CONNECTION.id,
@@ -1466,13 +1486,17 @@ describe('Setup assistant: step 4 creates the first post', () => {
     fireEvent.click(button('Next'));
     await flush();
     expect(
-      screen.getByRole('heading', { name: 'Save your profile' })
+      screen.getByRole('heading', { name: 'Your profile is ready!' })
     ).toBeTruthy();
     fireEvent.click(button('Save setup'));
     await flush();
     expect(screen.getByText('Your Content Studio is ready')).toBeTruthy();
     expect(
-      calls().some((c) => c.url === '/content-studio/activation/first-post')
+      calls().some(
+        (c) =>
+          c.method === 'POST' &&
+          c.url === '/content-studio/activation/first-post'
+      )
     ).toBe(false);
   });
 
@@ -1537,18 +1561,23 @@ describe('Setup assistant: step 3 lists on a phone', () => {
     expect(doList.className).not.toContain('tablet:grid-cols-2');
   });
 
-  it('UX3/UX4/UX5 "Show N more" is a real button that opens its own list only, and "Show less" closes it', async () => {
+  it('UX3/UX4/UX5/L1-L4 "Show all" is a real button that opens its own list only, and "Show less" closes it', async () => {
     await toStep3();
     expect(screen.queryByText('+4')).toBeNull();
-    const more = screen.getByRole('button', { name: 'Show 4 more: Do' });
+    // L1 not "Show 4 more", which reads as if 4 would be added
+    expect(screen.queryByText(/Show \d+ more/)).toBeNull();
+    const more = screen.getByRole('button', { name: 'Show all: Do' });
+    expect(more.textContent).toBe('Show all');
+    // L3
     expect(more.getAttribute('aria-expanded')).toBe('false');
     expect(screen.queryByText('Rule number 7')).toBeNull();
     fireEvent.click(more);
     expect(screen.getAllByText('Rule number 7')).toHaveLength(1);
-    // the Don't list stayed as it was
+    // L4 the Don't list stayed as it was
     expect(
-      screen.getByRole('button', { name: "Show 2 more: Don't" })
+      screen.getByRole('button', { name: "Show all: Don't" })
     ).toBeTruthy();
+    // L2
     const less = screen.getByRole('button', { name: 'Show less: Do' });
     expect(less.getAttribute('aria-expanded')).toBe('true');
     expect(less.textContent).toBe('Show less');
@@ -1562,5 +1591,333 @@ describe('Setup assistant: step 3 lists on a phone', () => {
     fireEvent.click(edit);
     expect(screen.getByLabelText('Tagline')).toBeTruthy();
     expect(screen.getAllByRole('button', { name: 'Done' }).length).toBe(1);
+  });
+});
+
+// Activation review 02: what the organization saved wins over what a
+// browser kept. Lambert's setup reopened at step 1 after the first post and
+// only "Draft my profile with AI" went on, so the AI wrote his profile again
+describe('Setup assistant: the saved setup wins over this browser', () => {
+  const VOICE = 'Our saved voice.';
+  const savedSetup = () => {
+    state.kit = {
+      latestRevisionNumber: 4,
+      content: {
+        ...KIT_CONTENT,
+        identity: {
+          brandName: 'Next Level Web',
+          tagline: 'Saved line',
+          description: 'We build websites for small shops.',
+        },
+      },
+    };
+    state.profiles['/content-studio/writing-profiles'] = [
+      {
+        id: '00000000-0000-4000-8000-0000000000b1',
+        name: 'Saved voice',
+        rev: 1,
+        content: writing(VOICE),
+      },
+    ];
+    state.profiles['/content-studio/expertise-profiles'] = [
+      {
+        id: '00000000-0000-4000-8000-0000000000c1',
+        name: 'Saved expertise',
+        rev: 2,
+        content: expertise(),
+      },
+    ];
+  };
+  const aiCalls = () =>
+    calls().filter((c) => c.url.startsWith('/content-studio/ai/setup/'));
+  const opened = (step: number) =>
+    expect(screen.getByText(`Step ${step} of 4`)).toBeTruthy();
+  const stale = (patch: Record<string, unknown> = {}) =>
+    window.localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({
+        v: 1,
+        step: 3,
+        connectionId: CONNECTION.id,
+        manual: false,
+        company: {
+          companyName: 'Next Level Web',
+          tagline: '',
+          website: '',
+          description: 'Typed long ago.',
+          goal: '',
+          audience: '',
+          language: 'nl',
+        },
+        source: null,
+        profile: null,
+        saved: {},
+        ...patch,
+      })
+    );
+
+  it('S1 a saved setup and a stale step-3 draft in this browser: step 4, with the saved profile, and the stale draft gone', async () => {
+    savedSetup();
+    stale();
+    await show();
+    opened(4);
+    expect(
+      screen.getByRole('heading', { name: 'Your profile is ready!' })
+    ).toBeTruthy();
+    expect(aiCalls()).toEqual([]);
+    const kept = JSON.parse(window.localStorage.getItem(DRAFT_KEY) as string);
+    expect(kept.step).toBe(4);
+    expect(kept.source).toBe('saved');
+    expect(kept.profile.writing.content.voice).toBe(VOICE);
+    expect(kept.base).toBeTruthy();
+  });
+
+  it('S2 a saved setup is never drafted or saved again by opening it', async () => {
+    savedSetup();
+    await show();
+    opened(4);
+    fireEvent.click(button(/^Your content profile/));
+    await flush();
+    opened(3);
+    expect(screen.getByText(/This is your saved profile/)).toBeTruthy();
+    expect(screen.getByText(VOICE)).toBeTruthy();
+    fireEvent.click(button('Next'));
+    await flush();
+    fireEvent.click(button('Create my first post'));
+    await flush();
+    // nothing of the profile was written, and no AI drafted it
+    expect(aiCalls()).toEqual([]);
+    expect(dataWrites().map((w) => w.url)).toEqual([
+      '/content-studio/activation/first-post',
+    ]);
+  });
+
+  it('S3 revisiting step 2 goes on with the saved profile; the AI drafts only when asked', async () => {
+    savedSetup();
+    await show();
+    fireEvent.click(button(/^Your company/));
+    await flush();
+    opened(2);
+    expect(field('Company name').value).toBe('Next Level Web');
+    expect(
+      screen.queryByRole('button', { name: 'Draft my profile with AI' })
+    ).toBeNull();
+    fireEvent.click(button('Next'));
+    await flush();
+    opened(3);
+    expect(screen.getByText(VOICE)).toBeTruthy();
+    expect(aiCalls()).toEqual([]);
+    // asked for by name: then it drafts
+    fireEvent.click(button(/^Your company/));
+    await flush();
+    fireEvent.click(button('Draft a new profile with AI'));
+    await flush();
+    expect(
+      aiCalls()
+        .filter((c) => c.method === 'POST')
+        .map((c) => c.url)
+    ).toEqual(['/content-studio/ai/setup/proposal']);
+  });
+
+  it('S4 /content-studio/setup without anything kept opens where the organization stands', async () => {
+    await show();
+    opened(1);
+    cleanup();
+    window.localStorage.clear();
+    savedSetup();
+    await show();
+    opened(4);
+    // a saved setup is looked at again, not finished later
+    expect(
+      screen.getByRole('link', { name: 'Back to Content Studio' })
+    ).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Finish later' })).toBeNull();
+  });
+
+  it('S5 a first post that exists is opened, never started again; a return finds the assistant as it was', async () => {
+    savedSetup();
+    state.firstPostRead = () =>
+      reply(200, {
+        packageId: 'first-post-package',
+        package: {
+          name: 'First post',
+          draftVersion: 2,
+          archived: false,
+          text: 'x',
+        },
+        research: null,
+        draft: null,
+        alternatives: [],
+        firstPost: { scheduled: false, published: false },
+        activated: false,
+      });
+    await show();
+    opened(4);
+    expect(screen.getByText(/Your first post is waiting for you/)).toBeTruthy();
+    fireEvent.click(button('Open my first post'));
+    await flush();
+    expect(mockRouter.push).toHaveBeenCalledWith('/content-studio/first-post');
+    expect(dataWrites()).toEqual([]);
+  });
+
+  it('S5 a revisit of exactly the saved setup is continued; once the setup is saved again elsewhere it is stale', async () => {
+    savedSetup();
+    await show();
+    fireEvent.click(button(/^Your content profile/));
+    await flush();
+    cleanup();
+    await show();
+    opened(3);
+    // saved again under Brand & AI meanwhile
+    cleanup();
+    state.profiles['/content-studio/writing-profiles'][0].rev = 2;
+    await show();
+    opened(4);
+    expect(aiCalls()).toEqual([]);
+  });
+
+  it('a changed saved profile is saved on the way to the first post, as a new version', async () => {
+    savedSetup();
+    state.firstPostRead = () =>
+      reply(200, {
+        packageId: 'first-post-package',
+        package: {
+          name: 'First post',
+          draftVersion: 2,
+          archived: false,
+          text: 'x',
+        },
+        research: null,
+        draft: null,
+        alternatives: [],
+        firstPost: { scheduled: false, published: false },
+        activated: false,
+      });
+    await show();
+    fireEvent.click(button(/^Your company/));
+    await flush();
+    type('Company name', 'Next Level Web BV');
+    fireEvent.click(button('Next'));
+    await flush();
+    fireEvent.click(button('Next'));
+    await flush();
+    fireEvent.click(button('Save and open my first post'));
+    await flush();
+    expect(dataWrites().map((w) => w.url)).toEqual([
+      '/content-studio/brand-kit/revisions',
+    ]);
+    expect(mockRouter.push).toHaveBeenCalledWith('/content-studio/first-post');
+  });
+
+  it('S4 a connection that needs attention listed first does not take the AI path away: the working one is used', async () => {
+    savedSetup();
+    const healthy = {
+      ...CONNECTION,
+      id: '44444444-4444-4444-8444-444444444445',
+      name: 'Working',
+    };
+    state.connections = [
+      {
+        ...CONNECTION,
+        name: 'A no credit',
+        lastValidationStatus: 'invalid',
+        lastValidationCode: 'QUOTA_EXCEEDED',
+      } as typeof CONNECTION,
+      healthy,
+    ];
+    await show();
+    opened(4);
+    fireEvent.click(button('Create my first post'));
+    await flush();
+    expect(
+      calls().find(
+        (c) =>
+          c.method === 'POST' &&
+          c.url === '/content-studio/activation/first-post'
+      )?.body.connectionId
+    ).toBe(healthy.id);
+  });
+
+  it('a description changed in step 2 goes into the profile and is saved with it; the language alone saves nothing', async () => {
+    savedSetup();
+    await show();
+    fireEvent.click(button('Back'));
+    await flush();
+    fireEvent.click(button('Back'));
+    await flush();
+    opened(2);
+    fireEvent.change(field('Language of your posts'), {
+      target: { value: 'en' },
+    });
+    fireEvent.click(button('Next'));
+    await flush();
+    fireEvent.click(button('Next'));
+    await flush();
+    expect(button('Create my first post')).toBeTruthy();
+    fireEvent.click(button('Back'));
+    await flush();
+    fireEvent.click(button('Back'));
+    await flush();
+    type('What does your company do?', 'We now also host websites.');
+    fireEvent.click(button('Next'));
+    await flush();
+    expect(screen.getByText('We now also host websites.')).toBeTruthy();
+    fireEvent.click(button('Next'));
+    await flush();
+    fireEvent.click(button('Create my first post'));
+    await flush();
+    const kit = writes().find(
+      (w) => w.url === '/content-studio/brand-kit/revisions'
+    );
+    expect(kit?.body.content.identity.description).toBe(
+      'We now also host websites.'
+    );
+    expect(dataWrites().map((w) => w.url)).toEqual([
+      '/content-studio/brand-kit/revisions',
+      '/content-studio/activation/first-post',
+    ]);
+  });
+
+  it('an archived first post is not opened again: a new one is made', async () => {
+    savedSetup();
+    state.firstPostRead = () =>
+      reply(200, {
+        packageId: 'first-post-package',
+        package: {
+          name: 'First post',
+          draftVersion: 2,
+          archived: true,
+          text: 'x',
+        },
+        research: null,
+        draft: null,
+        alternatives: [],
+        firstPost: { scheduled: false, published: false },
+        activated: false,
+      });
+    await show();
+    fireEvent.click(button('Create my first post'));
+    await flush();
+    expect(
+      calls().some(
+        (c) =>
+          c.method === 'POST' &&
+          c.url === '/content-studio/activation/first-post'
+      )
+    ).toBe(true);
+  });
+
+  it('the pure rule: saved wins, a revisit of exactly it is continued, nothing saved keeps what was kept', () => {
+    const { chooseContentStudioSetupStart } = require('./content-studio.setup');
+    expect(chooseContentStudioSetupStart(null, 'b')).toBe('saved');
+    expect(chooseContentStudioSetupStart({ v: 1 }, 'b')).toBe('saved');
+    expect(chooseContentStudioSetupStart({ v: 1, base: 'a' }, 'b')).toBe(
+      'saved'
+    );
+    expect(chooseContentStudioSetupStart({ v: 1, base: 'b' }, 'b')).toBe(
+      'resume'
+    );
+    expect(chooseContentStudioSetupStart({ v: 1 }, null)).toBe('resume');
+    expect(chooseContentStudioSetupStart(null, null)).toBe('new');
   });
 });

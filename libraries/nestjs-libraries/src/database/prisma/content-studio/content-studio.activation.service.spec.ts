@@ -515,6 +515,7 @@ describe('First post: activation is a scheduled or published post', () => {
       packageId: null,
       research: null,
       draft: null,
+      alternatives: [],
       firstPost: { scheduled: false, published: false },
       activated: false,
     });
@@ -585,5 +586,130 @@ describe('First post: review hardening', () => {
     expect(now.draft).toMatchObject({ status: 'succeeded', applied: false });
     await start(ctx, 'apply');
     expect((await state(ctx)).package).toMatchObject({ text: 'AI-tekst' });
+  });
+});
+
+// Activation review 02: what was made for the first post stays, and coming
+// back to it never starts it again
+describe('First post: earlier drafts are kept and can be put back', () => {
+  // the first post, then another draft from the mode asked for
+  const twoDrafts = async (ctx: Ctx, mode: 'angle' | 'research') => {
+    await firstPost(ctx);
+    await start(ctx, mode);
+    ctx.calls[2].answer(researchAnswer('Ander onderwerp'));
+    await settle();
+    ctx.calls[3].answer(draftAnswer('Tweede versie.'));
+    await settle();
+  };
+
+  it('P1 research and draft are read back from the server, as often as asked', async () => {
+    const ctx = build();
+    await firstPost(ctx);
+    const one = await state(ctx);
+    expect(await state(ctx)).toEqual(one);
+    expect(one.package).toMatchObject({
+      text: 'Eerste post over AI in het mkb.',
+    });
+    expect(one.research).toMatchObject({
+      status: 'succeeded',
+      result: { topic: 'AI in het mkb' },
+    });
+    expect(ctx.calls).toHaveLength(2);
+  });
+
+  it('P3 starting the first post again once it exists (setup opened again, a return) researches nothing', async () => {
+    const ctx = build();
+    await firstPost(ctx);
+    const { packageId } = await start(ctx, 'first');
+    expect(packageId).toBe(PACKAGE);
+    expect(ctx.calls).toHaveLength(2);
+    expect(ctx.service.createPackage).toHaveBeenCalledTimes(1);
+    expect((await state(ctx)).package).toMatchObject({
+      text: 'Eerste post over AI in het mkb.',
+    });
+  });
+
+  it('P4 another angle keeps the previous draft, with its own research', async () => {
+    const ctx = build();
+    await twoDrafts(ctx, 'angle');
+    const now = await state(ctx);
+    expect(now.package).toMatchObject({ text: 'Tweede versie.' });
+    expect(
+      now.alternatives.map((alternative) => ({
+        text: alternative.text,
+        topic: alternative.research?.topic,
+        current: alternative.current,
+      }))
+    ).toEqual([
+      { text: 'Tweede versie.', topic: 'Ander onderwerp', current: true },
+      {
+        text: 'Eerste post over AI in het mkb.',
+        topic: 'AI in het mkb',
+        current: false,
+      },
+    ]);
+  });
+
+  it('P5 an earlier draft is put back into the post without AI, and the newer one stays', async () => {
+    const ctx = build();
+    await twoDrafts(ctx, 'angle');
+    const earlier = (await state(ctx)).alternatives[1];
+    await ctx.activationService.startFirstPost({
+      organizationId: ORG,
+      userId: USER,
+      request: {
+        connectionId: CONNECTION,
+        mode: 'apply',
+        draftOperationId: earlier.operationId,
+      },
+    });
+    expect(ctx.calls).toHaveLength(4);
+    const now = await state(ctx);
+    expect(now.package).toMatchObject({
+      text: 'Eerste post over AI in het mkb.',
+    });
+    expect(now.alternatives.map((alternative) => alternative.current)).toEqual([
+      false,
+      true,
+    ]);
+    // a draft of another package, or one that does not exist, is refused
+    await expect(
+      ctx.activationService.startFirstPost({
+        organizationId: ORG,
+        userId: USER,
+        request: {
+          connectionId: CONNECTION,
+          mode: 'apply',
+          draftOperationId: '99999999-9999-4999-8999-999999999999',
+        },
+      })
+    ).rejects.toMatchObject({
+      response: { code: 'CS_FIRST_POST_NOT_STARTED' },
+    });
+  });
+
+  it('P6 refined research adds a draft; the earlier one is still there', async () => {
+    const ctx = build();
+    await twoDrafts(ctx, 'research');
+    const now = await state(ctx);
+    expect(now.alternatives).toHaveLength(2);
+    expect(now.alternatives[1]).toMatchObject({
+      text: 'Eerste post over AI in het mkb.',
+      research: { topic: 'AI in het mkb' },
+    });
+  });
+
+  it.each([
+    ['with another mode', { mode: 'angle', draftOperationId: PACKAGE }],
+    ['that is not a uuid', { mode: 'apply', draftOperationId: 'x' }],
+  ])('refuses an earlier draft %s', async (_label, patch) => {
+    const ctx = build();
+    await expect(
+      ctx.activationService.startFirstPost({
+        organizationId: ORG,
+        userId: USER,
+        request: { connectionId: CONNECTION, ...patch },
+      })
+    ).rejects.toMatchObject({ response: { code: 'CS_INVALID_REQUEST' } });
   });
 });
