@@ -5,7 +5,10 @@ import {
   ContentStudioAIOperationRepository,
   ContentStudioAIUsageCreate,
 } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-operation.repository';
-import { ContentStudioAIProviderResolver } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.resolver';
+import {
+  ContentStudioAIProviderResolver,
+  ContentStudioResolvedAIConnection,
+} from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.resolver';
 import { getContentStudioAIModel } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.catalog';
 import {
   ContentStudioAIExecutionError,
@@ -107,8 +110,20 @@ export interface ContentStudioAIExecutionOptions {
   // The caller's own check of the answer (that it parses as what was asked
   // for), run once before the operation is recorded as succeeded. It throws
   // to refuse the answer: a ContentStudioAIProviderError as it is, anything
-  // else as INVALID_RESPONSE. It must not keep or record the answer
-  validateResult?: (result: ContentStudioAITextResult) => void;
+  // else as INVALID_RESPONSE. It must not keep or record the answer itself
+  validateResult?: (result: ContentStudioAITextResult) => unknown;
+  // Records what validateResult returned (plain JSON of the checked answer)
+  // as the operation's result, for an operation that runs on after its
+  // request: the client that started it reads the answer back later
+  keepResult?: boolean;
+}
+
+// A started operation: it exists (running) and its provider attempt is under
+// way. done settles when the attempt is recorded, whatever became of the
+// request that started it
+export interface ContentStudioAIStartedOperation {
+  operationId: string;
+  done: Promise<ContentStudioAITextResult>;
 }
 
 const isId = (value: unknown) => typeof value === 'string' && UUID.test(value);
@@ -203,7 +218,10 @@ function providerUsage(
 // The generated text is returned, never stored. Everything that can be
 // checked without the provider is checked before the operation exists, so a
 // refused request leaves no row and costs nothing. An operation whose process
-// stops during the provider call stays running; nothing sweeps it yet
+// stops during the provider call stays running; nothing sweeps it, and a
+// reader treats one running longer than any provider call as interrupted.
+// The start methods return once the operation exists: its provider attempt
+// goes on without the request, which may end or be dropped meanwhile
 @Injectable()
 export class ContentStudioAIExecutionService {
   constructor(
@@ -241,6 +259,35 @@ export class ContentStudioAIExecutionService {
     );
   }
 
+  // The same package operation, started: it returns once the operation
+  // exists and the provider attempt goes on without the request
+  async startForPackage(
+    input: ContentStudioAIExecutionInput,
+    options: ContentStudioAIExecutionOptions = {}
+  ): Promise<ContentStudioAIStartedOperation> {
+    const context = this.checkInput(input);
+    const contentPackage =
+      await this._contentStudioRepository.getPackageForOrganization(
+        input.organizationId,
+        input.packageId
+      );
+    if (!contentPackage) {
+      throw new ContentStudioAIExecutionError('PACKAGE_NOT_FOUND');
+    }
+    if (contentPackage.archivedAt) {
+      throw new ContentStudioAIExecutionError('PACKAGE_ARCHIVED');
+    }
+    if (contentPackage.draftVersion !== input.baseDraftVersion) {
+      throw new ContentStudioAIExecutionError('DRAFT_VERSION_CONFLICT');
+    }
+    return this.start(
+      input,
+      { packageId: input.packageId, baseDraftVersion: input.baseDraftVersion },
+      context,
+      options
+    );
+  }
+
   // A Design Creative AI operation on exactly one saved design revision:
   // the same single attempt and records, with the revision instead of a
   // package. Nothing of the design is read or written here
@@ -267,12 +314,39 @@ export class ContentStudioAIExecutionService {
     return this.run(input, { scope: 'organization' }, context, options);
   }
 
+  // The same setup operation, started: it returns once the operation exists
+  // and the provider attempt goes on without the request
+  async startForOrganization(
+    input: ContentStudioAIOrganizationExecutionInput,
+    options: ContentStudioAIExecutionOptions = {}
+  ): Promise<ContentStudioAIStartedOperation> {
+    const context = this.checkOrganizationInput(input);
+    return this.start(input, { scope: 'organization' }, context, options);
+  }
+
   private async run(
     input: ExecutionCommon,
     target: ContentStudioAIRequestTarget,
     context: ContentStudioAIOperationContext,
     options: ContentStudioAIExecutionOptions
   ): Promise<{ operationId: string; result: ContentStudioAITextResult }> {
+    const { operationId, done } = await this.start(
+      input,
+      target,
+      context,
+      options
+    );
+    return { operationId, result: await done };
+  }
+
+  // Everything up to the running operation, awaited; the provider attempt
+  // and its record are done, which is not awaited here
+  private async start(
+    input: ExecutionCommon,
+    target: ContentStudioAIRequestTarget,
+    context: ContentStudioAIOperationContext,
+    options: ContentStudioAIExecutionOptions
+  ): Promise<ContentStudioAIStartedOperation> {
     const { organizationId } = input;
 
     // a connection that cannot be used ends here, with its own error
@@ -337,6 +411,20 @@ export class ContentStudioAIExecutionService {
       throw new ContentStudioAIExecutionError('PERSISTENCE_FAILED');
     }
 
+    return {
+      operationId,
+      done: this.attempt(input, resolved, operationId, options),
+    };
+  }
+
+  // The single provider attempt of a running operation, and its record
+  private async attempt(
+    input: ExecutionCommon,
+    resolved: ContentStudioResolvedAIConnection,
+    operationId: string,
+    options: ContentStudioAIExecutionOptions
+  ): Promise<ContentStudioAITextResult> {
+    const { organizationId } = input;
     const usageBase = {
       attempt: FIRST_ATTEMPT,
       provider: resolved.provider,
@@ -381,7 +469,7 @@ export class ContentStudioAIExecutionService {
 
     // A refused answer is a failed attempt, with the usage the provider
     // reported for it. The provider is not asked again
-    const rejection = this.rejection(result, options.validateResult);
+    const { rejection, value } = this.check(result, options.validateResult);
     if (rejection) {
       await this.record(() =>
         this._contentStudioAIOperationRepository.completeFailedWithUsage({
@@ -410,6 +498,7 @@ export class ContentStudioAIExecutionService {
           finishReason: result.finishReason,
           providerRequestId: providerRequestId ?? undefined,
         }),
+        ...(options.keepResult && value !== undefined ? { result: value } : {}),
         usage: {
           ...usageBase,
           ...providerUsage(result.usage),
@@ -418,23 +507,27 @@ export class ContentStudioAIExecutionService {
         },
       })
     );
-    return { operationId, result };
+    return result;
   }
 
-  private rejection(
+  // The caller's check: what it returned, or the error that refuses the
+  // answer
+  private check(
     result: ContentStudioAITextResult,
     validateResult: ContentStudioAIExecutionOptions['validateResult']
-  ) {
+  ): { rejection?: ContentStudioAIProviderError; value?: unknown } {
     if (!validateResult) {
-      return undefined;
+      return {};
     }
     try {
-      validateResult(result);
-      return undefined;
+      return { value: validateResult(result) };
     } catch (err) {
-      return err instanceof ContentStudioAIProviderError
-        ? err
-        : new ContentStudioAIProviderError('INVALID_RESPONSE');
+      return {
+        rejection:
+          err instanceof ContentStudioAIProviderError
+            ? err
+            : new ContentStudioAIProviderError('INVALID_RESPONSE'),
+      };
     }
   }
 

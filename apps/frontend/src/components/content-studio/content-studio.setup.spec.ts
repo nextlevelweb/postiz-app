@@ -231,6 +231,8 @@ const BASES = [
   '/content-studio/expertise-profiles',
 ];
 let ids = 0;
+// the drafts the server started, by operation
+const drafts = new Map<string, Promise<Reply>>();
 
 const server = (
   method: string,
@@ -252,8 +254,37 @@ const server = (
     state.connections = [{ ...CONNECTION, name: body.name }];
     return reply(201, state.connections[0]);
   }
+  // The server starts the draft and answers with its operation at once;
+  // state.proposal is how that draft ends, read back below
   if (method === 'POST' && pathname === '/content-studio/ai/setup/proposal') {
-    return state.proposal();
+    const operationId = `00000000-0000-4000-8000-a${String(++ids).padStart(
+      11,
+      '0'
+    )}`;
+    drafts.set(operationId, Promise.resolve(state.proposal()));
+    return reply(202, { operationId, status: 'running' });
+  }
+  const proposal = pathname.match(
+    /^\/content-studio\/ai\/setup\/proposal\/([^/]+)$/
+  );
+  if (method === 'GET' && proposal) {
+    const ended = drafts.get(proposal[1]);
+    if (!ended) {
+      return reply(404, { code: 'CS_NOT_FOUND' });
+    }
+    return ended.then(async (answer) => {
+      const body = (await answer.json()) as any;
+      return reply(
+        200,
+        answer.ok
+          ? {
+              operationId: proposal[1],
+              status: 'succeeded',
+              proposal: body.proposal,
+            }
+          : { operationId: proposal[1], status: 'failed', code: body?.code }
+      );
+    });
   }
   const test = pathname.match(
     /^\/content-studio\/ai\/connections\/([^/]+)\/test$/
@@ -434,6 +465,7 @@ beforeEach(() => {
   window.localStorage.clear();
   mockModals.set([]);
   ids = 0;
+  drafts.clear();
   state = {
     connections: [CONNECTION],
     kit: { latestRevisionNumber: 2, content: KIT_CONTENT },
@@ -910,7 +942,11 @@ describe('Setup assistant: AI connection health (review 02)', () => {
     fireEvent.click(button('Draft my profile with AI'));
     await flush();
     expect(screen.getByText('Drafting your content profile…')).toBeTruthy();
-    expect(screen.getByText('This may take a moment.')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'This takes about a minute. You can switch to another app: we keep working and show the result when you are back.'
+      )
+    ).toBeTruthy();
     // Back stays possible while the AI works
     fireEvent.click(button('Back'));
     await flush();
@@ -1208,5 +1244,125 @@ describe('Setup assistant: phone layout (review 03)', () => {
     expect((later.parentElement as HTMLElement).className).not.toContain(
       'flex-wrap'
     );
+  });
+});
+
+// Activation flow 01: on an iPhone the draft failed whenever Safari was put
+// away while the AI worked. The server finished it; the page had lost the
+// one request that would have carried it. The assistant now keeps the
+// operation and reads the draft back
+describe('Setup assistant: a draft that survives leaving the page', () => {
+  const held = () => {
+    let answer: (value: Reply) => void = () => undefined;
+    state.proposal = () =>
+      new Promise<Reply>((resolve) => {
+        answer = resolve;
+      });
+    return (value: Reply) => answer(value);
+  };
+  const startDraft = async () => {
+    await show();
+    fireEvent.click(button('Next'));
+    await flush();
+    fillCompany();
+    fireEvent.click(button('Draft my profile with AI'));
+    await flush();
+  };
+  const posts = () =>
+    calls().filter(
+      (c) =>
+        c.method === 'POST' && c.url === '/content-studio/ai/setup/proposal'
+    );
+
+  it('BG1-F keeps the started operation with the assistant before waiting', async () => {
+    held();
+    await startDraft();
+    const kept = JSON.parse(window.localStorage.getItem(DRAFT_KEY) as string);
+    expect(kept.pending).toEqual({
+      operationId: expect.stringMatching(/^00000000-/),
+      section: 'all',
+    });
+    expect(kept.step).toBe(3);
+  });
+
+  it('BG7-F a reload while the AI works picks the same draft up again, without asking the AI twice', async () => {
+    const answer = held();
+    await startDraft();
+    // the page is gone (reload, or Safari discarded it)
+    cleanup();
+    await show();
+    expect(
+      screen.getByText('Still drafting your content profile…')
+    ).toBeTruthy();
+    answer(reply(200, { proposal: PROPOSAL }));
+    await flush();
+    expect(screen.getByText('AI voice.')).toBeTruthy();
+    expect(posts()).toHaveLength(1);
+    const kept = JSON.parse(window.localStorage.getItem(DRAFT_KEY) as string);
+    expect(kept.pending).toBeNull();
+    expect(kept.profile.writing.content.voice).toBe('AI voice.');
+  });
+
+  it('BG2-F a look that gets no answer (the page was suspended) is made again, and the draft still arrives', async () => {
+    const answer = held();
+    const original = mockFetch.getMockImplementation()!;
+    let dropped = 0;
+    mockFetch.mockImplementation(
+      async (url: string, init: RequestInit = {}) => {
+        if (
+          (init.method || 'GET') === 'GET' &&
+          url.startsWith('/content-studio/ai/setup/proposal/') &&
+          dropped < 1
+        ) {
+          dropped += 1;
+          throw new TypeError('Load failed');
+        }
+        return original(url, init);
+      }
+    );
+    await startDraft();
+    expect(dropped).toBe(1);
+    expect(screen.getByText('Drafting your content profile…')).toBeTruthy();
+    answer(reply(200, { proposal: PROPOSAL }));
+    await flush();
+    // the page is shown again: it looks at once instead of waiting
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await flush();
+    expect(dropped).toBe(1);
+    expect(screen.getByText('AI voice.')).toBeTruthy();
+    expect(
+      screen.queryByText("We couldn't generate suggestions right now.")
+    ).toBeNull();
+  });
+
+  it('BG5-F a draft that failed while the page was away shows the real reason on return', async () => {
+    const answer = held();
+    await startDraft();
+    cleanup();
+    answer(reply(429, { code: 'CS_AI_RATE_LIMITED' }));
+    await show();
+    await flush();
+    expect(
+      screen.getByText('The AI provider is busy. Wait a moment and try again.')
+    ).toBeTruthy();
+    expect(button('Try again')).toBeTruthy();
+  });
+
+  it('BG6-F Back drops the running draft: its late answer never fills the profile', async () => {
+    const answer = held();
+    await startDraft();
+    fireEvent.click(button('Back'));
+    await flush();
+    answer(reply(200, { proposal: PROPOSAL }));
+    await flush();
+    const kept = JSON.parse(window.localStorage.getItem(DRAFT_KEY) as string);
+    expect(kept.pending).toBeNull();
+    expect(kept.profile).toBeNull();
+    // reopening the assistant does not pick the dropped draft up either
+    cleanup();
+    await show();
+    expect(screen.getByText('Step 2 of 4')).toBeTruthy();
   });
 });

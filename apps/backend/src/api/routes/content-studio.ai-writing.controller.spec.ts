@@ -163,7 +163,7 @@ describe('ContentStudioController AI writing routes', () => {
     );
     expect(
       routes.filter((r) =>
-        /generate|execute|operation|usage|openai|anthropic|openrouter|\/ai\/(?!item$|thread$|providers$|connections|propose$|setup\/proposal$)/.test(
+        /generate|execute|operation|usage|openai|anthropic|openrouter|\/ai\/(?!item$|thread$|providers$|connections|propose$|setup\/proposal(\/:id)?$)/.test(
           r
         )
       )
@@ -175,8 +175,10 @@ describe('ContentStudioController AI writing routes', () => {
     ]);
     // Product UX foundation: the setup assistant's AI draft, for the
     // organization itself (no package, no design)
+    // activation flow 01: and the same draft read back by its operation
     expect(routes.filter((r) => /\/ai\/setup\//.test(r))).toEqual([
       'POST /ai/setup/proposal',
+      'GET /ai/setup/proposal/:id',
     ]);
   });
 

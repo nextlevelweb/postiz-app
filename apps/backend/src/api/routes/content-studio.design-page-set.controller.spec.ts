@@ -161,7 +161,8 @@ describe('ContentStudioController design page set routes', () => {
     // P8-04B1: one more, the organization's page changes
     // P8-C3: two more, pause and resume a feed
     // P8-C4: one more, a feed's interval
-    expect(all).toHaveLength(150);
+    // activation flow 01: one more, reading a setup draft back
+    expect(all).toHaveLength(151);
     expect(
       all.filter(
         (r) =>

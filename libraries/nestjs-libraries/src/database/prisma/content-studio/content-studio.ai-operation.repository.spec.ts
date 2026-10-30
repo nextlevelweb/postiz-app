@@ -427,6 +427,7 @@ describe('ContentStudioAIOperationRepository: completion', () => {
       'constructor',
       'createRunningOperation',
       'getOperationForOrganization',
+      'getOperationStateForOrganization',
     ]);
   });
 });
@@ -505,6 +506,9 @@ describe('ContentStudioAIOperation and ContentStudioAIUsage schema', () => {
       context: 'Json',
       requestHash: 'String',
       resultHash: 'String?',
+      // the checked answer of a draft that runs on after its request
+      // (activation flow 01): read back by the client that started it
+      result: 'Json?',
       errorCode: 'String?',
       startedAt: 'DateTime',
       completedAt: 'DateTime?',

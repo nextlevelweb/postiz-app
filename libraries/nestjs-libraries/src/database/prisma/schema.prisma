@@ -2061,7 +2061,11 @@ model ContentStudioAIConnection {
 // the same organization instead: it has designRevisionId and no package or
 // draft version. Every operation has exactly one of the two, checked in code;
 // rows from before P6-02 are all package operations. The package relation
-// keeps the foreign key actions it had while packageId was required
+// keeps the foreign key actions it had while packageId was required.
+// result is the checked answer of an operation that runs on after its
+// request (the guided setup and the first post): the client that started it
+// may be gone, so it reads the answer back from here. Null for every other
+// kind, while running, after a failure, and for every operation before it
 model ContentStudioAIOperation {
   id               String                       @id
   organizationId   String
@@ -2078,6 +2082,7 @@ model ContentStudioAIOperation {
   context          Json
   requestHash      String
   resultHash       String?
+  result           Json?
   errorCode        String?
   startedAt        DateTime                     @default(now())
   completedAt      DateTime?

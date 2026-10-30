@@ -33,6 +33,7 @@ import {
   saveContentStudioSetupDraft,
   setContentStudioSetupHidden,
   useContentStudioSetupActions,
+  waitForNextAIOperationPoll,
 } from '@gitroom/frontend/components/content-studio/content-studio.setup.api';
 import {
   aiConnectionHealth,
@@ -122,6 +123,21 @@ export interface SetupSaved {
   editorial?: boolean;
 }
 
+// The parts of the profile the AI can draft again on their own
+export type SetupSection =
+  | 'brand'
+  | 'writing'
+  | 'audiences'
+  | 'expertise'
+  | 'editorial';
+
+// An AI draft started on the server and not yet read back: kept with the
+// assistant, so a reload or a phone that was put away picks it up again
+export interface SetupPending {
+  operationId: string;
+  section: SetupSection | 'all';
+}
+
 export interface SetupDraft {
   v: 1;
   step: SetupStep;
@@ -133,6 +149,7 @@ export interface SetupDraft {
   source: 'ai' | 'manual' | null;
   profile: SetupProfile | null;
   saved: SetupSaved;
+  pending?: SetupPending | null;
 }
 
 export const LANGUAGES: Array<{ value: string; label: string }> = [
@@ -624,6 +641,8 @@ export const ContentStudioSetupWizard: FC = () => {
   // what exists already, the start of a manual profile
   const existing = useRef<SetupProfile | null>(null);
   const [generating, setGenerating] = useState(false);
+  // a draft picked up again after a reload or a return to the page
+  const [stillWorking, setStillWorking] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
   // the failed draft was about the connection: fix it, don't just retry
   const [connectionProblem, setConnectionProblem] = useState(false);
@@ -796,13 +815,76 @@ export const ContentStudioSetupWizard: FC = () => {
       ? draft.connectionId
       : usable[0]?.id ?? null;
 
-  const propose = useCallback(async () => {
-    if (!draft || !connectionId) {
-      return null;
-    }
-    const { proposal } = await setup.proposeSetup(connectionId, draft.company);
-    return setupProfileFromProposal(proposal, draft.company.tagline);
-  }, [draft, connectionId, setup]);
+  // Waits for a started draft. A look that gets no answer from the server
+  // (the page was put away, the network dropped) is simply made again: the
+  // draft goes on on the server meanwhile. Null when the user moved on
+  const awaitProposal = useCallback(
+    async (operationId: string, mine: number) => {
+      for (;;) {
+        if (mine !== attempt.current) {
+          return null;
+        }
+        try {
+          const state = await setup.getSetupProposal(operationId);
+          if (state.status === 'succeeded') {
+            return state.proposal;
+          }
+          if (state.status === 'failed') {
+            throw new ContentStudioRequestError(502, state.code);
+          }
+        } catch (err) {
+          if (err instanceof ContentStudioRequestError && err.code) {
+            throw err;
+          }
+        }
+        await waitForNextAIOperationPoll();
+      }
+    },
+    [setup]
+  );
+
+  // The draft of a started operation, applied only while that operation is
+  // still the one the assistant waits for: an older answer never replaces a
+  // newer one
+  const settle = useCallback(
+    (
+      operationId: string,
+      section: SetupPending['section'],
+      proposal: ContentStudioSetupProposal | null
+    ) =>
+      setDraft((current) => {
+        if (!current || current.pending?.operationId !== operationId) {
+          return current;
+        }
+        if (!proposal) {
+          return { ...current, pending: null };
+        }
+        const next = setupProfileFromProposal(
+          proposal,
+          current.company.tagline
+        );
+        if (section === 'all') {
+          return {
+            ...current,
+            step: 3,
+            source: 'ai',
+            manual: false,
+            profile: next,
+            saved: {},
+            pending: null,
+          };
+        }
+        return current.profile
+          ? {
+              ...current,
+              profile: { ...current.profile, [section]: next[section] },
+              saved: {},
+              pending: null,
+            }
+          : { ...current, pending: null };
+      }),
+    []
+  );
 
   const providerName =
     (providers.data || []).find(
@@ -829,50 +911,122 @@ export const ContentStudioSetupWizard: FC = () => {
     [t, providerName, connections]
   );
 
-  const generate = useCallback(async () => {
-    if (busy.current) {
+  // Follows a started draft to its end: its result, or its failure with
+  // the specific reason. A resumed one says it is still working
+  const follow = useCallback(
+    async (pending: SetupPending, mine: number, started: number) => {
+      try {
+        const proposal = await awaitProposal(pending.operationId, mine);
+        if (proposal && mine === attempt.current) {
+          if (pending.section === 'all') {
+            setFailures(0);
+            lastFailure.current = null;
+          }
+          settle(pending.operationId, pending.section, proposal);
+        }
+      } catch (err) {
+        // A retry that a provider refuses at once would otherwise flash the
+        // wait for a moment only and look like a click that did nothing
+        const shown = Date.now() - started;
+        if (lastFailure.current !== null && shown < SETUP_MIN_WAIT_MS) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, SETUP_MIN_WAIT_MS - shown)
+          );
+        }
+        // the company information stays as typed
+        if (mine === attempt.current) {
+          settle(pending.operationId, pending.section, null);
+          failed(err);
+        }
+      } finally {
+        if (mine === attempt.current) {
+          busy.current = false;
+          setGenerating(false);
+          setRegenerating(null);
+          setStillWorking(false);
+        }
+      }
+    },
+    [awaitProposal, settle, failed]
+  );
+
+  // Starts one AI draft on the server, of the whole profile or one section,
+  // and keeps its operation with the assistant before waiting for it
+  const start = useCallback(
+    async (section: SetupPending['section']) => {
+      if (busy.current || !draft || !connectionId) {
+        return;
+      }
+      busy.current = true;
+      const mine = ++attempt.current;
+      const started = Date.now();
+      setGenerateError(null);
+      if (section === 'all') {
+        setGenerating(true);
+        setConnectionProblem(false);
+        update({ step: 3 });
+      } else {
+        setRegenerating(section);
+      }
+      let operationId: string;
+      try {
+        ({ operationId } = await setup.startSetupProposal(
+          connectionId,
+          draft.company
+        ));
+      } catch (err) {
+        const shown = Date.now() - started;
+        if (lastFailure.current !== null && shown < SETUP_MIN_WAIT_MS) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, SETUP_MIN_WAIT_MS - shown)
+          );
+        }
+        if (mine === attempt.current) {
+          failed(err);
+          busy.current = false;
+          setGenerating(false);
+          setRegenerating(null);
+        }
+        return;
+      }
+      if (mine !== attempt.current) {
+        return;
+      }
+      const pending = { operationId, section };
+      update({ pending });
+      await follow(pending, mine, started);
+    },
+    [draft, connectionId, setup, update, follow, failed]
+  );
+
+  const generate = useCallback(() => start('all'), [start]);
+
+  // A draft that was still being made when the assistant was left (a
+  // reload, a phone that put the browser away) is picked up again. A draft
+  // this page started itself is already followed (busy)
+  const pending = draft?.pending;
+  useEffect(() => {
+    if (!pending || busy.current) {
       return;
     }
     busy.current = true;
     const mine = ++attempt.current;
-    const started = Date.now();
-    setGenerating(true);
-    setGenerateError(null);
-    setConnectionProblem(false);
-    update({ step: 3 });
-    try {
-      const profile = await propose();
-      if (profile && mine === attempt.current) {
-        setFailures(0);
-        lastFailure.current = null;
-        update({
-          step: 3,
-          source: 'ai',
-          manual: false,
-          profile,
-          saved: {},
-        });
-      }
-    } catch (err) {
-      // A retry that a provider refuses at once would otherwise flash the
-      // wait for a moment only and look like a click that did nothing
-      const shown = Date.now() - started;
-      if (lastFailure.current !== null && shown < SETUP_MIN_WAIT_MS) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, SETUP_MIN_WAIT_MS - shown)
-        );
-      }
-      // the company information stays as typed
-      if (mine === attempt.current) {
-        failed(err);
-      }
-    } finally {
-      if (mine === attempt.current) {
-        busy.current = false;
-        setGenerating(false);
-      }
+    setStillWorking(true);
+    if (pending.section === 'all') {
+      setGenerating(true);
+    } else {
+      setRegenerating(pending.section);
     }
-  }, [propose, update, failed]);
+    follow(pending, mine, Date.now());
+  }, [pending, follow]);
+
+  // a page that is left stops waiting; the draft goes on on the server
+  useEffect(
+    () => () => {
+      attempt.current += 1;
+    },
+    []
+  );
 
   // leaving a running AI request: its answer will be dropped
   const abandon = useCallback(() => {
@@ -880,6 +1034,10 @@ export const ContentStudioSetupWizard: FC = () => {
     busy.current = false;
     setGenerating(false);
     setRegenerating(null);
+    setStillWorking(false);
+    setDraft((current) =>
+      current?.pending ? { ...current, pending: null } : current
+    );
   }, []);
 
   // Tests a connection and records the result on it (an admin only; the
@@ -915,9 +1073,8 @@ export const ContentStudioSetupWizard: FC = () => {
   // "Finish later": Home stops opening the assistant until it is continued;
   // what was typed stays kept for "Continue setup"
   const finishLater = useCallback(() => {
-    abandon();
     setContentStudioSetupHidden(organizationId, true);
-  }, [abandon, organizationId]);
+  }, [organizationId]);
 
   // Step 1 asks the provider once per visit whether the chosen connection
   // works (an admin only: members cannot test): the provider decides how,
@@ -949,33 +1106,8 @@ export const ContentStudioSetupWizard: FC = () => {
 
   // a new AI suggestion for one section only; the rest stays as reviewed
   const regenerate = useCallback(
-    async (
-      section: 'brand' | 'writing' | 'audiences' | 'expertise' | 'editorial'
-    ) => {
-      if (busy.current) {
-        return;
-      }
-      busy.current = true;
-      const mine = ++attempt.current;
-      setRegenerating(section);
-      setGenerateError(null);
-      try {
-        const next = await propose();
-        if (next && mine === attempt.current) {
-          updateProfile({ [section]: next[section] } as Partial<SetupProfile>);
-        }
-      } catch (err) {
-        if (mine === attempt.current) {
-          failed(err);
-        }
-      } finally {
-        if (mine === attempt.current) {
-          busy.current = false;
-          setRegenerating(null);
-        }
-      }
-    },
-    [propose, updateProfile, failed]
+    (section: SetupSection) => start(section),
+    [start]
   );
 
   // Saves what was reviewed, in a fixed order, each part in its own request.
@@ -1560,7 +1692,12 @@ export const ContentStudioSetupWizard: FC = () => {
       body = (
         <ContentStudioLoading
           label={
-            failures
+            stillWorking
+              ? t(
+                  'content_studio_setup_still_generating',
+                  'Still drafting your content profile…'
+                )
+              : failures
               ? t('content_studio_setup_retrying', 'Trying again…')
               : t(
                   'content_studio_setup_generating',
@@ -1568,8 +1705,8 @@ export const ContentStudioSetupWizard: FC = () => {
                 )
           }
           detail={t(
-            'content_studio_setup_generating_hint',
-            'This may take a moment.'
+            'content_studio_setup_generating_hint_background',
+            'This takes about a minute. You can switch to another app: we keep working and show the result when you are back.'
           )}
         />
       );

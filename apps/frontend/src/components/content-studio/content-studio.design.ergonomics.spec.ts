@@ -1630,7 +1630,8 @@ describe('Editor ergonomics: static boundaries', () => {
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
       // Product UX foundation: one more, the setup assistant's AI draft
-    ).toHaveLength(150);
+      // activation flow 01: one more, reading a setup draft back
+    ).toHaveLength(151);
     const api = source('content-studio.designs.api.ts');
     expect(api).not.toMatch(
       // (thumbnail is the Media list's own field, from P4-08)

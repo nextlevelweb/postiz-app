@@ -2337,5 +2337,7 @@
   "content_studio_setup_retrying": "Trying again…",
   "content_studio_setup_tagline": "Tagline (optional)",
   "content_studio_setup_tagline_hint": "Your slogan or one line about what you stand for. AI keeps it as you wrote it; leave it empty and AI suggests one.",
-  "content_studio_setup_tried_again": "Tried again just now ({{count}} tries): the same problem came back."
+  "content_studio_setup_tried_again": "Tried again just now ({{count}} tries): the same problem came back.",
+  "content_studio_setup_still_generating": "Still drafting your content profile…",
+  "content_studio_setup_generating_hint_background": "This takes about a minute. You can switch to another app: we keep working and show the result when you are back."
 }

@@ -473,7 +473,8 @@ describe('P8-01 routes', () => {
       // P8-04B1: one more, the organization's page changes
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(150);
+      // activation flow 01: one more, reading a setup draft back
+    ).toHaveLength(151);
     const handler = controller.slice(
       controller.indexOf("@Get('/sources/:id/discoveries')"),
       controller.indexOf("@Post('/sources/:id/archive')")
@@ -595,8 +596,9 @@ describe('P8-02 News Radar', () => {
     // (R1Q-3)
     // P8-R1C adds the retention execution, its items and lock, nothing this
     // forbids (R1C-10)
+    // activation flow 01 adds the AI operation's kept result (ai-operation S10/S11)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '315c1a0bbf5bf3b612d9e48e134c3424efec6b33ef9dc96a79c08a9fb946c216'
+      '204eb924acc0f809c0df5fc6e29e5ce169ac6b8f25f769a15170706aa665d70d'
     );
     // the Radar reads the P8-01 indexes
     expect(model('ContentStudioSourceDiscovery')).toMatch(
@@ -645,7 +647,8 @@ describe('P8-02 News Radar', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(150);
+      // activation flow 01: one more, reading a setup draft back
+    ).toHaveLength(151);
     expect(controller.match(/@Get\('\/discoveries'\)/g)).toHaveLength(1);
     expect(controller).not.toMatch(
       /@(Post|Put|Patch|Delete)\('\/discoveries|\/research|\/radar/
@@ -717,8 +720,9 @@ describe('P8-03 research into content', () => {
     // (R1Q-3)
     // P8-R1C adds the retention execution, its items and lock, nothing this
     // forbids (R1C-10)
+    // activation flow 01 adds the AI operation's kept result (ai-operation S10/S11)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '315c1a0bbf5bf3b612d9e48e134c3424efec6b33ef9dc96a79c08a9fb946c216'
+      '204eb924acc0f809c0df5fc6e29e5ce169ac6b8f25f769a15170706aa665d70d'
     );
     expect(schema).not.toMatch(
       /model \w*(Research|Selection|Basket|Collection|Radar)\w* \{/
@@ -787,7 +791,8 @@ describe('P8-03 research into content', () => {
       // P8-04B1: one more, the organization's page changes
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(150);
+      // activation flow 01: one more, reading a setup draft back
+    ).toHaveLength(151);
     // the routes of sources: the P8-02 ones, nothing to resolve or keep a
     // selection with
     expect(
@@ -986,8 +991,9 @@ describe('P8-04A source change detection', () => {
     // (R1Q-3)
     // P8-R1C adds the retention execution, its items and lock, nothing this
     // forbids (R1C-10)
+    // activation flow 01 adds the AI operation's kept result (ai-operation S10/S11)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '315c1a0bbf5bf3b612d9e48e134c3424efec6b33ef9dc96a79c08a9fb946c216'
+      '204eb924acc0f809c0df5fc6e29e5ce169ac6b8f25f769a15170706aa665d70d'
     );
     expect(schema).not.toMatch(/model \w*(Change|Diff|Comparison)\w* \{/);
     expect(schema).not.toMatch(
@@ -1001,7 +1007,8 @@ describe('P8-04A source change detection', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(150);
+      // activation flow 01: one more, reading a setup draft back
+    ).toHaveLength(151);
     expect(controller.match(/\/changes'/g)).toEqual(["/changes'"]);
     const handler = between(
       controller,
@@ -1534,7 +1541,8 @@ describe('P8-04B1 organization page changes', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(150);
+      // activation flow 01: one more, reading a setup draft back
+    ).toHaveLength(151);
     expect(controller.match(/'\/source-changes'/g)).toEqual([
       "'/source-changes'",
     ]);
@@ -1744,8 +1752,9 @@ describe('P8-04B2 News Radar change signals', () => {
     // (R1Q-3)
     // P8-R1C adds the retention execution, its items and lock, nothing this
     // forbids (R1C-10)
+    // activation flow 01 adds the AI operation's kept result (ai-operation S10/S11)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '315c1a0bbf5bf3b612d9e48e134c3424efec6b33ef9dc96a79c08a9fb946c216'
+      '204eb924acc0f809c0df5fc6e29e5ce169ac6b8f25f769a15170706aa665d70d'
     );
     expect(model('ContentStudioSourceDiscovery')).not.toMatch(/change/i);
     expect(schema).not.toMatch(/changedSinceFound/);
@@ -1759,7 +1768,8 @@ describe('P8-04B2 News Radar change signals', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(150);
+      // activation flow 01: one more, reading a setup draft back
+    ).toHaveLength(151);
     expect(controller).not.toMatch(/changedSinceFound|radar-changes|\/changed/);
   });
 
@@ -1919,8 +1929,9 @@ describe('P8-C1 organization safety caps', () => {
     // (R1Q-3)
     // P8-R1C adds the retention execution, its items and lock, nothing this
     // forbids (R1C-10)
+    // activation flow 01 adds the AI operation's kept result (ai-operation S10/S11)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '315c1a0bbf5bf3b612d9e48e134c3424efec6b33ef9dc96a79c08a9fb946c216'
+      '204eb924acc0f809c0df5fc6e29e5ce169ac6b8f25f769a15170706aa665d70d'
     );
     // the feed pause came with P8-C3 (P8C3-1), the schedule with P8-C4
     // (P8C4-1); nothing else here
@@ -1938,7 +1949,8 @@ describe('P8-C1 organization safety caps', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(150);
+      // activation flow 01: one more, reading a setup draft back
+    ).toHaveLength(151);
     expect(controller).not.toMatch(
       /\/limits|\/usage|\/quota|activeFeedsMax|urlSourcesMax|manualRefreshCooldownMs|contentStudioSourceLimits/
     );
@@ -2305,8 +2317,9 @@ describe('P8-C2 global feed-capture concurrency', () => {
     // (R1Q-3)
     // P8-R1C adds the retention execution, its items and lock, nothing this
     // forbids (R1C-10)
+    // activation flow 01 adds the AI operation's kept result (ai-operation S10/S11)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '315c1a0bbf5bf3b612d9e48e134c3424efec6b33ef9dc96a79c08a9fb946c216'
+      '204eb924acc0f809c0df5fc6e29e5ce169ac6b8f25f769a15170706aa665d70d'
     );
     // the feed pause came with P8-C3 (P8C3-1), the schedule with P8-C4
     // (P8C4-1); nothing else here
@@ -2321,7 +2334,8 @@ describe('P8-C2 global feed-capture concurrency', () => {
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
       // P8-C3: two more, pause and resume a feed
       // P8-C4: one more, a feed's interval
-    ).toHaveLength(150);
+      // activation flow 01: one more, reading a setup draft back
+    ).toHaveLength(151);
     expect(controller).not.toMatch(
       /CAPTURE_CONCURRENCY|capture-queue|TaskQueue/
     );
@@ -2508,8 +2522,9 @@ describe('P8-C3 feed pause', () => {
     // (R1Q-3)
     // P8-R1C adds the retention execution, its items and lock, nothing this
     // forbids (R1C-10)
+    // activation flow 01 adds the AI operation's kept result (ai-operation S10/S11)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '315c1a0bbf5bf3b612d9e48e134c3424efec6b33ef9dc96a79c08a9fb946c216'
+      '204eb924acc0f809c0df5fc6e29e5ce169ac6b8f25f769a15170706aa665d70d'
     );
     const source = fields('ContentStudioSource');
     expect(source.filter((f) => /paus/i.test(f))).toEqual([
@@ -3096,7 +3111,8 @@ describe('P8-C4 feed schedule and retries', () => {
     const controller = c4('controller');
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(150);
+      // activation flow 01: one more, reading a setup draft back
+    ).toHaveLength(151);
     const block = between(
       controller,
       "@Post('/sources/:id/interval')",
@@ -3272,7 +3288,8 @@ describe('P8-O1 feed capture history', () => {
     const controller = o1('controller');
     expect(
       controller.match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(150);
+      // activation flow 01: one more, reading a setup draft back
+    ).toHaveLength(151);
     expect(
       Array.from(
         controller.matchAll(/@(Get|Post|Put|Patch|Delete)\('([^']*)'\)/g),
@@ -3737,7 +3754,8 @@ describe('P8-G1 conditional source fetching', () => {
     ]);
     expect(
       g1('controller').match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(150);
+      // activation flow 01: one more, reading a setup draft back
+    ).toHaveLength(151);
   });
 
   it('P8G1-14 still one record per feed capture, written by the capture, whatever the answer', () => {
@@ -3869,6 +3887,10 @@ describe('P8-R1A source version protection', () => {
       'ContentPackage.draft': 'enumerated',
       'ContentPackageRevision.content': 'enumerated',
       'ContentStudioAIOperation.context': 'enumerated',
+      // activation flow 01: the checked setup draft or first-post research
+      // and draft, kept for the client to read back. It names no source
+      // version: research sources are web addresses, never versions
+      'ContentStudioAIOperation.result': 'no-reference',
       // the version itself
       'ContentStudioSourceVersion.content': 'no-reference',
       // profiles, policy, brand and design: no source, ever
@@ -4276,7 +4298,8 @@ describe('P8-R1A source version protection', () => {
     expect(r1('controller')).not.toMatch(/retention|eligib|protection/i);
     expect(
       r1('controller').match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(150);
+      // activation flow 01: one more, reading a setup draft back
+    ).toHaveLength(151);
     // and no schema for it: no table, flag or index of retention (P8-R1Q:
     // but the quarantine model, which protects nothing, R1Q-3)
     expect(beforeQuarantine(schema)).not.toMatch(
@@ -4854,7 +4877,8 @@ describe('P8-R1B retention dry run', () => {
     );
     expect(
       r1b('controller').match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(150);
+      // activation flow 01: one more, reading a setup draft back
+    ).toHaveLength(151);
     expect(
       PRODUCTION.filter(
         (file) =>
@@ -4875,8 +4899,9 @@ describe('P8-R1B retention dry run', () => {
     expect(beforeQuarantine(schema)).not.toMatch(
       /retention|Retention|quarantine|Quarantine|pendingAt|PendingAt|eligib/
     );
+    // activation flow 01 adds the AI operation's kept result (ai-operation S10/S11)
     expect(createHash('sha256').update(schema).digest('hex')).toBe(
-      '315c1a0bbf5bf3b612d9e48e134c3424efec6b33ef9dc96a79c08a9fb946c216'
+      '204eb924acc0f809c0df5fc6e29e5ce169ac6b8f25f769a15170706aa665d70d'
     );
   });
 
@@ -5118,9 +5143,16 @@ describe('P8-R1Q retention quarantine', () => {
   });
 
   it('R1Q-6 no AI operation, and so no provider call, with a held version: the operation is created first and refused whole', () => {
-    const run = between(r1q('execution'), '  private async run(', '\n  }\n\n');
+    // activation flow 01: start creates the operation and only then begins
+    // the provider attempt, which may outlive the request
+    const run =
+      between(r1q('execution'), '  private async start(', '\n  }\n\n') +
+      between(r1q('execution'), '  private async attempt(', '\n  }\n\n');
     expect(run.indexOf('createRunningOperation(')).toBeGreaterThan(-1);
     expect(run.indexOf('createRunningOperation(')).toBeLessThan(
+      run.indexOf('this.attempt(')
+    );
+    expect(run.indexOf('this.attempt(')).toBeLessThan(
       run.indexOf('generateText(')
     );
     expect(run).toMatch(
@@ -5203,7 +5235,8 @@ describe('P8-R1Q retention quarantine', () => {
     expect(r1q('controller')).not.toMatch(/quarantine|pending|retention/i);
     expect(
       r1q('controller').match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(150);
+      // activation flow 01: one more, reading a setup draft back
+    ).toHaveLength(151);
   });
 
   it('R1Q-11 no command but the read-only dry run: no quarantine, release or execution command', () => {
@@ -5428,7 +5461,8 @@ describe('P8-R1C retention execution', () => {
     expect(r1c('controller')).not.toMatch(/retention|prepare|quarantine/i);
     expect(
       r1c('controller').match(/^\s*@(Get|Post|Put|Patch|Delete)\(/gm)
-    ).toHaveLength(150);
+      // activation flow 01: one more, reading a setup draft back
+    ).toHaveLength(151);
     expect(command.match(/command: '([\w:-]+)'/g)).toEqual([
       "command: 'content-studio:retention-prepare'",
       "command: 'content-studio:retention-execute'",
@@ -5798,12 +5832,13 @@ describe('P8-R1C retention execution', () => {
     expect(schema).not.toMatch(/onDelete: Cascade/);
     // additive: without its three models and three relations, the schema
     // is the P8-R1Q schema (a753d9a6...) but for the alignment of the
-    // Organization fields: every other model and field as it was
+    // Organization fields: every other model and field as it was.
+    // Activation flow 01 adds the AI operation's kept result (S10/S11)
     expect(
       createHash('sha256')
         .update(beforeExecution(schema).replace(/\s+/g, ' '))
         .digest('hex')
-    ).toBe('4f4ff8d2c6f8234db224dcc9913efda055a9f842060f5a34183bcd4d120aa550');
+    ).toBe('854be4355b3e24c8ed7ae5026ea5512a3947b0ecae826c963ce34730b7c9fc7f');
     expect(
       model('Organization').match(
         /contentStudioRetentionExecution(s|Items|Lock)\s+ContentStudioSourceVersionRetentionExecution\w*(\[\]|\?)/g

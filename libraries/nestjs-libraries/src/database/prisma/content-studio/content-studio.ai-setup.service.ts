@@ -1,10 +1,15 @@
 import { HttpException, Injectable, Logger } from '@nestjs/common';
 import { ContentStudioAIConnectionRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.repository';
+import { ContentStudioAIOperationRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-operation.repository';
 import {
   assertComplete,
+  contentStudioAIOperationState,
   fromAIError,
 } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
-import { ContentStudioAIExecutionService } from '@gitroom/nestjs-libraries/content-studio/ai/ai.execution.service';
+import {
+  ContentStudioAIExecutionService,
+  ContentStudioAIStartedOperation,
+} from '@gitroom/nestjs-libraries/content-studio/ai/ai.execution.service';
 import {
   getContentStudioAIDefaultModel,
   getContentStudioAIModel,
@@ -44,6 +49,8 @@ const providerUnsupported = () =>
   fail(400, 'CS_AI_PROVIDER_UNSUPPORTED', 'This AI provider is not supported.');
 const contextTooLarge = () =>
   fail(400, 'CS_AI_CONTEXT_TOO_LARGE', 'The selected AI context is too large.');
+const notFound = () =>
+  fail(404, 'CS_NOT_FOUND', 'The Content Studio resource was not found');
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const UNPAIRED_SURROGATE =
@@ -83,27 +90,35 @@ export interface ContentStudioAISetupRequest {
 
 // The guided setup's AI draft: one structured suggestion for the
 // organization's brand description, writing profile, audiences, expertise
-// and editorial policy, from a few facts the user typed. It is returned for
-// the user to review and edit and is never saved here: nothing of a profile,
-// the policy or the Brand Kit is read or written, and saving goes through
-// their own routes afterwards. The provider is reached only through
+// and editorial policy, from a few facts the user typed. Starting it returns
+// the operation at once; the draft is made on the server whatever becomes of
+// that request (a phone that puts the browser away drops it) and kept on the
+// operation, where the assistant reads it back, however often and from
+// wherever, until it is there. It is never saved anywhere else: nothing of a
+// profile, the policy or the Brand Kit is read or written, and saving goes
+// through their own routes afterwards. The provider is reached only through
 // ContentStudioAIExecutionService, with the organization connection the user
 // chose and that connection's own model: no fallback, no environment key.
-// The operation is recorded for the organization, with hashes only
+// The operation is recorded for the organization; what the user typed is
+// never stored, only the checked draft
 @Injectable()
 export class ContentStudioAISetupService {
   private _logger = new Logger(ContentStudioAISetupService.name);
 
   constructor(
     private _contentStudioAIConnectionRepository: ContentStudioAIConnectionRepository,
-    private _contentStudioAIExecutionService: ContentStudioAIExecutionService
+    private _contentStudioAIExecutionService: ContentStudioAIExecutionService,
+    private _contentStudioAIOperationRepository: ContentStudioAIOperationRepository
   ) {}
 
-  async proposeSetup(input: {
+  // Checks the request and starts the operation. What can be refused without
+  // the provider is refused here, as before; done settles when the draft is
+  // kept or the failure recorded, and never rejects
+  async startSetup(input: {
     organizationId: string;
     userId: string;
     request: ContentStudioAISetupRequest;
-  }) {
+  }): Promise<{ operationId: string; done: Promise<void> }> {
     const connectionId = input.request?.connectionId;
     if (typeof connectionId !== 'string' || !UUID.test(connectionId)) {
       throw invalidRequest();
@@ -139,11 +154,10 @@ export class ContentStudioAISetupService {
       throw contextTooLarge();
     }
 
-    let proposal: ContentStudioAISetupProposalV1 | null = null;
-    let operationId: string;
+    let started: ContentStudioAIStartedOperation;
     try {
-      ({ operationId } =
-        await this._contentStudioAIExecutionService.executeForOrganization(
+      started =
+        await this._contentStudioAIExecutionService.startForOrganization(
           {
             organizationId: input.organizationId,
             userId: input.userId,
@@ -170,48 +184,75 @@ export class ContentStudioAISetupService {
           {
             validateResult: (result) => {
               assertComplete(result);
-              proposal = parseContentStudioAISetupProposal(
+              return parseContentStudioAISetupProposal(
                 result.text,
                 setup.language
               );
             },
+            keepResult: true,
           }
-        ));
-    } catch (err) {
-      // what is needed to tell why a real call failed, and nothing else: no
-      // key, prompt, company information or provider message
-      if (err instanceof ContentStudioAIProviderError) {
-        this._logger.warn(
-          `setup proposal failed: provider=${
-            connection.provider
-          } model=${model} code=${err.code} httpStatus=${
-            err.httpStatus ?? '-'
-          } providerRequestId=${err.providerRequestId ?? '-'}`
         );
-        if (CONNECTION_FAILURES.includes(err.code)) {
-          await this._contentStudioAIConnectionRepository
-            .setValidationResult({
-              organizationId: input.organizationId,
-              connectionId,
-              validatedAt: new Date(),
-              status: 'invalid',
-              code: err.code,
-            })
-            // the answer to the user is the provider failure either way
-            .catch(() => undefined);
-        }
-      }
+    } catch (err) {
       throw fromAIError(err);
     }
 
+    const done = started.done.then(
+      () => undefined,
+      async (err) => {
+        // what is needed to tell why a real call failed, and nothing else:
+        // no key, prompt, company information or provider message
+        if (err instanceof ContentStudioAIProviderError) {
+          this._logger.warn(
+            `setup proposal failed: provider=${
+              connection.provider
+            } model=${model} code=${err.code} httpStatus=${
+              err.httpStatus ?? '-'
+            } providerRequestId=${err.providerRequestId ?? '-'}`
+          );
+          if (CONNECTION_FAILURES.includes(err.code)) {
+            await this._contentStudioAIConnectionRepository
+              .setValidationResult({
+                organizationId: input.organizationId,
+                connectionId,
+                validatedAt: new Date(),
+                status: 'invalid',
+                code: err.code,
+              })
+              // the answer to the user is the provider failure either way
+              .catch(() => undefined);
+          }
+        } else {
+          this._logger.warn('setup proposal failed: not recorded');
+        }
+      }
+    );
+    return { operationId: started.operationId, done };
+  }
+
+  // A setup draft of the organization as it stands: running, the failure as
+  // the start request would have answered it, or the checked draft
+  async getSetupProposal(organizationId: string, operationId: string) {
+    if (typeof operationId !== 'string' || !UUID.test(operationId)) {
+      throw notFound();
+    }
+    const operation =
+      await this._contentStudioAIOperationRepository.getOperationStateForOrganization(
+        organizationId,
+        operationId
+      );
+    if (!operation || operation.kind !== 'setup_proposal') {
+      throw notFound();
+    }
+    const state = contentStudioAIOperationState(operation);
     return {
       operationId,
-      proposal: proposal as unknown as ContentStudioAISetupProposalV1,
-      ai: {
-        provider: connection.provider,
-        model,
-        promptVersion: prompt.promptVersion,
-      },
+      ...state,
+      ...(state.status === 'succeeded'
+        ? {
+            proposal:
+              operation.result as unknown as ContentStudioAISetupProposalV1,
+          }
+        : {}),
     };
   }
 

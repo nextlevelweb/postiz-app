@@ -212,6 +212,45 @@ export interface ContentStudioSetupProposal {
   editorialPolicy: { content: EditorialPolicyContent };
 }
 
+// A started AI draft, as the server keeps it: the draft is made there even
+// when the browser that asked for it is put away or reloaded
+export type ContentStudioSetupProposalState =
+  | { operationId: string; status: 'running' }
+  | { operationId: string; status: 'failed'; code: string }
+  | {
+      operationId: string;
+      status: 'succeeded';
+      proposal: ContentStudioSetupProposal;
+    };
+
+// How often a running AI operation is asked about, while the page is shown
+export const AI_OPERATION_POLL_MS = 2500;
+
+// Waits until the next look at a running operation: the interval, or at
+// once when the page is shown again or the network comes back, so a phone
+// that returns sees the result without waiting
+export const waitForNextAIOperationPoll = (ms = AI_OPERATION_POLL_MS) =>
+  new Promise<void>((resolve) => {
+    if (typeof window === 'undefined') {
+      setTimeout(resolve, ms);
+      return;
+    }
+    const done = () => {
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('online', done);
+      resolve();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        done();
+      }
+    };
+    const timer = setTimeout(done, ms);
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('online', done);
+  });
+
 export interface ContentStudioSetupCompany {
   companyName: string;
   tagline: string;
@@ -257,16 +296,13 @@ export const useContentStudioSetupActions = () => {
             )
           : null;
       },
-      // one AI request: never retried here, the user decides to try again
-      proposeSetup: (
+      // Starts one AI draft on the server and answers with its operation at
+      // once: never retried here, the user decides to try again
+      startSetupProposal: (
         connectionId: string,
         company: ContentStudioSetupCompany
       ) =>
-        request<{
-          operationId: string;
-          proposal: ContentStudioSetupProposal;
-          ai: { provider: string; model: string; promptVersion: string };
-        }>(fetch, AI_SETUP_PROPOSAL_PATH, {
+        request<{ operationId: string }>(fetch, AI_SETUP_PROPOSAL_PATH, {
           method: 'POST',
           body: JSON.stringify({
             connectionId,
@@ -279,6 +315,12 @@ export const useContentStudioSetupActions = () => {
             language: company.language.trim() || null,
           }),
         }),
+      // where a started draft stands; the draft itself once it is there
+      getSetupProposal: (operationId: string) =>
+        request<ContentStudioSetupProposalState>(
+          fetch,
+          `${AI_SETUP_PROPOSAL_PATH}/${encodeURIComponent(operationId)}`
+        ),
       // the Brand Kit identity over the revision it was read at; colors,
       // typography and visual direction are kept as they are
       saveBrandKit: async <T>(baseRevisionNumber: number, content: T) => {

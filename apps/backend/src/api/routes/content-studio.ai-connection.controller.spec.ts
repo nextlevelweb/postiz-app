@@ -225,6 +225,8 @@ describe('ContentStudioController AI connection routes', () => {
       'GET /ai/connections',
       'GET /ai/connections/:id',
       'GET /ai/providers',
+      // activation flow 01: the setup draft read back by its operation
+      'GET /ai/setup/proposal/:id',
       'PATCH /ai/connections/:id',
       'POST /ai/connections',
       'POST /ai/connections/:id/archive',

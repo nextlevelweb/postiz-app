@@ -542,14 +542,16 @@ export class ContentStudioController {
   // from what the user typed. Any member may ask; nothing is saved here: the
   // reviewed draft is saved through the routes of each profile. 200, since
   // nothing is created for the user to keep
+  // Starts the setup draft and answers at once with its operation: the draft
+  // is made on the server even when this request is gone, and read back below
   @Post('/ai/setup/proposal')
-  @HttpCode(200)
-  proposeAISetup(
+  @HttpCode(202)
+  async proposeAISetup(
     @GetOrgFromRequest() org: Organization,
     @GetUserFromRequest() user: User,
     @Body() body: ContentStudioAISetupProposalDto
   ) {
-    return this._contentStudioAISetupService.proposeSetup({
+    const { operationId } = await this._contentStudioAISetupService.startSetup({
       organizationId: org.id,
       userId: user.id,
       request: {
@@ -563,6 +565,15 @@ export class ContentStudioController {
         language: body.language,
       },
     });
+    return { operationId, status: 'running' };
+  }
+
+  @Get('/ai/setup/proposal/:id')
+  getAISetupProposal(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._contentStudioAISetupService.getSetupProposal(org.id, id);
   }
 
   @Get('/ai/connections/:id')

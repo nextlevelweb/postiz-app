@@ -16,6 +16,7 @@ import {
   ContentStudioAIResolutionError,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.error';
 import {
+  AI_REQUEST_TIMEOUT_MAX_MS,
   ContentStudioAIProviderErrorCode,
   ContentStudioAITextResult,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.types';
@@ -285,6 +286,34 @@ export const fromAIError = (err: unknown) => {
     return fail(status, code, msg);
   }
   return err;
+};
+
+// An operation still running this long after it started has lost its
+// provider call (the server stopped during it): no call runs longer
+export const AI_OPERATION_INTERRUPTED_AFTER_MS =
+  AI_REQUEST_TIMEOUT_MAX_MS + 60_000;
+
+// What a client that started an operation, and may have lost its request,
+// is told about it: running, succeeded, or failed with the same CS_ code the
+// request would have answered. A running one that cannot still be running
+// failed as interrupted
+export const contentStudioAIOperationState = (
+  operation: { status: string; errorCode: string | null; startedAt: Date },
+  now = Date.now()
+): { status: 'running' | 'succeeded' } | { status: 'failed'; code: string } => {
+  if (operation.status === 'succeeded') {
+    return { status: 'succeeded' };
+  }
+  if (operation.status === 'failed') {
+    const failure =
+      PROVIDER_FAILURES[
+        operation.errorCode as ContentStudioAIProviderErrorCode
+      ] ?? PROVIDER_FAILURES.PROVIDER_UNAVAILABLE;
+    return { status: 'failed', code: failure[1] };
+  }
+  return now - operation.startedAt.getTime() > AI_OPERATION_INTERRUPTED_AFTER_MS
+    ? { status: 'failed', code: 'CS_AI_OPERATION_INTERRUPTED' }
+    : { status: 'running' };
 };
 
 // Package, connection, profile, revision and source ids are Prisma uuid()

@@ -8,6 +8,7 @@ import {
   SETUP_TIMEOUT_MS,
 } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-setup.service';
 import { ContentStudioAIExecutionService } from '@gitroom/nestjs-libraries/content-studio/ai/ai.execution.service';
+import { AI_OPERATION_INTERRUPTED_AFTER_MS } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
 import { ContentStudioAIProviderResolver } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.resolver';
 import {
   ContentStudioAIProviderError,
@@ -124,10 +125,52 @@ const build = (
       }
     ),
   };
+  // the operations as the repository keeps them: created running, completed
+  // once, read back by the organization
+  const stored = new Map<string, Record<string, any>>();
   const operations = {
-    createRunningOperation: jest.fn(async () => ({ id: 'op' })),
-    completeSucceededWithUsage: jest.fn(async () => ({ completed: true })),
-    completeFailedWithUsage: jest.fn(async () => ({ completed: true })),
+    createRunningOperation: jest.fn(async (input: Record<string, any>) => {
+      stored.set(input.id, { ...input, status: 'running', result: null });
+      return { id: input.id };
+    }),
+    completeSucceededWithUsage: jest.fn(async (input: Record<string, any>) => {
+      const op = stored.get(input.operationId);
+      if (!op || op.status !== 'running') {
+        return { completed: false };
+      }
+      Object.assign(op, {
+        status: 'succeeded',
+        result: input.result ?? null,
+        errorCode: null,
+      });
+      return { completed: true };
+    }),
+    completeFailedWithUsage: jest.fn(async (input: Record<string, any>) => {
+      const op = stored.get(input.operationId);
+      if (!op || op.status !== 'running') {
+        return { completed: false };
+      }
+      Object.assign(op, { status: 'failed', errorCode: input.errorCode });
+      return { completed: true };
+    }),
+    getOperationStateForOrganization: jest.fn(
+      async (organizationId: string, id: string) => {
+        const op = stored.get(id);
+        return op && op.organizationId === organizationId
+          ? {
+              id,
+              kind: op.kind,
+              status: op.status,
+              packageId: null,
+              baseDraftVersion: null,
+              errorCode: op.errorCode ?? null,
+              result: op.result,
+              startedAt: op.startedAt,
+              completedAt: null,
+            }
+          : null;
+      }
+    ),
   };
   // a setup operation never reads a package
   const packages = { getPackageForOrganization: jest.fn() };
@@ -138,9 +181,41 @@ const build = (
   );
   const service = new ContentStudioAISetupService(
     connections as unknown as ContentStudioAIConnectionRepository,
-    execution
+    execution,
+    operations as unknown as ContentStudioAIOperationRepository
   );
-  return { service, connections, adapter, resolver, operations, packages };
+  return {
+    service,
+    connections,
+    adapter,
+    resolver,
+    operations,
+    packages,
+    stored,
+  };
+};
+
+type Ctx = ReturnType<typeof build>;
+
+// What the assistant does: start the draft, then read it back once it is
+// done. A failure reads back as the code the request used to answer, thrown
+// like that answer
+const propose = async (
+  ctx: Ctx,
+  input: Parameters<Ctx['service']['startSetup']>[0]
+) => {
+  const { operationId, done } = await ctx.service.startSetup(input);
+  await done;
+  const state = await ctx.service.getSetupProposal(
+    input.organizationId,
+    operationId
+  );
+  if (state.status === 'failed') {
+    throw new HttpException({ code: state.code, msg: 'failed' }, 502);
+  }
+  return state as typeof state & {
+    proposal: NonNullable<(typeof state & { proposal?: any })['proposal']>;
+  };
 };
 
 const request = (patch: Record<string, unknown> = {}) => ({
@@ -165,21 +240,16 @@ const failure = async (run: () => Promise<unknown>) => {
 const body = (err: HttpException) =>
   err.getResponse() as { code: string; msg: string };
 
-describe('ContentStudioAISetupService.proposeSetup', () => {
+describe('ContentStudioAISetupService: the setup draft', () => {
   it('returns a validated draft and records one organization operation, with hashes only', async () => {
     const ctx = build();
-    const result = await ctx.service.proposeSetup({
+    const result = await propose(ctx, {
       organizationId: ORG,
       userId: USER,
       request: request(),
     });
     expect(result.proposal.writing.content.perspective).toBe('first_plural');
     expect(result.proposal.audiences[0].content.locale).toBe('nl');
-    expect(result.ai).toEqual({
-      provider: 'openai',
-      model: 'gpt-6.1-sol',
-      promptVersion: CONTENT_STUDIO_AI_SETUP_PROMPT_VERSION,
-    });
 
     expect(ctx.operations.createRunningOperation).toHaveBeenCalledTimes(1);
     const [[created]] = ctx.operations.createRunningOperation.mock
@@ -198,7 +268,8 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
       context: { v: 1 },
     });
     expect(created.requestHash).toMatch(/^[0-9a-f]{64}$/);
-    // nothing the user typed or the AI answered is stored, and no key
+    // nothing the user typed is stored, and no key: only the checked draft
+    // is kept with the operation, for the assistant to read back
     const stored = inspect(
       [
         ctx.operations.createRunningOperation.mock.calls,
@@ -209,16 +280,19 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
     expect(
       JSON.stringify(ctx.operations.createRunningOperation.mock.calls)
     ).not.toContain('COMPANY_PRIVATE_SETUP');
-    expect(
-      JSON.stringify(ctx.operations.completeSucceededWithUsage.mock.calls)
-    ).not.toContain('Studio voice');
+    const [[completed]] = ctx.operations.completeSucceededWithUsage.mock
+      .calls as unknown as [[Record<string, unknown>]];
+    expect(completed.result).toEqual(result.proposal);
+    expect(JSON.stringify(completed.result)).not.toContain(
+      'COMPANY_PRIVATE_SETUP'
+    );
     expect(stored).not.toContain(KEY);
     expect(ctx.packages.getPackageForOrganization).not.toHaveBeenCalled();
   });
 
   it('asks a model with structured output for the JSON schema, others for text', async () => {
     const openai = build();
-    await openai.service.proposeSetup({
+    await propose(openai, {
       organizationId: ORG,
       userId: USER,
       request: request(),
@@ -230,7 +304,7 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
     });
 
     const anthropic = build({ provider: 'anthropic' });
-    await anthropic.service.proposeSetup({
+    await propose(anthropic, {
       organizationId: ORG,
       userId: USER,
       request: request(),
@@ -242,7 +316,7 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
 
   it("uses the connection's own model, never one from the request", async () => {
     const ctx = build({ defaultModel: 'gpt-6-luna' });
-    await ctx.service.proposeSetup({
+    await propose(ctx, {
       organizationId: ORG,
       userId: USER,
       request: { ...request(), model: 'gpt-6.1-sol' } as never,
@@ -253,7 +327,7 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
   it("refuses another organization's or a missing connection before anything is recorded", async () => {
     const ctx = build();
     const err = await failure(() =>
-      ctx.service.proposeSetup({
+      propose(ctx, {
         organizationId: OTHER_ORG,
         userId: USER,
         request: request(),
@@ -277,7 +351,7 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
   ])('refuses %s without asking the provider', async (_label, patch) => {
     const ctx = build();
     const err = await failure(() =>
-      ctx.service.proposeSetup({
+      propose(ctx, {
         organizationId: ORG,
         userId: USER,
         request: request(patch),
@@ -291,7 +365,7 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
   it('defaults the language to English and never fetches the website', async () => {
     const ctx = build();
     const fetchSpy = jest.spyOn(global, 'fetch' as never);
-    await ctx.service.proposeSetup({
+    await propose(ctx, {
       organizationId: ORG,
       userId: USER,
       request: request({ language: null }),
@@ -309,7 +383,7 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
       providerResult('Sure! Here is a draft: SECRET_DRAFT_TEXT')
     );
     const err = await failure(() =>
-      ctx.service.proposeSetup({
+      propose(ctx, {
         organizationId: ORG,
         userId: USER,
         request: request(),
@@ -327,7 +401,7 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
       new ContentStudioAIProviderError('AUTH_FAILED')
     );
     const err = await failure(() =>
-      ctx.service.proposeSetup({
+      propose(ctx, {
         organizationId: ORG,
         userId: USER,
         request: request(),
@@ -350,7 +424,7 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
       })
     );
     const err = await failure(() =>
-      ctx.service.proposeSetup({
+      propose(ctx, {
         organizationId: ORG,
         userId: USER,
         request: request(),
@@ -380,7 +454,7 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
         new ContentStudioAIProviderError(code, { httpStatus: 400 })
       );
       const err = await failure(() =>
-        ctx.service.proposeSetup({
+        propose(ctx, {
           organizationId: ORG,
           userId: USER,
           request: request(),
@@ -407,7 +481,7 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
         new ContentStudioAIProviderError(code)
       );
       await failure(() =>
-        ctx.service.proposeSetup({
+        propose(ctx, {
           organizationId: ORG,
           userId: USER,
           request: request(),
@@ -426,7 +500,7 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
       new ContentStudioAIProviderError('QUOTA_EXCEEDED')
     );
     const err = await failure(() =>
-      ctx.service.proposeSetup({
+      propose(ctx, {
         organizationId: ORG,
         userId: USER,
         request: request(),
@@ -437,7 +511,7 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
 
   it('SR3 gives the AI the tagline the user typed, as company information', async () => {
     const ctx = build();
-    await ctx.service.proposeSetup({
+    await propose(ctx, {
       organizationId: ORG,
       userId: USER,
       request: request({
@@ -464,7 +538,7 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
     expect(CONTENT_STUDIO_AI_SETUP_PROMPT_VERSION).toBe('cs-setup-v3');
 
     const without = build();
-    await without.service.proposeSetup({
+    await propose(without, {
       organizationId: ORG,
       userId: USER,
       request: request(),
@@ -473,7 +547,7 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
       '"tagline": null'
     );
     const err = await failure(() =>
-      without.service.proposeSetup({
+      propose(without, {
         organizationId: ORG,
         userId: USER,
         request: request({ tagline: 'x'.repeat(301) }),
@@ -488,13 +562,13 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
       new ContentStudioAIProviderError('PROVIDER_UNAVAILABLE')
     );
     await failure(() =>
-      ctx.service.proposeSetup({
+      propose(ctx, {
         organizationId: ORG,
         userId: USER,
         request: request(),
       })
     );
-    const second = await ctx.service.proposeSetup({
+    const second = await propose(ctx, {
       organizationId: ORG,
       userId: USER,
       request: request(),
@@ -508,7 +582,7 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
 
   it('gives the provider longer than a writing call: a whole profile set is a long answer', async () => {
     const ctx = build();
-    await ctx.service.proposeSetup({
+    await propose(ctx, {
       organizationId: ORG,
       userId: USER,
       request: request(),
@@ -527,7 +601,7 @@ describe('ContentStudioAISetupService.proposeSetup', () => {
       finishReason: 'length',
     });
     const err = await failure(() =>
-      ctx.service.proposeSetup({
+      propose(ctx, {
         organizationId: ORG,
         userId: USER,
         request: request(),
@@ -590,5 +664,143 @@ describe('ContentStudioAIExecutionService.executeForOrganization', () => {
     ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
     expect(ctx.operations.createRunningOperation).not.toHaveBeenCalled();
     expect(ctx.resolver.resolve).not.toHaveBeenCalled();
+  });
+});
+
+// Activation flow 01: the real iPhone test lost two finished drafts. The
+// server made both (the operations succeeded), but the answer lived only in
+// the response of one long request, which Safari dropped when the browser
+// was put away. The draft is now kept with its operation and read back
+describe('ContentStudioAISetupService: a draft that outlives its request', () => {
+  // a provider that answers only when the test says so
+  const held = (ctx: Ctx) => {
+    let answer!: (value: ReturnType<typeof providerResult>) => void;
+    let refuse!: (err: unknown) => void;
+    ctx.adapter.generateText.mockImplementationOnce(
+      () =>
+        new Promise((resolve, reject) => {
+          answer = resolve;
+          refuse = reject;
+        })
+    );
+    return {
+      answer: () => answer(providerResult(JSON.stringify(validAnswer()))),
+      refuse: (err: unknown) => refuse(err),
+    };
+  };
+  const start = (ctx: Ctx) =>
+    ctx.service.startSetup({
+      organizationId: ORG,
+      userId: USER,
+      request: request(),
+    });
+
+  it('BG1/BG3 starting answers at once with the running operation', async () => {
+    const ctx = build();
+    const provider = held(ctx);
+    const { operationId, done } = await start(ctx);
+    expect(operationId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(ctx.adapter.generateText).toHaveBeenCalledTimes(1);
+    expect(await ctx.service.getSetupProposal(ORG, operationId)).toEqual({
+      operationId,
+      status: 'running',
+    });
+    provider.answer();
+    await done;
+  });
+
+  it('BG2/BG4 the draft is made and kept when nobody waits for it, and read back later', async () => {
+    const ctx = build();
+    const provider = held(ctx);
+    // the request that started it is gone: only its operation id is known
+    const { operationId } = await start(ctx);
+    provider.answer();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    const state = await ctx.service.getSetupProposal(ORG, operationId);
+    expect(state).toMatchObject({ operationId, status: 'succeeded' });
+    expect(
+      (state as { proposal: { brand: { tagline: string } } }).proposal.brand
+        .tagline
+    ).toBe('Websites that work');
+    // read again, from anywhere: the same draft, no new provider call
+    expect(await ctx.service.getSetupProposal(ORG, operationId)).toEqual(state);
+    expect(ctx.adapter.generateText).toHaveBeenCalledTimes(1);
+  });
+
+  it('BG5 a failure reads back as the code the request would have answered, never a provider message', async () => {
+    const ctx = build();
+    const provider = held(ctx);
+    const { operationId, done } = await start(ctx);
+    provider.refuse(
+      new ContentStudioAIProviderError('RATE_LIMITED', {
+        httpStatus: 429,
+      })
+    );
+    await done;
+    expect(await ctx.service.getSetupProposal(ORG, operationId)).toEqual({
+      operationId,
+      status: 'failed',
+      code: 'CS_AI_RATE_LIMITED',
+    });
+  });
+
+  it('BG6 two drafts keep their own answers: an older one never becomes the newer one', async () => {
+    const ctx = build();
+    const first = held(ctx);
+    const older = await start(ctx);
+    const second = held(ctx);
+    const newer = await start(ctx);
+    second.refuse(new ContentStudioAIProviderError('TIMEOUT'));
+    await newer.done;
+    first.answer();
+    await older.done;
+    expect(
+      (await ctx.service.getSetupProposal(ORG, newer.operationId)).status
+    ).toBe('failed');
+    expect(
+      (await ctx.service.getSetupProposal(ORG, older.operationId)).status
+    ).toBe('succeeded');
+    // a completed operation is never completed again
+    expect(
+      await ctx.operations.completeSucceededWithUsage({
+        organizationId: ORG,
+        operationId: newer.operationId,
+        result: validAnswer(),
+      })
+    ).toEqual({ completed: false });
+  });
+
+  it('BG7 an operation left running by a stopped server reads back as interrupted', async () => {
+    const ctx = build();
+    held(ctx);
+    const { operationId } = await start(ctx);
+    ctx.stored.get(operationId)!.startedAt = new Date(
+      Date.now() - AI_OPERATION_INTERRUPTED_AFTER_MS - 1000
+    );
+    expect(await ctx.service.getSetupProposal(ORG, operationId)).toEqual({
+      operationId,
+      status: 'failed',
+      code: 'CS_AI_OPERATION_INTERRUPTED',
+    });
+  });
+
+  it('reads a setup draft of the organization only', async () => {
+    const ctx = build();
+    const { operationId, done } = await start(ctx);
+    await done;
+    for (const [org, id] of [
+      [OTHER_ORG, operationId],
+      [ORG, 'not-a-uuid'],
+      [ORG, '55555555-5555-4555-8555-555555555555'],
+    ]) {
+      const err = await failure(() => ctx.service.getSetupProposal(org, id));
+      expect(body(err).code).toBe('CS_NOT_FOUND');
+    }
+    ctx.stored.get(operationId)!.kind = 'generate_item';
+    const err = await failure(() =>
+      ctx.service.getSetupProposal(ORG, operationId)
+    );
+    expect(body(err).code).toBe('CS_NOT_FOUND');
   });
 });

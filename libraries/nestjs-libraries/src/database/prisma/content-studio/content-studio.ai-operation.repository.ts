@@ -138,13 +138,44 @@ export class ContentStudioAIOperationRepository {
     });
   }
 
+  // The state of one operation with its kept result, for the client that
+  // started it and may have lost its request
+  getOperationStateForOrganization(organizationId: string, id: string) {
+    return this._operation.model.contentStudioAIOperation.findFirst({
+      where: {
+        id,
+        organizationId,
+      },
+      select: {
+        id: true,
+        kind: true,
+        status: true,
+        packageId: true,
+        baseDraftVersion: true,
+        errorCode: true,
+        result: true,
+        startedAt: true,
+        completedAt: true,
+      },
+    });
+  }
+
+  // result: the checked answer of an operation that runs on after its
+  // request, kept for the client to read back
   completeSucceededWithUsage(
-    input: OperationCompletion & { resultHash: string }
+    input: OperationCompletion & {
+      resultHash: string;
+      // plain JSON data, as the caller's check returned it
+      result?: unknown;
+    }
   ) {
     return this.complete(input, {
       status: 'succeeded',
       resultHash: input.resultHash,
       errorCode: null,
+      ...(input.result !== undefined
+        ? { result: input.result as Prisma.InputJsonValue }
+        : {}),
     });
   }
 
@@ -165,6 +196,7 @@ export class ContentStudioAIOperationRepository {
       status: 'succeeded' | 'failed';
       resultHash: string | null;
       errorCode: string | null;
+      result?: Prisma.InputJsonValue;
     }
   ) {
     return this._transaction.model.$transaction(async (tx) => {
@@ -177,6 +209,7 @@ export class ContentStudioAIOperationRepository {
         data: {
           status: result.status,
           resultHash: result.resultHash,
+          ...(result.result !== undefined ? { result: result.result } : {}),
           errorCode: result.errorCode,
           completedAt: input.completedAt,
         },

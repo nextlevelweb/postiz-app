@@ -1135,3 +1135,61 @@ describe('ContentStudioAIExecutionService: design operations', () => {
     ).not.toBe(before);
   });
 });
+
+// Activation flow 01: an operation that runs on after its request (the
+// guided setup, the first post) is started, and keeps its checked answer
+describe('ContentStudioAIExecutionService: started operations', () => {
+  it('ES1 startForPackage returns once the operation exists; the provider attempt goes on without the caller', async () => {
+    const { service, adapter, operations } = setup();
+    let answer!: (value: ContentStudioAITextResult) => void;
+    adapter.generateText.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        })
+    );
+    const started = await service.startForPackage(input());
+    expect(started.operationId).toBe(OPERATION);
+    expect(operations.createRunningOperation).toHaveBeenCalledTimes(1);
+    expect(operations.completeSucceededWithUsage).not.toHaveBeenCalled();
+    answer(providerResult());
+    await expect(started.done).resolves.toEqual(providerResult());
+    expect(operations.completeSucceededWithUsage).toHaveBeenCalledTimes(1);
+  });
+
+  it('ES2 startForPackage checks the package before anything exists, like execute', async () => {
+    const { service, operations, contentPackage } = setup();
+    contentPackage.draftVersion = 4;
+    const err = await failure(service.startForPackage(input()));
+    expect(err).toMatchObject({ code: 'DRAFT_VERSION_CONFLICT' });
+    expect(operations.createRunningOperation).not.toHaveBeenCalled();
+  });
+
+  it('ES3 keepResult records what the check returned as the result; without it nothing is kept', async () => {
+    const { service, operations } = setup();
+    await service.execute(input(), {
+      validateResult: () => ({ checked: 'value' }),
+      keepResult: true,
+    });
+    expect(succeeded(operations).result).toEqual({ checked: 'value' });
+    const plain = setup();
+    await plain.service.execute(input(), {
+      validateResult: () => ({ checked: 'value' }),
+    });
+    expect(succeeded(plain.operations)).not.toHaveProperty('result');
+  });
+
+  it('ES4 a failed started operation rejects done and records the failure, keeping nothing', async () => {
+    const { service, adapter, operations } = setup();
+    adapter.generateText.mockRejectedValueOnce(
+      new ContentStudioAIProviderError('TIMEOUT')
+    );
+    const started = await service.startForPackage(input(), {
+      validateResult: () => ({ kept: true }),
+      keepResult: true,
+    });
+    await expect(started.done).rejects.toMatchObject({ code: 'TIMEOUT' });
+    expect(failed(operations).errorCode).toBe('TIMEOUT');
+    expect(failed(operations)).not.toHaveProperty('result');
+  });
+});

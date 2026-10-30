@@ -665,7 +665,8 @@ describe('ContentStudioController feed capture history (P8-O1)', () => {
     expect(
       Reflect.getMetadata(HTTP_CODE_METADATA, handler('listSourceCaptures'))
     ).toBeUndefined();
-    expect(allRoutes()).toHaveLength(150);
+    // activation flow 01: one more, reading a setup draft back
+    expect(allRoutes()).toHaveLength(151);
     // one history route: no other capture route, none for the organization
     expect(allRoutes().filter((r) => /captur|attempt|histor/i.test(r))).toEqual(
       ['GET /sources/:id/captures']
@@ -891,7 +892,8 @@ describe('ContentStudioController source version changes', () => {
   });
 
   it('R5 is the 144th route (145 with P8-04B1, 147 with P8-C3, 148 with P8-C4, 149 with P8-O1)', () => {
-    expect(allRoutes()).toHaveLength(150);
+    // activation flow 01: one more, reading a setup draft back
+    expect(allRoutes()).toHaveLength(151);
   });
 });
 
@@ -912,7 +914,8 @@ describe('ContentStudioController organization page changes', () => {
     expect(
       Reflect.getMetadata(HTTP_CODE_METADATA, handler('listSourceChanges'))
     ).toBeUndefined();
-    expect(allRoutes()).toHaveLength(150);
+    // activation flow 01: one more, reading a setup draft back
+    expect(allRoutes()).toHaveLength(151);
   });
 
   it('OC2 reads for the request organization with the page and window only', async () => {
@@ -1097,7 +1100,8 @@ describe('ContentStudioController feed pause', () => {
       expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler(name))).toBe(200);
     }
     // P8-C4: one more, a feed's interval; P8-O1: its capture history
-    expect(allRoutes()).toHaveLength(150);
+    // activation flow 01: one more, reading a setup draft back
+    expect(allRoutes()).toHaveLength(151);
     expect(
       allRoutes().filter((r) => /pause|resume|schedul|interval/i.test(r))
     ).toEqual([
@@ -1169,7 +1173,8 @@ describe('ContentStudioController feed interval (P8-C4)', () => {
     expect(
       Reflect.getMetadata(HTTP_CODE_METADATA, handler('setSourceInterval'))
     ).toBe(200);
-    expect(allRoutes()).toHaveLength(150);
+    // activation flow 01: one more, reading a setup draft back
+    expect(allRoutes()).toHaveLength(151);
   });
 
   it('sets the interval for the request organization with the path id and the value only, for any member', async () => {
