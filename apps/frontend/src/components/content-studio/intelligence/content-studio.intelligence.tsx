@@ -82,11 +82,13 @@ export const ContentStudioIntelligence: FC = () => {
         'What every AI suggestion in Content Studio starts from: your AI connection, who you are, how you sound and who you write for.'
       )}
       actions={
+        // the setup assistant, always reachable: it opens on what was saved
+        // and never drafts anything until asked to
         <Link
           href={CONTENT_STUDIO_SETUP_PATH}
           className="px-[24px] h-[40px] flex items-center rounded-full bg-third border border-textColor/60 text-textColor"
         >
-          {t('content_studio_setup_run_again', 'Run setup assistant')}
+          {t('content_studio_setup_review', 'Review setup')}
         </Link>
       }
     >

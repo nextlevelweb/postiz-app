@@ -2060,12 +2060,13 @@ describe('Source Library: source surface', () => {
     }
   });
 
-  it('6 is linked from the Content Studio navigation and home, not added to the main menu', () => {
+  it('6 is linked from the Content Studio navigation, not added to the main menu', () => {
     const shell = readFileSync(join(dir, 'content-studio.shell.tsx'), 'utf8');
     expect(shell).toContain("href: '/content-studio/sources'");
     expect(shell).toContain("t('content_studio_sources', 'Knowledge')");
+    // activation review 02: Home no longer repeats the navigation in cards
     const home = readFileSync(join(dir, 'content-studio.home.tsx'), 'utf8');
-    expect(home).toContain("href: '/content-studio/sources'");
+    expect(home).not.toContain("href: '/content-studio/sources'");
     const menu = readFileSync(join(dir, '../layout/top.menu.tsx'), 'utf8');
     expect(menu).not.toMatch(/content-studio\/(sources|research|radar|news)/i);
   });

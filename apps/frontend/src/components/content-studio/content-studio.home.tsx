@@ -23,8 +23,15 @@ import {
 } from '@gitroom/frontend/components/content-studio/content-studio.package.list';
 import { CreateContentStudioPackageModal } from '@gitroom/frontend/components/content-studio/content-studio.package.modal';
 import { ContentStudioProjectsModal } from '@gitroom/frontend/components/content-studio/content-studio.projects.modal';
-import { REVIEW_QUEUE_PAGE } from '@gitroom/frontend/components/content-studio/content-studio.reviews.api';
-import { RADAR_PAGE } from '@gitroom/frontend/components/content-studio/content-studio.research.api';
+import {
+  REVIEW_QUEUE_PAGE,
+  useContentStudioReviewQueue,
+} from '@gitroom/frontend/components/content-studio/content-studio.reviews.api';
+import { useContentStudioSetupStatus } from '@gitroom/frontend/components/content-studio/content-studio.setup.api';
+import {
+  FIRST_POST_PAGE,
+  useContentStudioFirstPost,
+} from '@gitroom/frontend/components/content-studio/content-studio.first-post';
 import {
   ContentStudioLinkPending,
   ContentStudioLoading,
@@ -37,56 +44,122 @@ import {
 } from '@gitroom/frontend/components/content-studio/content-studio.setup.card';
 import { ContentStudioGetStarted } from '@gitroom/frontend/components/content-studio/content-studio.onboarding';
 
-// What each other part of Content Studio is for, in one line
-const SectionCards: FC = () => {
+// What needs the user now, from the organization's data only: the first
+// post while it is not out yet, and reviews waiting for a decision. Not a
+// second menu: where each section is, the navigation above says. Nothing
+// when nothing waits. An organization that makes content already is not
+// asked to start a first post
+const ContentStudioHomeAttention: FC<{ hasContent: boolean }> = ({
+  hasContent,
+}) => {
   const t = useT();
-  const cards = [
-    {
-      href: '/content-studio/sources',
-      title: t('content_studio_sources', 'Knowledge'),
+  const status = useContentStudioSetupStatus();
+  const firstPost = useContentStudioFirstPost();
+  const reviews = useContentStudioReviewQueue({
+    queue: 'NEEDS_REVIEW',
+    targetType: null,
+    search: '',
+    page: 1,
+  });
+  const items: Array<{
+    key: string;
+    title: string;
+    text: string;
+    href: string;
+    action: string;
+  }> = [];
+  const firstPostOpen =
+    !!firstPost.data?.package && !firstPost.data.package.archived;
+  if (
+    status.complete &&
+    firstPost.data &&
+    !firstPost.data.activated &&
+    (firstPostOpen || !hasContent)
+  ) {
+    items.push(
+      firstPostOpen
+        ? {
+            key: 'first_post',
+            title: t(
+              'content_studio_home_first_post_waiting',
+              'Your first post is waiting'
+            ),
+            text: t(
+              'content_studio_home_first_post_waiting_text',
+              'Review it, then schedule or publish it.'
+            ),
+            href: FIRST_POST_PAGE,
+            action: t(
+              'content_studio_home_first_post_open',
+              'Open your first post'
+            ),
+          }
+        : {
+            key: 'first_post',
+            title: t(
+              'content_studio_home_first_post_create',
+              'Create your first post'
+            ),
+            text: t(
+              'content_studio_home_first_post_create_text',
+              'Content Studio researches a relevant topic and writes the post for you.'
+            ),
+            href: FIRST_POST_PAGE,
+            action: t(
+              'content_studio_setup_create_first_post',
+              'Create my first post'
+            ),
+          }
+    );
+  }
+  const waiting = reviews.data?.results.length ?? 0;
+  if (waiting) {
+    items.push({
+      key: 'reviews',
+      title:
+        (reviews.data?.pages ?? 1) > 1
+          ? t(
+              'content_studio_home_reviews_many',
+              'More than {{count}} items need review',
+              { count: waiting }
+            )
+          : t('content_studio_home_reviews', '{{count}} waiting for review', {
+              count: waiting,
+            }),
       text: t(
-        'content_studio_sources_card',
-        'The websites and feeds Content Studio writes from.'
+        'content_studio_home_reviews_text',
+        'Posts and designs waiting for a review or approval.'
       ),
-    },
-    {
-      href: RADAR_PAGE,
-      title: t('content_studio_research', 'Radar'),
-      text: t(
-        'content_studio_radar_card',
-        'New articles from your feeds and changes on pages you follow. Turn one into a post.'
-      ),
-    },
-    {
-      href: '/content-studio/designs',
-      title: t('content_studio_creative_studio', 'Creative Studio'),
-      text: t(
-        'content_studio_creative_card',
-        'Design on-brand images for your posts: from a template or blank, with your text, images and brand.'
-      ),
-    },
-    {
       href: REVIEW_QUEUE_PAGE,
-      title: t('content_studio_review_queue', 'Approvals'),
-      text: t(
-        'content_studio_reviews_card',
-        'Let colleagues review and approve a post or design before it is used.'
-      ),
-    },
-  ];
+      action: t('content_studio_home_reviews_open', 'Open approvals'),
+    });
+  }
+  if (!items.length) {
+    return null;
+  }
   return (
-    <ul className="grid grid-cols-1 tablet:grid-cols-2 xl:grid-cols-4 gap-[12px]">
-      {cards.map((card) => (
-        <li key={card.href}>
-          <Link
-            href={card.href}
-            className="flex flex-col gap-[4px] h-full p-[16px] rounded-[12px] border border-newTableBorder hover:border-[var(--brand-primary,#612ad5)] transition-colors"
-          >
-            <span className="flex items-center gap-[8px] font-[600]">
-              {card.title}
-              <ContentStudioLinkPending label={card.title} />
+    <ul
+      aria-label={t('content_studio_home_attention', 'Needs your attention')}
+      className="flex flex-col gap-[8px]"
+    >
+      {items.map((item) => (
+        <li
+          key={item.key}
+          data-attention={item.key}
+          className="flex flex-wrap items-center gap-[12px] p-[16px] rounded-[12px] border border-newTableBorder"
+        >
+          <div className="flex flex-col gap-[2px] flex-1 min-w-[200px]">
+            <span className="font-[600] break-words">{item.title}</span>
+            <span className="text-[13px] text-textItemBlur break-words">
+              {item.text}
             </span>
-            <span className="text-[13px] text-textItemBlur">{card.text}</span>
+          </div>
+          <Link
+            href={item.href}
+            className="h-[40px] px-[20px] flex items-center gap-[6px] rounded-full border border-newTableBorder hover:border-[var(--brand-primary,#612ad5)]"
+          >
+            {item.action}
+            <ContentStudioLinkPending label={item.action} />
           </Link>
         </li>
       ))}
@@ -95,7 +168,8 @@ const SectionCards: FC = () => {
 };
 
 // The Content Studio home. Until setup is done (or hidden) it leads with the
-// setup assistant; then with creating content and what was worked on last.
+// setup assistant; then with what needs attention (the first post, the
+// checklist, reviews waiting) and what was worked on last.
 // Below: the packages of the organization, filtered by project and archive
 // state on the server, one summary page at a time
 export const ContentStudioHome: FC = () => {
@@ -222,6 +296,9 @@ export const ContentStudioHome: FC = () => {
     >
       <ContentStudioSetupCard hasContent={!!packages.data?.results.length} />
       <ContentStudioGetStarted />
+      <ContentStudioHomeAttention
+        hasContent={!!packages.data?.results.length}
+      />
 
       {!!latest && (
         <div className="flex flex-wrap items-center gap-[12px] p-[16px] rounded-[12px] bg-newBgLineColor">
@@ -249,8 +326,6 @@ export const ContentStudioHome: FC = () => {
           </Link>
         </div>
       )}
-
-      <SectionCards />
 
       <div className="flex flex-wrap items-center gap-[12px] pt-[8px]">
         <h2 className="flex-1 min-w-[200px] text-[18px] font-[600]">

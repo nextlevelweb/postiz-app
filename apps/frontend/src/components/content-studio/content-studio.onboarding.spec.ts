@@ -405,16 +405,105 @@ describe('After the first post: the getting-started list on Home', () => {
     ).toBe('1');
   });
 
-  it('keeps no flag for what the data says: only the tour and the hidden list are remembered', () => {
+  it('keeps no flag for what the data says: only the tour, the hidden list and a deliberate "no approval" are remembered', () => {
     const source = require('fs').readFileSync(
       require('path').join(__dirname, 'content-studio.onboarding.tsx'),
       'utf8'
     );
     const keys = source.match(/`content-studio-[a-z-]+:/g);
+    // approval switched off has no form in the policy (activation review
+    // 02): the decision itself is the one thing the data cannot say
     expect(keys).toEqual([
       '`content-studio-tour:',
       '`content-studio-checklist-hidden:',
+      '`content-studio-no-approval:',
     ]);
     expect(source).not.toMatch(/method: 'POST'|\/posts|integrations/);
+  });
+});
+
+// Activation review 02: a decision about approval counts either way, and
+// the tour is never lost
+describe('After the first post: approval is a decision either way', () => {
+  const task = (key: string) =>
+    document.querySelector(`[data-task="${key}"]`) as HTMLElement;
+  beforeEach(() => {
+    window.localStorage.setItem(TOUR_KEY, '1');
+  });
+
+  it('A1 approval switched on in the editorial policy: decided', async () => {
+    state.policy = { ...POLICY, workflow: { requireApprovalForHandoff: true } };
+    await show(ContentStudioGetStarted);
+    expect(task('approval').getAttribute('data-done')).toBe('true');
+  });
+
+  it('A2 "No approval needed" is a decision too, and stays one', async () => {
+    await show(ContentStudioGetStarted);
+    fireEvent.click(
+      within(task('approval')).getByRole('button', {
+        name: 'No approval needed',
+      })
+    );
+    await flush();
+    expect(task('approval').getAttribute('data-done')).toBe('true');
+    expect(
+      window.localStorage.getItem('content-studio-no-approval:org-1')
+    ).toBe('1');
+    cleanup();
+    await show(ContentStudioGetStarted);
+    expect(task('approval').getAttribute('data-done')).toBe('true');
+    // nothing was written to the policy
+    expect(
+      mockFetch.mock.calls.some(([, init]) => init?.method === 'POST')
+    ).toBe(false);
+  });
+
+  it('A3 never looked at: still open, with both choices', async () => {
+    await show(ContentStudioGetStarted);
+    expect(task('approval').getAttribute('data-done')).toBe('false');
+    expect(
+      within(task('approval')).getByRole('link', {
+        name: 'Decide who approves posts',
+      })
+    ).toBeTruthy();
+    expect(
+      within(task('approval')).getByRole('button', {
+        name: 'No approval needed',
+      })
+    ).toBeTruthy();
+  });
+});
+
+describe('After the first post: the tour is never lost', () => {
+  it('TOUR1 an organization whose first post is not out yet gets no tour, on Home or the first post', async () => {
+    state.activated = false;
+    await show(ContentStudioGetStarted);
+    expect(screen.queryByTestId('tour-card')).toBeNull();
+    expect(screen.queryByRole('button', { name: /tour/i })).toBeNull();
+    cleanup();
+    await show(ContentStudioFirstPostPage);
+    expect(screen.queryByTestId('tour-card')).toBeNull();
+  });
+
+  it('TOUR2 the first scheduled or published post starts it, once', async () => {
+    await show(ContentStudioGetStarted);
+    expect(title()).toBe('Research starts in Radar');
+  });
+
+  it('TOUR4 with the list hidden or done, the tour can still be taken again from Home', async () => {
+    window.localStorage.setItem(TOUR_KEY, '1');
+    window.localStorage.setItem('content-studio-checklist-hidden:org-1', '1');
+    await show(ContentStudioGetStarted);
+    expect(screen.queryByText('Get more out of Content Studio')).toBeNull();
+    expect(screen.queryByTestId('tour-card')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Take the tour' }));
+    expect(title()).toBe('Research starts in Radar');
+  });
+
+  it('TOUR5 only finishing or skipping it here stops it: other keys (another organization, the hidden list) never do', async () => {
+    window.localStorage.setItem('content-studio-tour:org-2', '1');
+    window.localStorage.setItem('content-studio-checklist-hidden:org-1', '1');
+    await show(ContentStudioGetStarted);
+    expect(title()).toBe('Research starts in Radar');
   });
 });

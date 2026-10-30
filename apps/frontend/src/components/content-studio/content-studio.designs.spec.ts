@@ -2260,14 +2260,15 @@ describe('Creative Studio: frontend boundaries', () => {
     ...ROUTES.map((file) => [file, readFileSync(join(routes, file), 'utf8')]),
   ] as const;
 
-  it('65/4 the Content Studio navigation and home link to Creative Studio; the top menu keeps one Content Studio entry', () => {
+  it('65/4 the Content Studio navigation links to Creative Studio; the top menu keeps one Content Studio entry', () => {
     const shell = readFileSync(join(dir, 'content-studio.shell.tsx'), 'utf8');
     expect(shell).toContain("href: '/content-studio/designs'");
     expect(shell).toContain(
       "t('content_studio_creative_studio', 'Creative Studio')"
     );
+    // activation review 02: Home no longer repeats the navigation in cards
     const home = readFileSync(join(dir, 'content-studio.home.tsx'), 'utf8');
-    expect(home).toContain("href: '/content-studio/designs'");
+    expect(home).not.toContain("href: '/content-studio/designs'");
     const menu = readFileSync(join(dir, '../layout/top.menu.tsx'), 'utf8');
     expect(menu.match(/path: '\/content-studio/g)).toHaveLength(1);
   });

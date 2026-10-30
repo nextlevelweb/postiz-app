@@ -28,9 +28,9 @@ import { CONTENT_STUDIO_HOME_PATH } from '@gitroom/frontend/components/content-s
 // After the first post (activation flow 01): a short tour of Content Studio,
 // once, starting with the research the user just used, then a checklist of
 // useful first things to do in the other sections. Whether a task is done
-// is read from the organization's own data; only "the tour was seen" and
-// "hide the checklist" are kept, in this browser and per organization, like
-// the setup card
+// is read from the organization's own data; only "the tour was seen",
+// "hide the checklist" and "no approval needed" are kept, in this browser
+// and per organization, like the setup card
 
 // --- this browser only ---
 
@@ -38,6 +38,11 @@ const tourKey = (organizationId: string) =>
   `content-studio-tour:${organizationId}`;
 const checklistKey = (organizationId: string) =>
   `content-studio-checklist-hidden:${organizationId}`;
+// Approval switched on is saved in the editorial policy; switched off is no
+// workflow at all, the same as never looked at. So a deliberate "no approval
+// needed" is kept here, the smallest record of that decision
+const noApprovalKey = (organizationId: string) =>
+  `content-studio-no-approval:${organizationId}`;
 
 // Storage can be unavailable (private windows, blocked site data): then the
 // tour can show again and nothing fails
@@ -316,6 +321,13 @@ export const useContentStudioTour = () => {
 
 // --- the checklist ---
 
+export const isContentStudioNoApprovalDecided = (organizationId: string) =>
+  read(noApprovalKey(organizationId));
+export const setContentStudioNoApprovalDecided = (
+  organizationId: string,
+  decided: boolean
+) => write(noApprovalKey(organizationId), decided);
+
 export interface ContentStudioGetStartedTask {
   key:
     | 'setup'
@@ -334,6 +346,17 @@ export interface ContentStudioGetStartedTask {
 // so: never "visit page X"
 export const useContentStudioGetStartedTasks = () => {
   const t = useT();
+  const user = useUser();
+  const organizationId = user?.orgId || '';
+  // read after mount: storage is not there on the server
+  const [noApproval, setNoApproval] = useState(false);
+  useEffect(() => {
+    setNoApproval(isContentStudioNoApprovalDecided(organizationId));
+  }, [organizationId]);
+  const decideNoApproval = useCallback(() => {
+    setContentStudioNoApprovalDecided(organizationId, true);
+    setNoApproval(true);
+  }, [organizationId]);
   const status = useContentStudioSetupStatus();
   const firstPost = useContentStudioFirstPost();
   const policy = useContentStudioEditorialPolicy<EditorialPolicyContent>();
@@ -410,13 +433,15 @@ export const useContentStudioGetStartedTasks = () => {
       ),
       hint: t(
         'content_studio_get_started_approval_hint',
-        'Require approval before a post goes to publishing, under Editorial Policy.'
+        'Either is a decision: require approval before a post goes to publishing (under Editorial Policy), or say no approval is needed.'
       ),
       href: '/content-studio/intelligence?tab=editorial',
-      done: content?.workflow?.requireApprovalForHandoff === true,
+      // approval switched on, or no approval needed on purpose
+      done: content?.workflow?.requireApprovalForHandoff === true || noApproval,
     },
   ];
   return {
+    decideNoApproval,
     // shown after the first post succeeded, whatever failed to load
     activated: !!firstPost.data?.activated,
     loaded: status.loaded && firstPost.data !== undefined,
@@ -431,7 +456,8 @@ export const ContentStudioGetStarted: FC = () => {
   const t = useT();
   const user = useUser();
   const organizationId = user?.orgId || '';
-  const { activated, loaded, tasks } = useContentStudioGetStartedTasks();
+  const { activated, loaded, tasks, decideNoApproval } =
+    useContentStudioGetStartedTasks();
   const tour = useContentStudioTour();
   const [hidden, setHidden] = useState<boolean | null>(null);
   useEffect(() => {
@@ -517,6 +543,18 @@ export const ContentStudioGetStarted: FC = () => {
                       {task.hint}
                     </span>
                   )}
+                  {!task.done && task.key === 'approval' && (
+                    <button
+                      type="button"
+                      className="self-start min-h-[32px] text-[13px] underline"
+                      onClick={decideNoApproval}
+                    >
+                      {t(
+                        'content_studio_get_started_no_approval',
+                        'No approval needed'
+                      )}
+                    </button>
+                  )}
                 </div>
               </li>
             ))}
@@ -541,6 +579,18 @@ export const ContentStudioGetStarted: FC = () => {
             </button>
           </div>
         </section>
+      )}
+      {loaded && activated && !show && hidden !== null && (
+        // the tour stays at hand once the list is gone
+        <div className="text-[13px]">
+          <button
+            type="button"
+            className="min-h-[32px] underline text-textItemBlur hover:text-newTextColor"
+            onClick={tour.start}
+          >
+            {t('content_studio_get_started_tour_short', 'Take the tour')}
+          </button>
+        </div>
       )}
     </>
   );

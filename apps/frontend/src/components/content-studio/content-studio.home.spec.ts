@@ -1057,10 +1057,11 @@ describe('Content Studio: every request', () => {
     await flush();
 
     // the setup card only reads what is set up, without ids; the getting
-    // started list (activation flow 01) the first post and the designs
+    // started list (activation flow 01) the first post and the designs; what
+    // needs attention (activation review 02) the reviews waiting
     const all = calls();
     const setupReads = all.filter((call) =>
-      /^\/content-studio\/(ai\/providers|ai\/connections|brand-kit|writing-profiles|audience-profiles|expertise-profiles|editorial-policy|sources|activation\/first-post|designs)(\?|$)/.test(
+      /^\/content-studio\/(ai\/providers|ai\/connections|brand-kit|writing-profiles|audience-profiles|expertise-profiles|editorial-policy|sources|activation\/first-post|designs|reviews)(\?|$)/.test(
         call.url
       )
     );
@@ -1232,5 +1233,244 @@ describe('Content Studio: phones and tablets', () => {
       .map((file) => readFileSync(file, 'utf8'))
       .join('\n');
     expect(layouts).not.toMatch(/maximum-?scale|user-?scalable/i);
+  });
+});
+
+// Activation review 02: Home says what needs the user, not where the
+// sections are (the navigation above does), and the navigation is the row
+// of pills the Settings page uses
+describe('Content Studio home: what needs attention, not a second menu', () => {
+  const T0 = '2026-10-30T10:00:00.000Z';
+  const list = (n: number) => ({
+    pages: n ? 1 : 0,
+    results: Array.from({ length: n }, (_, i) => ({
+      id: `id-${i}`,
+      name: `n${i}`,
+      latestRevisionNumber: 1,
+      archivedAt: null,
+      createdAt: T0,
+      updatedAt: T0,
+    })),
+  });
+  const firstPostState = (packageId: string | null, activated = false) => ({
+    packageId,
+    package: packageId
+      ? { name: 'First post', draftVersion: 2, archived: false, text: 'x' }
+      : null,
+    research: null,
+    draft: null,
+    alternatives: [],
+    firstPost: { scheduled: activated, published: false },
+    activated,
+  });
+  // a set-up organization, with its first post and reviews as asked
+  const organization = (input: {
+    firstPost: ReturnType<typeof firstPostState>;
+    reviews?: number;
+  }) => {
+    override = (method, url) => {
+      const { pathname } = new URL(url, 'https://api.test');
+      if (method !== 'GET') {
+        return undefined;
+      }
+      switch (pathname) {
+        case '/content-studio/ai/providers':
+          return reply(200, [
+            {
+              provider: 'codex',
+              displayName: 'Codex',
+              credentialFields: [],
+              defaultModel: 'gpt-6.1-sol',
+              models: [],
+            },
+          ]);
+        case '/content-studio/ai/connections':
+          return reply(200, [
+            {
+              id: '44444444-4444-4444-8444-444444444444',
+              name: 'Codex',
+              provider: 'codex',
+              defaultModel: 'gpt-6.1-sol',
+              disabled: false,
+              credentialPresent: true,
+              credentialUpdatedAt: T0,
+              lastValidatedAt: T0,
+              lastValidationStatus: 'valid',
+              lastValidationCode: null,
+              createdAt: T0,
+              updatedAt: T0,
+            },
+          ]);
+        case '/content-studio/brand-kit':
+          return reply(200, {
+            latestRevisionNumber: 1,
+            currentRevision: {
+              content: {
+                identity: { brandName: 'A', tagline: '', description: 'd' },
+              },
+            },
+          });
+        case '/content-studio/editorial-policy':
+          return reply(200, {
+            latestRevisionNumber: 1,
+            currentRevision: { content: { schemaVersion: 1 } },
+          });
+        case '/content-studio/writing-profiles':
+        case '/content-studio/audience-profiles':
+        case '/content-studio/expertise-profiles':
+          return reply(200, list(1));
+        case '/content-studio/sources':
+        case '/content-studio/designs':
+          return reply(200, list(0));
+        case '/content-studio/activation/first-post':
+          return reply(200, input.firstPost);
+        case '/content-studio/reviews':
+          return reply(200, {
+            pages: input.reviews ? 1 : 0,
+            results: Array.from({ length: input.reviews ?? 0 }, (_, i) => ({
+              id: `review-${i}`,
+              targetType: 'PACKAGE_REVISION',
+              targetRevisionId: `rev-${i}`,
+              targetRevisionNumber: 1,
+              target: {
+                type: 'PACKAGE_REVISION',
+                revisionId: `rev-${i}`,
+                revisionNumber: 1,
+                parentId: 'pkg',
+                parentName: 'A post',
+              },
+            })),
+          });
+      }
+      return undefined;
+    };
+  };
+  const attention = (key: string) =>
+    document.querySelector(`[data-attention="${key}"]`) as HTMLElement | null;
+
+  it('H1 repeats no section of the navigation as a card', async () => {
+    renderHome();
+    await loaded();
+    const nav = screen.getByRole('navigation', { name: 'Content Studio' });
+    for (const name of ['Knowledge', 'Radar', 'Creative Studio', 'Approvals']) {
+      // only the navigation links there
+      expect(screen.getAllByRole('link', { name })).toEqual([
+        within(nav).getByRole('link', { name }),
+      ]);
+    }
+    expect(
+      screen.queryByText('The websites and feeds Content Studio writes from.')
+    ).toBeNull();
+  });
+
+  it('H2 leads with the first post while it is not out yet, and with reviews waiting', async () => {
+    organization({ firstPost: firstPostState('pkg-first'), reviews: 2 });
+    renderHome();
+    await loaded();
+    await flush();
+    const first = attention('first_post') as HTMLElement;
+    expect(within(first).getByText('Your first post is waiting')).toBeTruthy();
+    expect(
+      within(first)
+        .getByRole('link', { name: 'Open your first post' })
+        .getAttribute('href')
+    ).toBe('/content-studio/first-post');
+    const reviews = attention('reviews') as HTMLElement;
+    expect(within(reviews).getByText(/waiting for review/)).toBeTruthy();
+    expect(
+      within(reviews)
+        .getByRole('link', { name: 'Open approvals' })
+        .getAttribute('href')
+    ).toBe('/content-studio/reviews');
+  });
+
+  it('H2 an organization that already makes content is not asked to start a first post; a new one is', async () => {
+    organization({ firstPost: firstPostState(null) });
+    renderHome();
+    await loaded();
+    await flush();
+    expect(attention('first_post')).toBeNull();
+    cleanup();
+    packageList = { pages: 0, results: [] };
+    renderHome();
+    await screen.findByText(/No content yet/);
+    await flush();
+    expect(
+      within(attention('first_post') as HTMLElement).getByText(
+        'Create your first post'
+      )
+    ).toBeTruthy();
+  });
+
+  it('H2 nothing waits: nothing is shown, no made-up numbers', async () => {
+    organization({ firstPost: firstPostState('pkg-first', true), reviews: 0 });
+    window.localStorage.setItem('content-studio-tour:org', '1');
+    renderHome();
+    await loaded();
+    await flush();
+    expect(attention('first_post')).toBeNull();
+    expect(attention('reviews')).toBeNull();
+  });
+
+  it('H3 after the first post is out, the checklist is on Home', async () => {
+    organization({ firstPost: firstPostState('pkg-first', true) });
+    window.localStorage.setItem('content-studio-tour:org', '1');
+    renderHome();
+    await loaded();
+    await flush();
+    expect(screen.getByText('Get more out of Content Studio')).toBeTruthy();
+  });
+});
+
+describe('Content Studio: the section navigation', () => {
+  const shellSource = readFileSync(
+    join(__dirname, 'content-studio.shell.tsx'),
+    'utf8'
+  );
+
+  it('T1 follows the Settings tabs: a row of pills that scrolls sideways', () => {
+    const settings = readFileSync(
+      join(__dirname, '../layout/settings.component.tsx'),
+      'utf8'
+    );
+    for (const token of [
+      'overflow-x-auto',
+      'shrink-0 whitespace-nowrap rounded-full',
+      'bg-[var(--brand-primary',
+    ]) {
+      expect(settings).toContain(token);
+      expect(shellSource).toContain(token);
+    }
+  });
+
+  it('T2/T4 one row that scrolls on a phone instead of wrapping onto a second line', async () => {
+    renderHome();
+    await loaded();
+    const nav = screen.getByRole('navigation', { name: 'Content Studio' });
+    expect(nav.className).toContain('overflow-x-auto');
+    expect(nav.className).not.toContain('flex-wrap');
+    for (const link of within(nav).getAllByRole('link')) {
+      expect(link.className).toContain('whitespace-nowrap');
+      expect(link.className).toContain('shrink-0');
+    }
+  });
+
+  it('T3/T5 the current section is filled with the brand colour, marked for assistive tech and reachable by keyboard', async () => {
+    renderHome();
+    await loaded();
+    const nav = screen.getByRole('navigation', { name: 'Content Studio' });
+    const links = within(nav).getAllByRole('link');
+    const current = links.filter(
+      (link) => link.getAttribute('aria-current') === 'page'
+    );
+    expect(current.map((link) => link.textContent)).toEqual(['Home']);
+    expect(current[0].className).toContain('bg-[var(--brand-primary,#612ad5)]');
+    for (const link of links) {
+      expect(link.getAttribute('href')).toBeTruthy();
+      expect(link.className).toContain('focus-visible:outline');
+    }
+    expect(
+      links.filter((link) => link !== current[0]).map((l) => l.className)
+    ).not.toContainEqual(expect.stringContaining('bg-[var(--brand-primary'));
   });
 });

@@ -2677,13 +2677,13 @@ describe('Review & Approval queue (P5-06)', () => {
 
   it('FQ1 Content Studio links to Review & Approval, a page of its own', async () => {
     await show(h(ContentStudioHome));
-    // in the Content Studio navigation and on the home page
+    // in the Content Studio navigation; Home no longer repeats it in a card
+    // (activation review 02)
     const nav = screen.getByRole('navigation', { name: 'Content Studio' });
     expect(
       within(nav).getByRole('link', { name: 'Approvals' }).getAttribute('href')
     ).toBe('/content-studio/reviews');
-    const link = screen.getAllByRole('link', { name: /^Approvals/ })[1];
-    expect(link.getAttribute('href')).toBe('/content-studio/reviews');
+    expect(screen.getAllByRole('link', { name: /^Approvals/ })).toHaveLength(1);
     const page = readFileSync(
       join(__dirname, '../../app/(app)/(site)/content-studio/reviews/page.tsx'),
       'utf8'

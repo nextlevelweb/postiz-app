@@ -467,6 +467,9 @@ describe('AI connection surface so far', () => {
       // connection, read from the same list
       'content-studio.first-post.spec.ts',
       'content-studio.first-post.tsx',
+      // activation review 02: the Home test of what needs attention
+      // answers the same list for the setup status (Home reads none itself)
+      'content-studio.home.spec.ts',
       // its success page and checklist test answer the same list
       'content-studio.onboarding.spec.ts',
       // the setup assistant: whether AI is ready, the inline Add AI

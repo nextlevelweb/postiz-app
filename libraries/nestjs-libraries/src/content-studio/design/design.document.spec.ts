@@ -1496,8 +1496,8 @@ describe('Design Document P4-02 persistence boundary', () => {
       `${CS}/content-studio.design.workspace.tsx`,
       `${CS}/content-studio.designs.api.ts`,
       `${CS}/content-studio.designs.tsx`,
-      // the link to Creative Studio only
-      `${CS}/content-studio.home.tsx`,
+      // (activation review 02: Home no longer repeats the navigation, so
+      // its link to Creative Studio is gone)
       // activation flow 01: the getting-started list links to Creative
       // Studio and reads whether a design exists; it saves nothing
       `${CS}/content-studio.onboarding.tsx`,

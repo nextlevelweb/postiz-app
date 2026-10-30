@@ -1,6 +1,6 @@
 'use client';
 
-import { FC, MouseEvent, ReactNode, useEffect } from 'react';
+import { FC, MouseEvent, ReactNode, useEffect, useRef } from 'react';
 import clsx from 'clsx';
 import * as NextLink from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -118,18 +118,32 @@ export const ContentStudioDocumentClass: FC = () => {
   return null;
 };
 
-// The local navigation of every Content Studio list page
+// The local navigation of every Content Studio list page, in the pattern of
+// the Settings tabs: one row of pills that scrolls sideways (swipe on a
+// phone) instead of wrapping, the current section filled with the brand
+// colour. Only the row scrolls, never the page, and the current section is
+// scrolled into view
 export const ContentStudioNav: FC = () => {
   const t = useT();
   const pathname = usePathname() || CONTENT_STUDIO_HOME_PATH;
   const active = contentStudioSectionOf(pathname);
   const labels = useContentStudioSectionLabels();
+  const row = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const nav = row.current;
+    const current = nav?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (nav && current) {
+      nav.scrollLeft = Math.max(
+        0,
+        current.offsetLeft - (nav.clientWidth - current.offsetWidth) / 2
+      );
+    }
+  }, [active]);
   return (
     <nav
+      ref={row}
       aria-label={t('content_studio', 'Content Studio')}
-      // on a phone the sections wrap onto a second line rather than run off
-      // the right edge; wider screens keep one row
-      className="flex flex-wrap sm:flex-nowrap gap-x-[2px] sm:gap-[4px] sm:overflow-x-auto -mx-[4px] px-[4px] pb-[2px] shrink-0 border-b border-newTableBorder"
+      className="flex gap-[8px] overflow-x-auto pb-[4px] shrink-0 min-w-0"
     >
       {SECTIONS.map((section) => {
         const current = section.key === active;
@@ -141,10 +155,10 @@ export const ContentStudioNav: FC = () => {
             data-cs-section={section.key}
             aria-current={current ? 'page' : undefined}
             className={clsx(
-              'shrink-0 whitespace-nowrap flex items-center gap-[6px] px-[10px] sm:px-[12px] h-[36px] sm:h-[40px] -mb-[1px] border-b-2 text-[14px]',
+              'shrink-0 whitespace-nowrap rounded-full flex items-center gap-[6px] px-[14px] min-h-[40px] border text-[14px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2',
               current
-                ? 'border-[var(--brand-primary,#612ad5)] font-[600] text-newTextColor'
-                : 'border-transparent text-textItemBlur hover:text-newTextColor'
+                ? 'bg-[var(--brand-primary,#612ad5)] text-[var(--brand-action-text,#fff)] border-[var(--brand-primary,#612ad5)] font-[600]'
+                : 'bg-newBgColorInner border-newTableBorder text-newTextColor hover:border-[var(--brand-primary,#612ad5)]'
             )}
           >
             {labels[section.key]}
