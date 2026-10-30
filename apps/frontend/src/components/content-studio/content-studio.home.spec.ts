@@ -1056,10 +1056,11 @@ describe('Content Studio: every request', () => {
     fireEvent.click(button('Restore Old project', modal));
     await flush();
 
-    // the setup card only reads what is set up, without ids
+    // the setup card only reads what is set up, without ids; the getting
+    // started list (activation flow 01) the first post and the designs
     const all = calls();
     const setupReads = all.filter((call) =>
-      /^\/content-studio\/(ai\/providers|ai\/connections|brand-kit|writing-profiles|audience-profiles|expertise-profiles|editorial-policy|sources)(\?|$)/.test(
+      /^\/content-studio\/(ai\/providers|ai\/connections|brand-kit|writing-profiles|audience-profiles|expertise-profiles|editorial-policy|sources|activation\/first-post|designs)(\?|$)/.test(
         call.url
       )
     );

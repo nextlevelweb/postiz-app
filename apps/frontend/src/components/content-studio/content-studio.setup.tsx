@@ -274,6 +274,8 @@ const setupAIErrorMessage = (
         { provider }
       );
     case 'CS_AI_TIMEOUT':
+    // the server stopped while the draft was being made
+    case 'CS_AI_OPERATION_INTERRUPTED':
       return t(
         'content_studio_setup_ai_error_timeout',
         'The AI provider took too long to answer. Try again; a faster model can help.'
@@ -1299,11 +1301,16 @@ export const ContentStudioSetupWizard: FC = () => {
             name: t('content_studio_first_post_name', 'First post'),
           });
         } catch (err) {
-          // the profile is saved: the first post page says what failed
-          target = `${FIRST_POST_PAGE}?error=${encodeURIComponent(
-            (err instanceof ContentStudioRequestError && err.code) ||
-              'CS_AI_PROVIDER_UNAVAILABLE'
-          )}`;
+          // the profile is saved: the first post page says what failed (a
+          // start already on its way is followed there as it is)
+          target =
+            err instanceof ContentStudioRequestError &&
+            err.code === 'CS_FIRST_POST_STARTING'
+              ? FIRST_POST_PAGE
+              : `${FIRST_POST_PAGE}?error=${encodeURIComponent(
+                  (err instanceof ContentStudioRequestError && err.code) ||
+                    'CS_AI_PROVIDER_UNAVAILABLE'
+                )}`;
         }
         router.push(target);
       } catch (err) {

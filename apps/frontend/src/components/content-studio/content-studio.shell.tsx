@@ -137,6 +137,8 @@ export const ContentStudioNav: FC = () => {
           <Link
             key={section.key}
             href={section.href}
+            // what the product tour points at
+            data-cs-section={section.key}
             aria-current={current ? 'page' : undefined}
             className={clsx(
               'shrink-0 whitespace-nowrap flex items-center gap-[6px] px-[10px] sm:px-[12px] h-[36px] sm:h-[40px] -mb-[1px] border-b-2 text-[14px]',

@@ -1,0 +1,585 @@
+'use client';
+
+import {
+  FC,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
+import Link from 'next/link';
+import { Button } from '@gitroom/react/form/button';
+import { useT } from '@gitroom/react/translation/get.transation.service.client';
+import { useUser } from '@gitroom/frontend/components/layout/user.context';
+import { useContentStudioSetupStatus } from '@gitroom/frontend/components/content-studio/content-studio.setup.api';
+import { useContentStudioDesigns } from '@gitroom/frontend/components/content-studio/content-studio.designs.api';
+import { useContentStudioEditorialPolicy } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.api';
+import type { EditorialPolicyContent } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.editorial-policy';
+import {
+  ContentStudioFirstPost,
+  FIRST_POST_PAGE,
+  FirstPostSuccess,
+  useContentStudioFirstPost,
+} from '@gitroom/frontend/components/content-studio/content-studio.first-post';
+import { CONTENT_STUDIO_HOME_PATH } from '@gitroom/frontend/components/content-studio/content-studio.shell';
+
+// After the first post (activation flow 01): a short tour of Content Studio,
+// once, starting with the research the user just used, then a checklist of
+// useful first things to do in the other sections. Whether a task is done
+// is read from the organization's own data; only "the tour was seen" and
+// "hide the checklist" are kept, in this browser and per organization, like
+// the setup card
+
+// --- this browser only ---
+
+const tourKey = (organizationId: string) =>
+  `content-studio-tour:${organizationId}`;
+const checklistKey = (organizationId: string) =>
+  `content-studio-checklist-hidden:${organizationId}`;
+
+// Storage can be unavailable (private windows, blocked site data): then the
+// tour can show again and nothing fails
+const storage = () => {
+  try {
+    return typeof window === 'undefined' ? null : window.localStorage;
+  } catch {
+    return null;
+  }
+};
+const read = (key: string) => {
+  try {
+    return storage()?.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+};
+const write = (key: string, on: boolean) => {
+  try {
+    if (on) {
+      storage()?.setItem(key, '1');
+    } else {
+      storage()?.removeItem(key);
+    }
+  } catch {
+    // shown again next time
+  }
+};
+
+export const isContentStudioTourSeen = (organizationId: string) =>
+  read(tourKey(organizationId));
+export const setContentStudioTourSeen = (
+  organizationId: string,
+  seen: boolean
+) => write(tourKey(organizationId), seen);
+
+// --- the tour ---
+
+export type ContentStudioTourSection =
+  | 'radar'
+  | 'home'
+  | 'sources'
+  | 'creative'
+  | 'reviews';
+
+// What was just used comes first; five steps, no more
+export const CONTENT_STUDIO_TOUR: ContentStudioTourSection[] = [
+  'radar',
+  'home',
+  'sources',
+  'creative',
+  'reviews',
+];
+
+// Below this width the step is a sheet at the bottom of the screen, never
+// a popover next to a target that may sit at an edge
+const SHEET_BELOW_PX = 640;
+const CARD_WIDTH_PX = 360;
+const EDGE_PX = 16;
+
+const useTourSteps = () => {
+  const t = useT();
+  const steps: Record<
+    ContentStudioTourSection,
+    { title: string; text: string }
+  > = {
+    radar: {
+      title: t('content_studio_tour_radar_title', 'Research starts in Radar'),
+      text: t(
+        'content_studio_tour_radar',
+        'Radar watches your feeds and pages for new developments. Research for your posts uses what it finds together with your research focus, which you can refine at any time, as you could for your first post.'
+      ),
+    },
+    home: {
+      title: t('content_studio_tour_home_title', 'Home'),
+      text: t(
+        'content_studio_tour_home',
+        "Here you can see what's ready, what needs attention and what's coming up."
+      ),
+    },
+    sources: {
+      title: t('content_studio_tour_knowledge_title', 'Knowledge'),
+      text: t(
+        'content_studio_tour_knowledge',
+        'Add trusted sources about your company, products and expertise so AI has stronger context.'
+      ),
+    },
+    creative: {
+      title: t('content_studio_tour_creative_title', 'Creative Studio'),
+      text: t(
+        'content_studio_tour_creative',
+        'Create visuals that match your content and brand.'
+      ),
+    },
+    reviews: {
+      title: t('content_studio_tour_approvals_title', 'Approvals'),
+      text: t(
+        'content_studio_tour_approvals',
+        'Review or approve content before it goes live.'
+      ),
+    },
+  };
+  return steps;
+};
+
+interface Placement {
+  // the highlighted section in the navigation, when it is on the page
+  target: { top: number; left: number; width: number; height: number } | null;
+  sheet: boolean;
+  card: { top: number; left: number; width: number } | null;
+}
+
+const place = (
+  section: ContentStudioTourSection,
+  cardHeight: number
+): Placement => {
+  const element = document.querySelector<HTMLElement>(
+    `[data-cs-section="${section}"]`
+  );
+  const width = window.innerWidth;
+  const sheet = width < SHEET_BELOW_PX;
+  const rect = element?.getBoundingClientRect();
+  const target =
+    rect && rect.width
+      ? {
+          top: rect.top,
+          left: rect.left,
+          width: rect.width,
+          height: rect.height,
+        }
+      : null;
+  if (sheet || !target) {
+    return { target, sheet: true, card: null };
+  }
+  const cardWidth = Math.min(CARD_WIDTH_PX, width - 2 * EDGE_PX);
+  const left = Math.min(
+    Math.max(target.left, EDGE_PX),
+    width - cardWidth - EDGE_PX
+  );
+  const below = target.top + target.height + 12;
+  const top =
+    below + cardHeight > window.innerHeight - EDGE_PX
+      ? Math.max(EDGE_PX, target.top - cardHeight - 12)
+      : below;
+  return { target, sheet: false, card: { top, left, width: cardWidth } };
+};
+
+// One step at a time: its section in the navigation is highlighted, and a
+// card says what it is for, with Next and Skip tour. On a phone the card is
+// a sheet at the bottom, so it can never leave the screen
+export const ContentStudioTour: FC<{ onClose: () => void }> = ({ onClose }) => {
+  const t = useT();
+  const steps = useTourSteps();
+  const titleId = useId();
+  const [index, setIndex] = useState(0);
+  const [placement, setPlacement] = useState<Placement | null>(null);
+  const card = useRef<HTMLDivElement>(null);
+  const section = CONTENT_STUDIO_TOUR[index];
+  const last = index === CONTENT_STUDIO_TOUR.length - 1;
+
+  const measure = useCallback(() => {
+    setPlacement(place(section, card.current?.offsetHeight ?? 180));
+  }, [section]);
+
+  useLayoutEffect(() => {
+    document
+      .querySelector<HTMLElement>(`[data-cs-section="${section}"]`)
+      ?.scrollIntoView?.({ block: 'nearest', inline: 'center' });
+    measure();
+    card.current?.focus();
+  }, [section, measure]);
+
+  useEffect(() => {
+    window.addEventListener('resize', measure);
+    window.addEventListener('scroll', measure, true);
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', escape);
+    return () => {
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure, true);
+      document.removeEventListener('keydown', escape);
+    };
+  }, [measure, onClose]);
+
+  const step = steps[section];
+  return (
+    <>
+      {!!placement?.target && (
+        <div
+          aria-hidden="true"
+          data-testid="tour-highlight"
+          className="fixed z-[200] pointer-events-none rounded-[8px] ring-2 ring-[var(--brand-primary,#612ad5)] ring-offset-2"
+          style={{
+            top: placement.target.top,
+            left: placement.target.left,
+            width: placement.target.width,
+            height: placement.target.height,
+          }}
+        />
+      )}
+      <div
+        ref={card}
+        role="dialog"
+        aria-modal="false"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        data-testid="tour-card"
+        data-placement={placement?.sheet === false ? 'popover' : 'sheet'}
+        className={
+          placement?.sheet === false
+            ? 'fixed z-[201] flex flex-col gap-[10px] p-[16px] rounded-[12px] border border-newTableBorder bg-newBgColorInner shadow-xl outline-none'
+            : 'fixed z-[201] inset-x-0 bottom-0 mx-auto w-full max-w-[520px] flex flex-col gap-[10px] p-[16px] pb-[max(16px,env(safe-area-inset-bottom))] rounded-t-[16px] border border-newTableBorder bg-newBgColorInner shadow-xl outline-none'
+        }
+        style={
+          placement?.sheet === false && placement.card
+            ? {
+                top: placement.card.top,
+                left: placement.card.left,
+                width: placement.card.width,
+              }
+            : undefined
+        }
+      >
+        <span className="text-[12px] text-textItemBlur" aria-live="polite">
+          {t('content_studio_tour_step', '{{step}} of {{total}}', {
+            step: index + 1,
+            total: CONTENT_STUDIO_TOUR.length,
+          })}
+        </span>
+        <h2 id={titleId} className="font-[600] text-[16px]">
+          {step.title}
+        </h2>
+        <p className="text-[14px]">{step.text}</p>
+        <div className="flex items-center justify-between gap-[8px] pt-[4px]">
+          <button
+            type="button"
+            className="min-h-[40px] text-[14px] text-textItemBlur underline"
+            onClick={onClose}
+          >
+            {t('content_studio_tour_skip', 'Skip tour')}
+          </button>
+          <Button onClick={() => (last ? onClose() : setIndex(index + 1))}>
+            {last
+              ? t('content_studio_tour_done', 'Done')
+              : t('content_studio_tour_next', 'Next')}
+          </Button>
+        </div>
+      </div>
+    </>
+  );
+};
+
+// The tour once per organization (in this browser): started by the first
+// post's success or by hand, finished or skipped for good
+export const useContentStudioTour = () => {
+  const user = useUser();
+  const organizationId = user?.orgId || '';
+  const [open, setOpen] = useState(false);
+  const start = useCallback(() => setOpen(true), []);
+  const close = useCallback(() => {
+    setOpen(false);
+    setContentStudioTourSeen(organizationId, true);
+  }, [organizationId]);
+  // the first time only: never again once finished or skipped
+  const startOnce = useCallback(() => {
+    if (organizationId && !isContentStudioTourSeen(organizationId)) {
+      setOpen(true);
+    }
+  }, [organizationId]);
+  return { open, start, startOnce, close };
+};
+
+// --- the checklist ---
+
+export interface ContentStudioGetStartedTask {
+  key:
+    | 'setup'
+    | 'first_post'
+    | 'knowledge'
+    | 'research'
+    | 'visual'
+    | 'approval';
+  label: string;
+  hint: string;
+  href: string;
+  done: boolean;
+}
+
+// Each task is a useful thing to do in a section, done when the data says
+// so: never "visit page X"
+export const useContentStudioGetStartedTasks = () => {
+  const t = useT();
+  const status = useContentStudioSetupStatus();
+  const firstPost = useContentStudioFirstPost();
+  const policy = useContentStudioEditorialPolicy<EditorialPolicyContent>();
+  const designs = useContentStudioDesigns(false, 1);
+  const content = policy.data?.currentRevision?.content;
+  const tasks: ContentStudioGetStartedTask[] = [
+    {
+      key: 'setup',
+      label: t('content_studio_get_started_setup', 'Set up Content Studio'),
+      hint: t(
+        'content_studio_get_started_setup_hint',
+        'Your AI, company profile, voice, audiences, expertise and rules.'
+      ),
+      href: '/content-studio/setup',
+      done: status.complete,
+    },
+    {
+      key: 'first_post',
+      label: t(
+        'content_studio_get_started_first_post',
+        'Create and schedule your first AI-researched post'
+      ),
+      hint: t(
+        'content_studio_get_started_first_post_hint',
+        'Research a current topic and turn it into a post.'
+      ),
+      href: FIRST_POST_PAGE,
+      done: !!firstPost.data?.activated,
+    },
+    {
+      key: 'knowledge',
+      label: t(
+        'content_studio_get_started_knowledge',
+        'Add your first Knowledge source'
+      ),
+      hint: t(
+        'content_studio_get_started_knowledge_hint',
+        'A page or feed about your company, products or field, so AI writes from it.'
+      ),
+      href: '/content-studio/sources',
+      done: status.hasSources,
+    },
+    {
+      key: 'research',
+      label: t(
+        'content_studio_get_started_research',
+        'Set your research focus'
+      ),
+      hint: t(
+        'content_studio_get_started_research_hint',
+        'What Content Studio should look for and avoid when it researches topics.'
+      ),
+      href: `${FIRST_POST_PAGE}?refine=1`,
+      done: !!content?.research,
+    },
+    {
+      key: 'visual',
+      label: t(
+        'content_studio_get_started_visual',
+        'Create a visual in Creative Studio'
+      ),
+      hint: t(
+        'content_studio_get_started_visual_hint',
+        'An image for your posts, in your brand style.'
+      ),
+      href: '/content-studio/designs',
+      done: !!designs.data?.results.length,
+    },
+    {
+      key: 'approval',
+      label: t(
+        'content_studio_get_started_approval',
+        'Decide who approves posts'
+      ),
+      hint: t(
+        'content_studio_get_started_approval_hint',
+        'Require approval before a post goes to publishing, under Editorial Policy.'
+      ),
+      href: '/content-studio/intelligence?tab=editorial',
+      done: content?.workflow?.requireApprovalForHandoff === true,
+    },
+  ];
+  return {
+    // shown after the first post succeeded, whatever failed to load
+    activated: !!firstPost.data?.activated,
+    loaded: status.loaded && firstPost.data !== undefined,
+    tasks,
+  };
+};
+
+// On Home, once the first post was scheduled or published, until every
+// task is done or the list is hidden. Easy to come back to: it stays until
+// then, and the tour can be taken again from it
+export const ContentStudioGetStarted: FC = () => {
+  const t = useT();
+  const user = useUser();
+  const organizationId = user?.orgId || '';
+  const { activated, loaded, tasks } = useContentStudioGetStartedTasks();
+  const tour = useContentStudioTour();
+  const [hidden, setHidden] = useState<boolean | null>(null);
+  useEffect(() => {
+    setHidden(read(checklistKey(organizationId)));
+  }, [organizationId]);
+  // a first post that succeeded while the user was elsewhere: the tour
+  // starts here, once
+  useEffect(() => {
+    if (loaded && activated) {
+      tour.startOnce();
+    }
+  }, [loaded, activated, tour.startOnce]);
+
+  const doneCount = tasks.filter((task) => task.done).length;
+  const show =
+    loaded && activated && hidden === false && doneCount < tasks.length;
+  return (
+    <>
+      {tour.open && <ContentStudioTour onClose={tour.close} />}
+      {show && (
+        <section
+          aria-labelledby="content-studio-get-started-title"
+          className="flex flex-col gap-[12px] p-[16px] rounded-[12px] border border-newTableBorder"
+        >
+          <div className="flex flex-wrap items-baseline gap-[8px]">
+            <h2
+              id="content-studio-get-started-title"
+              className="flex-1 min-w-[200px] font-[600]"
+            >
+              {t(
+                'content_studio_get_started_title',
+                'Get more out of Content Studio'
+              )}
+            </h2>
+            <span className="text-[13px] text-textItemBlur">
+              {t(
+                'content_studio_get_started_count',
+                '{{done}} of {{total}} done',
+                {
+                  done: doneCount,
+                  total: tasks.length,
+                }
+              )}
+            </span>
+          </div>
+          <ul className="flex flex-col gap-[8px]">
+            {tasks.map((task) => (
+              <li
+                key={task.key}
+                data-task={task.key}
+                data-done={task.done}
+                className="flex items-start gap-[10px]"
+              >
+                <span
+                  aria-hidden="true"
+                  className={
+                    task.done
+                      ? 'mt-[2px] w-[20px] h-[20px] shrink-0 rounded-full bg-[var(--brand-primary,#612ad5)] text-[var(--brand-action-text,#fff)] flex items-center justify-center text-[12px]'
+                      : 'mt-[2px] w-[20px] h-[20px] shrink-0 rounded-full border border-newTableBorder'
+                  }
+                >
+                  {task.done ? '✓' : ''}
+                </span>
+                <div className="flex flex-col min-w-0">
+                  {task.done ? (
+                    <span className="text-[14px] text-textItemBlur line-through break-words">
+                      {task.label}
+                      <span className="sr-only">
+                        {' '}
+                        {t('content_studio_setup_done', 'done')}
+                      </span>
+                    </span>
+                  ) : (
+                    <Link
+                      href={task.href}
+                      className="text-[14px] font-[600] underline break-words"
+                    >
+                      {task.label}
+                    </Link>
+                  )}
+                  {!task.done && (
+                    <span className="text-[13px] text-textItemBlur break-words">
+                      {task.hint}
+                    </span>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+          <div className="flex flex-wrap items-center gap-[16px] pt-[4px] text-[13px]">
+            <button
+              type="button"
+              className="min-h-[32px] underline"
+              onClick={tour.start}
+            >
+              {t('content_studio_get_started_tour', 'Take the tour again')}
+            </button>
+            <button
+              type="button"
+              className="min-h-[32px] underline text-textItemBlur"
+              onClick={() => {
+                write(checklistKey(organizationId), true);
+                setHidden(true);
+              }}
+            >
+              {t('content_studio_get_started_hide', 'Hide this list')}
+            </button>
+          </div>
+        </section>
+      )}
+    </>
+  );
+};
+
+// The success of the first post, and right after it the tour, once
+const FirstPostSuccessWithTour: FC<{ published: boolean }> = ({
+  published,
+}) => {
+  const t = useT();
+  const tour = useContentStudioTour();
+  useEffect(() => {
+    tour.startOnce();
+  }, [tour.startOnce]);
+  return (
+    <>
+      <FirstPostSuccess published={published}>
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-[8px]">
+          <Button onClick={tour.start}>
+            {t('content_studio_tour_start', 'Take a quick tour')}
+          </Button>
+          <Link
+            href={CONTENT_STUDIO_HOME_PATH}
+            className="px-[24px] h-[40px] flex items-center justify-center rounded-full border border-textColor/60 text-textColor"
+          >
+            {t('content_studio_setup_to_home', 'Go to Content Studio')}
+          </Link>
+        </div>
+      </FirstPostSuccess>
+      {tour.open && <ContentStudioTour onClose={tour.close} />}
+    </>
+  );
+};
+
+// The first post page with its success moment and the tour after it
+export const ContentStudioFirstPostPage: FC = () => (
+  <ContentStudioFirstPost
+    success={(state) => (
+      <FirstPostSuccessWithTour published={state.firstPost.published} />
+    )}
+  />
+);

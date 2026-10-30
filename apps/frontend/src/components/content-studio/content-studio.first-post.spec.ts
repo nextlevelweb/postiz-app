@@ -598,3 +598,28 @@ describe('First post: the success', () => {
     expect(screen.getByText('Your first post is published')).toBeTruthy();
   });
 });
+
+describe('First post: review hardening', () => {
+  it('a new draft made after the user changed the post waits: "Use the new draft" puts it in', async () => {
+    state.firstPost = ready({
+      draft: { operationId: 'd', status: 'succeeded', applied: false },
+    });
+    await show();
+    expect(screen.getByTestId('first-post-text').textContent).toBe(
+      'Eerste post over AI.'
+    );
+    fireEvent.click(button('Use the new draft'));
+    await flush();
+    expect(posts('/content-studio/activation/first-post')[0].body.mode).toBe(
+      'apply'
+    );
+  });
+
+  it('a start already on its way (another tab) is followed, not shown as an error', async () => {
+    state.start = () => reply(409, { code: 'CS_FIRST_POST_STARTING' });
+    await show();
+    fireEvent.click(button('Try another angle'));
+    await flush();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+});

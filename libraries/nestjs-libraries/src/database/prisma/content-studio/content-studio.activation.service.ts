@@ -72,6 +72,12 @@ const providerUnsupported = () =>
   fail(400, 'CS_AI_PROVIDER_UNSUPPORTED', 'This AI provider is not supported.');
 const contextTooLarge = () =>
   fail(400, 'CS_AI_CONTEXT_TOO_LARGE', 'The selected AI context is too large.');
+const alreadyStarting = () =>
+  fail(
+    409,
+    'CS_FIRST_POST_STARTING',
+    'The first post is already being started.'
+  );
 const notStarted = () =>
   fail(
     409,
@@ -134,6 +140,9 @@ const day = (value: Date | null) =>
 @Injectable()
 export class ContentStudioActivationService {
   private _logger = new Logger(ContentStudioActivationService.name);
+  // organizations whose first post is being started right now: a second
+  // start in between (a double click, two tabs) would research twice
+  private _starting = new Set<string>();
 
   constructor(
     private _contentStudioAIConnectionRepository: ContentStudioAIConnectionRepository,
@@ -178,6 +187,24 @@ export class ContentStudioActivationService {
     }
     const name = this.text(request.name, NAME_MAX) ?? DEFAULT_NAME;
 
+    if (this._starting.has(input.organizationId)) {
+      throw alreadyStarting();
+    }
+    this._starting.add(input.organizationId);
+    try {
+      return await this.start(input, request, mode, language, name);
+    } finally {
+      this._starting.delete(input.organizationId);
+    }
+  }
+
+  private async start(
+    input: { organizationId: string; userId: string },
+    request: ContentStudioFirstPostRequest,
+    mode: ContentStudioFirstPostMode,
+    language: string | null,
+    name: string
+  ): Promise<{ packageId: string; done: Promise<void> }> {
     const operations = await this.operations(input.organizationId);
     const research = operations.find(
       (operation) => operation.kind === 'first_post_research'
@@ -621,7 +648,8 @@ export class ContentStudioActivationService {
         this.write(
           prepared.organizationId,
           packageId,
-          parseContentStudioFirstPostDraft(result.text, research)
+          parseContentStudioFirstPostDraft(result.text, research),
+          contentPackage.draftVersion
         )
       )
       .catch((err) => this.failed('draft', prepared, err));
@@ -643,27 +671,39 @@ export class ContentStudioActivationService {
   }
 
   // The draft into the package: the text of its first item, its media and
-  // any other item kept. Over the package as it is now, once more when
-  // someone saved it in between: the user asked for this draft
+  // any other item kept. Over the package exactly as it was when the draft
+  // started (baseDraftVersion): text someone saved since is theirs, and the
+  // draft then waits on its operation for "Use the new draft". Without a
+  // base (that request), over the package as it is now
   private async write(
     organizationId: string,
     packageId: string,
-    draft: ContentStudioFirstPostDraft
+    draft: ContentStudioFirstPostDraft,
+    baseDraftVersion?: number
   ) {
-    for (let attempt = 0; ; attempt += 1) {
-      const current = await this._contentStudioService.getPackage(
-        organizationId,
-        packageId
-      );
-      const [first, ...rest] = current.draft.copy.global.thread;
-      const itemId = first?.id ?? randomBytes(8).toString('base64url');
-      // a claim of the old text does not hold for the new one
-      const base = (
-        first
-          ? replaceContentPackageItemClaims(current.draft, [itemId], [])
-          : current.draft
-      ) as ContentPackageDraft;
-      const next = {
+    const current = await this._contentStudioService.getPackage(
+      organizationId,
+      packageId
+    );
+    if (
+      baseDraftVersion !== undefined &&
+      current.draftVersion !== baseDraftVersion
+    ) {
+      return;
+    }
+    const [first, ...rest] = current.draft.copy.global.thread;
+    const itemId = first?.id ?? randomBytes(8).toString('base64url');
+    // a claim of the old text does not hold for the new one
+    const base = (
+      first
+        ? replaceContentPackageItemClaims(current.draft, [itemId], [])
+        : current.draft
+    ) as ContentPackageDraft;
+    await this._contentStudioService.saveDraft({
+      organizationId,
+      packageId,
+      baseDraftVersion: current.draftVersion,
+      draft: {
         ...base,
         copy: {
           global: {
@@ -673,21 +713,8 @@ export class ContentStudioActivationService {
             ],
           },
         },
-      };
-      try {
-        await this._contentStudioService.saveDraft({
-          organizationId,
-          packageId,
-          baseDraftVersion: current.draftVersion,
-          draft: next,
-        });
-        return;
-      } catch (err) {
-        if (attempt >= 1) {
-          throw err;
-        }
-      }
-    }
+      },
+    });
   }
 
   // what is needed to tell why a step failed, and nothing else

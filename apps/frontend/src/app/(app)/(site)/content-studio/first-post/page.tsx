@@ -1,4 +1,4 @@
-import { ContentStudioFirstPost } from '@gitroom/frontend/components/content-studio/content-studio.first-post';
+import { ContentStudioFirstPostPage } from '@gitroom/frontend/components/content-studio/content-studio.onboarding';
 export const dynamic = 'force-dynamic';
 import { Metadata } from 'next';
 import { isGeneralServerSide } from '@gitroom/helpers/utils/is.general.server.side';
@@ -13,5 +13,5 @@ export const metadata: Metadata = {
   description: '',
 };
 export default async function Index() {
-  return <ContentStudioFirstPost />;
+  return <ContentStudioFirstPostPage />;
 }

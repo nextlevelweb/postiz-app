@@ -467,6 +467,8 @@ describe('AI connection surface so far', () => {
       // connection, read from the same list
       'content-studio.first-post.spec.ts',
       'content-studio.first-post.tsx',
+      // its success page and checklist test answer the same list
+      'content-studio.onboarding.spec.ts',
       // the setup assistant: whether AI is ready, the inline Add AI
       // connection form of the Brand & AI screen, and its setup status
       'content-studio.setup.api.ts',

@@ -586,6 +586,14 @@ export const ContentStudioFirstPost: FC<{
         await actions.start({ connectionId: connection.connectionId, mode });
         return true;
       } catch (err) {
+        // started a moment ago (another tab, a double tap): follow that one
+        if (
+          err instanceof ContentStudioRequestError &&
+          err.code === 'CS_FIRST_POST_STARTING'
+        ) {
+          await firstPost.mutate();
+          return true;
+        }
         setError(
           firstPostErrorMessage(
             t,
@@ -597,7 +605,7 @@ export const ContentStudioFirstPost: FC<{
         setBusy(false);
       }
     },
-    [actions, connection.connectionId, t]
+    [actions, connection.connectionId, firstPost, t]
   );
 
   // Saves the refined preferences as a new version of the editorial policy,
@@ -981,9 +989,33 @@ export const ContentStudioFirstPost: FC<{
     );
   }
 
+  // a draft made after the user changed the post: theirs stays until they
+  // choose the new one
+  const newDraftWaiting =
+    state.draft?.status === 'succeeded' && state.draft.applied === false;
   // ready: the draft, why, and what to do with it
   return page(
     <>
+      {newDraftWaiting && (
+        <div
+          role="status"
+          className="flex flex-col sm:flex-row sm:items-center gap-[8px] p-[12px] rounded-[8px] border border-newTableBorder text-[14px]"
+        >
+          <span className="flex-1">
+            {t(
+              'content_studio_first_post_new_draft',
+              'A new draft is ready. Your post was changed in the meantime, so it was kept as it is.'
+            )}
+          </span>
+          <Button
+            secondary
+            disabled={busy || !connection.connectionId}
+            onClick={() => start('apply')}
+          >
+            {t('content_studio_first_post_use_new', 'Use the new draft')}
+          </Button>
+        </div>
+      )}
       <section className="flex flex-col gap-[12px] p-[16px] rounded-[12px] border border-newTableBorder">
         <div className="flex flex-wrap items-baseline gap-[8px] justify-between">
           <h2 className="font-[600]">

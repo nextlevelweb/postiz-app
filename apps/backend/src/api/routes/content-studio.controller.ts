@@ -544,11 +544,10 @@ export class ContentStudioController {
 
   // The guided setup's AI draft: one suggestion for the organization's brand
   // description, writing profile, audiences, expertise and editorial policy,
-  // from what the user typed. Any member may ask; nothing is saved here: the
-  // reviewed draft is saved through the routes of each profile. 200, since
-  // nothing is created for the user to keep
-  // Starts the setup draft and answers at once with its operation: the draft
-  // is made on the server even when this request is gone, and read back below
+  // from what the user typed. Any member may ask; no profile is saved here:
+  // the reviewed draft is saved through the routes of each profile. Starting
+  // answers at once (202) with the operation: the draft is made on the
+  // server even when this request is gone, and read back below
   @Post('/ai/setup/proposal')
   @HttpCode(202)
   async proposeAISetup(

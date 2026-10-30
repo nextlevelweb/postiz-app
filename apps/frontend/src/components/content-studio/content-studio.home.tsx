@@ -35,6 +35,7 @@ import {
   ContentStudioSetupCard,
   useContentStudioFirstUseSetup,
 } from '@gitroom/frontend/components/content-studio/content-studio.setup.card';
+import { ContentStudioGetStarted } from '@gitroom/frontend/components/content-studio/content-studio.onboarding';
 
 // What each other part of Content Studio is for, in one line
 const SectionCards: FC = () => {
@@ -220,6 +221,7 @@ export const ContentStudioHome: FC = () => {
       }
     >
       <ContentStudioSetupCard hasContent={!!packages.data?.results.length} />
+      <ContentStudioGetStarted />
 
       {!!latest && (
         <div className="flex flex-wrap items-center gap-[12px] p-[16px] rounded-[12px] bg-newBgLineColor">

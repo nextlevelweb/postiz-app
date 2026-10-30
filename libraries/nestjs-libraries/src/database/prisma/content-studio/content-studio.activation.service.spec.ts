@@ -404,7 +404,6 @@ describe('First post: failures say where it stopped', () => {
     ctx.calls[0].answer(researchAnswer());
     await settle();
     ctx.service.saveDraft.mockRejectedValueOnce(new Error('db'));
-    ctx.service.saveDraft.mockRejectedValueOnce(new Error('db'));
     ctx.calls[1].answer(draftAnswer());
     await settle();
     expect((await state(ctx)).draft).toMatchObject({
@@ -546,5 +545,45 @@ describe('First post: requests', () => {
         response: { code: 'CS_FIRST_POST_NOT_STARTED' },
       });
     }
+  });
+});
+
+describe('First post: review hardening', () => {
+  it('a second start while the first is still being set up is refused, not researched twice', async () => {
+    const ctx = build();
+    const [one, two] = await Promise.allSettled([
+      start(ctx, 'first'),
+      start(ctx, 'first'),
+    ]);
+    expect(one.status).toBe('fulfilled');
+    expect(two).toMatchObject({
+      status: 'rejected',
+      reason: { response: { code: 'CS_FIRST_POST_STARTING' } },
+    });
+    expect(ctx.calls).toHaveLength(1);
+    expect(ctx.service.createPackage).toHaveBeenCalledTimes(1);
+    // and a later start works again
+    ctx.calls[0].refuse(new ContentStudioAIProviderError('TIMEOUT'));
+    await settle();
+    await start(ctx, 'research');
+    expect(ctx.calls).toHaveLength(2);
+  });
+
+  it('text the user saved while the draft was written is kept; the new draft waits for "Use the new draft"', async () => {
+    const ctx = build();
+    await start(ctx, 'first');
+    ctx.calls[0].answer(researchAnswer());
+    await settle();
+    // the user writes their own text in the editor meanwhile
+    const pkg = ctx.packages.get(PACKAGE);
+    pkg.draft.copy.global.thread[0].text = 'Mijn eigen tekst';
+    pkg.draftVersion += 1;
+    ctx.calls[1].answer(draftAnswer('AI-tekst'));
+    await settle();
+    const now = await state(ctx);
+    expect(now.package).toMatchObject({ text: 'Mijn eigen tekst' });
+    expect(now.draft).toMatchObject({ status: 'succeeded', applied: false });
+    await start(ctx, 'apply');
+    expect((await state(ctx)).package).toMatchObject({ text: 'AI-tekst' });
   });
 });

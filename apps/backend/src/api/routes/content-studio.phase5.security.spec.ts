@@ -406,7 +406,10 @@ describe('Phase 5 security and audit architecture (P5-08)', () => {
     it('P5S-14 the approval policy and its refusal live in exactly the intended Content Studio modules', () => {
       // the policy and its setting; the editor only hears from the server
       // whether a revision needs approval (handoffApprovalRequired)
+      // activation flow 01: the getting-started list only reads whether
+      // approval is on, to tick its task
       expect(users(/requireApprovalForHandoff/)).toEqual([
+        `${FE}/content-studio.onboarding.tsx`,
         `${FE}/intelligence/content-studio.editorial-policy.tsx`,
         POLICY,
       ]);
