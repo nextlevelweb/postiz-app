@@ -96,13 +96,16 @@ export class ContentStudioAICredentialError extends Error {
 }
 
 // What a model can do. text is always true; structuredOutput says whether
-// the provider documents JSON schema output for it
+// the provider documents JSON schema output for it; webSearch, present only
+// where true, that the connection can let the model search the web itself
+// (the first-post research): Content Studio never searches or fetches
 export interface ContentStudioAIModelInfo {
   id: string;
   label: string;
   capabilities: {
     text: true;
     structuredOutput: boolean;
+    webSearch?: true;
   };
 }
 
@@ -188,17 +191,18 @@ const MODELS: Record<
     },
   ],
   // as `codex debug models` lists them for a ChatGPT sign-in (checked
-  // 2026-10-29); codex exec takes a JSON schema for the final answer
+  // 2026-10-29); codex exec takes a JSON schema for the final answer, and
+  // its own live web search when asked (web_search = "live")
   codex: [
     {
       id: 'gpt-6.1-sol',
       label: 'GPT-6.1 Sol',
-      capabilities: { text: true, structuredOutput: true },
+      capabilities: { text: true, structuredOutput: true, webSearch: true },
     },
     {
       id: 'gpt-6.1-terra',
       label: 'GPT-6.1 Terra',
-      capabilities: { text: true, structuredOutput: true },
+      capabilities: { text: true, structuredOutput: true, webSearch: true },
     },
   ],
 };
@@ -219,6 +223,7 @@ const copyModel = (model: ContentStudioAIModelInfo) => ({
   capabilities: {
     text: model.capabilities.text,
     structuredOutput: model.capabilities.structuredOutput,
+    ...(model.capabilities.webSearch ? { webSearch: true as const } : {}),
   },
 });
 

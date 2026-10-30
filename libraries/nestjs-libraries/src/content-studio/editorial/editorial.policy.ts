@@ -34,6 +34,55 @@ export const EDITORIAL_COMPLIANCE_NOTES_MAX = 4000;
 // keys and strings in another order only, so this is its size too
 export const EDITORIAL_POLICY_CONTENT_MAX_BYTES = 32_768;
 
+// What Content Studio researches for the organization (activation flow 01):
+// what to look for and stay away from, how fresh a subject should be and
+// which angles fit. Context for the first-post research, refined by the
+// user; a policy without it (every policy saved before it existed) leaves
+// the choice to the profile
+export const CONTENT_STUDIO_RESEARCH_FRESHNESS = [
+  'breaking',
+  'week',
+  'month',
+  'evergreen',
+] as const;
+export const CONTENT_STUDIO_RESEARCH_ANGLES = [
+  'practical',
+  'explainer',
+  'opinion',
+  'analysis',
+  'example',
+  'myth_busting',
+  'opportunity',
+  'industry',
+] as const;
+export const RESEARCH_FOCUS_MAX = 10;
+export const RESEARCH_FOCUS_ENTRY_MAX = 200;
+
+const researchSchema = z
+  .object({
+    lookFor: distinctList(
+      trimmedText(RESEARCH_FOCUS_ENTRY_MAX, 1),
+      RESEARCH_FOCUS_MAX
+    ),
+    avoid: distinctList(
+      trimmedText(RESEARCH_FOCUS_ENTRY_MAX, 1),
+      RESEARCH_FOCUS_MAX
+    ),
+    freshness: z.enum(CONTENT_STUDIO_RESEARCH_FRESHNESS),
+    angles: z
+      .array(z.enum(CONTENT_STUDIO_RESEARCH_ANGLES))
+      .max(CONTENT_STUDIO_RESEARCH_ANGLES.length)
+      .refine((angles) => new Set(angles).size === angles.length),
+  })
+  .strict();
+
+export interface ContentStudioResearchPreferences {
+  lookFor: string[];
+  avoid: string[];
+  freshness: (typeof CONTENT_STUDIO_RESEARCH_FRESHNESS)[number];
+  angles: Array<(typeof CONTENT_STUDIO_RESEARCH_ANGLES)[number]>;
+}
+
 // The workflow of the organization's Content Studio: one switch. A policy
 // without it (every policy saved before it existed) requires nothing
 const workflowSchema = z
@@ -42,7 +91,7 @@ const workflowSchema = z
   })
   .strict();
 
-// Every key but workflow is required. Each list refuses an entry it already
+// Every key but workflow and research is required. Each list refuses an entry it already
 // has; the same text in two different lists is allowed
 const contentSchema = z
   .object({
@@ -71,6 +120,7 @@ const contentSchema = z
     // there is nothing to note
     complianceNotes: trimmedText(EDITORIAL_COMPLIANCE_NOTES_MAX),
     workflow: workflowSchema.optional(),
+    research: researchSchema.optional(),
   })
   .strict();
 
@@ -84,6 +134,7 @@ export interface ContentStudioEditorialPolicyContentV1 {
   complianceNotes: string;
   // only ever { requireApprovalForHandoff: true }: off is no workflow at all
   workflow?: { requireApprovalForHandoff: boolean };
+  research?: ContentStudioResearchPreferences;
 }
 
 export type ContentStudioEditorialPolicyErrorCode = 'INVALID' | 'TOO_LARGE';

@@ -1,4 +1,5 @@
 import { ContentStudioAISetupService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-setup.service';
+import { ContentStudioActivationService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.activation.service';
 import {
   ArgumentMetadata,
   BadRequestException,
@@ -117,7 +118,8 @@ const setup = () => {
     {} as ContentStudioDesignBlockService,
     {} as ContentStudioReviewService,
     {} as ContentStudioDesignAIService,
-    {} as ContentStudioAISetupService
+    {} as ContentStudioAISetupService,
+    {} as ContentStudioActivationService
   );
   return { patterns, controller, result };
 };
@@ -176,7 +178,8 @@ describe('ContentStudioController design layout pattern routes', () => {
     // P8-C3: two more, pause and resume a feed
     // P8-C4: one more, a feed's interval
     // activation flow 01: one more, reading a setup draft back
-    expect(all).toHaveLength(151);
+    // activation flow 01: two more, the first post and starting it
+    expect(all).toHaveLength(153);
     expect(
       all.filter(
         (r) =>

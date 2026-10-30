@@ -46,6 +46,19 @@ export interface ContentStudioAIUsageCreate {
   providerRequestId: string | null;
 }
 
+// What a client reads back of an operation it started
+const OPERATION_STATE = {
+  id: true,
+  kind: true,
+  status: true,
+  packageId: true,
+  baseDraftVersion: true,
+  errorCode: true,
+  result: true,
+  startedAt: true,
+  completedAt: true,
+} as const;
+
 interface OperationCompletion {
   organizationId: string;
   operationId: string;
@@ -146,17 +159,25 @@ export class ContentStudioAIOperationRepository {
         id,
         organizationId,
       },
-      select: {
-        id: true,
-        kind: true,
-        status: true,
-        packageId: true,
-        baseDraftVersion: true,
-        errorCode: true,
-        result: true,
-        startedAt: true,
-        completedAt: true,
+      select: OPERATION_STATE,
+    });
+  }
+
+  // The latest operations of these kinds, newest first, with their kept
+  // results: the first post reads its research and draft back this way
+  listOperationStatesForOrganization(input: {
+    organizationId: string;
+    kinds: readonly string[];
+    take: number;
+  }) {
+    return this._operation.model.contentStudioAIOperation.findMany({
+      where: {
+        organizationId: input.organizationId,
+        kind: { in: [...input.kinds] },
       },
+      orderBy: [{ startedAt: 'desc' }, { id: 'asc' }],
+      select: OPERATION_STATE,
+      take: input.take,
     });
   }
 

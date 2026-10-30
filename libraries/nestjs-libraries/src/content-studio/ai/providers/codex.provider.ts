@@ -207,7 +207,9 @@ export function toContentStudioCodexResult(
 const codexPrompt = (request: ContentStudioAITextRequest) =>
   [
     request.system,
-    'Answer from this message alone: do not run commands, read files or search the web.',
+    request.webSearch
+      ? 'Answer from this message and what you find with web search: do not run commands or read files.'
+      : 'Answer from this message alone: do not run commands, read files or search the web.',
     request.prompt,
   ].join('\n\n');
 
@@ -262,6 +264,10 @@ export function createCodexProviderAdapter(
           'read-only',
           '-c',
           'shell_environment_policy.inherit="none"',
+          // Codex's own web search: live only when the request asks for it
+          // (a model with the webSearch capability), otherwise off
+          '-c',
+          request.webSearch ? 'web_search="live"' : 'web_search="disabled"',
           '-m',
           model.id,
         ];

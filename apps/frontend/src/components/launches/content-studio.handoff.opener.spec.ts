@@ -878,6 +878,39 @@ describe('ContentStudioHandoffOpener: closing the composer', () => {
     expect(handoffCalls()).toHaveLength(1);
   });
 
+  // activation flow 01: the first post comes back to its own page, which
+  // then sees whether the post was scheduled
+  it('a handoff of the first post goes back to the first post page when the composer closes', async () => {
+    const id = newId();
+    renderOpener(`/launches?handoff=${id}&return=first-post`);
+    await waitFor(() => expect(composerOpens()).toHaveLength(1));
+    act(() => mockModals.set([]));
+    await flush();
+    expect(mockRouter.push).toHaveBeenCalledWith('/content-studio/first-post');
+    expect(mockRouter.replace).not.toHaveBeenCalled();
+  });
+
+  it('an unknown return page is ignored: only the fixed list, never an address from the URL', async () => {
+    for (const page of [
+      'https://evil.example',
+      'constructor',
+      '/content-studio',
+    ]) {
+      cleanup();
+      mockRouter.push.mockClear();
+      mockRouter.replace.mockClear();
+      const id = newId();
+      renderOpener(
+        `/launches?handoff=${id}&return=${encodeURIComponent(page)}`
+      );
+      await waitFor(() => expect(composerOpens().length).toBeGreaterThan(0));
+      act(() => mockModals.set([]));
+      await flush();
+      expect(mockRouter.push).not.toHaveBeenCalled();
+      expect(mockRouter.replace).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it('O37 under StrictMode the URL is only cleaned on the real close', async () => {
     const id = newId();
     renderOpener(`/launches?handoff=${id}&msg=1`, { strict: true });

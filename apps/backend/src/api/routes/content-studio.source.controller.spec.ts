@@ -1,4 +1,5 @@
 import { ContentStudioAISetupService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-setup.service';
+import { ContentStudioActivationService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.activation.service';
 import {
   ArgumentMetadata,
   BadRequestException,
@@ -120,7 +121,8 @@ const setup = () => {
     {} as ContentStudioDesignBlockService,
     {} as ContentStudioReviewService,
     {} as ContentStudioDesignAIService,
-    {} as ContentStudioAISetupService
+    {} as ContentStudioAISetupService,
+    {} as ContentStudioActivationService
   );
   return { sources, ingestion, controller, result };
 };
@@ -666,7 +668,8 @@ describe('ContentStudioController feed capture history (P8-O1)', () => {
       Reflect.getMetadata(HTTP_CODE_METADATA, handler('listSourceCaptures'))
     ).toBeUndefined();
     // activation flow 01: one more, reading a setup draft back
-    expect(allRoutes()).toHaveLength(151);
+    // activation flow 01: two more, the first post and starting it
+    expect(allRoutes()).toHaveLength(153);
     // one history route: no other capture route, none for the organization
     expect(allRoutes().filter((r) => /captur|attempt|histor/i.test(r))).toEqual(
       ['GET /sources/:id/captures']
@@ -893,7 +896,8 @@ describe('ContentStudioController source version changes', () => {
 
   it('R5 is the 144th route (145 with P8-04B1, 147 with P8-C3, 148 with P8-C4, 149 with P8-O1)', () => {
     // activation flow 01: one more, reading a setup draft back
-    expect(allRoutes()).toHaveLength(151);
+    // activation flow 01: two more, the first post and starting it
+    expect(allRoutes()).toHaveLength(153);
   });
 });
 
@@ -915,7 +919,8 @@ describe('ContentStudioController organization page changes', () => {
       Reflect.getMetadata(HTTP_CODE_METADATA, handler('listSourceChanges'))
     ).toBeUndefined();
     // activation flow 01: one more, reading a setup draft back
-    expect(allRoutes()).toHaveLength(151);
+    // activation flow 01: two more, the first post and starting it
+    expect(allRoutes()).toHaveLength(153);
   });
 
   it('OC2 reads for the request organization with the page and window only', async () => {
@@ -1101,7 +1106,8 @@ describe('ContentStudioController feed pause', () => {
     }
     // P8-C4: one more, a feed's interval; P8-O1: its capture history
     // activation flow 01: one more, reading a setup draft back
-    expect(allRoutes()).toHaveLength(151);
+    // activation flow 01: two more, the first post and starting it
+    expect(allRoutes()).toHaveLength(153);
     expect(
       allRoutes().filter((r) => /pause|resume|schedul|interval/i.test(r))
     ).toEqual([
@@ -1174,7 +1180,8 @@ describe('ContentStudioController feed interval (P8-C4)', () => {
       Reflect.getMetadata(HTTP_CODE_METADATA, handler('setSourceInterval'))
     ).toBe(200);
     // activation flow 01: one more, reading a setup draft back
-    expect(allRoutes()).toHaveLength(151);
+    // activation flow 01: two more, the first post and starting it
+    expect(allRoutes()).toHaveLength(153);
   });
 
   it('sets the interval for the request organization with the path id and the value only, for any member', async () => {

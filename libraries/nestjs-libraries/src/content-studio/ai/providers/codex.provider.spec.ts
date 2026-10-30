@@ -8,6 +8,17 @@ import {
   ContentStudioAISetupInput,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.setup.prompt';
 import { parseContentStudioAISetupProposal } from '@gitroom/nestjs-libraries/content-studio/ai/ai.setup.proposal';
+import {
+  buildContentStudioAIFirstPostDraftPrompt,
+  buildContentStudioAIFirstPostResearchPrompt,
+  CONTENT_STUDIO_AI_FIRST_POST_DRAFT_SCHEMA,
+  CONTENT_STUDIO_AI_FIRST_POST_DRAFT_SCHEMA_NAME,
+  CONTENT_STUDIO_AI_FIRST_POST_RESEARCH_SCHEMA,
+  CONTENT_STUDIO_AI_FIRST_POST_RESEARCH_SCHEMA_NAME,
+  parseContentStudioFirstPostDraft,
+  parseContentStudioFirstPostResearch,
+} from '@gitroom/nestjs-libraries/content-studio/ai/ai.activation.prompt';
+import { parseContentStudioEditorialPolicyContent } from '@gitroom/nestjs-libraries/content-studio/editorial/editorial.policy';
 import { ContentStudioAITextRequest } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.types';
 import {
   ContentStudioCodexRun,
@@ -142,6 +153,26 @@ describe('Codex adapter: codex exec', () => {
       output: { type: 'text' },
     });
     expect(seen[0].args).not.toContain('--output-schema');
+  });
+
+  // activation flow 01: the first-post research may search the web; every
+  // other request has Codex's web search off
+  it('turns web search on only when the request asks for it', async () => {
+    const off = fakeRunner();
+    await createCodexProviderAdapter(off.runner).generateText(setupRequest());
+    expect(off.seen[0].args).toContain('web_search="disabled"');
+    expect(off.seen[0].args).not.toContain('web_search="live"');
+    expect(off.seen[0].stdin).toContain(
+      'do not run commands, read files or search the web'
+    );
+    const on = fakeRunner();
+    await createCodexProviderAdapter(on.runner).generateText({
+      ...setupRequest(),
+      webSearch: true,
+    });
+    expect(on.seen[0].args).toContain('web_search="live"');
+    expect(on.seen[0].args).not.toContain('web_search="disabled"');
+    expect(on.seen[0].stdin).toContain('what you find with web search');
   });
 
   it('refuses a model outside its catalog before starting a process', async () => {
@@ -307,5 +338,176 @@ describe('Codex adapter: real model (opt-in)', () => {
       );
     },
     180_000
+  );
+});
+
+// Activation flow 01: one real first post (research with web search, then
+// the draft) and one refined research, through the real prompts and the
+// strict parsers. Opt-in like the test above; nothing is stored
+describe('Codex adapter: real first post (opt-in)', () => {
+  const profile = {
+    language: 'nl',
+    today: new Date().toISOString().slice(0, 10),
+    brand: {
+      name: SEMANTIC_INPUT.companyName,
+      tagline: SEMANTIC_INPUT.tagline as string,
+      description: SEMANTIC_INPUT.description,
+    },
+    context: {
+      writing: null,
+      editorialPolicy: parseContentStudioEditorialPolicyContent({
+        schemaVersion: 1,
+        principles: ['Toon expertise met concrete uitleg'],
+        prohibitedTopics: [],
+        claimRules: ['Geen cijfers of klanten verzinnen'],
+        ctaRules: ['Nodig uit tot een gesprek over de eigen situatie'],
+        formatConventions: [],
+        complianceNotes: '',
+      }),
+      audience: {
+        schemaVersion: 1 as const,
+        description: SEMANTIC_INPUT.audience as string,
+        role: 'Eigenaar of marketingverantwoordelijke',
+        knowledgeLevel: 'beginner' as const,
+        goals: ['Meer resultaat uit website en marketing'],
+        painPoints: ['Te veel handmatig werk'],
+        objections: [],
+        preferredTone: null,
+        locale: 'nl',
+      },
+      expertise: {
+        schemaVersion: 1 as const,
+        subjects: [
+          'Websites voor mkb',
+          'Automatiseren van handmatig werk',
+          'Praktische AI',
+        ],
+        differentiators: [],
+        stances: [],
+        frameworks: [],
+        evidenceExpectations: '',
+        avoidTopics: [],
+        confidenceBoundaries: '',
+      },
+    },
+    findings: [],
+    webSearch: true,
+  };
+  const ask = async (
+    prompt: { system: string; prompt: string },
+    schema: { name: string; schema: Record<string, unknown> },
+    webSearch: boolean
+  ) => {
+    const started = Date.now();
+    const result = await createCodexProviderAdapter().generateText({
+      model: 'gpt-6.1-sol',
+      system: prompt.system,
+      prompt: prompt.prompt,
+      output: { type: 'json', schemaName: schema.name, schema: schema.schema },
+      maxOutputTokens: 4096,
+      timeoutMs: 180_000,
+      ...(webSearch ? { webSearch: true } : {}),
+    });
+    return { result, latencyMs: Date.now() - started };
+  };
+
+  realTest(
+    'researches a current topic with sources and drafts a Dutch post from it; refined research finds another',
+    async () => {
+      const research = await ask(
+        buildContentStudioAIFirstPostResearchPrompt({
+          ...profile,
+          preferences: null,
+          previousTopics: [],
+        }),
+        {
+          name: CONTENT_STUDIO_AI_FIRST_POST_RESEARCH_SCHEMA_NAME,
+          schema: CONTENT_STUDIO_AI_FIRST_POST_RESEARCH_SCHEMA,
+        },
+        true
+      );
+      const found = parseContentStudioFirstPostResearch(
+        research.result.text,
+        profile
+      );
+      const draft = await ask(
+        buildContentStudioAIFirstPostDraftPrompt({
+          ...profile,
+          research: found,
+        }),
+        {
+          name: CONTENT_STUDIO_AI_FIRST_POST_DRAFT_SCHEMA_NAME,
+          schema: CONTENT_STUDIO_AI_FIRST_POST_DRAFT_SCHEMA,
+        },
+        false
+      );
+      const post = parseContentStudioFirstPostDraft(draft.result.text, found);
+      expect(post.text.length).toBeGreaterThan(200);
+      // refined: other preferences, steering away from the first subject
+      const refined = await ask(
+        buildContentStudioAIFirstPostResearchPrompt({
+          ...profile,
+          preferences: {
+            lookFor: [
+              'Nieuwe Europese regels voor AI en websites (AI Act, toegankelijkheid)',
+            ],
+            avoid: ['Algemeen AI-nieuws van grote techbedrijven'],
+            freshness: 'month',
+            angles: ['practical', 'myth_busting'],
+          },
+          previousTopics: [found.topic],
+        }),
+        {
+          name: CONTENT_STUDIO_AI_FIRST_POST_RESEARCH_SCHEMA_NAME,
+          schema: CONTENT_STUDIO_AI_FIRST_POST_RESEARCH_SCHEMA,
+        },
+        true
+      );
+      const second = parseContentStudioFirstPostResearch(
+        refined.result.text,
+        profile
+      );
+      // for the developer's review: what was found, not the whole post
+      console.log(
+        JSON.stringify(
+          {
+            research: {
+              latencyMs: research.latencyMs,
+              usage: research.result.usage,
+              topic: found.topic,
+              angle: found.angle,
+              why: found.why,
+              sourceBacked: found.sourceBacked,
+              sources: found.sources.map((s) => ({
+                host: new URL(s.url).host,
+                publishedAt: s.publishedAt,
+                origin: s.origin,
+              })),
+            },
+            draft: {
+              latencyMs: draft.latencyMs,
+              usage: draft.result.usage,
+              characters: post.text.length,
+              opening: post.text.slice(0, 160),
+              addresses: post.text.match(/https?:\/\/\S+/g) ?? [],
+            },
+            refined: {
+              latencyMs: refined.latencyMs,
+              usage: refined.result.usage,
+              topic: second.topic,
+              angle: second.angle,
+              sourceBacked: second.sourceBacked,
+              sources: second.sources.map((s) => ({
+                host: new URL(s.url).host,
+                publishedAt: s.publishedAt,
+              })),
+            },
+          },
+          null,
+          2
+        )
+      );
+    },
+    600_000
   );
 });

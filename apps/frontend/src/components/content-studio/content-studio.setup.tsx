@@ -11,6 +11,7 @@ import {
 } from 'react';
 import clsx from 'clsx';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import i18next from 'i18next';
 import { Button } from '@gitroom/react/form/button';
 import { Input } from '@gitroom/react/form/input';
@@ -19,6 +20,10 @@ import { useUser } from '@gitroom/frontend/components/layout/user.context';
 import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import { ContentStudioRequestError } from '@gitroom/frontend/components/content-studio/content-studio.api';
 import { CreateContentStudioPackageModal } from '@gitroom/frontend/components/content-studio/content-studio.package.modal';
+import {
+  FIRST_POST_PAGE,
+  useContentStudioFirstPostActions,
+} from '@gitroom/frontend/components/content-studio/content-studio.first-post';
 import {
   CONTENT_STUDIO_HOME_PATH,
   ContentStudioLoading,
@@ -335,7 +340,7 @@ const WizardProgress: FC<{
     t('content_studio_setup_step_ai', 'Connect AI'),
     t('content_studio_setup_step_company', 'Your company'),
     t('content_studio_setup_step_profile', 'Your content profile'),
-    t('content_studio_setup_step_save', 'Review and save'),
+    t('content_studio_setup_step_first_post', 'Your first post'),
   ];
   return (
     <nav
@@ -558,38 +563,114 @@ const SuggestionCard: FC<{
   );
 };
 
-const Chips: FC<{ values: string[]; max?: number }> = ({ values, max = 10 }) =>
-  values.length ? (
-    <ul className="flex flex-wrap gap-[6px]">
-      {values.slice(0, max).map((value) => (
-        <li
-          key={value}
-          className="px-[10px] py-[2px] rounded-full border border-newTableBorder text-[13px] break-words max-w-full"
-        >
-          {value}
-        </li>
-      ))}
-      {values.length > max && (
-        <li className="text-[13px] text-textItemBlur self-center">
-          +{values.length - max}
-        </li>
-      )}
-    </ul>
-  ) : null;
+// "Show 4 more" / "Show less" under a list that is longer than it shows:
+// a real button, for touch and keyboard, that names the list it opens
+const ShowMore: FC<{
+  hidden: number;
+  open: boolean;
+  label?: string;
+  onToggle: () => void;
+}> = ({ hidden, open, label, onToggle }) => {
+  const t = useT();
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      aria-label={
+        label
+          ? open
+            ? t('content_studio_setup_show_less_of', 'Show less: {{list}}', {
+                list: label,
+              })
+            : t(
+                'content_studio_setup_show_more_of',
+                'Show {{count}} more: {{list}}',
+                { count: hidden, list: label }
+              )
+          : undefined
+      }
+      onClick={onToggle}
+      className="self-start min-h-[32px] px-[2px] text-[13px] font-[600] text-[var(--brand-primary,#612ad5)] underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 rounded-[4px]"
+    >
+      {open
+        ? t('content_studio_setup_show_less', 'Show less')
+        : t('content_studio_setup_show_more', 'Show {{count}} more', {
+            count: hidden,
+          })}
+    </button>
+  );
+};
 
-const Bullets: FC<{ values: string[]; max?: number }> = ({ values, max = 3 }) =>
-  values.length ? (
-    <ul className="list-disc ps-[20px] text-[14px] flex flex-col gap-[2px]">
-      {values.slice(0, max).map((value) => (
-        <li key={value} className="break-words">
-          {value}
-        </li>
-      ))}
+// Each list opens on its own: the state is the list's, never shared
+const Chips: FC<{ values: string[]; max?: number; label?: string }> = ({
+  values,
+  max = 10,
+  label,
+}) => {
+  const [open, setOpen] = useState(false);
+  if (!values.length) {
+    return null;
+  }
+  const shown = open ? values : values.slice(0, max);
+  return (
+    <div className="flex flex-col gap-[6px] min-w-0">
+      <ul className="flex flex-wrap gap-[6px]">
+        {shown.map((value) => (
+          <li
+            key={value}
+            className="px-[10px] py-[2px] rounded-full border border-newTableBorder text-[13px] break-words max-w-full"
+          >
+            {value}
+          </li>
+        ))}
+      </ul>
       {values.length > max && (
-        <li className="list-none text-textItemBlur">+{values.length - max}</li>
+        <ShowMore
+          hidden={values.length - max}
+          open={open}
+          label={label}
+          onToggle={() => setOpen(!open)}
+        />
       )}
-    </ul>
-  ) : null;
+    </div>
+  );
+};
+
+const Bullets: FC<{ values: string[]; max?: number; label?: string }> = ({
+  values,
+  max = 3,
+  label,
+}) => {
+  const [open, setOpen] = useState(false);
+  if (!values.length) {
+    return null;
+  }
+  const shown = open ? values : values.slice(0, max);
+  return (
+    <div className="flex flex-col gap-[4px] min-w-0">
+      <ul className="list-disc ps-[20px] text-[14px] flex flex-col gap-[2px]">
+        {shown.map((value) => (
+          <li key={value} className="break-words">
+            {value}
+          </li>
+        ))}
+      </ul>
+      {values.length > max && (
+        <ShowMore
+          hidden={values.length - max}
+          open={open}
+          label={label}
+          onToggle={() => setOpen(!open)}
+        />
+      )}
+    </div>
+  );
+};
+
+// Two lists side by side only where both fit: one column on a phone. (The
+// tablet: prefix of this app is a max-width query, so tablet:grid-cols-2
+// made phones two columns and wide screens one)
+const PAIRED = 'grid grid-cols-1 sm:grid-cols-2 gap-[12px]';
 
 const SummaryLine: FC<{ label: string; children: ReactNode }> = ({
   label,
@@ -636,6 +717,8 @@ export const ContentStudioSetupWizard: FC = () => {
   );
   const policyActions = useContentStudioEditorialPolicyActions();
   const connectionActions = useContentStudioAIConnectionActions();
+  const firstPostActions = useContentStudioFirstPostActions();
+  const router = useRouter();
 
   const [draft, setDraft] = useState<SetupDraft | null>(null);
   // what exists already, the start of a manual profile
@@ -661,6 +744,8 @@ export const ContentStudioSetupWizard: FC = () => {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  // saved, and on the way to the first post
+  const [leaving, setLeaving] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const busy = useRef(false);
 
@@ -790,10 +875,10 @@ export const ContentStudioSetupWizard: FC = () => {
 
   // every change is kept, so the assistant can be left and resumed
   useEffect(() => {
-    if (draft && !done) {
+    if (draft && !done && !leaving) {
       saveContentStudioSetupDraft(organizationId, draft);
     }
-  }, [draft, done, organizationId]);
+  }, [draft, done, leaving, organizationId]);
 
   const update = useCallback(
     (patch: Partial<SetupDraft>) =>
@@ -1112,102 +1197,137 @@ export const ContentStudioSetupWizard: FC = () => {
 
   // Saves what was reviewed, in a fixed order, each part in its own request.
   // A part that was saved is not saved again when Save is pressed after a
-  // failure
-  const save = useCallback(async () => {
-    if (!draft?.profile || busy.current) {
-      return;
-    }
-    busy.current = true;
-    setSaving(true);
-    setSaveError(null);
-    const profile = draft.profile;
-    const saved: SetupSaved = { ...draft.saved };
-    const keep = () => update({ saved: { ...saved } });
-    const upsert = async <C,>(
-      base: ContentStudioProfilesPath,
-      actions: typeof writingActions,
-      named: Named<C>
-    ) => {
-      const name = named.name.trim();
-      const same = await setup.findActiveProfile(base, name);
-      if (!same) {
-        await actions.createProfile(name, named.content);
+  // failure. With firstPost (an AI connection is ready), the first post is
+  // started next and the assistant goes to it: research and draft run on
+  // the server, and a failure to start them leaves the saved profile saved
+  const save = useCallback(
+    async (firstPost = false) => {
+      if (!draft?.profile || busy.current) {
         return;
       }
-      const current = await setup.getProfile<C>(base, same.id);
-      await actions.saveRevision(
-        same.id,
-        current.currentRevision.revisionNumber,
-        named.content
-      );
-    };
-    try {
-      if (profile.brand.include && !saved.brand) {
-        const kit = await setup.getBrandKit();
-        await setup.saveBrandKit(
-          kit.latestRevisionNumber,
-          brandKitWithIdentity(kit.currentRevision?.content, {
-            brandName: draft.company.companyName,
-            tagline: profile.brand.tagline,
-            description: profile.brand.description,
-          })
+      busy.current = true;
+      setSaving(true);
+      setSaveError(null);
+      const profile = draft.profile;
+      const saved: SetupSaved = { ...draft.saved };
+      const keep = () => update({ saved: { ...saved } });
+      const upsert = async <C,>(
+        base: ContentStudioProfilesPath,
+        actions: typeof writingActions,
+        named: Named<C>
+      ) => {
+        const name = named.name.trim();
+        const same = await setup.findActiveProfile(base, name);
+        if (!same) {
+          await actions.createProfile(name, named.content);
+          return;
+        }
+        const current = await setup.getProfile<C>(base, same.id);
+        await actions.saveRevision(
+          same.id,
+          current.currentRevision.revisionNumber,
+          named.content
         );
-        saved.brand = true;
-        keep();
-      }
-      if (profile.writing.include && !saved.writing) {
-        await upsert(WRITING_PROFILES_PATH, writingActions, profile.writing);
-        saved.writing = true;
-        keep();
-      }
-      for (const [index, audience] of profile.audiences.entries()) {
-        if (audience.include && !saved.audiences?.includes(index)) {
-          await upsert(AUDIENCE_PROFILES_PATH, audienceActions, audience);
-          saved.audiences = [...(saved.audiences || []), index];
+      };
+      try {
+        if (profile.brand.include && !saved.brand) {
+          const kit = await setup.getBrandKit();
+          await setup.saveBrandKit(
+            kit.latestRevisionNumber,
+            brandKitWithIdentity(kit.currentRevision?.content, {
+              brandName: draft.company.companyName,
+              tagline: profile.brand.tagline,
+              description: profile.brand.description,
+            })
+          );
+          saved.brand = true;
           keep();
         }
+        if (profile.writing.include && !saved.writing) {
+          await upsert(WRITING_PROFILES_PATH, writingActions, profile.writing);
+          saved.writing = true;
+          keep();
+        }
+        for (const [index, audience] of profile.audiences.entries()) {
+          if (audience.include && !saved.audiences?.includes(index)) {
+            await upsert(AUDIENCE_PROFILES_PATH, audienceActions, audience);
+            saved.audiences = [...(saved.audiences || []), index];
+            keep();
+          }
+        }
+        if (profile.expertise.include && !saved.expertise) {
+          await upsert(
+            EXPERTISE_PROFILES_PATH,
+            expertiseActions,
+            profile.expertise
+          );
+          saved.expertise = true;
+          keep();
+        }
+        if (profile.editorial.include && !saved.editorial) {
+          const policy = await setup.getEditorialPolicy();
+          // the approval workflow and the research focus are not part of the
+          // assistant: kept as they are
+          const workflow = policy.currentRevision?.content.workflow;
+          const research = policy.currentRevision?.content.research;
+          const {
+            workflow: _ignored,
+            research: _kept,
+            ...rules
+          } = profile.editorial.content;
+          await policyActions.saveRevision(policy.latestRevisionNumber, {
+            ...rules,
+            ...(workflow ? { workflow } : {}),
+            ...(research ? { research } : {}),
+          });
+          saved.editorial = true;
+          keep();
+        }
+        clearContentStudioSetupDraft(organizationId);
+        setContentStudioSetupHidden(organizationId, false);
+        if (!firstPost || !connectionId) {
+          setDone(true);
+          return;
+        }
+        setLeaving(true);
+        let target = FIRST_POST_PAGE;
+        try {
+          await firstPostActions.start({
+            connectionId,
+            mode: 'first',
+            language: draft.company.language,
+            name: t('content_studio_first_post_name', 'First post'),
+          });
+        } catch (err) {
+          // the profile is saved: the first post page says what failed
+          target = `${FIRST_POST_PAGE}?error=${encodeURIComponent(
+            (err instanceof ContentStudioRequestError && err.code) ||
+              'CS_AI_PROVIDER_UNAVAILABLE'
+          )}`;
+        }
+        router.push(target);
+      } catch (err) {
+        setSaveError(profileErrorMessage(t, 'writing', err));
+      } finally {
+        busy.current = false;
+        setSaving(false);
       }
-      if (profile.expertise.include && !saved.expertise) {
-        await upsert(
-          EXPERTISE_PROFILES_PATH,
-          expertiseActions,
-          profile.expertise
-        );
-        saved.expertise = true;
-        keep();
-      }
-      if (profile.editorial.include && !saved.editorial) {
-        const policy = await setup.getEditorialPolicy();
-        // the approval workflow is not part of the assistant: kept as it is
-        const workflow = policy.currentRevision?.content.workflow;
-        const { workflow: _ignored, ...rules } = profile.editorial.content;
-        await policyActions.saveRevision(policy.latestRevisionNumber, {
-          ...rules,
-          ...(workflow ? { workflow } : {}),
-        });
-        saved.editorial = true;
-        keep();
-      }
-      clearContentStudioSetupDraft(organizationId);
-      setContentStudioSetupHidden(organizationId, false);
-      setDone(true);
-    } catch (err) {
-      setSaveError(profileErrorMessage(t, 'writing', err));
-    } finally {
-      busy.current = false;
-      setSaving(false);
-    }
-  }, [
-    draft,
-    setup,
-    writingActions,
-    audienceActions,
-    expertiseActions,
-    policyActions,
-    organizationId,
-    update,
-    t,
-  ]);
+    },
+    [
+      draft,
+      setup,
+      writingActions,
+      audienceActions,
+      expertiseActions,
+      policyActions,
+      organizationId,
+      update,
+      t,
+      connectionId,
+      firstPostActions,
+      router,
+    ]
+  );
 
   const newPackage = () =>
     modals.openModal({
@@ -1866,7 +1986,10 @@ export const ContentStudioSetupWizard: FC = () => {
                     {profile.writing.content.voice}
                   </div>
                 )}
-                <Chips values={profile.writing.content.toneTags} />
+                <Chips
+                  values={profile.writing.content.toneTags}
+                  label={t('content_studio_setup_tone', 'Tone')}
+                />
                 {!!profile.writing.content.perspective && (
                   <SummaryLine
                     label={t(
@@ -1879,7 +2002,7 @@ export const ContentStudioSetupWizard: FC = () => {
                     </div>
                   </SummaryLine>
                 )}
-                <div className="grid grid-cols-1 tablet:grid-cols-2 gap-[12px]">
+                <div className={PAIRED}>
                   {!!profile.writing.content.vocabulary.prefer.length && (
                     <SummaryLine
                       label={t(
@@ -1889,6 +2012,10 @@ export const ContentStudioSetupWizard: FC = () => {
                     >
                       <Chips
                         values={profile.writing.content.vocabulary.prefer}
+                        label={t(
+                          'content_studio_writing_prefer',
+                          'Words to prefer'
+                        )}
                         max={8}
                       />
                     </SummaryLine>
@@ -1902,20 +2029,30 @@ export const ContentStudioSetupWizard: FC = () => {
                     >
                       <Chips
                         values={profile.writing.content.vocabulary.avoid}
+                        label={t(
+                          'content_studio_writing_avoid',
+                          'Words to avoid'
+                        )}
                         max={8}
                       />
                     </SummaryLine>
                   )}
                   {!!profile.writing.content.dos.length && (
                     <SummaryLine label={t('content_studio_writing_dos', 'Do')}>
-                      <Bullets values={profile.writing.content.dos} />
+                      <Bullets
+                        values={profile.writing.content.dos}
+                        label={t('content_studio_writing_dos', 'Do')}
+                      />
                     </SummaryLine>
                   )}
                   {!!profile.writing.content.donts.length && (
                     <SummaryLine
                       label={t('content_studio_writing_donts', "Don't")}
                     >
-                      <Bullets values={profile.writing.content.donts} />
+                      <Bullets
+                        values={profile.writing.content.donts}
+                        label={t('content_studio_writing_donts', "Don't")}
+                      />
                     </SummaryLine>
                   )}
                 </div>
@@ -1972,12 +2109,15 @@ export const ContentStudioSetupWizard: FC = () => {
                         {audience.content.description}
                       </div>
                     )}
-                    <div className="grid grid-cols-1 tablet:grid-cols-2 gap-[12px]">
+                    <div className={PAIRED}>
                       {!!audience.content.goals.length && (
                         <SummaryLine
                           label={t('content_studio_audience_goals', 'Goals')}
                         >
-                          <Bullets values={audience.content.goals} />
+                          <Bullets
+                            values={audience.content.goals}
+                            label={t('content_studio_audience_goals', 'Goals')}
+                          />
                         </SummaryLine>
                       )}
                       {!!audience.content.painPoints.length && (
@@ -1987,7 +2127,13 @@ export const ContentStudioSetupWizard: FC = () => {
                             'Pain points'
                           )}
                         >
-                          <Bullets values={audience.content.painPoints} />
+                          <Bullets
+                            values={audience.content.painPoints}
+                            label={t(
+                              'content_studio_audience_pain_points',
+                              'Pain points'
+                            )}
+                          />
                         </SummaryLine>
                       )}
                     </div>
@@ -2022,7 +2168,10 @@ export const ContentStudioSetupWizard: FC = () => {
             regenerating={regenerating === 'expertise'}
             summary={
               <div className="flex flex-col gap-[10px]">
-                <Chips values={profile.expertise.content.subjects} />
+                <Chips
+                  values={profile.expertise.content.subjects}
+                  label={t('content_studio_setup_subjects', 'Subjects')}
+                />
                 {!!profile.expertise.content.differentiators.length && (
                   <SummaryLine
                     label={t(
@@ -2032,6 +2181,10 @@ export const ContentStudioSetupWizard: FC = () => {
                   >
                     <Bullets
                       values={profile.expertise.content.differentiators}
+                      label={t(
+                        'content_studio_setup_differentiators',
+                        'What sets you apart'
+                      )}
                     />
                   </SummaryLine>
                 )}
@@ -2070,13 +2223,17 @@ export const ContentStudioSetupWizard: FC = () => {
             onRegenerate={ai ? () => regenerate('editorial') : undefined}
             regenerating={regenerating === 'editorial'}
             summary={
-              <div className="grid grid-cols-1 tablet:grid-cols-2 gap-[12px]">
+              <div className={PAIRED}>
                 {!!profile.editorial.content.principles.length && (
                   <SummaryLine
                     label={t('content_studio_policy_principles', 'Principles')}
                   >
                     <Bullets
                       values={profile.editorial.content.principles}
+                      label={t(
+                        'content_studio_policy_principles',
+                        'Principles'
+                      )}
                       max={4}
                     />
                   </SummaryLine>
@@ -2090,6 +2247,10 @@ export const ContentStudioSetupWizard: FC = () => {
                   >
                     <Bullets
                       values={profile.editorial.content.claimRules}
+                      label={t(
+                        'content_studio_policy_claim_rules',
+                        'Claim rules'
+                      )}
                       max={2}
                     />
                   </SummaryLine>
@@ -2103,6 +2264,10 @@ export const ContentStudioSetupWizard: FC = () => {
                   >
                     <Chips
                       values={profile.editorial.content.prohibitedTopics}
+                      label={t(
+                        'content_studio_setup_prohibited',
+                        'Topics to stay away from'
+                      )}
                       max={6}
                     />
                   </SummaryLine>
@@ -2166,118 +2331,98 @@ export const ContentStudioSetupWizard: FC = () => {
     );
   }
 
-  // --- step 4: review and save ---
+  // --- step 4: put the profile to work ---
+  // Not another summary of step 3: the profile is used at once to research
+  // a topic and write the first post. Saving (with its versions) happens on
+  // the way, quietly
   const profile = draft.profile as SetupProfile;
-  const rows: Array<{
-    key: string;
-    label: string;
-    detail: string;
-    include: boolean;
-    saved: boolean;
-  }> = [
-    {
-      key: 'brand',
-      label: t('content_studio_setup_section_brand', 'Company description'),
-      detail: t(
-        'content_studio_setup_saves_brand',
-        'Saved as the identity of your Brand Kit; its colors and fonts stay as they are.'
-      ),
-      include: profile.brand.include,
-      saved: !!draft.saved.brand,
-    },
-    {
-      key: 'writing',
-      label: `${t('content_studio_setup_section_writing', 'Writing style')}: ${
-        profile.writing.name
-      }`,
-      detail: t(
-        'content_studio_setup_saves_named',
-        'A new profile, or a new version of the profile with this name.'
-      ),
-      include: profile.writing.include,
-      saved: !!draft.saved.writing,
-    },
-    ...profile.audiences.map((audience, index) => ({
-      key: `audience-${index}`,
-      label: `${t('content_studio_setup_section_audience', 'Audience')}: ${
-        audience.name
-      }`,
-      detail: t(
-        'content_studio_setup_saves_named',
-        'A new profile, or a new version of the profile with this name.'
-      ),
-      include: audience.include,
-      saved: !!draft.saved.audiences?.includes(index),
-    })),
-    {
-      key: 'expertise',
-      label: `${t('content_studio_setup_section_expertise', 'Expertise')}: ${
-        profile.expertise.name
-      }`,
-      detail: t(
-        'content_studio_setup_saves_named',
-        'A new profile, or a new version of the profile with this name.'
-      ),
-      include: profile.expertise.include,
-      saved: !!draft.saved.expertise,
-    },
-    {
-      key: 'editorial',
-      label: t('content_studio_setup_section_editorial', 'Editorial rules'),
-      detail: t(
-        'content_studio_setup_saves_policy',
-        'A new version of your editorial policy; earlier versions stay in its history.'
-      ),
-      include: profile.editorial.include,
-      saved: !!draft.saved.editorial,
-    },
-  ];
-  const nothing = rows.every((row) => !row.include);
+  const parts = [
+    profile.brand.include &&
+      t('content_studio_setup_section_brand', 'Company description'),
+    profile.writing.include &&
+      t('content_studio_setup_section_writing', 'Writing style'),
+    profile.audiences.some((audience) => audience.include) &&
+      t('content_studio_setup_uses_audiences', 'Audiences'),
+    profile.expertise.include &&
+      t('content_studio_setup_section_expertise', 'Expertise'),
+    profile.editorial.include &&
+      t('content_studio_setup_section_editorial', 'Editorial rules'),
+  ].filter(Boolean) as string[];
+  const nothing = !parts.length;
+  // research and a draft need a working AI connection
+  const withAI = !draft.manual && aiReady;
+  if (leaving) {
+    return shell(
+      <ContentStudioLoading
+        label={t(
+          'content_studio_setup_starting_first_post',
+          'Starting your first post…'
+        )}
+      />
+    );
+  }
   return shell(
     <>
       {header}
       <section className="flex flex-col gap-[16px]">
         <h2 className="text-[18px] font-[600]">
-          {t('content_studio_setup_review_title', 'Review and save')}
+          {withAI
+            ? t(
+                'content_studio_setup_first_post_title',
+                'Create your first post'
+              )
+            : t('content_studio_setup_save_title', 'Save your profile')}
         </h2>
-        <div className="text-[14px] text-textItemBlur">
-          {t(
-            'content_studio_setup_review_hint',
-            'This is what will be saved. Nothing is deleted or overwritten: changed profiles get a new version and keep their history.'
-          )}
-        </div>
-        <ul className="flex flex-col gap-[8px]">
-          {rows.map((row) => (
-            <li
-              key={row.key}
-              className="flex items-start gap-[10px] p-[12px] rounded-[8px] border border-newTableBorder"
-            >
-              <span
-                aria-hidden="true"
-                className="w-[20px] shrink-0 text-center"
-              >
-                {row.saved ? '✓' : row.include ? '•' : '–'}
-              </span>
-              <div className="flex flex-col gap-[2px] min-w-0">
-                <span
-                  className={clsx(
-                    'font-[600] break-words',
-                    !row.include && 'line-through text-textItemBlur'
-                  )}
+        <p className="text-[15px] max-w-[620px]">
+          {withAI
+            ? t(
+                'content_studio_setup_first_post_intro',
+                "Your profile is ready. Now let's put it to work: we research what is relevant for your audience right now and write your first post with it. You review it and decide when it goes out."
+              )
+            : t(
+                'content_studio_setup_save_intro',
+                'Your profile is ready to save. Every AI suggestion in Content Studio starts from it.'
+              )}
+        </p>
+        {!nothing && (
+          <div className="flex flex-col gap-[6px]">
+            <span className="text-[12px] text-textItemBlur">
+              {t('content_studio_setup_uses', 'Built on your')}
+            </span>
+            <ul className="flex flex-wrap gap-[6px]">
+              {parts.map((part) => (
+                <li
+                  key={part}
+                  className="px-[10px] py-[2px] rounded-full border border-newTableBorder text-[13px]"
                 >
-                  {row.label}
-                </span>
-                <span className="text-[13px] text-textItemBlur">
-                  {row.saved
-                    ? t('content_studio_setup_saved_part', 'Saved')
-                    : row.include
-                    ? row.detail
-                    : t('content_studio_setup_left_out', 'Left out')}
-                </span>
-              </div>
+                  {part}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {withAI && (
+          <ol className="flex flex-col gap-[6px] text-[14px] list-decimal ps-[20px]">
+            <li>
+              {t(
+                'content_studio_setup_first_post_step_research',
+                'Research: a current topic that fits your audience and expertise'
+              )}
             </li>
-          ))}
-        </ul>
+            <li>
+              {t(
+                'content_studio_setup_first_post_step_draft',
+                'Draft: your first post, in your voice'
+              )}
+            </li>
+            <li>
+              {t(
+                'content_studio_setup_first_post_step_schedule',
+                'You: edit it, then schedule or publish'
+              )}
+            </li>
+          </ol>
+        )}
         {!!saveError && (
           <div
             role="alert"
@@ -2298,12 +2443,27 @@ export const ContentStudioSetupWizard: FC = () => {
           >
             {t('content_studio_setup_back', 'Back')}
           </Button>
-          <Button loading={saving} disabled={saving || nothing} onClick={save}>
+          <Button
+            loading={saving}
+            disabled={saving || nothing}
+            onClick={() => save(withAI)}
+          >
             {saveError
               ? t('content_studio_setup_save_again', 'Save again')
+              : withAI
+              ? t(
+                  'content_studio_setup_create_first_post',
+                  'Create my first post'
+                )
               : t('content_studio_setup_save', 'Save setup')}
           </Button>
         </div>
+        <p className="text-[12px] text-textItemBlur">
+          {t(
+            'content_studio_setup_versions_hint',
+            'Saving never deletes anything: profiles you change keep their earlier versions under Brand & AI.'
+          )}
+        </p>
       </section>
     </>
   );

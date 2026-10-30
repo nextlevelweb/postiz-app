@@ -428,6 +428,7 @@ describe('ContentStudioAIOperationRepository: completion', () => {
       'createRunningOperation',
       'getOperationForOrganization',
       'getOperationStateForOrganization',
+      'listOperationStatesForOrganization',
     ]);
   });
 });

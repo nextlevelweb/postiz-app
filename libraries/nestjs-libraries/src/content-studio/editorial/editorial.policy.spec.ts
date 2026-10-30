@@ -624,3 +624,43 @@ describe('Editorial Policy source', () => {
     }
   });
 });
+
+// Activation flow 01: what Content Studio researches for the organization,
+// refined by the user, kept with the policy as an optional part
+describe('Editorial Policy research preferences (activation flow 01)', () => {
+  const research = {
+    lookFor: ['AI in het mkb'],
+    avoid: ['Generic AI news'],
+    freshness: 'week',
+    angles: ['practical', 'myth_busting'],
+  };
+
+  it('REF2 keeps valid preferences, normalized, and a policy without them stays as it was', () => {
+    const parsed = parseContentStudioEditorialPolicyContent({
+      ...full(),
+      research: { ...research, lookFor: ['  AI in het mkb  '] },
+    });
+    expect(parsed.research).toEqual(research);
+    expect(parseContentStudioEditorialPolicyContent(full())).not.toHaveProperty(
+      'research'
+    );
+  });
+
+  it.each([
+    ['an unknown freshness', { ...research, freshness: 'yesterday' }],
+    ['an unknown angle', { ...research, angles: ['clickbait'] }],
+    ['a repeated angle', { ...research, angles: ['practical', 'practical'] }],
+    ['a repeated entry', { ...research, lookFor: ['AI', 'AI'] }],
+    [
+      'too many entries',
+      { ...research, avoid: Array.from({ length: 11 }, (_, i) => `t${i}`) },
+    ],
+    ['an empty entry', { ...research, lookFor: ['  '] }],
+    ['an extra key', { ...research, sources: ['x'] }],
+    ['a missing key', { lookFor: [], avoid: [], angles: [] }],
+  ])('refuses %s', (_label, value) => {
+    expect(() =>
+      parseContentStudioEditorialPolicyContent({ ...full(), research: value })
+    ).toThrow(ContentStudioEditorialPolicyError);
+  });
+});

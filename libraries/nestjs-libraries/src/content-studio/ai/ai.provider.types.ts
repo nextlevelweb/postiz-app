@@ -39,6 +39,10 @@ export interface ContentStudioAITextRequest {
   // a longer wait than the adapter's default for a request known to produce
   // a long answer, at most AI_REQUEST_TIMEOUT_MAX_MS
   timeoutMs?: number;
+  // let the model search the web itself (a model with the webSearch
+  // capability only: refused before the operation exists otherwise); left
+  // out, the model answers from the request alone
+  webSearch?: boolean;
 }
 
 export const AI_REQUEST_TIMEOUT_MAX_MS = 180_000;

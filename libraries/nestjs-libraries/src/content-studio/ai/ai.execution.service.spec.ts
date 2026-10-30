@@ -1193,3 +1193,21 @@ describe('ContentStudioAIExecutionService: started operations', () => {
     expect(failed(operations)).not.toHaveProperty('result');
   });
 });
+
+describe('ContentStudioAIExecutionService: web search', () => {
+  it('ES5 refuses web search for a model without it, before anything exists', async () => {
+    const { service, operations, adapter } = setup('openai');
+    const err = await failure(service.execute(input({}, { webSearch: true })));
+    expect(err).toMatchObject({ code: 'MODEL_UNSUPPORTED' });
+    expect(operations.createRunningOperation).not.toHaveBeenCalled();
+    expect(adapter.generateText).not.toHaveBeenCalled();
+  });
+
+  it('ES6 refuses a web search flag that is not a boolean', async () => {
+    const { service } = setup();
+    const err = await failure(
+      service.execute(input({}, { webSearch: 'yes' as never }))
+    );
+    expect(err).toMatchObject({ code: 'INVALID_INPUT' });
+  });
+});

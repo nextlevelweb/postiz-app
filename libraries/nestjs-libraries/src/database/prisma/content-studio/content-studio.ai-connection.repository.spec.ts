@@ -463,6 +463,10 @@ describe('AI connection surface so far', () => {
       // P6-02: the design AI suggestions read the same connection list
       'content-studio.design-ai.spec.ts',
       'content-studio.design-ai.tsx',
+      // activation flow 01: the first post uses the first working
+      // connection, read from the same list
+      'content-studio.first-post.spec.ts',
+      'content-studio.first-post.tsx',
       // the setup assistant: whether AI is ready, the inline Add AI
       // connection form of the Brand & AI screen, and its setup status
       'content-studio.setup.api.ts',

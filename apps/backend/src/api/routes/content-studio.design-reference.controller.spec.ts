@@ -1,4 +1,5 @@
 import { ContentStudioAISetupService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-setup.service';
+import { ContentStudioActivationService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.activation.service';
 import { RequestMethod } from '@nestjs/common';
 import {
   HTTP_CODE_METADATA,
@@ -85,7 +86,8 @@ const setup = () => {
     {} as ContentStudioDesignBlockService,
     {} as ContentStudioReviewService,
     {} as ContentStudioDesignAIService,
-    {} as ContentStudioAISetupService
+    {} as ContentStudioAISetupService,
+    {} as ContentStudioActivationService
   );
   return { controller, references, result };
 };

@@ -25,8 +25,10 @@ import {
   AI_PROMPT_VERSION,
   ContentStudioAIDesignOperationKind,
   ContentStudioAIOperationContext,
+  ContentStudioAIFirstPostOperationKind,
   ContentStudioAIOperationKind,
   ContentStudioAISetupOperationKind,
+  isContentStudioAIFirstPostOperationKind,
   isContentStudioAIDesignOperationKind,
   isContentStudioAIOperationKind,
   isContentStudioAISetupOperationKind,
@@ -63,7 +65,7 @@ export interface ContentStudioAIExecutionInput {
   userId: string;
   connectionId: string;
   packageId: string;
-  kind: ContentStudioAIOperationKind;
+  kind: ContentStudioAIOperationKind | ContentStudioAIFirstPostOperationKind;
   model: string;
   promptVersion: string;
   baseDraftVersion: number;
@@ -151,6 +153,8 @@ function isTextRequest(
       (Number.isSafeInteger(request.timeoutMs) &&
         (request.timeoutMs as number) >= 1 &&
         (request.timeoutMs as number) <= AI_REQUEST_TIMEOUT_MAX_MS)) &&
+    (request.webSearch === undefined ||
+      typeof request.webSearch === 'boolean') &&
     isRecord(output) &&
     (output.type === 'text' ||
       (output.type === 'json' &&
@@ -354,7 +358,9 @@ export class ContentStudioAIExecutionService {
       organizationId,
       connectionId: input.connectionId,
     });
-    if (!getContentStudioAIModel(resolved.provider, input.model)) {
+    const model = getContentStudioAIModel(resolved.provider, input.model);
+    // web search only where the model has it
+    if (!model || (input.request.webSearch && !model.capabilities.webSearch)) {
       throw new ContentStudioAIExecutionError('MODEL_UNSUPPORTED');
     }
 
@@ -555,7 +561,10 @@ export class ContentStudioAIExecutionService {
       !isId(input.userId) ||
       !isId(input.connectionId) ||
       !isId(input.packageId) ||
-      !isContentStudioAIOperationKind(input.kind) ||
+      !(
+        isContentStudioAIOperationKind(input.kind) ||
+        isContentStudioAIFirstPostOperationKind(input.kind)
+      ) ||
       !!context?.design ||
       typeof input.model !== 'string' ||
       !input.model ||

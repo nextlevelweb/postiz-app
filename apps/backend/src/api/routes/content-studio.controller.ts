@@ -29,7 +29,11 @@ import { ContentStudioAudienceProfileService } from '@gitroom/nestjs-libraries/d
 import { ContentStudioExpertiseProfileService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.expertise-profile.service';
 import { ContentStudioAIWritingService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-writing.service';
 import { ContentStudioAISetupService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-setup.service';
-import { ContentStudioAISetupProposalDto } from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.ai-setup.dto';
+import { ContentStudioActivationService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.activation.service';
+import {
+  ContentStudioAISetupProposalDto,
+  StartContentStudioFirstPostDto,
+} from '@gitroom/nestjs-libraries/dtos/content-studio/content-studio.ai-setup.dto';
 import { ContentStudioSourceService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.source.service';
 import { ContentStudioSourceIngestionService } from '@gitroom/nestjs-libraries/content-studio/sources/ingestion/source.ingestion.service';
 import { ContentStudioBrandKitService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.brand-kit.service';
@@ -214,7 +218,8 @@ export class ContentStudioController {
     private _contentStudioDesignBlockService: ContentStudioDesignBlockService,
     private _contentStudioReviewService: ContentStudioReviewService,
     private _contentStudioDesignAIService: ContentStudioDesignAIService,
-    private _contentStudioAISetupService: ContentStudioAISetupService
+    private _contentStudioAISetupService: ContentStudioAISetupService,
+    private _contentStudioActivationService: ContentStudioActivationService
   ) {}
 
   @Get('/projects')
@@ -574,6 +579,36 @@ export class ContentStudioController {
     @Param('id') id: string
   ) {
     return this._contentStudioAISetupService.getSetupProposal(org.id, id);
+  }
+
+  // The first post (activation flow 01): research and a draft made on the
+  // server after the guided setup, read back here
+  @Get('/activation/first-post')
+  getFirstPost(@GetOrgFromRequest() org: Organization) {
+    return this._contentStudioActivationService.getFirstPost(org.id);
+  }
+
+  // Starts its research, another angle, a new draft or putting the draft in
+  // again, and answers at once
+  @Post('/activation/first-post')
+  @HttpCode(202)
+  async startFirstPost(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Body() body: StartContentStudioFirstPostDto
+  ) {
+    const { packageId } =
+      await this._contentStudioActivationService.startFirstPost({
+        organizationId: org.id,
+        userId: user.id,
+        request: {
+          connectionId: body.connectionId,
+          mode: body.mode,
+          language: body.language,
+          name: body.name,
+        },
+      });
+    return { packageId };
   }
 
   @Get('/ai/connections/:id')

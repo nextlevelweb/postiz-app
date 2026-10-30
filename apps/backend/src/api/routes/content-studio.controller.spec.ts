@@ -1,4 +1,5 @@
 import { ContentStudioAISetupService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-setup.service';
+import { ContentStudioActivationService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.activation.service';
 import {
   ArgumentMetadata,
   BadRequestException,
@@ -118,7 +119,8 @@ const setup = () => {
     {} as ContentStudioDesignBlockService,
     {} as ContentStudioReviewService,
     {} as ContentStudioDesignAIService,
-    {} as ContentStudioAISetupService
+    {} as ContentStudioAISetupService,
+    {} as ContentStudioActivationService
   );
   return { service, handoffs, controller, result };
 };
@@ -320,6 +322,8 @@ describe('ContentStudioController wiring', () => {
       .sort();
 
     expect(routes).toEqual([
+      // activation flow 01: the first post, read back
+      'GET /activation/first-post',
       'GET /ai/connections',
       'GET /ai/connections/:id',
       'GET /ai/providers',
@@ -394,6 +398,8 @@ describe('ContentStudioController wiring', () => {
       'PATCH /reviews/:id/comments/:commentId',
       'PATCH /sources/:id',
       'PATCH /writing-profiles/:id',
+      // activation flow 01: starting the first post
+      'POST /activation/first-post',
       'POST /ai/connections',
       'POST /ai/connections/:id/archive',
       'POST /ai/connections/:id/disable',
@@ -617,6 +623,8 @@ describe('ContentStudioController handoffs', () => {
       ContentStudioReviewService,
       ContentStudioDesignAIService,
       ContentStudioAISetupService,
+      // activation flow 01: the first post
+      ContentStudioActivationService,
     ]);
   });
 });

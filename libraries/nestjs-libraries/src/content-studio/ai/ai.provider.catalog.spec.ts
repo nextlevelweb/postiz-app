@@ -330,10 +330,13 @@ describe('Content Studio AI provider catalog: models', () => {
     for (const info of listContentStudioAIProviders()) {
       for (const model of info.models) {
         expect(Object.keys(model)).toEqual(['id', 'label', 'capabilities']);
-        expect(Object.keys(model.capabilities)).toEqual([
-          'text',
-          'structuredOutput',
-        ]);
+        // activation flow 01: webSearch, only where a model has it
+        expect(Object.keys(model.capabilities)).toEqual(
+          model.capabilities.webSearch
+            ? ['text', 'structuredOutput', 'webSearch']
+            : ['text', 'structuredOutput']
+        );
+        expect([undefined, true]).toContain(model.capabilities.webSearch);
         expect(model.capabilities.text).toBe(true);
         expect(typeof model.capabilities.structuredOutput).toBe('boolean');
         expect(model.id).toMatch(/^[a-z0-9][a-z0-9./-]*$/);

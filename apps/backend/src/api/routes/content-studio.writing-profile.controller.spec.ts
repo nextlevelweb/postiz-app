@@ -1,4 +1,5 @@
 import { ContentStudioAISetupService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-setup.service';
+import { ContentStudioActivationService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.activation.service';
 import {
   ArgumentMetadata,
   BadRequestException,
@@ -116,7 +117,8 @@ const setup = () => {
     {} as ContentStudioDesignBlockService,
     {} as ContentStudioReviewService,
     {} as ContentStudioDesignAIService,
-    {} as ContentStudioAISetupService
+    {} as ContentStudioAISetupService,
+    {} as ContentStudioActivationService
   );
   return { profiles, controller, result };
 };

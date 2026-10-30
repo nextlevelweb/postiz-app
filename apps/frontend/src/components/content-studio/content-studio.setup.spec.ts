@@ -223,6 +223,7 @@ let state: {
   proposal: () => Reply | Promise<Reply>;
   // what a connection test answers
   test: () => { ok: true } | { ok: false; code: string };
+  firstPost?: () => Reply;
   fail?: (method: string, url: string) => Reply | undefined;
 };
 const BASES = [
@@ -256,6 +257,15 @@ const server = (
   }
   // The server starts the draft and answers with its operation at once;
   // state.proposal is how that draft ends, read back below
+  // the first post (activation flow 01) starts on the server
+  if (
+    method === 'POST' &&
+    pathname === '/content-studio/activation/first-post'
+  ) {
+    return (
+      state.firstPost?.() ?? reply(202, { packageId: 'first-post-package' })
+    );
+  }
   if (method === 'POST' && pathname === '/content-studio/ai/setup/proposal') {
     const operationId = `00000000-0000-4000-8000-a${String(++ids).padStart(
       11,
@@ -727,16 +737,18 @@ describe('Setup assistant: save', () => {
     await flush();
   };
 
-  it('W11 shows what will be saved, then saves without deleting or overwriting', async () => {
+  it('W11/ACT3 saves without deleting or overwriting, then starts the first post', async () => {
     await toReview();
     expect(screen.getByText('Step 4 of 4')).toBeTruthy();
     expect(dataWrites().map((w) => w.url)).toEqual([
       '/content-studio/ai/setup/proposal',
     ]);
-    fireEvent.click(button('Save setup'));
+    fireEvent.click(button('Create my first post'));
     await flush();
     const saved = dataWrites().filter(
-      (w) => w.url !== '/content-studio/ai/setup/proposal'
+      (w) =>
+        w.url !== '/content-studio/ai/setup/proposal' &&
+        w.url !== '/content-studio/activation/first-post'
     );
     expect(saved.map((w) => `${w.method} ${w.url}`)).toEqual([
       'POST /content-studio/brand-kit/revisions',
@@ -768,8 +780,13 @@ describe('Setup assistant: save', () => {
         workflow: { requireApprovalForHandoff: true },
       },
     });
-    expect(screen.getByText('Your Content Studio is ready')).toBeTruthy();
-    expect(button('Create your first content')).toBeTruthy();
+    // then, and only then, the first post
+    expect(
+      dataWrites()
+        .map((w) => w.url)
+        .slice(-1)
+    ).toEqual(['/content-studio/activation/first-post']);
+    expect(mockRouter.push).toHaveBeenCalledWith('/content-studio/first-post');
     expect(window.localStorage.getItem(DRAFT_KEY)).toBeNull();
     expect(calls().map((c) => c.method)).not.toContain('DELETE');
   });
@@ -788,7 +805,7 @@ describe('Setup assistant: save', () => {
     fireEvent.click(checkboxes[3]);
     fireEvent.click(button('Next'));
     await flush();
-    fireEvent.click(button('Save setup'));
+    fireEvent.click(button('Create my first post'));
     await flush();
     const urls = writes().map((w) => w.url);
     expect(urls).not.toContain('/content-studio/editorial-policy/revisions');
@@ -803,7 +820,7 @@ describe('Setup assistant: save', () => {
       method === 'POST' && url === '/content-studio/expertise-profiles'
         ? reply(400, { code: 'CS_PROFILE_TOO_LARGE' })
         : undefined;
-    fireEvent.click(button('Save setup'));
+    fireEvent.click(button('Create my first post'));
     await flush();
     expect(screen.getByRole('alert').textContent).toContain(
       'This is too long to save.'
@@ -818,8 +835,9 @@ describe('Setup assistant: save', () => {
     expect(again).toEqual([
       'POST /content-studio/expertise-profiles',
       'POST /content-studio/editorial-policy/revisions',
+      'POST /content-studio/activation/first-post',
     ]);
-    expect(screen.getByText('Your Content Studio is ready')).toBeTruthy();
+    expect(mockRouter.push).toHaveBeenCalledWith('/content-studio/first-post');
   });
 });
 
@@ -1364,5 +1382,185 @@ describe('Setup assistant: a draft that survives leaving the page', () => {
     cleanup();
     await show();
     expect(screen.getByText('Step 2 of 4')).toBeTruthy();
+  });
+});
+
+// Activation flow 01: step 4 puts the reviewed profile to work instead of
+// summing it up a second time
+describe('Setup assistant: step 4 creates the first post', () => {
+  const toStep4 = async () => {
+    await show();
+    fireEvent.click(button('Next'));
+    await flush();
+    fillCompany();
+    fireEvent.click(button('Draft my profile with AI'));
+    await flush();
+    fireEvent.click(button('Next'));
+    await flush();
+  };
+
+  it('ACT1/ACT2 no second summary of profile names and versions: step 4 explains the first post', async () => {
+    await toStep4();
+    expect(screen.getByText('Step 4 of 4')).toBeTruthy();
+    expect(
+      screen.getByRole('heading', { name: 'Create your first post' })
+    ).toBeTruthy();
+    expect(screen.queryByText('Review and save')).toBeNull();
+    expect(
+      screen.queryByText(
+        'A new profile, or a new version of the profile with this name.'
+      )
+    ).toBeNull();
+    expect(screen.queryByText('Studio voice')).toBeNull();
+    expect(
+      screen.getByText(/we research what is relevant for your audience/)
+    ).toBeTruthy();
+    // versions are a quiet note, not the page
+    expect(
+      screen.getByText(/profiles you change keep their earlier versions/)
+    ).toBeTruthy();
+    expect(button('Create my first post')).toBeTruthy();
+  });
+
+  it('ACT4/ACT5 starts research with the AI connection and the language of step 2, then opens the first post', async () => {
+    await toStep4();
+    fireEvent.click(button('Create my first post'));
+    await flush();
+    const started = calls().find(
+      (c) => c.url === '/content-studio/activation/first-post'
+    );
+    expect(started?.body).toEqual({
+      connectionId: CONNECTION.id,
+      mode: 'first',
+      language: 'nl',
+      name: 'First post',
+    });
+    expect(mockRouter.push).toHaveBeenCalledWith('/content-studio/first-post');
+  });
+
+  it('saved, but the first post could not start: the profile stays saved and the first post page says why', async () => {
+    state.firstPost = () => reply(429, { code: 'CS_AI_RATE_LIMITED' });
+    await toStep4();
+    fireEvent.click(button('Create my first post'));
+    await flush();
+    expect(
+      writes().some(
+        (w) => w.url === '/content-studio/editorial-policy/revisions'
+      )
+    ).toBe(true);
+    expect(mockRouter.push).toHaveBeenCalledWith(
+      '/content-studio/first-post?error=CS_AI_RATE_LIMITED'
+    );
+    expect(window.localStorage.getItem(DRAFT_KEY)).toBeNull();
+  });
+
+  it('without AI, step 4 saves the profile and offers what is next', async () => {
+    state.connections = [];
+    await show();
+    fireEvent.click(button('Continue without AI'));
+    await flush();
+    type('Company name', 'Next Level Web');
+    type('What does your company do?', 'We build websites for small shops.');
+    fireEvent.click(button('Next'));
+    await flush();
+    fireEvent.click(button('Next'));
+    await flush();
+    expect(
+      screen.getByRole('heading', { name: 'Save your profile' })
+    ).toBeTruthy();
+    fireEvent.click(button('Save setup'));
+    await flush();
+    expect(screen.getByText('Your Content Studio is ready')).toBeTruthy();
+    expect(
+      calls().some((c) => c.url === '/content-studio/activation/first-post')
+    ).toBe(false);
+  });
+
+  it('keeps research preferences the policy has when the setup saves it', async () => {
+    state.policy.content = {
+      ...state.policy.content,
+      research: {
+        lookFor: ['AI'],
+        avoid: [],
+        freshness: 'week',
+        angles: [],
+      },
+    };
+    await toStep4();
+    fireEvent.click(button('Create my first post'));
+    await flush();
+    const policy = writes().find(
+      (w) => w.url === '/content-studio/editorial-policy/revisions'
+    );
+    expect(policy?.body.content.research).toEqual({
+      lookFor: ['AI'],
+      avoid: [],
+      freshness: 'week',
+      angles: [],
+    });
+  });
+});
+
+// Activation flow 01: on a phone the paired lists of step 3 were two narrow
+// columns, and "+4" looked like a control but was text
+describe('Setup assistant: step 3 lists on a phone', () => {
+  const LONG = Array.from({ length: 7 }, (_, i) => `Rule number ${i + 1}`);
+  const toStep3 = async () => {
+    state.proposal = () =>
+      reply(200, {
+        proposal: {
+          ...PROPOSAL,
+          writing: {
+            ...PROPOSAL.writing,
+            content: {
+              ...writing('AI voice.'),
+              dos: LONG,
+              donts: LONG.slice(0, 5),
+            },
+          },
+        },
+      });
+    await show();
+    fireEvent.click(button('Next'));
+    await flush();
+    fillCompany();
+    fireEvent.click(button('Draft my profile with AI'));
+    await flush();
+  };
+
+  it('UX1/UX2 paired lists are one column below the small breakpoint and two from it up', async () => {
+    await toStep3();
+    const doList = screen.getByText('Do').parentElement!.parentElement!;
+    expect(doList.className).toContain('grid-cols-1');
+    expect(doList.className).toContain('sm:grid-cols-2');
+    // the max-width tablet: prefix made phones two columns
+    expect(doList.className).not.toContain('tablet:grid-cols-2');
+  });
+
+  it('UX3/UX4/UX5 "Show N more" is a real button that opens its own list only, and "Show less" closes it', async () => {
+    await toStep3();
+    expect(screen.queryByText('+4')).toBeNull();
+    const more = screen.getByRole('button', { name: 'Show 4 more: Do' });
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('Rule number 7')).toBeNull();
+    fireEvent.click(more);
+    expect(screen.getAllByText('Rule number 7')).toHaveLength(1);
+    // the Don't list stayed as it was
+    expect(
+      screen.getByRole('button', { name: "Show 2 more: Don't" })
+    ).toBeTruthy();
+    const less = screen.getByRole('button', { name: 'Show less: Do' });
+    expect(less.getAttribute('aria-expanded')).toBe('true');
+    expect(less.textContent).toBe('Show less');
+    fireEvent.click(less);
+    expect(screen.queryByText('Rule number 7')).toBeNull();
+  });
+
+  it('UX6 Edit still opens the full form of the section', async () => {
+    await toStep3();
+    const [edit] = screen.getAllByRole('button', { name: 'Edit' });
+    fireEvent.click(edit);
+    expect(screen.getByLabelText('Tagline')).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Done' }).length).toBe(1);
   });
 });

@@ -1,4 +1,5 @@
-import { IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { CONTENT_STUDIO_FIRST_POST_MODES } from '@gitroom/nestjs-libraries/content-studio/ai/ai.activation.prompt';
 import {
   SETUP_COMPANY_NAME_MAX,
   SETUP_DESCRIPTION_MAX,
@@ -48,4 +49,26 @@ export class ContentStudioAISetupProposalDto {
   @IsString()
   @MaxLength(35)
   language?: string | null;
+}
+
+// Starting the first post (activation flow 01): the organization's AI
+// connection, what to do (see CONTENT_STUDIO_FIRST_POST_MODES), the language
+// of the post and the name of its package. Nothing of a profile, a
+// preference or a post: the server reads those from the organization
+export class StartContentStudioFirstPostDto {
+  @IsUUID()
+  connectionId: string;
+
+  @IsIn(CONTENT_STUDIO_FIRST_POST_MODES)
+  mode: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(35)
+  language?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  name?: string | null;
 }

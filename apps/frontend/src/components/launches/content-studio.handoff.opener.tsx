@@ -28,8 +28,16 @@ const HANDOFF_ID = /^[0-9a-f]{64}$/;
 // the URL no longer names it
 let handoffGuard: { id: string; done: boolean } | null = null;
 
+// Where a closed composer may send the user back to, by the `return`
+// parameter of its handoff: a fixed list, never an address from the URL
+const RETURN_PAGES: Record<string, string> = {
+  // the first post (activation flow 01), which then sees what was scheduled
+  'first-post': '/content-studio/first-post',
+};
+
 // Removes `handoff` from the current URL, keeping every other parameter, and
-// only while the URL still names this handoff
+// only while the URL still names this handoff. A handoff that came with a
+// known `return` page goes back there instead
 const useRemoveHandoffParam = () => {
   const router = useRouter();
   const pathname = usePathname();
@@ -43,6 +51,14 @@ const useRemoveHandoffParam = () => {
     (handoffId: string) => {
       const current = location.current;
       if (current.searchParams.get('handoff') !== handoffId) {
+        return;
+      }
+      const page = current.searchParams.get('return') ?? '';
+      const back = Object.prototype.hasOwnProperty.call(RETURN_PAGES, page)
+        ? RETURN_PAGES[page]
+        : undefined;
+      if (back) {
+        router.push(back);
         return;
       }
       const params = new URLSearchParams(current.searchParams.toString());

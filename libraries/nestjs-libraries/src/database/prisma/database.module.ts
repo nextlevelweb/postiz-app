@@ -89,6 +89,8 @@ import { ContentStudioDesignRepository } from '@gitroom/nestjs-libraries/databas
 import { ContentStudioDesignService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design.service';
 import { ContentStudioDesignAIService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-ai.service';
 import { ContentStudioAISetupService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-setup.service';
+import { ContentStudioActivationService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.activation.service';
+import { ContentStudioActivationRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.activation.repository';
 import { ContentStudioRenderFontRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.repository';
 import { ContentStudioRenderFontService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.render-font.service';
 import { ContentStudioDesignRenderRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.design-render.repository';
@@ -202,6 +204,8 @@ import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/p
     ContentStudioDesignService,
     ContentStudioDesignAIService,
     ContentStudioAISetupService,
+    ContentStudioActivationRepository,
+    ContentStudioActivationService,
     ContentStudioRenderFontRepository,
     ContentStudioRenderFontService,
     ContentStudioDesignRenderRepository,

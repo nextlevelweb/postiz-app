@@ -22,6 +22,25 @@ export const isContentStudioAIOperationKind = (
   typeof value === 'string' &&
   (CONTENT_STUDIO_AI_OPERATION_KINDS as readonly string[]).includes(value);
 
+// The AI operations of the first post (activation flow 01), on the package
+// that holds it: the research that picks its subject, then its draft. Their
+// checked answers are kept with the operation, to be read back
+export const CONTENT_STUDIO_AI_FIRST_POST_OPERATION_KINDS = [
+  'first_post_research',
+  'first_post_draft',
+] as const;
+
+export type ContentStudioAIFirstPostOperationKind =
+  (typeof CONTENT_STUDIO_AI_FIRST_POST_OPERATION_KINDS)[number];
+
+export const isContentStudioAIFirstPostOperationKind = (
+  value: unknown
+): value is ContentStudioAIFirstPostOperationKind =>
+  typeof value === 'string' &&
+  (CONTENT_STUDIO_AI_FIRST_POST_OPERATION_KINDS as readonly string[]).includes(
+    value
+  );
+
 // The AI operations Content Studio runs on one saved design revision
 // (P6-02): one kind per Design Creative AI intent. They are recorded like the
 // package operations, but never on a package

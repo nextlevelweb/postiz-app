@@ -21,6 +21,7 @@ import {
 } from '@gitroom/frontend/components/content-studio/content-studio.dialog';
 import {
   ConflictNotice,
+  ChoiceField,
   ContentStudioContentForm,
   ContentStudioRevisionHistory,
   EditorActions,
@@ -42,7 +43,198 @@ export interface EditorialPolicyContent {
   formatConventions: string[];
   complianceNotes: string;
   workflow?: { requireApprovalForHandoff: boolean };
+  research?: ResearchPreferences;
 }
+
+// What Content Studio researches for the organization (activation flow 01),
+// as the server checks it (editorial.policy.ts)
+export const RESEARCH_FRESHNESS = [
+  'breaking',
+  'week',
+  'month',
+  'evergreen',
+] as const;
+export const RESEARCH_ANGLES = [
+  'practical',
+  'explainer',
+  'opinion',
+  'analysis',
+  'example',
+  'myth_busting',
+  'opportunity',
+  'industry',
+] as const;
+export const RESEARCH_FOCUS_MAX = 10;
+
+export interface ResearchPreferences {
+  lookFor: string[];
+  avoid: string[];
+  freshness: (typeof RESEARCH_FRESHNESS)[number];
+  angles: Array<(typeof RESEARCH_ANGLES)[number]>;
+}
+
+export const emptyResearchPreferences = (): ResearchPreferences => ({
+  lookFor: [],
+  avoid: [],
+  freshness: 'week',
+  angles: [],
+});
+
+export const useResearchFreshnessOptions = () => {
+  const t = useT();
+  return [
+    {
+      value: 'breaking',
+      label: t(
+        'content_studio_research_fresh_breaking',
+        'Very current: the last few days'
+      ),
+    },
+    {
+      value: 'week',
+      label: t('content_studio_research_fresh_week', 'The last week'),
+    },
+    {
+      value: 'month',
+      label: t('content_studio_research_fresh_month', 'The last month'),
+    },
+    {
+      value: 'evergreen',
+      label: t(
+        'content_studio_research_fresh_evergreen',
+        'Lasting topics with a current hook'
+      ),
+    },
+  ];
+};
+
+export const useResearchAngleLabels = (): Record<
+  ResearchPreferences['angles'][number],
+  string
+> => {
+  const t = useT();
+  return {
+    practical: t('content_studio_research_angle_practical', 'Practical advice'),
+    explainer: t(
+      'content_studio_research_angle_explainer',
+      'Expert explanation'
+    ),
+    opinion: t(
+      'content_studio_research_angle_opinion',
+      'Opinion or point of view'
+    ),
+    analysis: t('content_studio_research_angle_analysis', 'Analysis'),
+    example: t('content_studio_research_angle_example', 'Case or example'),
+    myth_busting: t('content_studio_research_angle_myth', 'Myth-busting'),
+    opportunity: t(
+      'content_studio_research_angle_opportunity',
+      'Commercial opportunity'
+    ),
+    industry: t(
+      'content_studio_research_angle_industry',
+      'What it means for the industry'
+    ),
+  };
+};
+
+// The angles as checkboxes: any number, each on or off
+export const ResearchAnglesField: FC<{
+  value: ResearchPreferences['angles'];
+  onChange: (next: ResearchPreferences['angles']) => void;
+  disabled?: boolean;
+}> = ({ value, onChange, disabled }) => {
+  const labels = useResearchAngleLabels();
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-[8px]">
+      {RESEARCH_ANGLES.map((angle) => (
+        <label
+          key={angle}
+          className="flex items-center gap-[8px] min-h-[40px] px-[12px] rounded-[8px] border border-newTableBorder text-[14px] cursor-pointer"
+        >
+          <input
+            type="checkbox"
+            checked={value.includes(angle)}
+            disabled={disabled}
+            onChange={(e) =>
+              onChange(
+                e.target.checked
+                  ? RESEARCH_ANGLES.filter(
+                      (entry) => entry === angle || value.includes(entry)
+                    )
+                  : value.filter((entry) => entry !== angle)
+              )
+            }
+          />
+          {labels[angle]}
+        </label>
+      ))}
+    </div>
+  );
+};
+
+// The research preferences as one group of the editorial policy (Brand &
+// AI): the same four answers the refinement asks for, one after the other
+export const ResearchFocusFields: FC<{
+  value: ResearchPreferences | undefined;
+  onChange: (next: ResearchPreferences) => void;
+  disabled?: boolean;
+}> = ({ value, onChange, disabled }) => {
+  const t = useT();
+  const freshnessOptions = useResearchFreshnessOptions();
+  const research = value ?? emptyResearchPreferences();
+  const set = (patch: Partial<ResearchPreferences>) =>
+    onChange({ ...research, ...patch });
+  return (
+    <FieldGroup
+      label={t('content_studio_research_focus', 'Research focus')}
+      hint={t(
+        'content_studio_research_focus_hint',
+        'Content Studio uses this to decide which topics are worth bringing to you, for example for your first post.'
+      )}
+    >
+      <div className="flex flex-col gap-[16px] min-w-0">
+        <StringListEditor
+          label={t(
+            'content_studio_research_look_for',
+            'What should we look for?'
+          )}
+          values={research.lookFor}
+          max={RESEARCH_FOCUS_MAX}
+          disabled={disabled}
+          onChange={(lookFor) => set({ lookFor })}
+        />
+        <StringListEditor
+          label={t('content_studio_research_avoid', 'What should we avoid?')}
+          values={research.avoid}
+          max={RESEARCH_FOCUS_MAX}
+          disabled={disabled}
+          onChange={(avoid) => set({ avoid })}
+        />
+        <ChoiceField
+          label={t(
+            'content_studio_research_freshness',
+            'How fresh should results be?'
+          )}
+          value={research.freshness}
+          options={freshnessOptions}
+          disabled={disabled}
+          onChange={(freshness) =>
+            set({ freshness: freshness as ResearchPreferences['freshness'] })
+          }
+        />
+        <FieldGroup
+          label={t('content_studio_research_angles', 'What angle fits you?')}
+        >
+          <ResearchAnglesField
+            value={research.angles}
+            disabled={disabled}
+            onChange={(angles) => set({ angles })}
+          />
+        </FieldGroup>
+      </div>
+    </FieldGroup>
+  );
+};
 
 export const emptyEditorialPolicyContent = (): EditorialPolicyContent => ({
   schemaVersion: 1,
@@ -149,6 +341,25 @@ export const EditorialPolicyForm: ContentStudioContentForm<
   );
 };
 
+// The editorial policy as Brand & AI edits it: the rules, and the research
+// focus that the setup assistant does not ask about
+export const EditorialPolicyWithResearchForm: ContentStudioContentForm<
+  EditorialPolicyContent
+> = ({ value, onChange, disabled }) => (
+  <div className="flex flex-col gap-[16px] min-w-0">
+    <EditorialPolicyForm
+      value={value}
+      onChange={onChange}
+      disabled={disabled}
+    />
+    <ResearchFocusFields
+      value={value.research}
+      disabled={disabled}
+      onChange={(research) => onChange({ ...value, research })}
+    />
+  </div>
+);
+
 // The one editorial policy of the organization. Before its first save there
 // is none: the form starts empty and the first save (over version 0) creates
 // it. Every member may edit it
@@ -230,7 +441,7 @@ export const EditorialPolicySection: FC = () => {
         <ContentStudioDialogLayout>
           <ContentStudioRevisionHistory
             base={EDITORIAL_POLICY_PATH}
-            Form={EditorialPolicyForm}
+            Form={EditorialPolicyWithResearchForm}
           />
         </ContentStudioDialogLayout>
       ),

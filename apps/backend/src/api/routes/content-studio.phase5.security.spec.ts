@@ -276,6 +276,8 @@ describe('Phase 5 security and audit architecture (P5-08)', () => {
       expect(users(/\.createHandoff\(|\.createHandoffWhileApproved\(/)).toEqual(
         [
           CONTROLLER,
+          // the first post (activation flow 01), the same way
+          `${FE}/content-studio.first-post.tsx`,
           // the package editor, through the API client and so the route
           `${FE}/content-studio.workspace.tsx`,
           HANDOFF_SERVICE,
@@ -414,8 +416,13 @@ describe('Phase 5 security and audit architecture (P5-08)', () => {
       expect(users(/isApprovalRequiredForHandoff\(/)).toEqual(
         [POLICY_SERVICE, HANDOFF_SERVICE, STUDIO_SERVICE].sort()
       );
+      // the first post (activation flow 01) says so the same way
       expect(users(/CS_APPROVAL_REQUIRED/)).toEqual(
-        [REVIEW_SERVICE, `${FE}/content-studio.workspace.tsx`].sort()
+        [
+          REVIEW_SERVICE,
+          `${FE}/content-studio.first-post.tsx`,
+          `${FE}/content-studio.workspace.tsx`,
+        ].sort()
       );
     });
 
