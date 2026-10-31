@@ -45,4 +45,23 @@ export class ContentStudioActivationRepository {
       },
     });
   }
+
+  // The newest post the organization saved as a draft since a moment (a
+  // thread head, not deleted): in the calendar, but not scheduled, so no
+  // activation. Its planned date only
+  getLatestDraftSince(organizationId: string, since: Date) {
+    return this._post.model.post.findFirst({
+      where: {
+        organizationId,
+        deletedAt: null,
+        parentPostId: null,
+        createdAt: { gte: since },
+        state: State.DRAFT,
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      select: {
+        publishDate: true,
+      },
+    });
+  }
 }

@@ -2,6 +2,7 @@
 
 import { FC, ReactNode, useCallback, useMemo, useState } from 'react';
 import clsx from 'clsx';
+import dayjs from 'dayjs';
 import Link from 'next/link';
 import useSWR, { useSWRConfig } from 'swr';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -110,7 +111,13 @@ export interface ContentStudioFirstPostState {
   draft: (OperationState & { applied?: boolean }) | null;
   // newest first
   alternatives?: ContentStudioFirstPostAlternative[];
-  firstPost: { scheduled: boolean; published: boolean };
+  firstPost: {
+    scheduled: boolean;
+    published: boolean;
+    // saved in the composer as a draft since the first handoff: in the
+    // calendar, not scheduled (no activation), with its planned date
+    savedAsDraft?: { publishDate: string } | null;
+  };
   activated: boolean;
 }
 
@@ -176,11 +183,13 @@ export const useContentStudioFirstPost = () => {
     (path: string) => request<ContentStudioFirstPostState>(fetch, path),
     {
       // asked again while research or a draft runs, and whenever the page
-      // is shown again
+      // is shown again: a return from the composer reads at once whether
+      // the post was scheduled or published
       refreshInterval: (data) =>
         data && RUNNING.includes(firstPostPhase(data))
           ? AI_OPERATION_POLL_MS
           : 0,
+      revalidateOnMount: true,
       revalidateOnFocus: true,
     }
   );
@@ -1019,8 +1028,39 @@ export const ContentStudioFirstPost: FC<{
   // Ready: first the post itself and why its subject was chosen, then what
   // to do with it, in order: finish it in the composer, another idea with
   // the same focus, or a different focus. Every draft made stays below
+  const savedAsDraft = state.firstPost.savedAsDraft;
   return page(
     <>
+      {/* back from the composer with the post saved as a draft: it is in
+          the calendar, but nothing will be published yet */}
+      {!!savedAsDraft && (
+        <div
+          role="status"
+          data-testid="first-post-saved-as-draft"
+          className="flex flex-col gap-[6px] p-[14px] rounded-[12px] border border-newTableBorder text-[14px]"
+        >
+          <span className="font-[600]">
+            {t(
+              'content_studio_first_post_saved_draft_title',
+              'Your post is saved as a draft, not scheduled yet'
+            )}
+          </span>
+          <span>
+            {t(
+              'content_studio_first_post_saved_draft',
+              'It is in the calendar as a draft for {{date}}, so it will not be published. Open it in the calendar and choose Schedule to schedule it.',
+              {
+                date: dayjs(savedAsDraft.publishDate).format(
+                  'MMM D, YYYY HH:mm'
+                ),
+              }
+            )}
+          </span>
+          <Link href="/launches" className="underline self-start">
+            {t('content_studio_first_post_open_calendar', 'Open the calendar')}
+          </Link>
+        </div>
+      )}
       {newDraftWaiting && (
         <div
           role="status"

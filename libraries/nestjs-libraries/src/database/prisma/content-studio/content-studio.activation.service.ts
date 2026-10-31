@@ -327,7 +327,7 @@ export class ContentStudioActivationService {
 
   // Where the first post stands: its package and text, its latest research
   // (with what it found) and draft, and whether a post was scheduled or
-  // published since it was first handed off
+  // published since it was first handed off, or only saved as a draft
   async getFirstPost(organizationId: string) {
     const operations = await this.operations(organizationId);
     const research = operations.find(
@@ -339,7 +339,7 @@ export class ContentStudioActivationService {
         research: null,
         draft: null,
         alternatives: [],
-        firstPost: { scheduled: false, published: false },
+        firstPost: { scheduled: false, published: false, savedAsDraft: null },
         activated: false,
       };
     }
@@ -369,6 +369,15 @@ export class ContentStudioActivationService {
       : [];
     const scheduled = states.some((post) => post.state === 'QUEUE');
     const published = states.some((post) => post.state === 'PUBLISHED');
+    // saved in the composer as a draft only: said on the first post page,
+    // which otherwise looks as if nothing happened
+    const savedAsDraft =
+      handoff && !scheduled && !published
+        ? await this._contentStudioActivationRepository.getLatestDraftSince(
+            organizationId,
+            handoff.createdAt
+          )
+        : null;
     return {
       packageId,
       package: content
@@ -404,7 +413,13 @@ export class ContentStudioActivationService {
             }
           : null,
       alternatives: this.alternatives(operations, packageId, text),
-      firstPost: { scheduled, published },
+      firstPost: {
+        scheduled,
+        published,
+        savedAsDraft: savedAsDraft
+          ? { publishDate: savedAsDraft.publishDate }
+          : null,
+      },
       activated: scheduled || published,
     };
   }

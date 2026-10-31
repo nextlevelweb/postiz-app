@@ -248,12 +248,16 @@ describe('After the first post: the success and the tour', () => {
       'Approvals',
     ]);
     expect(screen.queryByTestId('tour-card')).toBeNull();
-    expect(window.localStorage.getItem(TOUR_KEY)).toBe('1');
+    expect(window.localStorage.getItem(TOUR_KEY)).toBe('completed');
   });
 
   it('TOUR1 the first step is about the research the user just used', async () => {
     await show(ContentStudioFirstPostPage);
-    expect(within(card()).getByText(/research focus/)).toBeTruthy();
+    expect(
+      within(card()).getByText(
+        /^You just used research to create your first post\. Radar is where Content Studio keeps an eye on new developments/
+      )
+    ).toBeTruthy();
   });
 
   it('TOUR7/AC5 Skip ends the tour for good: it never starts again by itself, but can be taken again', async () => {
@@ -330,6 +334,129 @@ describe('After the first post: the success and the tour', () => {
         configurable: true,
       });
     }
+  });
+});
+
+// Activation review 03: Lambert saved his first post in the composer and
+// came back to the same page, with no word about it. Back from the
+// composer, the page reads where the post stands at once
+describe('After the first post: back from the composer', () => {
+  const firstPostReads = () =>
+    mockFetch.mock.calls.filter(
+      ([url]) =>
+        new URL(url, 'https://api.test').pathname ===
+        '/content-studio/activation/first-post'
+    ).length;
+  // the same cache across leaving for the composer and coming back, as in
+  // the app
+  const cache = new Map();
+  const mount = async () => {
+    render(
+      h(
+        SWRConfig,
+        { value: { provider: () => cache, dedupingInterval: 0 } },
+        h(ContentStudioFirstPostPage)
+      )
+    );
+    await flush();
+  };
+  beforeEach(() => cache.clear());
+
+  it('ACT1 a first post that is drafted only: no success, no tour, no checklist', async () => {
+    state.activated = false;
+    await mount();
+    expect(screen.getByText('Your draft')).toBeTruthy();
+    expect(screen.queryByText('Your first post is scheduled')).toBeNull();
+    expect(screen.queryByTestId('tour-card')).toBeNull();
+    expect(screen.queryByText('Get more out of Content Studio')).toBeNull();
+  });
+
+  it('ACT4/ACT5/ACT6/ACT7 scheduled in the composer: the return reads it again at once, shows the success and starts the tour, without Home', async () => {
+    state.activated = false;
+    await mount();
+    expect(screen.getByText('Your draft')).toBeTruthy();
+    const before = firstPostReads();
+    // to the composer and back: the page leaves and is shown again
+    cleanup();
+    state.activated = true;
+    await mount();
+    // what was kept is shown first; it is read again on the next frame
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+    await flush();
+    expect(firstPostReads()).toBeGreaterThan(before);
+    expect(screen.getByText('Your first post is scheduled')).toBeTruthy();
+    expect(title()).toBe('Research starts in Radar');
+  });
+
+  it('ACT3 published in the composer: the success says so, and the tour starts', async () => {
+    mockFetch.mockImplementation(async (url: string) =>
+      new URL(url, 'https://api.test').pathname ===
+      '/content-studio/activation/first-post'
+        ? reply(200, {
+            ...firstPost(true),
+            firstPost: { scheduled: false, published: true },
+          })
+        : server(url)
+    );
+    await mount();
+    expect(screen.getByText('Your first post is published')).toBeTruthy();
+    expect(title()).toBe('Research starts in Radar');
+  });
+
+  it('ACT8 the tour starts once: skipped or completed, a return shows the success only, and it can be taken again', async () => {
+    await mount();
+    fireEvent.click(within(card()).getByRole('button', { name: 'Skip tour' }));
+    await flush();
+    expect(window.localStorage.getItem(TOUR_KEY)).toBe('skipped');
+    cleanup();
+    await mount();
+    expect(screen.getByText('Your first post is scheduled')).toBeTruthy();
+    expect(screen.queryByTestId('tour-card')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Take a quick tour' }));
+    expect(title()).toBe('Research starts in Radar');
+  });
+
+  it('ACT9/TOUR5 a tour kept as seen before skipped and completed were told apart still counts; nothing else blocks the first one', async () => {
+    window.localStorage.setItem(TOUR_KEY, '1');
+    await mount();
+    expect(screen.queryByTestId('tour-card')).toBeNull();
+    cleanup();
+    window.localStorage.clear();
+    window.localStorage.setItem('content-studio-setup-draft:org-1', '{}');
+    window.localStorage.setItem('content-studio-setup-hidden:org-1', '1');
+    await mount();
+    expect(title()).toBe('Research starts in Radar');
+  });
+
+  it("ACT9 saved as a draft in the composer (Lambert's post): said, with its date and the way to schedule it; no success, no tour", async () => {
+    mockFetch.mockImplementation(async (url: string) =>
+      new URL(url, 'https://api.test').pathname ===
+      '/content-studio/activation/first-post'
+        ? reply(200, {
+            ...firstPost(false),
+            firstPost: {
+              scheduled: false,
+              published: false,
+              savedAsDraft: { publishDate: '2026-11-25T07:20:00.000Z' },
+            },
+          })
+        : server(url)
+    );
+    await mount();
+    const notice = screen.getByTestId('first-post-saved-as-draft');
+    expect(
+      within(notice).getByText(
+        'Your post is saved as a draft, not scheduled yet'
+      )
+    ).toBeTruthy();
+    expect(within(notice).getByText(/Nov 25, 2026/)).toBeTruthy();
+    expect(
+      within(notice)
+        .getByRole('link', { name: 'Open the calendar' })
+        .getAttribute('href')
+    ).toBe('/launches');
+    expect(screen.queryByText('Your first post is scheduled')).toBeNull();
+    expect(screen.queryByTestId('tour-card')).toBeNull();
   });
 });
 

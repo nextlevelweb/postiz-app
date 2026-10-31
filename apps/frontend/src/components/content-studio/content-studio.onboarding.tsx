@@ -72,12 +72,37 @@ const write = (key: string, on: boolean) => {
   }
 };
 
+// The tour in this browser: never shown (nothing kept), skipped or
+// completed. Either ends it for good; a "1" kept before the two were told
+// apart counts as completed. A key of another organization never counts
+export type ContentStudioTourState = 'never' | 'skipped' | 'completed';
+export const contentStudioTourState = (
+  organizationId: string
+): ContentStudioTourState => {
+  let value: string | null = null;
+  try {
+    value = storage()?.getItem(tourKey(organizationId)) ?? null;
+  } catch {
+    // shown again next time
+  }
+  return value === 'skipped' ? 'skipped' : value ? 'completed' : 'never';
+};
 export const isContentStudioTourSeen = (organizationId: string) =>
-  read(tourKey(organizationId));
-export const setContentStudioTourSeen = (
+  contentStudioTourState(organizationId) !== 'never';
+export const setContentStudioTourState = (
   organizationId: string,
-  seen: boolean
-) => write(tourKey(organizationId), seen);
+  next: ContentStudioTourState
+) => {
+  try {
+    if (next === 'never') {
+      storage()?.removeItem(tourKey(organizationId));
+    } else {
+      storage()?.setItem(tourKey(organizationId), next);
+    }
+  } catch {
+    // shown again next time
+  }
+};
 
 // --- the tour ---
 
@@ -112,8 +137,8 @@ const useTourSteps = () => {
     radar: {
       title: t('content_studio_tour_radar_title', 'Research starts in Radar'),
       text: t(
-        'content_studio_tour_radar',
-        'Radar watches your feeds and pages for new developments. Research for your posts uses what it finds together with your research focus, which you can refine at any time, as you could for your first post.'
+        'content_studio_tour_radar_after_first_post',
+        'You just used research to create your first post. Radar is where Content Studio keeps an eye on new developments and content opportunities for your next posts.'
       ),
     },
     home: {
@@ -192,8 +217,11 @@ const place = (
 
 // One step at a time: its section in the navigation is highlighted, and a
 // card says what it is for, with Next and Skip tour. On a phone the card is
-// a sheet at the bottom, so it can never leave the screen
-export const ContentStudioTour: FC<{ onClose: () => void }> = ({ onClose }) => {
+// a sheet at the bottom, so it can never leave the screen. Done after the
+// last step completes it; Skip tour or Escape skips it
+export const ContentStudioTour: FC<{
+  onClose: (how: 'skipped' | 'completed') => void;
+}> = ({ onClose }) => {
   const t = useT();
   const steps = useTourSteps();
   const titleId = useId();
@@ -220,7 +248,7 @@ export const ContentStudioTour: FC<{ onClose: () => void }> = ({ onClose }) => {
     window.addEventListener('scroll', measure, true);
     const escape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        onClose();
+        onClose('skipped');
       }
     };
     document.addEventListener('keydown', escape);
@@ -284,11 +312,13 @@ export const ContentStudioTour: FC<{ onClose: () => void }> = ({ onClose }) => {
           <button
             type="button"
             className="min-h-[40px] text-[14px] text-textItemBlur underline"
-            onClick={onClose}
+            onClick={() => onClose('skipped')}
           >
             {t('content_studio_tour_skip', 'Skip tour')}
           </button>
-          <Button onClick={() => (last ? onClose() : setIndex(index + 1))}>
+          <Button
+            onClick={() => (last ? onClose('completed') : setIndex(index + 1))}
+          >
             {last
               ? t('content_studio_tour_done', 'Done')
               : t('content_studio_tour_next', 'Next')}
@@ -306,10 +336,13 @@ export const useContentStudioTour = () => {
   const organizationId = user?.orgId || '';
   const [open, setOpen] = useState(false);
   const start = useCallback(() => setOpen(true), []);
-  const close = useCallback(() => {
-    setOpen(false);
-    setContentStudioTourSeen(organizationId, true);
-  }, [organizationId]);
+  const close = useCallback(
+    (how: 'skipped' | 'completed') => {
+      setOpen(false);
+      setContentStudioTourState(organizationId, how);
+    },
+    [organizationId]
+  );
   // the first time only: never again once finished or skipped
   const startOnce = useCallback(() => {
     if (organizationId && !isContentStudioTourSeen(organizationId)) {

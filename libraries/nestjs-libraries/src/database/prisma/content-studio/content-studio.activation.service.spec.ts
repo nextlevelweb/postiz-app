@@ -249,6 +249,9 @@ const build = (
     listPostStatesSince: jest.fn(
       async (): Promise<Array<{ state: string }>> => []
     ),
+    getLatestDraftSince: jest.fn(
+      async (): Promise<{ publishDate: Date } | null> => null
+    ),
   };
   const connections = {
     getConnectionForOrganization: jest.fn(async () => ({
@@ -525,9 +528,10 @@ describe('First post: activation is a scheduled or published post', () => {
     await firstPost(ctx);
     expect(await state(ctx)).toMatchObject({
       activated: false,
-      firstPost: { scheduled: false, published: false },
+      firstPost: { scheduled: false, published: false, savedAsDraft: null },
     });
     expect(ctx.activation.listPostStatesSince).not.toHaveBeenCalled();
+    expect(ctx.activation.getLatestDraftSince).not.toHaveBeenCalled();
   });
 
   it('AC2 a post scheduled after the first post went to the composer is activation', async () => {
@@ -569,9 +573,50 @@ describe('First post: activation is a scheduled or published post', () => {
       research: null,
       draft: null,
       alternatives: [],
-      firstPost: { scheduled: false, published: false },
+      firstPost: { scheduled: false, published: false, savedAsDraft: null },
       activated: false,
     });
+  });
+
+  it('ACT9 like the clone: handed off 22:24, then saved in the composer as a draft for 25 November: no activation, the draft is said', async () => {
+    const ctx = build();
+    await firstPost(ctx);
+    const handedOff = new Date('2026-10-30T22:24:15.154Z');
+    const planned = new Date('2026-11-25T07:20:00.000Z');
+    ctx.activation.getFirstHandoffOfPackage.mockResolvedValue({
+      createdAt: handedOff,
+    });
+    // drafts never count as scheduled or published
+    ctx.activation.listPostStatesSince.mockResolvedValue([]);
+    ctx.activation.getLatestDraftSince.mockResolvedValue({
+      publishDate: planned,
+    });
+    expect(await state(ctx)).toMatchObject({
+      activated: false,
+      firstPost: {
+        scheduled: false,
+        published: false,
+        savedAsDraft: { publishDate: planned },
+      },
+    });
+    expect(ctx.activation.getLatestDraftSince).toHaveBeenCalledWith(
+      ORG,
+      handedOff
+    );
+  });
+
+  it('ACT2/ACT9 the same post scheduled instead (QUEUE) is activation, and no draft is looked for', async () => {
+    const ctx = build();
+    await firstPost(ctx);
+    ctx.activation.getFirstHandoffOfPackage.mockResolvedValue({
+      createdAt: new Date('2026-10-30T22:24:15.154Z'),
+    });
+    ctx.activation.listPostStatesSince.mockResolvedValue([{ state: 'QUEUE' }]);
+    expect(await state(ctx)).toMatchObject({
+      activated: true,
+      firstPost: { scheduled: true, published: false, savedAsDraft: null },
+    });
+    expect(ctx.activation.getLatestDraftSince).not.toHaveBeenCalled();
   });
 });
 
