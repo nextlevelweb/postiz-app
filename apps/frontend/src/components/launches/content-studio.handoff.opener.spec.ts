@@ -903,7 +903,7 @@ describe('ContentStudioHandoffOpener: closing the composer', () => {
 
   // activation review 02: the way back is on the screen, not only the
   // browser's Back or the composer's close
-  it('N3/N4/N5 a first post handoff shows "Back to Content Studio", which asks, closes the composer and returns to the first post', async () => {
+  it('N3/N4/N5/NAV3 a first post handoff shows "Back to Content Studio", which asks, closes the composer and returns to the first post', async () => {
     mockCloseAll.mockImplementation(() => mockModals.set([]));
     const id = newId();
     renderOpener(`/launches?handoff=${id}&return=first-post`);

@@ -617,6 +617,32 @@ describe('Setup assistant: progress and the AI step', () => {
   });
 });
 
+describe('Setup assistant: AI first (activation review 03)', () => {
+  it('with AI ready, the AI draft is the way: no "not required" note, and filling in by hand is a quiet link', async () => {
+    await show();
+    expect(screen.queryByText(/Content Studio works best with AI/)).toBeNull();
+    fireEvent.click(button('Next'));
+    await flush();
+    fillCompany();
+    const draft = button('Draft my profile with AI');
+    const myself = button('Fill in myself');
+    expect(draft.className).toMatch(/bg-/);
+    expect(myself.className).toMatch(/underline/);
+    expect(myself.className).not.toMatch(/rounded-full/);
+  });
+
+  it('without AI the way out stays, and says why AI is better', async () => {
+    state.connections = [];
+    await show();
+    expect(
+      screen.getByText(
+        'Content Studio works best with AI. Without it you fill in your profile yourself.'
+      )
+    ).toBeTruthy();
+    expect(button('Continue without AI')).toBeTruthy();
+  });
+});
+
 describe('Setup assistant: the AI draft', () => {
   const toProfile = async () => {
     await show();
@@ -1734,7 +1760,7 @@ describe('Setup assistant: the saved setup wins over this browser', () => {
     expect(screen.queryByRole('link', { name: 'Finish later' })).toBeNull();
   });
 
-  it('S5 a first post that exists is opened, never started again; a return finds the assistant as it was', async () => {
+  it('S5/NAV5 a first post that exists is opened, never started again; a return finds the assistant as it was', async () => {
     savedSetup();
     state.firstPostRead = () =>
       reply(200, {

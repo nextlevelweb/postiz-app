@@ -43,20 +43,27 @@ const SECTIONS: Array<{
   },
 ];
 
+// Pages of no section: the first post is a step of getting started, not a
+// part of Home, so nothing in the navigation is marked as the current page
+const OUTSIDE_SECTIONS = ['/content-studio/first-post'];
+
 const within = (pathname: string, path: string) =>
   pathname === path || pathname.startsWith(`${path}/`);
 
-// The section a path belongs to; a package (/content-studio/<id>) is home
+// The section a path belongs to; a package (/content-studio/<id>) is home,
+// a page of no section none
 export const contentStudioSectionOf = (
   pathname: string
-): ContentStudioSection =>
-  SECTIONS.find(
-    (section) =>
-      section.key !== 'home' &&
-      [section.href, ...(section.also || [])].some((path) =>
-        within(pathname, path)
-      )
-  )?.key ?? 'home';
+): ContentStudioSection | null =>
+  OUTSIDE_SECTIONS.some((path) => within(pathname, path))
+    ? null
+    : SECTIONS.find(
+        (section) =>
+          section.key !== 'home' &&
+          [section.href, ...(section.also || [])].some((path) =>
+            within(pathname, path)
+          )
+      )?.key ?? 'home';
 
 // Short names for what each section holds today (UX review 02): Knowledge
 // is the web pages and feeds AI writes from (the routes keep their /sources
@@ -301,7 +308,7 @@ export const ContentStudioRouteLoading: FC = () => {
     <div className="bg-newBgColorInner p-[20px] mobile:p-[12px] flex flex-1 flex-col min-w-0">
       <ContentStudioLoading
         label={`${t('content_studio_opening', 'Opening')} ${
-          section === 'home'
+          !section || section === 'home'
             ? t('content_studio', 'Content Studio')
             : labels[section]
         }…`}

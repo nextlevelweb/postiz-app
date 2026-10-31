@@ -376,7 +376,7 @@ describe('First post: research and draft while the user waits or is away', () =>
 });
 
 describe('First post: to the composer', () => {
-  it('ACT5/N2 Review and schedule hands exactly this draft to the real composer, which brings the user back', async () => {
+  it('ACT5/N2/NAV2 Review and schedule hands exactly this draft to the real composer, which brings the user back', async () => {
     await show();
     fireEvent.click(button('Review and schedule'));
     await flush();
@@ -700,16 +700,17 @@ describe('First post: one clear purpose', () => {
 });
 
 describe('First post: earlier drafts are kept', () => {
-  it('P2/N4 a return from the composer shows the same post again, without starting anything', async () => {
+  it('P2/N4/NAV4/PRES1/PRES2/PRES5 a return from the composer shows the same post and its research again, without starting anything', async () => {
     mockParams = new URLSearchParams();
     await show();
     expect(screen.getByTestId('first-post-text').textContent).toBe(
       'Eerste post over AI.'
     );
+    expect(screen.getByText('Why this topic?')).toBeTruthy();
     expect(posts('/content-studio/activation/first-post')).toEqual([]);
   });
 
-  it('P3 a ready first post opened again starts no research', async () => {
+  it('P3/NAV4 a ready first post opened again starts no research', async () => {
     state.firstPost = ready({ alternatives: [ALTERNATIVE_NEW] });
     await show();
     await flush();
@@ -720,7 +721,7 @@ describe('First post: earlier drafts are kept', () => {
     ).toBe(true);
   });
 
-  it('P4/P5 the earlier draft stays listed and is put back on request, without AI', async () => {
+  it('P4/P5/PRES3/PRES4 the earlier draft stays listed and is put back on request, without AI', async () => {
     state.firstPost = ready({
       alternatives: [ALTERNATIVE_NEW, ALTERNATIVE_OLD],
     });

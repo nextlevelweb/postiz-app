@@ -1863,12 +1863,16 @@ export const ContentStudioSetupWizard: FC = () => {
               )}
             </div>
           )}
-          <div className="text-[13px] text-textItemBlur">
-            {t(
-              'content_studio_setup_ai_optional',
-              'AI is recommended, not required: without it you fill in your profile yourself.'
-            )}
-          </div>
+          {/* AI first: filling everything in by hand is a way out when AI
+              is missing or failing, not an equal choice */}
+          {(!usable.length || health === 'attention') && (
+            <div className="text-[13px] text-textItemBlur">
+              {t(
+                'content_studio_setup_ai_fallback',
+                'Content Studio works best with AI. Without it you fill in your profile yourself.'
+              )}
+            </div>
+          )}
           <div className="flex flex-col-reverse items-stretch sm:flex-row sm:flex-wrap sm:items-center gap-[8px] sm:justify-end pt-[16px] border-t border-newTableBorder">
             {(!usable.length || health === 'attention') && (
               <Button
@@ -2031,13 +2035,15 @@ export const ContentStudioSetupWizard: FC = () => {
               </>
             ) : aiReady ? (
               <>
-                <Button
-                  secondary
+                {/* the AI draft is the way; typing it all is a quiet way out */}
+                <button
+                  type="button"
                   disabled={!companyReady}
                   onClick={continueManually}
+                  className="min-h-[40px] px-[8px] text-[14px] text-textItemBlur underline underline-offset-2 hover:text-newTextColor disabled:opacity-50"
                 >
                   {t('content_studio_setup_fill_myself', 'Fill in myself')}
-                </Button>
+                </button>
                 <Button disabled={!companyReady} onClick={generate}>
                   {t(
                     'content_studio_setup_draft_with_ai',

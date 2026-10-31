@@ -299,8 +299,17 @@ describe('Dialogs and navigation', () => {
     ['/content-studio/reviews', 'reviews'],
     ['/content-studio/intelligence', 'brand'],
     ['/content-studio/setup', 'brand'],
-  ])('N4 %s is in the %s section', (path, section) => {
+    // a step of getting started, not Home (activation review 03)
+    ['/content-studio/first-post', null],
+  ])('N4/NAV1 %s is in the %s section', (path, section) => {
     expect(contentStudioSectionOf(path)).toBe(section);
+  });
+
+  it('NAV1 on the first post page no section is marked as the current one', () => {
+    mockPathname = '/content-studio/first-post';
+    render(h(ContentStudioNav));
+    expect(screen.getAllByRole('link')).toHaveLength(6);
+    expect(document.querySelector('[aria-current="page"]')).toBeNull();
   });
 
   it('N5 the navigation is in the order of the work, the current section marked', () => {

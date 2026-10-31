@@ -2316,7 +2316,7 @@
   "content_studio_setup_ai_error_timeout": "The AI provider took too long to answer. Try again; a faster model can help.",
   "content_studio_setup_ai_error_unavailable": "The AI provider is not available right now. Try again in a moment.",
   "content_studio_setup_ai_error_workspace": "This Anthropic key is not tied to a workspace. Add the workspace ID to the connection, or use a key created inside a workspace.",
-  "content_studio_setup_ai_optional": "AI is recommended, not required: without it you fill in your profile yourself.",
+  "content_studio_setup_ai_fallback": "Content Studio works best with AI. Without it you fill in your profile yourself.",
   "content_studio_setup_ai_testing": "Checking your AI connection…",
   "content_studio_setup_ai_untested": "This connection has not been tested yet.",
   "content_studio_setup_ai_untested_member": "An admin can test this connection under Brand & AI.",
