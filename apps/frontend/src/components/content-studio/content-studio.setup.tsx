@@ -160,6 +160,9 @@ export interface SetupDraft {
   // the saved setup this draft started from (contentStudioSavedSetupBase),
   // when there was one: the draft is a revisit of exactly that setup
   base?: string | null;
+  // the language the profile's texts were written in (by the AI, or as
+  // saved): step 2 says when the language of the posts differs from it
+  profileLanguage?: string | null;
 }
 
 // What the organization saved through the setup, as one value: its company
@@ -215,6 +218,42 @@ export const chooseContentStudioSetupStart = (
   return kept?.v === 1 ? 'resume' : 'new';
 };
 
+// The language of the posts chosen in step 2 is the audiences' locale: what
+// the first post and every later AI draft is written in. Changing it makes
+// the audiences unsaved, so it is saved even when nothing else changed. A
+// regional locale of the same language (nl-BE for nl) stays as it is
+export const setupProfileWithLanguage = (
+  draft: Pick<SetupDraft, 'profile' | 'saved'>,
+  language: string
+): Pick<SetupDraft, 'profile' | 'saved'> => {
+  const { profile, saved } = draft;
+  const same = (locale: string | null) =>
+    locale?.split('-')[0].toLowerCase() === language;
+  if (
+    !profile ||
+    profile.audiences.every((audience) => same(audience.content.locale))
+  ) {
+    return { profile, saved };
+  }
+  return {
+    profile: {
+      ...profile,
+      audiences: profile.audiences.map((audience) =>
+        same(audience.content.locale)
+          ? audience
+          : { ...audience, content: { ...audience.content, locale: language } }
+      ),
+    },
+    // only an audience whose language changed is saved again
+    saved: {
+      ...saved,
+      audiences: (saved.audiences || []).filter((index) =>
+        same(profile.audiences[index]?.content.locale ?? null)
+      ),
+    },
+  };
+};
+
 export const LANGUAGES: Array<{ value: string; label: string }> = [
   { value: 'nl', label: 'Nederlands' },
   { value: 'en', label: 'English' },
@@ -224,6 +263,11 @@ export const LANGUAGES: Array<{ value: string; label: string }> = [
   { value: 'it', label: 'Italiano' },
   { value: 'pt', label: 'Português' },
 ];
+
+const baseLanguage = (value: string) => value.split('-')[0].toLowerCase();
+const languageLabel = (value: string) =>
+  LANGUAGES.find((entry) => entry.value === baseLanguage(value))?.label ??
+  value;
 
 const COMPANY_NAME_MAX = 200;
 const WEBSITE_MAX = 300;
@@ -933,6 +977,7 @@ export const ContentStudioSetupWizard: FC = () => {
             editorial: true,
           },
           base: savedBase,
+          profileLanguage: audience?.currentRevision.content.locale ?? null,
         });
         return;
       }
@@ -1060,6 +1105,7 @@ export const ContentStudioSetupWizard: FC = () => {
             profile: next,
             saved: {},
             pending: null,
+            profileLanguage: current.company.language,
           };
         }
         return current.profile
@@ -1353,7 +1399,15 @@ export const ContentStudioSetupWizard: FC = () => {
         }
         for (const [index, audience] of profile.audiences.entries()) {
           if (audience.include && !saved.audiences?.includes(index)) {
-            await upsert(AUDIENCE_PROFILES_PATH, audienceActions, audience);
+            // a profile typed by hand has no language of its own: it is
+            // written for the language of step 2
+            await upsert(AUDIENCE_PROFILES_PATH, audienceActions, {
+              ...audience,
+              content: {
+                ...audience.content,
+                locale: audience.content.locale || draft.company.language,
+              },
+            });
             saved.audiences = [...(saved.audiences || []), index];
             keep();
           }
@@ -1554,15 +1608,19 @@ export const ContentStudioSetupWizard: FC = () => {
 
   const company = draft.company;
   // A changed company name is saved again with the profile (its tagline
-  // and description go into the profile on Next); the language is not
-  // part of the Brand Kit
-  const setCompany = (patch: Partial<ContentStudioSetupCompany>) =>
+  // and description go into the profile on Next); a changed language with
+  // its audiences, whose locale it is
+  const setCompany = (patch: Partial<ContentStudioSetupCompany>) => {
+    const next = patch.language
+      ? setupProfileWithLanguage(draft, patch.language)
+      : { profile: draft.profile, saved: draft.saved };
     update({
       company: { ...company, ...patch },
-      ...('companyName' in patch
-        ? { saved: { ...draft.saved, brand: false } }
-        : {}),
+      profile: next.profile,
+      saved:
+        'companyName' in patch ? { ...next.saved, brand: false } : next.saved,
     });
+  };
   // Next from step 2 with a profile: a tagline or description changed here
   // is the profile's now, and is saved with it
   const nextWithProfile = () => {
@@ -1895,6 +1953,34 @@ export const ContentStudioSetupWizard: FC = () => {
               onChange={(language) => setCompany({ language })}
             />
           </div>
+          {!!draft.profile &&
+            !!draft.profileLanguage &&
+            baseLanguage(draft.profileLanguage) !== company.language && (
+              <div
+                role="status"
+                className="p-[12px] rounded-[8px] bg-newBgLineColor text-[14px]"
+              >
+                {aiReady
+                  ? t(
+                      'content_studio_setup_language_changed_ai',
+                      'New drafts will be written in {{language}}. Your profile texts are still in {{profile}}: draft a new profile with AI to write them in {{language}} as well.',
+                      {
+                        language: languageLabel(company.language),
+                        profile: languageLabel(draft.profileLanguage),
+                        interpolation: { escapeValue: false },
+                      }
+                    )
+                  : t(
+                      'content_studio_setup_language_changed',
+                      'New drafts will be written in {{language}}. Your profile texts are still in {{profile}}; you can change them in the next step.',
+                      {
+                        language: languageLabel(company.language),
+                        profile: languageLabel(draft.profileLanguage),
+                        interpolation: { escapeValue: false },
+                      }
+                    )}
+              </div>
+            )}
           <LongTextField
             label={t(
               'content_studio_setup_goal',

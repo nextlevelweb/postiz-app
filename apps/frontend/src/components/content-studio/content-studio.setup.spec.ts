@@ -1838,7 +1838,7 @@ describe('Setup assistant: the saved setup wins over this browser', () => {
     ).toBe(healthy.id);
   });
 
-  it('a description changed in step 2 goes into the profile and is saved with it; the language alone saves nothing', async () => {
+  it('a description changed in step 2 goes into the profile and is saved with it; nothing else is written', async () => {
     savedSetup();
     await show();
     fireEvent.click(button('Back'));
@@ -1846,18 +1846,6 @@ describe('Setup assistant: the saved setup wins over this browser', () => {
     fireEvent.click(button('Back'));
     await flush();
     opened(2);
-    fireEvent.change(field('Language of your posts'), {
-      target: { value: 'en' },
-    });
-    fireEvent.click(button('Next'));
-    await flush();
-    fireEvent.click(button('Next'));
-    await flush();
-    expect(button('Create my first post')).toBeTruthy();
-    fireEvent.click(button('Back'));
-    await flush();
-    fireEvent.click(button('Back'));
-    await flush();
     type('What does your company do?', 'We now also host websites.');
     fireEvent.click(button('Next'));
     await flush();
@@ -1876,6 +1864,184 @@ describe('Setup assistant: the saved setup wins over this browser', () => {
       '/content-studio/brand-kit/revisions',
       '/content-studio/activation/first-post',
     ]);
+  });
+
+  describe('the language of the posts (review 03)', () => {
+    const i18n = require('i18next').default as { resolvedLanguage: string };
+    const AUDIENCE_ID = '00000000-0000-4000-8000-0000000000a1';
+    // the saved audience, in a language of its own
+    const savedIn = (locale: string | null) => {
+      savedSetup();
+      state.profiles['/content-studio/audience-profiles'][0].content = {
+        ...audience('Existing audience.'),
+        locale,
+      };
+    };
+    const toStep2 = async () => {
+      fireEvent.click(button(/^Your company/));
+      await flush();
+      opened(2);
+    };
+    const language = () => field('Language of your posts').value;
+    const choose = (value: string) =>
+      fireEvent.change(field('Language of your posts'), {
+        target: { value },
+      });
+    const audienceWrites = () =>
+      writes().filter((w) =>
+        w.url.startsWith('/content-studio/audience-profiles')
+      );
+    const firstPostStart = () =>
+      writes().find((w) => w.url === '/content-studio/activation/first-post');
+
+    beforeEach(() => {
+      // the interface is in English
+      i18n.resolvedLanguage = 'en';
+    });
+    afterEach(() => {
+      i18n.resolvedLanguage = 'nl';
+    });
+
+    it('LANG1/LANG7 an explicit Nederlands survives a reload, and is not reset to the interface language', async () => {
+      savedIn('en');
+      await show();
+      await toStep2();
+      expect(language()).toBe('en');
+      choose('nl');
+      cleanup();
+      await show();
+      opened(2);
+      expect(language()).toBe('nl');
+    });
+
+    it('LANG2/LANG3/LANG4 Nederlands: the setup AI is asked for nl, the audiences are saved as nl and the first post starts in nl', async () => {
+      savedIn('en');
+      await show();
+      await toStep2();
+      choose('nl');
+      // the saved texts are still English: said, and redrafting is offered
+      expect(
+        screen.getByText(
+          'New drafts will be written in Nederlands. Your profile texts are still in English: draft a new profile with AI to write them in Nederlands as well.'
+        )
+      ).toBeTruthy();
+      fireEvent.click(button('Draft a new profile with AI'));
+      await flush();
+      expect(
+        writes().find((w) => w.url === '/content-studio/ai/setup/proposal')
+          ?.body.language
+      ).toBe('nl');
+      opened(3);
+      fireEvent.click(button('Next'));
+      await flush();
+      fireEvent.click(button('Create my first post'));
+      await flush();
+      const saved = audienceWrites();
+      expect(saved).toHaveLength(2);
+      expect(saved.map((w) => w.body.content.locale)).toEqual(['nl', 'nl']);
+      expect(firstPostStart()?.body.language).toBe('nl');
+    });
+
+    it('LANG3 Nederlands alone, without a new AI draft, is saved as the language of the audiences', async () => {
+      savedIn('en');
+      await show();
+      await toStep2();
+      choose('nl');
+      fireEvent.click(button('Next'));
+      await flush();
+      fireEvent.click(button('Next'));
+      await flush();
+      fireEvent.click(button('Create my first post'));
+      await flush();
+      expect(aiCalls()).toEqual([]);
+      expect(audienceWrites()).toEqual([
+        expect.objectContaining({
+          url: `/content-studio/audience-profiles/${AUDIENCE_ID}/revisions`,
+          body: expect.objectContaining({
+            content: expect.objectContaining({ locale: 'nl' }),
+          }),
+        }),
+      ]);
+      expect(firstPostStart()?.body.language).toBe('nl');
+    });
+
+    it('LANG6 a saved Dutch profile opens in Nederlands under an English interface, and its first post starts in nl', async () => {
+      savedIn('nl');
+      await show();
+      opened(4);
+      fireEvent.click(button('Create my first post'));
+      await flush();
+      expect(firstPostStart()?.body.language).toBe('nl');
+      expect(audienceWrites()).toEqual([]);
+      cleanup();
+      await show();
+      await toStep2();
+      expect(language()).toBe('nl');
+      // nothing differs: nothing to say
+      expect(screen.queryByText(/New drafts will be written in/)).toBeNull();
+    });
+
+    it('LANG3 a profile filled in by hand (its audience has no language) is saved for the language of step 2', async () => {
+      state.profiles['/content-studio/audience-profiles'] = [];
+      await show();
+      fireEvent.click(button('Next'));
+      await flush();
+      fillCompany();
+      choose('nl');
+      fireEvent.click(button('Fill in myself'));
+      await flush();
+      opened(3);
+      fireEvent.click(button('Next'));
+      await flush();
+      fireEvent.click(button('Save setup'));
+      await flush();
+      const created = audienceWrites().find(
+        (w) => w.url === '/content-studio/audience-profiles'
+      );
+      expect(created?.body.content.locale).toBe('nl');
+    });
+
+    it('a regional locale of the chosen language stays as it is', () => {
+      const { setupProfileWithLanguage } = require('./content-studio.setup');
+      const profile = {
+        audiences: [
+          { name: 'A', content: { locale: 'nl-BE' }, include: true },
+          { name: 'B', content: { locale: null }, include: true },
+        ],
+      };
+      const next = setupProfileWithLanguage(
+        { profile, saved: { audiences: [0, 1] } },
+        'nl'
+      );
+      expect(next.profile.audiences.map((a: any) => a.content.locale)).toEqual([
+        'nl-BE',
+        'nl',
+      ]);
+      expect(next.saved.audiences).toEqual([0]);
+      const same = setupProfileWithLanguage(
+        { profile: next.profile, saved: { audiences: [0, 1] } },
+        'nl'
+      );
+      expect(same.saved.audiences).toEqual([0, 1]);
+      // back and forth: only the audience whose language changed is saved
+      // again, and a locale in capitals is the same language
+      const mixed = setupProfileWithLanguage(
+        {
+          profile: {
+            audiences: [
+              { name: 'A', content: { locale: 'NL' }, include: true },
+              { name: 'B', content: { locale: 'en' }, include: true },
+            ],
+          },
+          saved: { audiences: [0, 1] },
+        },
+        'nl'
+      );
+      expect(mixed.profile.audiences.map((a: any) => a.content.locale)).toEqual(
+        ['NL', 'nl']
+      );
+      expect(mixed.saved.audiences).toEqual([0]);
+    });
   });
 
   it('an archived first post is not opened again: a new one is made', async () => {

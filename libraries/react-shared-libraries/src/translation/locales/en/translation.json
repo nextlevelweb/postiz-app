@@ -2216,6 +2216,8 @@
   "content_studio_setup_item_voice": "Writing style",
   "content_studio_setup_kept": "Everything you entered is kept. Try again, fix the AI connection, or fill in the profile yourself.",
   "content_studio_setup_language": "Language of your posts",
+  "content_studio_setup_language_changed_ai": "New drafts will be written in {{language}}. Your profile texts are still in {{profile}}: draft a new profile with AI to write them in {{language}} as well.",
+  "content_studio_setup_language_changed": "New drafts will be written in {{language}}. Your profile texts are still in {{profile}}; you can change them in the next step.",
   "content_studio_setup_later": "Finish later",
   "content_studio_setup_left_out": "Left out",
   "content_studio_setup_loading": "Opening the setup assistant…",

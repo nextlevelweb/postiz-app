@@ -58,7 +58,13 @@ const result = (text: string) => ({
   usage: { inputTokens: 10, outputTokens: 20 },
 });
 
-const build = (options: { provider?: 'codex' | 'openai' } = {}) => {
+const build = (
+  options: {
+    provider?: 'codex' | 'openai';
+    // the language of the latest audience, the one the posts are written in
+    audienceLocale?: string | null;
+  } = {}
+) => {
   const provider = options.provider ?? 'codex';
   let policy = policyWith(['AI in het mkb']);
   // the provider: each call waits until the test answers it
@@ -184,7 +190,20 @@ const build = (options: { provider?: 'codex' | 'openai' } = {}) => {
       context: {
         writing: null,
         editorialPolicy: policy,
-        audience: null,
+        audience:
+          options.audienceLocale === undefined
+            ? null
+            : {
+                schemaVersion: 1,
+                description: 'Ondernemers',
+                role: 'Eigenaar',
+                knowledgeLevel: 'beginner',
+                goals: [],
+                painPoints: [],
+                objections: [],
+                preferredTone: null,
+                locale: options.audienceLocale,
+              },
         expertise: null,
       },
       refs: {},
@@ -463,6 +482,40 @@ describe('First post: another angle and refined research', () => {
     // only read: there is nothing here that could write a policy
     expect(Object.keys(ctx.policyService)).toEqual(['getPolicy']);
     expect(ctx.policyService.getPolicy).toHaveBeenCalled();
+  });
+});
+
+describe('First post: the language of the posts (review 03)', () => {
+  const asked = (ctx: Ctx, index: number) =>
+    `${ctx.calls[index].request.system}\n${ctx.calls[index].request.prompt}`;
+  const withoutLanguage = (ctx: Ctx, mode: string) =>
+    ctx.activationService.startFirstPost({
+      organizationId: ORG,
+      userId: USER,
+      request: { connectionId: CONNECTION, mode },
+    });
+
+  it('LANG4/LANG5 another angle, which sends no language, researches and drafts in the saved audience language (nl)', async () => {
+    const ctx = build({ audienceLocale: 'nl' });
+    await firstPost(ctx);
+    await withoutLanguage(ctx, 'angle');
+    expect(asked(ctx, 2)).toContain('the language with the tag nl');
+    ctx.calls[2].answer(researchAnswer('Iets anders'));
+    await settle();
+    expect(asked(ctx, 3)).toContain('the language with the tag nl');
+  });
+
+  it('LANG4/LANG6 a language chosen in the setup wins over the saved audience language', async () => {
+    const ctx = build({ audienceLocale: 'en' });
+    await start(ctx, 'first');
+    expect(asked(ctx, 0)).toContain('the language with the tag nl');
+    expect(asked(ctx, 0)).not.toContain('the language with the tag en');
+  });
+
+  it('English only as the last fallback: no language chosen and none saved', async () => {
+    const ctx = build({ audienceLocale: null });
+    await withoutLanguage(ctx, 'first');
+    expect(asked(ctx, 0)).toContain('the language with the tag en');
   });
 });
 
