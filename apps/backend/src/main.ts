@@ -20,6 +20,32 @@ import { HttpExceptionFilter } from '@gitroom/nestjs-libraries/services/exceptio
 import { ConfigurationChecker } from '@gitroom/helpers/configuration/configuration.checker';
 import { startMcp } from '@gitroom/nestjs-libraries/chat/start.mcp';
 
+// The frontend dev server answers on localhost, 127.0.0.1 and the hostnames
+// in POSTIZ_ALLOWED_DEV_ORIGINS (see next.config.js). Only when that is set
+// (a LAN dev setup) is each of them also an allowed origin, on the protocol
+// and port of FRONTEND_URL; otherwise, and always in production, nothing
+// changes
+const devFrontendOrigins = () => {
+  const hosts = (process.env.POSTIZ_ALLOWED_DEV_ORIGINS ?? '')
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => /^[a-z0-9.-]+$/.test(entry));
+  if (!hosts.length || process.env.NODE_ENV === 'production') {
+    return [];
+  }
+  try {
+    const frontend = new URL(process.env.FRONTEND_URL!);
+    return [...new Set(['localhost', '127.0.0.1', ...hosts])].map((host) => {
+      const origin = new URL(frontend.origin);
+      origin.hostname = host;
+      return origin.origin;
+    });
+  } catch {
+    // no valid FRONTEND_URL: the configuration check reports it
+    return [];
+  }
+};
+
 async function start() {
   const app = await NestFactory.create(AppModule, {
     rawBody: true,
@@ -45,6 +71,7 @@ async function start() {
       ],
       origin: [
         process.env.FRONTEND_URL,
+        ...devFrontendOrigins(),
         'http://localhost:6274',
         ...(process.env.MAIN_URL ? [process.env.MAIN_URL] : []),
         // Optional: the Canva app calls the public API from its iframe origin
