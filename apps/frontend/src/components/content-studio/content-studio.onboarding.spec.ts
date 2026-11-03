@@ -61,6 +61,7 @@ jest.mock('@gitroom/frontend/components/layout/user.context', () => ({
 
 const {
   ContentStudioFirstPostPage,
+  ContentStudioFirstPostReminder,
   ContentStudioGetStarted,
   CONTENT_STUDIO_TOUR,
 } = require('./content-studio.onboarding');
@@ -86,7 +87,23 @@ const CONNECTION = {
   createdAt: T0,
   updatedAt: T0,
 };
-const firstPost = (activated: boolean) => ({
+// Lambert's post: saved in the composer as a draft for 25 November, after
+// the research it came from
+const SAVED = {
+  publishDate: '2026-11-25T07:20:00.000Z',
+  group: '51766056-e439-4d14-892f-fdf34b26c5b5',
+  createdAt: '2026-10-30T22:29:45.106Z',
+};
+const SAVED_PATH =
+  '/launches?post=51766056-e439-4d14-892f-fdf34b26c5b5&return=first-post';
+const alternative = (id: string, current: boolean) => ({
+  operationId: id,
+  completedAt: T0,
+  text: `text ${id}`,
+  research: null,
+  current,
+});
+const firstPost = (activated: boolean, saved = false) => ({
   packageId: 'p',
   package: { name: 'First post', draftVersion: 2, archived: false, text: 'x' },
   research: {
@@ -103,7 +120,12 @@ const firstPost = (activated: boolean) => ({
     },
   },
   draft: { operationId: 'd', status: 'succeeded', applied: true },
-  firstPost: { scheduled: activated, published: false },
+  alternatives: [alternative('d', true), alternative('d0', false)],
+  firstPost: {
+    scheduled: activated,
+    published: false,
+    savedAsDraft: saved && !activated ? SAVED : null,
+  },
   activated,
 });
 const list = (n: number) => ({
@@ -120,6 +142,8 @@ const list = (n: number) => ({
 
 let state: {
   activated: boolean;
+  // saved in the composer as a draft
+  saved?: boolean;
   sources: number;
   designs: number;
   policy: Record<string, unknown>;
@@ -128,7 +152,7 @@ const server = (url: string) => {
   const { pathname } = new URL(url, 'https://api.test');
   switch (pathname) {
     case '/content-studio/activation/first-post':
-      return reply(200, firstPost(state.activated));
+      return reply(200, firstPost(state.activated, state.saved));
     case '/content-studio/ai/providers':
       return reply(200, [
         {
@@ -196,6 +220,7 @@ const title = () => within(card()).getByRole('heading').textContent;
 
 beforeEach(() => {
   window.localStorage.clear();
+  window.sessionStorage.clear();
   state = { activated: true, sources: 0, designs: 0, policy: POLICY };
   mockFetch.mockImplementation(async (url: string) => server(url));
 });
@@ -371,7 +396,7 @@ describe('After the first post: back from the composer', () => {
     expect(screen.queryByText('Get more out of Content Studio')).toBeNull();
   });
 
-  it('ACT4/ACT5/ACT6/ACT7 scheduled in the composer: the return reads it again at once, shows the success and starts the tour, without Home', async () => {
+  it('ACT4/ACT5/ACT6/ACT7/SCHED4/SCHED5/SCHED7 scheduled in the composer: the return reads it again at once, shows the success and starts the tour, without Home', async () => {
     state.activated = false;
     await mount();
     expect(screen.getByText('Your draft')).toBeTruthy();
@@ -388,7 +413,7 @@ describe('After the first post: back from the composer', () => {
     expect(title()).toBe('Research starts in Radar');
   });
 
-  it('ACT3 published in the composer: the success says so, and the tour starts', async () => {
+  it('ACT3/SCHED6 published in the composer: the success says so, and the tour starts', async () => {
     mockFetch.mockImplementation(async (url: string) =>
       new URL(url, 'https://api.test').pathname ===
       '/content-studio/activation/first-post'
@@ -427,50 +452,23 @@ describe('After the first post: back from the composer', () => {
     await mount();
     expect(title()).toBe('Research starts in Radar');
   });
-
-  it("ACT9 saved as a draft in the composer (Lambert's post): said, with its date and the way to schedule it; no success, no tour", async () => {
-    mockFetch.mockImplementation(async (url: string) =>
-      new URL(url, 'https://api.test').pathname ===
-      '/content-studio/activation/first-post'
-        ? reply(200, {
-            ...firstPost(false),
-            firstPost: {
-              scheduled: false,
-              published: false,
-              savedAsDraft: { publishDate: '2026-11-25T07:20:00.000Z' },
-            },
-          })
-        : server(url)
-    );
-    await mount();
-    const notice = screen.getByTestId('first-post-saved-as-draft');
-    expect(
-      within(notice).getByText(
-        'Your post is saved as a draft, not scheduled yet'
-      )
-    ).toBeTruthy();
-    expect(within(notice).getByText(/Nov 25, 2026/)).toBeTruthy();
-    expect(
-      within(notice)
-        .getByRole('link', { name: 'Open the calendar' })
-        .getAttribute('href')
-    ).toBe('/launches');
-    expect(screen.queryByText('Your first post is scheduled')).toBeNull();
-    expect(screen.queryByTestId('tour-card')).toBeNull();
-  });
 });
 
 describe('After the first post: the getting-started list on Home', () => {
   const task = (key: string) =>
     document.querySelector(`[data-task="${key}"]`) as HTMLElement;
 
-  it('CL1 appears only once the first post was scheduled or published', async () => {
+  it('CL1 appears once the first post was saved as a draft, scheduled or published; not for a draft made only here', async () => {
     window.localStorage.setItem(TOUR_KEY, '1');
     state.activated = false;
     await show(ContentStudioGetStarted);
     expect(screen.queryByText('Get more out of Content Studio')).toBeNull();
     cleanup();
-    state.activated = true;
+    state.saved = true;
+    await show(ContentStudioGetStarted);
+    expect(screen.getByText('Get more out of Content Studio')).toBeTruthy();
+    cleanup();
+    state = { ...state, saved: false, activated: true };
     await show(ContentStudioGetStarted);
     expect(screen.getByText('Get more out of Content Studio')).toBeTruthy();
   });
@@ -479,8 +477,9 @@ describe('After the first post: the getting-started list on Home', () => {
     window.localStorage.setItem(TOUR_KEY, '1');
     await show(ContentStudioGetStarted);
     expect(task('setup').getAttribute('data-done')).toBe('true');
+    expect(task('first_draft').getAttribute('data-done')).toBe('true');
     expect(task('first_post').getAttribute('data-done')).toBe('true');
-    expect(screen.getByText('2 of 6 done')).toBeTruthy();
+    expect(screen.getByText('3 of 7 done')).toBeTruthy();
     const link = (name: string) =>
       screen.getByRole('link', { name }).getAttribute('href');
     expect(link('Add your first Knowledge source')).toBe(
@@ -511,7 +510,7 @@ describe('After the first post: the getting-started list on Home', () => {
       expect(task(key).getAttribute('data-done')).toBe('true');
     }
     expect(task('approval').getAttribute('data-done')).toBe('false');
-    expect(screen.getByText('5 of 6 done')).toBeTruthy();
+    expect(screen.getByText('6 of 7 done')).toBeTruthy();
   });
 
   it('starts the tour once on Home when the first post succeeded elsewhere, and can be hidden', async () => {
@@ -532,7 +531,7 @@ describe('After the first post: the getting-started list on Home', () => {
     ).toBe('1');
   });
 
-  it('keeps no flag for what the data says: only the tour, the hidden list and a deliberate "no approval" are remembered', () => {
+  it('keeps no flag for what the data says: only the tour, the hidden list, a deliberate "no approval" and, for this visit, "not now" and exploring are remembered', () => {
     const source = require('fs').readFileSync(
       require('path').join(__dirname, 'content-studio.onboarding.tsx'),
       'utf8'
@@ -544,7 +543,12 @@ describe('After the first post: the getting-started list on Home', () => {
       '`content-studio-tour:',
       '`content-studio-checklist-hidden:',
       '`content-studio-no-approval:',
+      // sessionStorage: this visit only
+      '`content-studio-first-post-not-now:',
+      '`content-studio-first-post-explored:',
     ]);
+    // saved, scheduled or published is read from the server, never kept
+    expect(source).not.toMatch(/activated'|savedAsDraft'|scheduled'/);
     expect(source).not.toMatch(/method: 'POST'|\/posts|integrations/);
   });
 });
@@ -632,5 +636,291 @@ describe('After the first post: the tour is never lost', () => {
     window.localStorage.setItem('content-studio-checklist-hidden:org-1', '1');
     await show(ContentStudioGetStarted);
     expect(title()).toBe('Research starts in Radar');
+  });
+});
+
+// Activation review 04: a first post saved as a draft is progress, not the
+// success. The page says it is saved, opens the same post to schedule it,
+// and lets the user go on exploring; Home keeps reminding until it is
+// scheduled or published
+describe('A first post saved as a draft', () => {
+  const cache = new Map();
+  const mount = async (component: unknown = ContentStudioFirstPostPage) => {
+    render(
+      h(
+        SWRConfig,
+        { value: { provider: () => cache, dedupingInterval: 0 } },
+        h(component as never)
+      )
+    );
+    await flush();
+  };
+  const writes = () =>
+    mockFetch.mock.calls.filter(
+      ([, init]) => init?.method && init.method !== 'GET'
+    );
+  beforeEach(() => {
+    cache.clear();
+    state.activated = false;
+    state.saved = true;
+  });
+
+  it('D1/D2/D3/SCHED1 back from the composer with a DRAFT: "Your first post is saved", its draft date (never "scheduled"), and Schedule my first post opens the same post', async () => {
+    await mount();
+    const saved = screen.getByTestId('first-post-saved');
+    expect(within(saved).getByRole('heading').textContent).toBe(
+      'Your first post is saved'
+    );
+    expect(
+      within(saved).getByText(
+        'The draft is safe. You can schedule it now or come back to it later.'
+      )
+    ).toBeTruthy();
+    expect(
+      within(saved).getByText(
+        /^Draft date: Nov 25, 2026 \d\d:\d\d\. It stays a draft and will not be published until you schedule it\.$/
+      )
+    ).toBeTruthy();
+    // the primary action, first: the same post in the composer
+    const links = within(saved).getAllByRole('link');
+    expect(links[0].textContent).toBe('Schedule my first post');
+    expect(links[0].getAttribute('href')).toBe(SAVED_PATH);
+    expect(
+      within(saved).getByRole('button', {
+        name: 'Continue exploring Content Studio',
+      })
+    ).toBeTruthy();
+    // not the success, no tour by itself, nothing says scheduled
+    expect(screen.queryByText('Your first post is scheduled')).toBeNull();
+    expect(screen.queryByText(/scheduled for/i)).toBeNull();
+    expect(screen.queryByTestId('tour-card')).toBeNull();
+    // no new handoff from here: that would make a second post
+    expect(
+      screen.queryByRole('button', { name: 'Review and schedule' })
+    ).toBeNull();
+  });
+
+  it('ONB1/ONB4/ONB6 the saved state starts nothing: no research, no draft, no write; the drafts stay readable, another angle stays possible', async () => {
+    await mount();
+    expect(writes()).toEqual([]);
+    expect(screen.getByText('Your drafts')).toBeTruthy();
+    expect(screen.getByText('Draft 2')).toBeTruthy();
+    expect(screen.getByText('Draft 1')).toBeTruthy();
+    // the saved post is what gets scheduled: no draft is put back from here
+    expect(screen.queryByRole('button', { name: 'Use this draft' })).toBeNull();
+    expect(
+      screen.getByRole('button', { name: 'Try another angle' })
+    ).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: 'Refine my research' })
+    ).toBeTruthy();
+    // never sent to setup
+    expect(mockRouter.push).not.toHaveBeenCalled();
+    expect(mockRouter.replace).not.toHaveBeenCalled();
+  });
+
+  it('D4/D5 Continue exploring starts the same five-step tour on purpose; finishing it goes Home, and the first post is still saved, not done', async () => {
+    mockRouter.push.mockClear();
+    await mount();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Continue exploring Content Studio' })
+    );
+    const seen = [title()];
+    for (let i = 1; i < CONTENT_STUDIO_TOUR.length; i++) {
+      fireEvent.click(within(card()).getByRole('button', { name: 'Next' }));
+      seen.push(title());
+    }
+    expect(seen).toEqual([
+      'Research starts in Radar',
+      'Home',
+      'Knowledge',
+      'Creative Studio',
+      'Approvals',
+    ]);
+    fireEvent.click(within(card()).getByRole('button', { name: 'Done' }));
+    await flush();
+    expect(window.localStorage.getItem(TOUR_KEY)).toBe('completed');
+    expect(mockRouter.push).toHaveBeenCalledWith('/content-studio');
+    expect(
+      window.sessionStorage.getItem('content-studio-first-post-explored:org-1')
+    ).toBe('1');
+    // the server still says DRAFT: saved, not the success
+    cleanup();
+    await mount();
+    expect(screen.getByTestId('first-post-saved')).toBeTruthy();
+    expect(screen.queryByText('Your first post is scheduled')).toBeNull();
+    expect(screen.queryByTestId('tour-card')).toBeNull();
+  });
+
+  it('D5 skipping the tour from there is the same: Home, still saved', async () => {
+    mockRouter.push.mockClear();
+    await mount();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Continue exploring Content Studio' })
+    );
+    fireEvent.click(within(card()).getByRole('button', { name: 'Skip tour' }));
+    await flush();
+    expect(window.localStorage.getItem(TOUR_KEY)).toBe('skipped');
+    expect(mockRouter.push).toHaveBeenCalledWith('/content-studio');
+  });
+
+  it('SCHED4/SCHED5 scheduled later (QUEUE): the return shows the success; the tour starts by itself unless it was taken already', async () => {
+    await mount();
+    expect(screen.getByTestId('first-post-saved')).toBeTruthy();
+    cleanup();
+    state = { ...state, saved: false, activated: true };
+    await mount();
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+    await flush();
+    expect(screen.getByText('Your first post is scheduled')).toBeTruthy();
+    expect(title()).toBe('Research starts in Radar');
+    // taken while it was saved: the success only, and the tour at hand
+    cleanup();
+    window.localStorage.setItem(TOUR_KEY, 'completed');
+    await mount();
+    expect(screen.getByText('Your first post is scheduled')).toBeTruthy();
+    expect(screen.queryByTestId('tour-card')).toBeNull();
+    expect(
+      screen.getByRole('button', { name: 'Take a quick tour' })
+    ).toBeTruthy();
+  });
+
+  it('research made after the post was saved: the new draft is ready, and the saved post is still named with its draft date', async () => {
+    mockFetch.mockImplementation(async (url: string) => {
+      if (
+        new URL(url, 'https://api.test').pathname !==
+        '/content-studio/activation/first-post'
+      ) {
+        return server(url);
+      }
+      const value = firstPost(false, true);
+      return reply(200, {
+        ...value,
+        research: {
+          ...value.research,
+          completedAt: '2026-10-31T09:00:00.000Z',
+        },
+      });
+    });
+    await mount();
+    expect(screen.queryByTestId('first-post-saved')).toBeNull();
+    const notice = screen.getByTestId('first-post-saved-as-draft');
+    expect(
+      within(notice).getByText('Your earlier post is saved as a draft')
+    ).toBeTruthy();
+    expect(within(notice).getByText(/^Draft date: Nov 25, 2026/)).toBeTruthy();
+    expect(
+      within(notice)
+        .getByRole('link', { name: 'Schedule that post' })
+        .getAttribute('href')
+    ).toBe(SAVED_PATH);
+    expect(
+      screen.getByRole('button', { name: 'Review and schedule' })
+    ).toBeTruthy();
+  });
+
+  it('D6/D7 Home reminds on every visit: "Your first post is still waiting", Review and schedule opens the same post, Not now is for this visit only', async () => {
+    await mount(ContentStudioFirstPostReminder);
+    const reminder = screen.getByTestId('first-post-reminder');
+    expect(within(reminder).getByRole('heading').textContent).toBe(
+      'Your first post is still waiting'
+    );
+    expect(
+      within(reminder).getByText(
+        'You created your first AI-researched post. Want to review it once more and schedule it?'
+      )
+    ).toBeTruthy();
+    expect(
+      within(reminder)
+        .getByRole('link', { name: 'Review and schedule' })
+        .getAttribute('href')
+    ).toBe(SAVED_PATH);
+    fireEvent.click(within(reminder).getByRole('button', { name: 'Not now' }));
+    expect(screen.queryByTestId('first-post-reminder')).toBeNull();
+    // the same visit: still away
+    cleanup();
+    await mount(ContentStudioFirstPostReminder);
+    expect(screen.queryByTestId('first-post-reminder')).toBeNull();
+    // the next visit (a new browser session): back
+    cleanup();
+    window.sessionStorage.clear();
+    await mount(ContentStudioFirstPostReminder);
+    expect(screen.getByTestId('first-post-reminder')).toBeTruthy();
+  });
+
+  it('D6/B9/B18 after exploring and finishing the tour, still a draft: Home says the draft is ready and waits to be scheduled', async () => {
+    window.localStorage.setItem(TOUR_KEY, 'completed');
+    window.sessionStorage.setItem(
+      'content-studio-first-post-explored:org-1',
+      '1'
+    );
+    await mount(ContentStudioFirstPostReminder);
+    const reminder = screen.getByTestId('first-post-reminder');
+    expect(within(reminder).getByRole('heading').textContent).toBe(
+      'Your first post is waiting'
+    );
+    expect(
+      within(reminder).getByText(
+        "Your AI-researched draft is ready. Review it and schedule it when you're ready."
+      )
+    ).toBeTruthy();
+  });
+
+  it('no reminder once it is scheduled or published, or before anything was saved', async () => {
+    state = { ...state, saved: false, activated: true };
+    await mount(ContentStudioFirstPostReminder);
+    expect(screen.queryByTestId('first-post-reminder')).toBeNull();
+    cleanup();
+    cache.clear();
+    state = { ...state, saved: false, activated: false };
+    await mount(ContentStudioFirstPostReminder);
+    expect(screen.queryByTestId('first-post-reminder')).toBeNull();
+  });
+
+  it('CL1/CL2 the list: the AI draft is done, scheduling it is not, and leads to the same post; the tour does not start by itself', async () => {
+    await mount(ContentStudioGetStarted);
+    const task = (key: string) =>
+      document.querySelector(`[data-task="${key}"]`) as HTMLElement;
+    expect(task('setup').getAttribute('data-done')).toBe('true');
+    expect(task('first_draft').getAttribute('data-done')).toBe('true');
+    expect(task('first_draft').textContent).toContain(
+      'Create your first AI-researched post'
+    );
+    expect(task('first_post').getAttribute('data-done')).toBe('false');
+    expect(
+      within(task('first_post'))
+        .getByRole('link', { name: 'Schedule or publish your first post' })
+        .getAttribute('href')
+    ).toBe(SAVED_PATH);
+    expect(screen.queryByTestId('tour-card')).toBeNull();
+  });
+
+  it('CL3/CL4 scheduled or published: both done', async () => {
+    for (const published of [false, true]) {
+      cleanup();
+      cache.clear();
+      window.localStorage.setItem(TOUR_KEY, 'completed');
+      mockFetch.mockImplementation(async (url: string) =>
+        new URL(url, 'https://api.test').pathname ===
+        '/content-studio/activation/first-post'
+          ? reply(200, {
+              ...firstPost(true),
+              firstPost: {
+                scheduled: !published,
+                published,
+                savedAsDraft: null,
+              },
+            })
+          : server(url)
+      );
+      await mount(ContentStudioGetStarted);
+      for (const key of ['first_draft', 'first_post']) {
+        expect(
+          (
+            document.querySelector(`[data-task="${key}"]`) as HTMLElement
+          ).getAttribute('data-done')
+        ).toBe('true');
+      }
+    }
   });
 });

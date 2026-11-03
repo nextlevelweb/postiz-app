@@ -1252,7 +1252,12 @@ describe('Content Studio home: what needs attention, not a second menu', () => {
       updatedAt: T0,
     })),
   });
-  const firstPostState = (packageId: string | null, activated = false) => ({
+  const firstPostState = (
+    packageId: string | null,
+    activated = false,
+    // saved in the composer as a draft
+    saved = false
+  ) => ({
     packageId,
     package: packageId
       ? { name: 'First post', draftVersion: 2, archived: false, text: 'x' }
@@ -1260,7 +1265,17 @@ describe('Content Studio home: what needs attention, not a second menu', () => {
     research: null,
     draft: null,
     alternatives: [],
-    firstPost: { scheduled: activated, published: false },
+    firstPost: {
+      scheduled: activated,
+      published: false,
+      savedAsDraft: saved
+        ? {
+            publishDate: '2026-11-25T07:20:00.000Z',
+            group: 'group-1',
+            createdAt: T0,
+          }
+        : null,
+    },
     activated,
   });
   // a set-up organization, with its first post and reviews as asked
@@ -1410,6 +1425,29 @@ describe('Content Studio home: what needs attention, not a second menu', () => {
     await flush();
     expect(attention('first_post')).toBeNull();
     expect(attention('reviews')).toBeNull();
+  });
+
+  it('D6/B9/B18 a first post saved as a draft: Home leads with the reminder to schedule that post, then the list; no second first-post item', async () => {
+    organization({ firstPost: firstPostState('pkg-first', false, true) });
+    window.localStorage.setItem('content-studio-tour:org', 'completed');
+    renderHome();
+    await loaded();
+    await flush();
+    const reminder = screen.getByTestId('first-post-reminder');
+    expect(
+      within(reminder).getByText('Your first post is still waiting')
+    ).toBeTruthy();
+    expect(
+      within(reminder)
+        .getByRole('link', { name: 'Review and schedule' })
+        .getAttribute('href')
+    ).toBe('/launches?post=group-1&return=first-post');
+    expect(attention('first_post')).toBeNull();
+    const list = screen.getByText('Get more out of Content Studio');
+    // the reminder comes first
+    expect(
+      reminder.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
   });
 
   it('H3 after the first post is out, the checklist is on Home', async () => {

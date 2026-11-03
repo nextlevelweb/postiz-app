@@ -55,12 +55,17 @@ import { StringListEditor } from '@gitroom/frontend/components/content-studio/in
 // draft made stays, and an earlier one can be put back. This page prepares
 // the post, the composer finishes it: there is no second editor here. The
 // first post is done once a post was scheduled or published after it went
-// to the composer: only then does the page say so
+// to the composer: only then does the page say so. Saved as a draft there
+// is progress, not done: the page says it is saved, opens that same post
+// again to schedule it, and lets the user go on exploring meanwhile
 
 export const FIRST_POST_PAGE = '/content-studio/first-post';
 const FIRST_POST_PATH = '/content-studio/activation/first-post';
 // the composer brings the user back here when it closes
 export const FIRST_POST_RETURN = 'first-post';
+// the post saved as a draft, opened again in the composer (by its group)
+export const firstPostDraftPath = (group: string) =>
+  `/launches?post=${encodeURIComponent(group)}&return=${FIRST_POST_RETURN}`;
 
 export interface ContentStudioFirstPostSource {
   title: string;
@@ -115,8 +120,13 @@ export interface ContentStudioFirstPostState {
     scheduled: boolean;
     published: boolean;
     // saved in the composer as a draft since the first handoff: in the
-    // calendar, not scheduled (no activation), with its planned date
-    savedAsDraft?: { publishDate: string } | null;
+    // calendar, not scheduled (progress, no activation), with the date
+    // chosen for it, its group and when it was saved
+    savedAsDraft?: {
+      publishDate: string;
+      group: string;
+      createdAt: string;
+    } | null;
   };
   activated: boolean;
 }
@@ -135,6 +145,8 @@ export type FirstPostPhase =
   | 'draft_failed'
   | 'not_placed'
   | 'ready'
+  // saved in the composer as a draft, not scheduled yet
+  | 'saved'
   | 'activated';
 
 // Where the first post stands, from what the server read back
@@ -169,8 +181,22 @@ export const firstPostPhase = (
   }
   // made, but not in the post: only when the post is still empty (text the
   // user wrote over it since is theirs)
-  return !draft.applied && !state.package?.text.trim() ? 'not_placed' : 'ready';
+  if (!draft.applied && !state.package?.text.trim()) {
+    return 'not_placed';
+  }
+  // saved as a draft after this research; research after it is a new idea
+  const saved = state.firstPost.savedAsDraft;
+  return saved &&
+    (!research.completedAt ||
+      new Date(research.completedAt).getTime() <=
+        new Date(saved.createdAt).getTime())
+    ? 'saved'
+    : 'ready';
 };
+
+// The date chosen for a draft: never "scheduled for"
+export const firstPostDraftDate = (publishDate: string) =>
+  dayjs(publishDate).format('MMM D, YYYY HH:mm');
 
 const RUNNING: FirstPostPhase[] = ['researching', 'drafting'];
 
@@ -581,7 +607,9 @@ export const FirstPostWhy: FC<{ research: ContentStudioFirstPostResearch }> = ({
 export const ContentStudioFirstPost: FC<{
   // shown once the first post is scheduled or published (the tour)
   success?: (state: ContentStudioFirstPostState) => ReactNode;
-}> = ({ success }) => {
+  // the way on from a first post saved as a draft (the tour)
+  explore?: ReactNode;
+}> = ({ success, explore }) => {
   const t = useT();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -818,6 +846,94 @@ export const ContentStudioFirstPost: FC<{
     );
   }
 
+  // Saved in the composer as a draft: progress, said as such. First the
+  // way to schedule that same post, then the way on meanwhile; a different
+  // post can still be made below, the saved one stays in the calendar
+  const saved = state.firstPost.savedAsDraft;
+  if (phase === 'saved' && saved) {
+    const why = current ? current.research : research;
+    return page(
+      <>
+        <FirstPostSaved publishDate={saved.publishDate} group={saved.group}>
+          {explore ?? (
+            <Link
+              href={CONTENT_STUDIO_HOME_PATH}
+              className="px-[24px] h-[40px] flex items-center justify-center rounded-full border border-textColor/60 text-textColor"
+            >
+              {t(
+                'content_studio_first_post_explore',
+                'Continue exploring Content Studio'
+              )}
+            </Link>
+          )}
+        </FirstPostSaved>
+        {!!why && <FirstPostWhy research={why} />}
+        {alert}
+        <section
+          aria-labelledby="content-studio-first-post-other"
+          data-testid="first-post-actions"
+          className="flex flex-col gap-[16px] pt-[12px] border-t border-newTableBorder"
+        >
+          <div className="flex flex-col gap-[4px]">
+            <h2 id="content-studio-first-post-other" className="font-[600]">
+              {t(
+                'content_studio_first_post_other_title',
+                'Want a different post?'
+              )}
+            </h2>
+            <p className="text-[13px] text-textItemBlur">
+              {t(
+                'content_studio_first_post_other_hint',
+                'Your saved draft stays in the calendar either way.'
+              )}
+            </p>
+          </div>
+          <div className="flex flex-col gap-[6px]">
+            <div className="flex flex-col sm:flex-row">
+              <Button
+                secondary
+                disabled={busy || !connection.connectionId}
+                onClick={() => start('angle')}
+              >
+                {t('content_studio_first_post_angle', 'Try another angle')}
+              </Button>
+            </div>
+            <p className="text-[13px] text-textItemBlur">
+              {t(
+                'content_studio_first_post_angle_hint',
+                'Keep the same research focus and create a different post idea. This draft stays available.'
+              )}
+            </p>
+          </div>
+          <div className="flex flex-col gap-[6px]">
+            <button
+              type="button"
+              disabled={busy || !connection.connectionId}
+              onClick={() => {
+                setRefineError(null);
+                setRefining(true);
+              }}
+              className="self-start min-h-[40px] text-[14px] font-[600] underline underline-offset-2 disabled:opacity-50"
+            >
+              {t('content_studio_first_post_refine', 'Refine my research')}
+            </button>
+            <p className="text-[13px] text-textItemBlur">
+              {t(
+                'content_studio_first_post_refine_hint',
+                'Change what Content Studio looks for before creating another draft.'
+              )}
+            </p>
+          </div>
+        </section>
+        {/* every draft made stays readable; the saved post is what gets
+            scheduled, so none is put back from here */}
+        {alternatives.length > 1 && (
+          <FirstPostDrafts alternatives={alternatives} disabled={busy} />
+        )}
+      </>
+    );
+  }
+
   if (phase === 'none') {
     return page(
       <section className="flex flex-col gap-[12px]">
@@ -1028,12 +1144,11 @@ export const ContentStudioFirstPost: FC<{
   // Ready: first the post itself and why its subject was chosen, then what
   // to do with it, in order: finish it in the composer, another idea with
   // the same focus, or a different focus. Every draft made stays below
-  const savedAsDraft = state.firstPost.savedAsDraft;
   return page(
     <>
-      {/* back from the composer with the post saved as a draft: it is in
-          the calendar, but nothing will be published yet */}
-      {!!savedAsDraft && (
+      {/* a new idea made after an earlier post was saved as a draft: that
+          one is still in the calendar, not scheduled */}
+      {!!saved && (
         <div
           role="status"
           data-testid="first-post-saved-as-draft"
@@ -1041,23 +1156,25 @@ export const ContentStudioFirstPost: FC<{
         >
           <span className="font-[600]">
             {t(
-              'content_studio_first_post_saved_draft_title',
-              'Your post is saved as a draft, not scheduled yet'
+              'content_studio_first_post_earlier_draft_title',
+              'Your earlier post is saved as a draft'
             )}
           </span>
           <span>
             {t(
-              'content_studio_first_post_saved_draft',
-              'It is in the calendar as a draft for {{date}}, so it will not be published. Open it in the calendar and choose Schedule to schedule it.',
-              {
-                date: dayjs(savedAsDraft.publishDate).format(
-                  'MMM D, YYYY HH:mm'
-                ),
-              }
+              'content_studio_first_post_draft_date',
+              'Draft date: {{date}}. It stays a draft and will not be published until you schedule it.',
+              { date: firstPostDraftDate(saved.publishDate) }
             )}
           </span>
-          <Link href="/launches" className="underline self-start">
-            {t('content_studio_first_post_open_calendar', 'Open the calendar')}
+          <Link
+            href={firstPostDraftPath(saved.group)}
+            className="underline self-start"
+          >
+            {t(
+              'content_studio_first_post_schedule_earlier',
+              'Schedule that post'
+            )}
           </Link>
         </div>
       )}
@@ -1175,7 +1292,8 @@ export const ContentStudioFirstPost: FC<{
 export const FirstPostDrafts: FC<{
   alternatives: ContentStudioFirstPostAlternative[];
   disabled: boolean;
-  onUse: (operationId: string) => void;
+  // without it the drafts are only read
+  onUse?: (operationId: string) => void;
 }> = ({ alternatives, disabled, onUse }) => {
   const t = useT();
   return (
@@ -1215,7 +1333,7 @@ export const FirstPostDrafts: FC<{
                 <div className="text-[14px] whitespace-pre-wrap break-words">
                   {alternative.text}
                 </div>
-                {!alternative.current && (
+                {!alternative.current && !!onUse && (
                   <div className="flex flex-col sm:flex-row">
                     <Button
                       secondary
@@ -1277,6 +1395,66 @@ export const FirstPostSuccess: FC<{
           {t('content_studio_setup_to_home', 'Go to Content Studio')}
         </Link>
       )}
+    </section>
+  );
+};
+
+// A first post saved as a draft: progress, not the success yet. Its date is
+// a draft date, never "scheduled for". Scheduling opens that same post in
+// the composer; the way on meanwhile comes from the page
+export const FirstPostSaved: FC<{
+  publishDate: string;
+  group: string;
+  children?: ReactNode;
+}> = ({ publishDate, group, children }) => {
+  const t = useT();
+  return (
+    <section
+      data-testid="first-post-saved"
+      className="flex flex-col items-center text-center gap-[16px] py-[24px]"
+    >
+      <span
+        aria-hidden="true"
+        className="w-[56px] h-[56px] rounded-full border-2 border-[var(--brand-primary,#612ad5)] text-[var(--brand-primary,#612ad5)] flex items-center justify-center text-[28px]"
+      >
+        {'✓'}
+      </span>
+      <h2 className="text-[22px] font-[600]">
+        {t('content_studio_first_post_saved_title', 'Your first post is saved')}
+      </h2>
+      <div className="flex flex-col gap-[6px] max-w-[520px]">
+        <p className="text-[14px]">
+          {t(
+            'content_studio_first_post_saved_text',
+            'The draft is safe. You can schedule it now or come back to it later.'
+          )}
+        </p>
+        <p className="text-[13px] text-textItemBlur">
+          {t(
+            'content_studio_first_post_draft_date',
+            'Draft date: {{date}}. It stays a draft and will not be published until you schedule it.',
+            { date: firstPostDraftDate(publishDate) }
+          )}
+        </p>
+      </div>
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-[8px]">
+        <Link
+          href={firstPostDraftPath(group)}
+          className="px-[24px] h-[40px] flex items-center justify-center rounded-full bg-[var(--brand-primary,#612ad5)] text-[var(--brand-action-text,#fff)] font-[600]"
+        >
+          {t(
+            'content_studio_first_post_schedule_saved',
+            'Schedule my first post'
+          )}
+        </Link>
+        {children}
+      </div>
+      <p className="text-[13px] text-textItemBlur max-w-[520px]">
+        {t(
+          'content_studio_first_post_schedule_saved_hint',
+          'Opens this same post in the composer: choose Schedule there.'
+        )}
+      </p>
     </section>
   );
 };

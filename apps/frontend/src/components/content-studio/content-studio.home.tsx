@@ -42,7 +42,10 @@ import {
   ContentStudioSetupCard,
   useContentStudioFirstUseSetup,
 } from '@gitroom/frontend/components/content-studio/content-studio.setup.card';
-import { ContentStudioGetStarted } from '@gitroom/frontend/components/content-studio/content-studio.onboarding';
+import {
+  ContentStudioFirstPostReminder,
+  ContentStudioGetStarted,
+} from '@gitroom/frontend/components/content-studio/content-studio.onboarding';
 
 // What needs the user now, from the organization's data only: the first
 // post while it is not out yet, and reviews waiting for a decision. Not a
@@ -70,10 +73,12 @@ const ContentStudioHomeAttention: FC<{ hasContent: boolean }> = ({
   }> = [];
   const firstPostOpen =
     !!firstPost.data?.package && !firstPost.data.package.archived;
+  // saved as a draft: the reminder above says it
   if (
     status.complete &&
     firstPost.data &&
     !firstPost.data.activated &&
+    !firstPost.data.firstPost.savedAsDraft &&
     (firstPostOpen || !hasContent)
   ) {
     items.push(
@@ -295,6 +300,7 @@ export const ContentStudioHome: FC = () => {
       }
     >
       <ContentStudioSetupCard hasContent={!!packages.data?.results.length} />
+      <ContentStudioFirstPostReminder />
       <ContentStudioGetStarted />
       <ContentStudioHomeAttention
         hasContent={!!packages.data?.results.length}

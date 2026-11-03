@@ -10,6 +10,7 @@ import {
   useState,
 } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Button } from '@gitroom/react/form/button';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useUser } from '@gitroom/frontend/components/layout/user.context';
@@ -21,6 +22,8 @@ import {
   ContentStudioFirstPost,
   FIRST_POST_PAGE,
   FirstPostSuccess,
+  firstPostDraftDate,
+  firstPostDraftPath,
   useContentStudioFirstPost,
 } from '@gitroom/frontend/components/content-studio/content-studio.first-post';
 import { CONTENT_STUDIO_HOME_PATH } from '@gitroom/frontend/components/content-studio/content-studio.shell';
@@ -30,7 +33,9 @@ import { CONTENT_STUDIO_HOME_PATH } from '@gitroom/frontend/components/content-s
 // useful first things to do in the other sections. Whether a task is done
 // is read from the organization's own data; only "the tour was seen",
 // "hide the checklist" and "no approval needed" are kept, in this browser
-// and per organization, like the setup card
+// and per organization, like the setup card. A first post saved as a
+// draft is progress: the tour can be taken on purpose, and Home reminds
+// the user to schedule it until it is scheduled or published
 
 // --- this browser only ---
 
@@ -101,6 +106,34 @@ export const setContentStudioTourState = (
     }
   } catch {
     // shown again next time
+  }
+};
+
+// For this visit only (a browser session): "not now" to the reminder of a
+// first post saved as a draft, and that the user went on exploring from it
+const firstPostNotNowKey = (organizationId: string) =>
+  `content-studio-first-post-not-now:${organizationId}`;
+const firstPostExploredKey = (organizationId: string) =>
+  `content-studio-first-post-explored:${organizationId}`;
+const visit = () => {
+  try {
+    return typeof window === 'undefined' ? null : window.sessionStorage;
+  } catch {
+    return null;
+  }
+};
+const readVisit = (key: string) => {
+  try {
+    return visit()?.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+};
+const writeVisit = (key: string) => {
+  try {
+    visit()?.setItem(key, '1');
+  } catch {
+    // asked again
   }
 };
 
@@ -364,6 +397,7 @@ export const setContentStudioNoApprovalDecided = (
 export interface ContentStudioGetStartedTask {
   key:
     | 'setup'
+    | 'first_draft'
     | 'first_post'
     | 'knowledge'
     | 'research'
@@ -395,6 +429,10 @@ export const useContentStudioGetStartedTasks = () => {
   const policy = useContentStudioEditorialPolicy<EditorialPolicyContent>();
   const designs = useContentStudioDesigns(false, 1);
   const content = policy.data?.currentRevision?.content;
+  const activated = !!firstPost.data?.activated;
+  const savedAsDraft = activated
+    ? null
+    : firstPost.data?.firstPost.savedAsDraft ?? null;
   const tasks: ContentStudioGetStartedTask[] = [
     {
       key: 'setup',
@@ -407,17 +445,38 @@ export const useContentStudioGetStartedTasks = () => {
       done: status.complete,
     },
     {
-      key: 'first_post',
+      key: 'first_draft',
       label: t(
-        'content_studio_get_started_first_post',
-        'Create and schedule your first AI-researched post'
+        'content_studio_get_started_first_draft',
+        'Create your first AI-researched post'
       ),
       hint: t(
         'content_studio_get_started_first_post_hint',
         'Research a current topic and turn it into a post.'
       ),
       href: FIRST_POST_PAGE,
-      done: !!firstPost.data?.activated,
+      // a draft made by AI is enough; saved or scheduled is the next task
+      done:
+        activated ||
+        !!savedAsDraft ||
+        !!firstPost.data?.alternatives?.length ||
+        firstPost.data?.draft?.status === 'succeeded',
+    },
+    {
+      key: 'first_post',
+      label: t(
+        'content_studio_get_started_schedule_first_post',
+        'Schedule or publish your first post'
+      ),
+      hint: t(
+        'content_studio_get_started_schedule_first_post_hint',
+        'Open it in the composer and choose Schedule, or publish it.'
+      ),
+      // the post saved as a draft opens again; otherwise the first post
+      href: savedAsDraft
+        ? firstPostDraftPath(savedAsDraft.group)
+        : FIRST_POST_PAGE,
+      done: activated,
     },
     {
       key: 'knowledge',
@@ -476,20 +535,23 @@ export const useContentStudioGetStartedTasks = () => {
   return {
     decideNoApproval,
     // shown after the first post succeeded, whatever failed to load
-    activated: !!firstPost.data?.activated,
+    activated,
+    // or once it was saved as a draft (progress)
+    draftSaved: !!savedAsDraft,
     loaded: status.loaded && firstPost.data !== undefined,
     tasks,
   };
 };
 
-// On Home, once the first post was scheduled or published, until every
-// task is done or the list is hidden. Easy to come back to: it stays until
-// then, and the tour can be taken again from it
+// On Home, once the first post was scheduled or published (or saved as a
+// draft, with scheduling it still open), until every task is done or the
+// list is hidden. Easy to come back to: it stays until then, and the tour
+// can be taken again from it
 export const ContentStudioGetStarted: FC = () => {
   const t = useT();
   const user = useUser();
   const organizationId = user?.orgId || '';
-  const { activated, loaded, tasks, decideNoApproval } =
+  const { activated, draftSaved, loaded, tasks, decideNoApproval } =
     useContentStudioGetStartedTasks();
   const tour = useContentStudioTour();
   const [hidden, setHidden] = useState<boolean | null>(null);
@@ -505,8 +567,9 @@ export const ContentStudioGetStarted: FC = () => {
   }, [loaded, activated, tour.startOnce]);
 
   const doneCount = tasks.filter((task) => task.done).length;
+  const started = activated || draftSaved;
   const show =
-    loaded && activated && hidden === false && doneCount < tasks.length;
+    loaded && started && hidden === false && doneCount < tasks.length;
   return (
     <>
       {tour.open && <ContentStudioTour onClose={tour.close} />}
@@ -613,7 +676,7 @@ export const ContentStudioGetStarted: FC = () => {
           </div>
         </section>
       )}
-      {loaded && activated && !show && hidden !== null && (
+      {loaded && started && !show && hidden !== null && (
         // the tour stays at hand once the list is gone
         <div className="text-[13px]">
           <button
@@ -658,11 +721,141 @@ const FirstPostSuccessWithTour: FC<{ published: boolean }> = ({
   );
 };
 
-// The first post page with its success moment and the tour after it
+// From a first post saved as a draft: the tour, on purpose only, and then
+// Home, where the reminder to schedule it waits. Not the success: that
+// stays for a scheduled or published post
+const FirstPostExplore: FC = () => {
+  const t = useT();
+  const router = useRouter();
+  const user = useUser();
+  const organizationId = user?.orgId || '';
+  const tour = useContentStudioTour();
+  const close = useCallback(
+    (how: 'skipped' | 'completed') => {
+      tour.close(how);
+      router.push(CONTENT_STUDIO_HOME_PATH);
+    },
+    [tour.close, router]
+  );
+  return (
+    <>
+      <button
+        type="button"
+        data-testid="first-post-explore"
+        onClick={() => {
+          writeVisit(firstPostExploredKey(organizationId));
+          tour.start();
+        }}
+        className="px-[24px] h-[40px] flex items-center justify-center rounded-full border border-textColor/60 text-textColor"
+      >
+        {t(
+          'content_studio_first_post_explore',
+          'Continue exploring Content Studio'
+        )}
+      </button>
+      {tour.open && <ContentStudioTour onClose={close} />}
+    </>
+  );
+};
+
+// On Home while the first post is saved as a draft and not scheduled or
+// published: a reminder to schedule it, on every visit, before anything
+// else. "Not now" puts it away for this visit only. Right after exploring
+// it says the draft is ready; on a later visit that it is still waiting
+export const ContentStudioFirstPostReminder: FC = () => {
+  const t = useT();
+  const user = useUser();
+  const organizationId = user?.orgId || '';
+  const firstPost = useContentStudioFirstPost();
+  const saved = firstPost.data?.activated
+    ? null
+    : firstPost.data?.firstPost.savedAsDraft ?? null;
+  // read after mount: storage is not there on the server
+  const [visitState, setVisitState] = useState<{
+    notNow: boolean;
+    explored: boolean;
+  } | null>(null);
+  useEffect(() => {
+    setVisitState({
+      notNow: readVisit(firstPostNotNowKey(organizationId)),
+      explored: readVisit(firstPostExploredKey(organizationId)),
+    });
+  }, [organizationId]);
+  if (!saved || !visitState || visitState.notNow) {
+    return null;
+  }
+  return (
+    <section
+      aria-labelledby="content-studio-first-post-reminder-title"
+      data-testid="first-post-reminder"
+      className="flex flex-col gap-[12px] p-[16px] rounded-[12px] border border-[var(--brand-primary,#612ad5)]"
+    >
+      <div className="flex flex-col gap-[4px]">
+        <h2
+          id="content-studio-first-post-reminder-title"
+          className="font-[600] text-[16px] break-words"
+        >
+          {visitState.explored
+            ? t(
+                'content_studio_first_post_reminder_ready_title',
+                'Your first post is waiting'
+              )
+            : t(
+                'content_studio_first_post_reminder_title',
+                'Your first post is still waiting'
+              )}
+        </h2>
+        <p className="text-[14px] break-words">
+          {visitState.explored
+            ? t(
+                'content_studio_first_post_reminder_ready',
+                "Your AI-researched draft is ready. Review it and schedule it when you're ready."
+              )
+            : t(
+                'content_studio_first_post_reminder',
+                'You created your first AI-researched post. Want to review it once more and schedule it?'
+              )}
+        </p>
+        <p className="text-[13px] text-textItemBlur break-words">
+          {t(
+            'content_studio_first_post_draft_date',
+            'Draft date: {{date}}. It stays a draft and will not be published until you schedule it.',
+            { date: firstPostDraftDate(saved.publishDate) }
+          )}
+        </p>
+      </div>
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-[8px]">
+        <Link
+          href={firstPostDraftPath(saved.group)}
+          className="px-[24px] h-[40px] flex items-center justify-center rounded-full bg-[var(--brand-primary,#612ad5)] text-[var(--brand-action-text,#fff)] font-[600]"
+        >
+          {t(
+            'content_studio_first_post_review_schedule',
+            'Review and schedule'
+          )}
+        </Link>
+        <button
+          type="button"
+          onClick={() => {
+            writeVisit(firstPostNotNowKey(organizationId));
+            setVisitState({ ...visitState, notNow: true });
+          }}
+          className="min-h-[40px] px-[8px] text-[14px] text-textItemBlur underline underline-offset-2 hover:text-newTextColor"
+        >
+          {t('content_studio_not_now', 'Not now')}
+        </button>
+      </div>
+    </section>
+  );
+};
+
+// The first post page with its success moment and the tour after it, or,
+// saved as a draft, the tour on purpose
 export const ContentStudioFirstPostPage: FC = () => (
   <ContentStudioFirstPost
     success={(state) => (
       <FirstPostSuccessWithTour published={state.firstPost.published} />
     )}
+    explore={<FirstPostExplore />}
   />
 );

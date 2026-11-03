@@ -59,6 +59,7 @@ jest.mock('@gitroom/react/translation/get.transation.service.client', () => ({
 
 const {
   ContentStudioFirstPost,
+  firstPostDraftPath,
   firstPostPhase,
 } = require('./content-studio.first-post');
 
@@ -312,6 +313,65 @@ describe('First post: where it stands', () => {
         firstPost: { scheduled: true, published: false },
       })
     ).toBe('activated');
+  });
+});
+
+// Activation review 04: saved in the composer as a draft is progress, said
+// as its own state; only QUEUE or PUBLISHED is the success
+describe('First post: saved as a draft', () => {
+  const NOW = new Date(T0).getTime();
+  const SAVED = {
+    publishDate: '2026-11-25T07:20:00.000Z',
+    group: 'group-1',
+    createdAt: '2026-10-30T22:29:45.106Z',
+  };
+  const at = (patch: Record<string, unknown>) =>
+    firstPostPhase(ready(patch), NOW);
+
+  it('D1/SCHED1 a DRAFT with a future date is saved, never activated or scheduled', () => {
+    expect(
+      at({
+        research: {
+          ...ready().research,
+          completedAt: '2026-10-30T22:23:46.952Z',
+        },
+        firstPost: { scheduled: false, published: false, savedAsDraft: SAVED },
+      })
+    ).toBe('saved');
+  });
+
+  it('SCHED2/SCHED3 QUEUE or PUBLISHED is the success, whatever was saved before', () => {
+    for (const firstPost of [
+      { scheduled: true, published: false, savedAsDraft: null },
+      { scheduled: false, published: true, savedAsDraft: null },
+    ]) {
+      expect(at({ activated: true, firstPost })).toBe('activated');
+    }
+  });
+
+  it('research after the post was saved is a new idea: ready again (the saved post is still named there)', () => {
+    expect(
+      at({
+        research: {
+          ...ready().research,
+          completedAt: '2026-10-31T09:00:00.000Z',
+        },
+        firstPost: { scheduled: false, published: false, savedAsDraft: SAVED },
+      })
+    ).toBe('ready');
+    // and while it runs, it runs
+    expect(
+      at({
+        research: { operationId: 'r2', status: 'running', completedAt: null },
+        firstPost: { scheduled: false, published: false, savedAsDraft: SAVED },
+      })
+    ).toBe('researching');
+  });
+
+  it('the saved post opens again by its group, back to the first post', () => {
+    expect(firstPostDraftPath('51766056-e439-4d14-892f-fdf34b26c5b5')).toBe(
+      '/launches?post=51766056-e439-4d14-892f-fdf34b26c5b5&return=first-post'
+    );
   });
 });
 
