@@ -26,8 +26,10 @@ dayjs.extend(utc);
 // frontend tsconfig
 const {
   ContentStudioHandoffOpener,
+  ContentStudioPostOpener,
 }: {
   ContentStudioHandoffOpener: React.FC;
+  ContentStudioPostOpener: React.FC;
 } = require('@gitroom/frontend/components/launches/content-studio.handoff.opener');
 
 // --- URL: a tiny store behind next/navigation; replace() really changes it ---
@@ -126,11 +128,16 @@ jest.mock('@gitroom/frontend/components/launches/calendar.context', () => {
   };
 });
 
-// the composer itself is not rendered: its props are recorded
+// the composer itself is not rendered: its props are recorded, and the
+// existing post it edits (none for a handoff)
 const mockAddEditModal = jest.fn();
+const mockExistingData = jest.fn();
 jest.mock('@gitroom/frontend/components/new-launch/add.edit.modal', () => ({
   AddEditModal: (props: unknown) => {
     mockAddEditModal(props);
+    mockExistingData(
+      require('@gitroom/frontend/components/launches/helpers/use.existing.data').useExistingData()
+    );
     return null;
   },
 }));
@@ -258,6 +265,24 @@ const handoffBody = (id: string) => ({
 });
 let handoffReply: (id: string) => unknown;
 let slotReply: () => unknown;
+// a post saved as a draft, as GET /posts/group/:group answers it
+const SAVED_GROUP = '51766056-e439-4d14-892f-fdf34b26c5b5';
+const groupBody = (group: string) => ({
+  group,
+  integration: 'int_2',
+  integrationPicture: 'https://cdn.example/picture.png',
+  settings: {},
+  posts: [
+    {
+      id: 'post_1',
+      group,
+      state: 'DRAFT',
+      content: '<p>Saved first post</p>',
+      publishDate: '2026-11-25T07:20:00.000Z',
+    },
+  ],
+});
+let groupReply: (group: string) => unknown;
 
 const handoffCalls = () =>
   mockFetch.mock.calls.filter(([url]) =>
@@ -331,8 +356,11 @@ beforeEach(() => {
   mockFetch.mockImplementation(async (url: string) =>
     url === '/posts/find-slot'
       ? slotReply()
+      : url.startsWith('/posts/group/')
+      ? groupReply(decodeURIComponent(url.replace('/posts/group/', '')))
       : handoffReply(url.replace('/content-studio/handoffs/', ''))
   );
+  groupReply = (group) => reply(200, groupBody(group));
 });
 
 // A composer still open at the end of a test closes on unmount, a tick later:
@@ -1165,11 +1193,171 @@ describe('opener source surface', () => {
     expect(source).not.toMatch(/router\.(push|replace)\('\/launches/);
   });
 
-  it('requests only the handoff and the slot', () => {
+  it('requests only the handoff, the slot and a saved post (read)', () => {
     const urls = source.match(/fetch\(([^)]*)\)/g);
     expect(urls).toEqual([
       'fetch(`/content-studio/handoffs/${id}`)',
       "fetch('/posts/find-slot')",
+      'fetch(`/posts/group/${id}`)',
     ]);
+  });
+});
+
+// activation review 04: a first post saved as a draft opens again, the same
+// post, to schedule it
+const renderPostOpener = (href: string, integrations = INTEGRATIONS) => {
+  setUrl(href);
+  return render(
+    h(
+      Fragment,
+      null,
+      h(ModalHost),
+      h(CalendarWeekProvider, {
+        integrations,
+        children: h(ContentStudioPostOpener),
+      })
+    )
+  );
+};
+const groupCalls = () =>
+  mockFetch.mock.calls.filter(([url]) =>
+    String(url).startsWith('/posts/group/')
+  );
+
+describe('ContentStudioPostOpener: the first post saved as a draft, opened again', () => {
+  it('D7 opens the same saved post in the composer by its group, with its channel and its own date; nothing new is made or sent', async () => {
+    renderPostOpener(`/launches?post=${SAVED_GROUP}&return=first-post`);
+    await waitFor(() => expect(composerOpens()).toHaveLength(1));
+    expect(groupCalls()).toEqual([[`/posts/group/${SAVED_GROUP}`]]);
+    // no handoff, no slot: the post exists
+    expect(handoffCalls()).toEqual([]);
+    expect(slotCalls()).toEqual([]);
+    const props = lastComposerProps();
+    expect(props.integrations).toEqual([
+      { ...INTEGRATIONS[1], picture: 'https://cdn.example/picture.png' },
+    ]);
+    expect(props.onlyValues).toBeUndefined();
+    expect(props.date.toISOString()).toBe('2026-11-25T07:20:00.000Z');
+    expect(props.draftForLater).toBe(true);
+    // the composer edits that post: its group and its DRAFT state
+    const existing =
+      mockExistingData.mock.calls[mockExistingData.mock.calls.length - 1][0];
+    expect(existing.group).toBe(SAVED_GROUP);
+    expect(existing.posts[0].state).toBe('DRAFT');
+    expect(mockFetch.mock.calls.filter(([, init]) => init?.method)).toEqual([]);
+  });
+
+  it('D7/NAV3 shows "Back to Content Studio" and what finishes the first post; closing returns to the first post page', async () => {
+    renderPostOpener(`/launches?post=${SAVED_GROUP}&return=first-post`);
+    await waitFor(() => expect(composerOpens()).toHaveLength(1));
+    expect(
+      screen.getByRole('button', { name: /Back to Content Studio/ })
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId('content-studio-handoff-finish').textContent
+    ).toBe(
+      'Schedule it here to finish your first post. Save for later keeps it as a draft.'
+    );
+    act(() => mockModals.set([]));
+    await flush();
+    expect(mockRouter.push).toHaveBeenCalledWith('/content-studio/first-post');
+    // closed for good: not opened again on the way out
+    expect(composerOpens()).toHaveLength(1);
+  });
+
+  it('a group that is no group is never sent to the backend', async () => {
+    renderPostOpener(
+      `/launches?post=${encodeURIComponent('../posts/x?y')}&return=first-post`
+    );
+    await flush();
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(composerOpens()).toEqual([]);
+    expect(toasts()).toEqual([MESSAGES.invalid]);
+  });
+
+  it('a post that is gone (deleted, or of another organization) says so and opens nothing', async () => {
+    groupReply = () => reply(200, { group: SAVED_GROUP, posts: [] });
+    renderPostOpener(`/launches?post=${SAVED_GROUP}&return=first-post`);
+    await flush();
+    expect(composerOpens()).toEqual([]);
+    expect(toasts()).toEqual(['Post not found']);
+    expect(mockRouter.push).toHaveBeenCalledWith('/content-studio/first-post');
+  });
+
+  it('D7 the same post opens again on a later visit, after the composer was closed', async () => {
+    const first = renderPostOpener(
+      `/launches?post=${SAVED_GROUP}&return=first-post`
+    );
+    await waitFor(() => expect(composerOpens()).toHaveLength(1));
+    act(() => mockModals.set([]));
+    await flush();
+    // back on the first post page: the calendar is left
+    first.unmount();
+    renderPostOpener(`/launches?post=${SAVED_GROUP}&return=first-post`);
+    await waitFor(() => expect(composerOpens()).toHaveLength(2));
+  });
+
+  it('a post whose channel is no longer connected says so and opens nothing', async () => {
+    groupReply = (group) =>
+      reply(200, { ...groupBody(group), integration: 'int_gone' });
+    renderPostOpener(`/launches?post=${SAVED_GROUP}&return=first-post`);
+    await flush();
+    expect(composerOpens()).toEqual([]);
+    expect(toasts()).toEqual([
+      'The channel of this post is no longer connected',
+    ]);
+  });
+
+  it('waits for the channels, and never opens over a post being written', async () => {
+    const view = renderPostOpener(
+      `/launches?post=${SAVED_GROUP}&return=first-post`,
+      []
+    );
+    await flush();
+    expect(groupCalls()).toEqual([]);
+    view.rerender(
+      h(
+        Fragment,
+        null,
+        h(ModalHost),
+        h(CalendarWeekProvider, {
+          integrations: INTEGRATIONS,
+          children: h(ContentStudioPostOpener),
+        })
+      )
+    );
+    await waitFor(() => expect(composerOpens()).toHaveLength(1));
+  });
+});
+
+describe('the first post composer: Schedule finishes it, Save for later is quiet', () => {
+  it('B6/B7 a first post handoff asks the composer for the quiet "Save for later"', async () => {
+    const id = newId();
+    renderOpener(`/launches?handoff=${id}&return=first-post`);
+    await waitFor(() => expect(composerOpens()).toHaveLength(1));
+    expect(lastComposerProps().draftForLater).toBe(true);
+    expect(screen.getByTestId('content-studio-handoff-finish')).toBeTruthy();
+  });
+
+  it('any other handoff keeps the composer as it is', async () => {
+    const id = newId();
+    renderOpener(`/launches?handoff=${id}`);
+    await waitFor(() => expect(composerOpens()).toHaveLength(1));
+    expect(lastComposerProps().draftForLater).toBeUndefined();
+    expect(screen.queryByTestId('content-studio-handoff-finish')).toBeNull();
+  });
+
+  it('the composer: "Save as Draft" stays everywhere else; only draftForLater makes it the outlined "Save for later"', () => {
+    const manage = readFileSync(
+      join(__dirname, '../new-launch/manage.modal.tsx'),
+      'utf8'
+    );
+    expect(manage).toContain("t('save_as_draft', 'Save as Draft')");
+    expect(manage).toContain("t('save_for_later', 'Save for later')");
+    expect(manage).toMatch(
+      /draftForLater\s*\?\s*'border border-newTableBorder[^']*'\s*:\s*'bg-\[var\(--brand-primary\)\]/
+    );
+    // the action that schedules is unchanged
+    expect(manage).toContain("onClick={schedule('schedule')}");
   });
 });

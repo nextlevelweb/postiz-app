@@ -38,7 +38,7 @@ describe('ContentStudioActivationRepository', () => {
     );
   });
 
-  it('ACT9 the newest draft since the handoff, of this organization, with its planned date only', async () => {
+  it('ACT9/D1 the newest draft since the handoff, of this organization, with its planned date, group and save time only', async () => {
     const { repository, post } = setup();
     await repository.getLatestDraftSince(ORG, SINCE);
     expect(post.findFirst).toHaveBeenCalledWith({
@@ -50,7 +50,7 @@ describe('ContentStudioActivationRepository', () => {
         state: 'DRAFT',
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
-      select: { publishDate: true },
+      select: { publishDate: true, group: true, createdAt: true },
     });
   });
 });

@@ -192,6 +192,8 @@
   "post_deleted_successfully": "Post deleted successfully",
   "delete_post": "Delete Post",
   "save_as_draft": "Save as draft",
+  "save_for_later": "Save for later",
+  "save_for_later_hint": "Keeps the post as a draft: it is not scheduled or published.",
   "post_now": "Post now",
   "please_add": "Please add",
   "to_your_telegram_group_channel_and_click_here": "to your\n telegram group / channel and click here:",
@@ -2490,5 +2492,7 @@
   "content_studio_setup_review": "Review setup",
   "content_studio_handoff_back_confirm": "Go back to Content Studio? Changes made here are not kept; your Content Studio draft stays as it is.",
   "content_studio_handoff_back_yes": "Go back",
-  "content_studio_handoff_back": "Back to Content Studio"
+  "content_studio_handoff_back": "Back to Content Studio",
+  "content_studio_handoff_finish": "Schedule it here to finish your first post. Save for later keeps it as a draft.",
+  "content_studio_post_channel_missing": "The channel of this post is no longer connected"
 }

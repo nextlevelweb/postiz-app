@@ -250,7 +250,11 @@ const build = (
       async (): Promise<Array<{ state: string }>> => []
     ),
     getLatestDraftSince: jest.fn(
-      async (): Promise<{ publishDate: Date } | null> => null
+      async (): Promise<{
+        publishDate: Date;
+        group: string;
+        createdAt: Date;
+      } | null> => null
     ),
   };
   const connections = {
@@ -523,7 +527,7 @@ describe('First post: the language of the posts (review 03)', () => {
 });
 
 describe('First post: activation is a scheduled or published post', () => {
-  it('AC1 a draft alone is not activation', async () => {
+  it('AC1/D1 a draft alone is not activation', async () => {
     const ctx = build();
     await firstPost(ctx);
     expect(await state(ctx)).toMatchObject({
@@ -534,7 +538,7 @@ describe('First post: activation is a scheduled or published post', () => {
     expect(ctx.activation.getLatestDraftSince).not.toHaveBeenCalled();
   });
 
-  it('AC2 a post scheduled after the first post went to the composer is activation', async () => {
+  it('AC2/SCHED2 a post scheduled (QUEUE) after the first post went to the composer is activation', async () => {
     const ctx = build();
     await firstPost(ctx);
     const handedOff = new Date('2026-10-30T10:00:00Z');
@@ -552,7 +556,7 @@ describe('First post: activation is a scheduled or published post', () => {
     );
   });
 
-  it('AC3 a published post is activation', async () => {
+  it('AC3/SCHED3 a published post is activation', async () => {
     const ctx = build();
     await firstPost(ctx);
     ctx.activation.getFirstHandoffOfPackage.mockResolvedValue({
@@ -578,11 +582,12 @@ describe('First post: activation is a scheduled or published post', () => {
     });
   });
 
-  it('ACT9 like the clone: handed off 22:24, then saved in the composer as a draft for 25 November: no activation, the draft is said', async () => {
+  it('ACT9/D1/SCHED1 like the clone: handed off 22:24, then saved in the composer as a draft for 25 November: a future date does not make it scheduled, no activation, the draft is said with its group', async () => {
     const ctx = build();
     await firstPost(ctx);
     const handedOff = new Date('2026-10-30T22:24:15.154Z');
     const planned = new Date('2026-11-25T07:20:00.000Z');
+    const saved = new Date('2026-10-30T22:29:45.106Z');
     ctx.activation.getFirstHandoffOfPackage.mockResolvedValue({
       createdAt: handedOff,
     });
@@ -590,13 +595,19 @@ describe('First post: activation is a scheduled or published post', () => {
     ctx.activation.listPostStatesSince.mockResolvedValue([]);
     ctx.activation.getLatestDraftSince.mockResolvedValue({
       publishDate: planned,
+      group: '51766056-e439-4d14-892f-fdf34b26c5b5',
+      createdAt: saved,
     });
     expect(await state(ctx)).toMatchObject({
       activated: false,
       firstPost: {
         scheduled: false,
         published: false,
-        savedAsDraft: { publishDate: planned },
+        savedAsDraft: {
+          publishDate: planned,
+          group: '51766056-e439-4d14-892f-fdf34b26c5b5',
+          createdAt: saved,
+        },
       },
     });
     expect(ctx.activation.getLatestDraftSince).toHaveBeenCalledWith(
@@ -605,7 +616,7 @@ describe('First post: activation is a scheduled or published post', () => {
     );
   });
 
-  it('ACT2/ACT9 the same post scheduled instead (QUEUE) is activation, and no draft is looked for', async () => {
+  it('ACT2/ACT9/SCHED2 the same post scheduled instead (QUEUE) is activation, and no draft is looked for', async () => {
     const ctx = build();
     await firstPost(ctx);
     ctx.activation.getFirstHandoffOfPackage.mockResolvedValue({

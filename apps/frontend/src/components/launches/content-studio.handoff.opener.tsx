@@ -14,6 +14,7 @@ import {
   AddEditModal,
   AddEditModalProps,
 } from '@gitroom/frontend/components/new-launch/add.edit.modal';
+import { ExistingDataContextProvider } from '@gitroom/frontend/components/launches/helpers/use.existing.data';
 import { useToaster } from '@gitroom/react/toaster/toaster';
 import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
@@ -28,6 +29,14 @@ const HANDOFF_ID = /^[0-9a-f]{64}$/;
 // once; otherwise it is `done` (closed, or it can't open) and is let go when
 // the URL no longer names it
 let handoffGuard: { id: string; done: boolean } | null = null;
+// the same for a post opened again by `post` (its group), let go as well
+// once the calendar is left, so the same post opens again on a later visit
+let postGuard: { id: string; done: boolean } | null = null;
+let postOpeners = 0;
+
+// What a Content Studio link opens the composer with: a handoff (a new post
+// with its values) or a post saved before, by its group
+type OpenerParam = 'handoff' | 'post';
 
 // Where a closed composer may send the user back to, by the `return`
 // parameter of its handoff: a fixed list, never an address from the URL
@@ -40,10 +49,10 @@ const returnPageOf = (page: string | null) =>
     ? RETURN_PAGES[page]
     : undefined;
 
-// Removes `handoff` from the current URL, keeping every other parameter, and
-// only while the URL still names this handoff. A handoff that came with a
-// known `return` page goes back there instead
-const useRemoveHandoffParam = () => {
+// Removes `handoff` (or `post`) from the current URL, keeping every other
+// parameter, and only while the URL still names this one. One that came with
+// a known `return` page goes back there instead
+const useRemoveHandoffParam = (param: OpenerParam = 'handoff') => {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -55,7 +64,7 @@ const useRemoveHandoffParam = () => {
   return useCallback(
     (handoffId: string) => {
       const current = location.current;
-      if (current.searchParams.get('handoff') !== handoffId) {
+      if (current.searchParams.get(param) !== handoffId) {
         return;
       }
       const back = returnPageOf(current.searchParams.get('return'));
@@ -64,14 +73,14 @@ const useRemoveHandoffParam = () => {
         return;
       }
       const params = new URLSearchParams(current.searchParams.toString());
-      params.delete('handoff');
+      params.delete(param);
       const query = params.toString();
       router.replace(
         query ? `${current.pathname}?${query}` : current.pathname,
         { scroll: false }
       );
     },
-    [router]
+    [router, param]
   );
 };
 
@@ -80,12 +89,12 @@ const useRemoveHandoffParam = () => {
 // URL. Until then the URL keeps it, so a reload opens the same revision again.
 // Edits made in the composer are not kept over a reload. A handoff with a
 // known return page has a visible way back to it above the composer, so
-// the browser's Back is never the only one
-const HandoffComposer: FC<AddEditModalProps & { handoffId: string }> = ({
-  handoffId,
-  ...props
-}) => {
-  const removeHandoffParam = useRemoveHandoffParam();
+// the browser's Back is never the only one. Such a flow is there to schedule
+// the post: saving it as a draft is the quiet "Save for later"
+const HandoffComposer: FC<
+  AddEditModalProps & { handoffId: string; param?: OpenerParam }
+> = ({ handoffId, param = 'handoff', ...props }) => {
+  const removeHandoffParam = useRemoveHandoffParam(param);
   const back = returnPageOf(useSearchParams().get('return'));
   const modal = useModals();
   const t = useT();
@@ -100,8 +109,12 @@ const HandoffComposer: FC<AddEditModalProps & { handoffId: string }> = ({
         if (mounted.current) {
           return;
         }
-        if (handoffGuard?.id === handoffId) {
-          handoffGuard.done = true;
+        const guard = param === 'post' ? postGuard : handoffGuard;
+        if (guard?.id === handoffId) {
+          guard.done = true;
+        }
+        if (param === 'post' && !postOpeners) {
+          postGuard = null;
         }
         removeHandoffParam(handoffId);
       });
@@ -129,10 +142,11 @@ const HandoffComposer: FC<AddEditModalProps & { handoffId: string }> = ({
     return <AddEditModal {...props} />;
   }
   // the composer keeps its own layout: on a wide screen the way back sits
-  // in its top margin, on a phone (no margin) above it
+  // in its top margin, on a phone (no margin) above it, with what finishes
+  // the first post
   return (
     <div className="relative flex flex-1 w-full h-full min-w-0 mobile:block mobile:h-auto">
-      <div className="absolute top-[4px] start-[40px] z-[2] mobile:static mobile:px-[16px] mobile:pt-[8px] mobile:pb-[4px]">
+      <div className="absolute top-[4px] start-[40px] z-[2] flex flex-wrap items-center gap-x-[12px] gap-y-[4px] mobile:static mobile:px-[16px] mobile:pt-[8px] mobile:pb-[4px]">
         <button
           type="button"
           data-testid="content-studio-handoff-back"
@@ -142,8 +156,17 @@ const HandoffComposer: FC<AddEditModalProps & { handoffId: string }> = ({
           <span aria-hidden="true">{'←'}</span>
           {t('content_studio_handoff_back', 'Back to Content Studio')}
         </button>
+        <span
+          data-testid="content-studio-handoff-finish"
+          className="text-[13px] text-textItemBlur"
+        >
+          {t(
+            'content_studio_handoff_finish',
+            'Schedule it here to finish your first post. Save for later keeps it as a draft.'
+          )}
+        </span>
       </div>
-      <AddEditModal {...props} />
+      <AddEditModal {...props} draftForLater={true} />
     </div>
   );
 };
@@ -326,6 +349,138 @@ export const ContentStudioHandoffOpener: FC = () => {
     handoffGuard = { id: handoffId, done: false };
     openHandoff(handoffId);
   }, [handoffId, integrations, composerOpen]);
+
+  return null;
+};
+
+// A post saved before, opened again by /launches?post=<group>&return=<page>
+// (the first post's "Schedule my first post"): the same composer as a click
+// on the post in the calendar, with the way back above it. The group is
+// read for this organization only
+const POST_GROUP = /^[A-Za-z0-9-]{1,64}$/;
+export const ContentStudioPostOpener: FC = () => {
+  const group = useSearchParams().get('post');
+  const composerOpen = useIsModalOpen('add-edit-modal');
+  const { integrations, reloadCalendarView } = useCalendar();
+  const fetch = useFetch();
+  const modal = useModals();
+  const toaster = useToaster();
+  const t = useT();
+  const removePostParam = useRemoveHandoffParam('post');
+
+  const openPost = useCallback(
+    async (id: string) => {
+      try {
+        const data = await (await fetch(`/posts/group/${id}`)).json();
+        // another post took over meanwhile
+        if (postGuard?.id !== id) {
+          return;
+        }
+        if (!data?.posts?.length) {
+          postGuard.done = true;
+          toaster.show(t('post_not_found', 'Post not found'), 'warning');
+          removePostParam(id);
+          return;
+        }
+        // its channel is gone: the composer could not show it
+        const channel = integrations
+          .filter((f) => f.id === data.integration)
+          .map((p) => ({ ...p, picture: data.integrationPicture }));
+        if (!channel.length) {
+          postGuard.done = true;
+          toaster.show(
+            t(
+              'content_studio_post_channel_missing',
+              'The channel of this post is no longer connected'
+            ),
+            'warning'
+          );
+          removePostParam(id);
+          return;
+        }
+        modal.openModal({
+          id: 'add-edit-modal',
+          closeOnClickOutside: false,
+          removeLayout: true,
+          closeOnEscape: false,
+          withCloseButton: false,
+          askClose: true,
+          fullScreen: true,
+          classNames: {
+            modal: 'w-[100%] max-w-[1400px] text-textColor',
+          },
+          children: (
+            <ExistingDataContextProvider value={data}>
+              <HandoffComposer
+                handoffId={id}
+                param="post"
+                allIntegrations={integrations.map((p) => ({ ...p }))}
+                reopenModal={() => {}}
+                mutate={reloadCalendarView}
+                integrations={channel}
+                date={dayjs.utc(data.posts[0].publishDate).local()}
+              />
+            </ExistingDataContextProvider>
+          ),
+          size: '80%',
+          title: ``,
+        });
+      } catch {
+        // kept in the URL, and can be tried again
+        if (postGuard?.id === id) {
+          postGuard = null;
+        }
+        toaster.show(
+          t(
+            'content_studio_handoff_open_error',
+            'Could not open this Content Studio post'
+          ),
+          'warning'
+        );
+      }
+    },
+    [integrations, reloadCalendarView]
+  );
+
+  // the same post can be opened again on a later visit of the calendar
+  // (the way back leaves it)
+  useEffect(() => {
+    postOpeners++;
+    return () => {
+      postOpeners--;
+      if (postGuard?.done) {
+        postGuard = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (postGuard?.done && postGuard.id !== group) {
+      postGuard = null;
+    }
+    if (group === null || postGuard?.id === group) {
+      return;
+    }
+    // never sent to the backend
+    if (!POST_GROUP.test(group)) {
+      postGuard = { id: group, done: true };
+      toaster.show(
+        t(
+          'content_studio_handoff_invalid',
+          'This Content Studio link is not valid'
+        ),
+        'warning'
+      );
+      removePostParam(group);
+      return;
+    }
+    // opens once the channels are there, and never over a post being written
+    if (!integrations.length || composerOpen) {
+      return;
+    }
+    postGuard = { id: group, done: false };
+    openPost(group);
+  }, [group, integrations, composerOpen]);
 
   return null;
 };

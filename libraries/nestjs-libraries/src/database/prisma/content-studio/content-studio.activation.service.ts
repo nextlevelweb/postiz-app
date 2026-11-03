@@ -369,8 +369,8 @@ export class ContentStudioActivationService {
       : [];
     const scheduled = states.some((post) => post.state === 'QUEUE');
     const published = states.some((post) => post.state === 'PUBLISHED');
-    // saved in the composer as a draft only: said on the first post page,
-    // which otherwise looks as if nothing happened
+    // saved in the composer as a draft only: progress, not activation. Its
+    // group opens the same post in the composer again
     const savedAsDraft =
       handoff && !scheduled && !published
         ? await this._contentStudioActivationRepository.getLatestDraftSince(
@@ -417,7 +417,11 @@ export class ContentStudioActivationService {
         scheduled,
         published,
         savedAsDraft: savedAsDraft
-          ? { publishDate: savedAsDraft.publishDate }
+          ? {
+              publishDate: savedAsDraft.publishDate,
+              group: savedAsDraft.group,
+              createdAt: savedAsDraft.createdAt,
+            }
           : null,
       },
       activated: scheduled || published,

@@ -61,7 +61,7 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
   });
   const { data: shortlinkPreferenceData } = useShortlinkPreference();
 
-  const { addEditSets, mutate, customClose, dummy } = props;
+  const { addEditSets, mutate, customClose, dummy, draftForLater } = props;
 
   const {
     selectedIntegrations,
@@ -669,7 +669,20 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
                   selectedIntegrations.length === 0 || loading || locked
                 }
                 onClick={schedule('draft')}
-                className="relative cursor-pointer disabled:cursor-not-allowed px-[22px] h-[44px] w-full xl:w-auto bg-[var(--brand-primary)] text-[var(--brand-action-text)] justify-center items-center flex rounded-full text-[15px] font-[600]"
+                title={
+                  draftForLater
+                    ? t(
+                        'save_for_later_hint',
+                        'Keeps the post as a draft: it is not scheduled or published.'
+                      )
+                    : undefined
+                }
+                className={clsx(
+                  'relative cursor-pointer disabled:cursor-not-allowed px-[22px] h-[44px] w-full xl:w-auto justify-center items-center flex rounded-full text-[15px] font-[600]',
+                  draftForLater
+                    ? 'border border-newTableBorder text-newTextColor hover:border-[var(--brand-primary)]'
+                    : 'bg-[var(--brand-primary)] text-[var(--brand-action-text)]'
+                )}
               >
                 {loading && (
                   <div className="absolute left-[50%] top-[50%] -translate-y-[50%] -translate-x-[50%]">
@@ -677,7 +690,9 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
                   </div>
                 )}
                 <div className={clsx(loading && 'invisible')}>
-                  {t('save_as_draft', 'Save as Draft')}
+                  {draftForLater
+                    ? t('save_for_later', 'Save for later')
+                    : t('save_as_draft', 'Save as Draft')}
                 </div>
               </button>
             )}

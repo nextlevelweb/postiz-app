@@ -26,6 +26,9 @@ export interface AddEditModalProps {
   mutate: () => void;
   padding?: string;
   customClose?: () => void;
+  // a flow that is there to schedule the post (Content Studio's first
+  // post): saving it as a draft is the quiet "Save for later"
+  draftForLater?: boolean;
   onlyValues?: Array<{
     content: string;
     id?: string;

@@ -48,7 +48,8 @@ export class ContentStudioActivationRepository {
 
   // The newest post the organization saved as a draft since a moment (a
   // thread head, not deleted): in the calendar, but not scheduled, so no
-  // activation. Its planned date only
+  // activation. Its planned date, its group (to open it again) and when it
+  // was saved
   getLatestDraftSince(organizationId: string, since: Date) {
     return this._post.model.post.findFirst({
       where: {
@@ -61,6 +62,8 @@ export class ContentStudioActivationRepository {
       orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
       select: {
         publishDate: true,
+        group: true,
+        createdAt: true,
       },
     });
   }

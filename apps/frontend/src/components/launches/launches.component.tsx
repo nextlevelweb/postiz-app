@@ -25,7 +25,10 @@ import { DNDProvider } from '@gitroom/frontend/components/launches/helpers/dnd.p
 import { GeneratorComponent } from './generator/generator';
 import { useVariables } from '@gitroom/react/helpers/variable.context';
 import { NewPost } from '@gitroom/frontend/components/launches/new.post';
-import { ContentStudioHandoffOpener } from '@gitroom/frontend/components/launches/content-studio.handoff.opener';
+import {
+  ContentStudioHandoffOpener,
+  ContentStudioPostOpener,
+} from '@gitroom/frontend/components/launches/content-studio.handoff.opener';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useIntegrationList } from '@gitroom/frontend/components/launches/helpers/use.integration.list';
 import useCookie from 'react-use-cookie';
@@ -629,6 +632,7 @@ export const LaunchesComponent = () => {
       <Onboarding />
       <CalendarWeekProvider integrations={sortedIntegrations}>
         <ContentStudioHandoffOpener />
+        <ContentStudioPostOpener />
         {channelsOpen && (
           <div
             className="hidden mobile:block fixed inset-0 bg-newBackdrop opacity-60 z-[149]"
