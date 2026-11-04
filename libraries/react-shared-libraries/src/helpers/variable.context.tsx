@@ -70,12 +70,52 @@ const VariableContext = createContext({
   extensionId: '',
   recaptchaSiteKey: '',
 } as VariableContextInterface);
+// Development only: a backend on the frontend's own host (FRONTEND_URL) is
+// reached on the host the browser opened the frontend on, so localhost,
+// 127.0.0.1 and a LAN address each call their own backend (with NOT_SECURED;
+// secure cookies stay bound to FRONTEND_URL). Production, the server and a
+// backend on another host keep the configured URL.
+export const developmentBackendUrl = (
+  backendUrl: string,
+  frontEndUrl: string,
+  environment: string,
+  hostname?: string
+) => {
+  if (environment !== 'development' || !hostname) {
+    return backendUrl;
+  }
+  try {
+    const backend = new URL(backendUrl);
+    if (
+      backend.hostname !== new URL(frontEndUrl).hostname ||
+      backend.hostname === hostname
+    ) {
+      return backendUrl;
+    }
+    backend.hostname = hostname;
+    return backendUrl.endsWith('/')
+      ? backend.href
+      : backend.href.replace(/\/$/, '');
+  } catch {
+    return backendUrl;
+  }
+};
+
 export const VariableContextComponent: FC<
   VariableContextInterface & {
     children: ReactNode;
   }
 > = (props) => {
-  const { children, ...otherProps } = props;
+  const { children, ...configured } = props;
+  const otherProps = {
+    ...configured,
+    backendUrl: developmentBackendUrl(
+      configured.backendUrl,
+      configured.frontEndUrl,
+      configured.environment,
+      typeof window === 'undefined' ? undefined : window.location.hostname
+    ),
+  };
   useEffect(() => {
     if (typeof window !== 'undefined') {
       // @ts-ignore
