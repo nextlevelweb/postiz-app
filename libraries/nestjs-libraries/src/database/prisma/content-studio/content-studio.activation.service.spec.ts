@@ -249,6 +249,9 @@ const build = (
     listPostStatesSince: jest.fn(
       async (): Promise<Array<{ state: string }>> => []
     ),
+    getFirstScheduledSince: jest.fn(
+      async (): Promise<{ publishDate: Date } | null> => null
+    ),
     getLatestDraftSince: jest.fn(
       async (): Promise<{
         publishDate: Date;
@@ -577,7 +580,12 @@ describe('First post: activation is a scheduled or published post', () => {
       research: null,
       draft: null,
       alternatives: [],
-      firstPost: { scheduled: false, published: false, savedAsDraft: null },
+      firstPost: {
+        scheduled: false,
+        published: false,
+        scheduledFor: null,
+        savedAsDraft: null,
+      },
       activated: false,
     });
   });
@@ -628,6 +636,85 @@ describe('First post: activation is a scheduled or published post', () => {
       firstPost: { scheduled: true, published: false, savedAsDraft: null },
     });
     expect(ctx.activation.getLatestDraftSince).not.toHaveBeenCalled();
+  });
+});
+
+describe('First post: when a scheduled first post goes out', () => {
+  const handedOff = new Date('2026-10-30T22:24:15.154Z');
+  const planned = new Date('2027-01-05T07:20:00.000Z');
+
+  it('SCHED-DATE1 like the clone: scheduled (QUEUE) for 5 January 2027 07:20 UTC, the success gets that date', async () => {
+    const ctx = build();
+    await firstPost(ctx);
+    ctx.activation.getFirstHandoffOfPackage.mockResolvedValue({
+      createdAt: handedOff,
+    });
+    ctx.activation.listPostStatesSince.mockResolvedValue([{ state: 'QUEUE' }]);
+    ctx.activation.getFirstScheduledSince.mockResolvedValue({
+      publishDate: planned,
+    });
+    expect(await state(ctx)).toMatchObject({
+      activated: true,
+      firstPost: {
+        scheduled: true,
+        published: false,
+        scheduledFor: { publishDate: planned },
+        savedAsDraft: null,
+      },
+    });
+    expect(ctx.activation.getFirstScheduledSince).toHaveBeenCalledWith(
+      ORG,
+      handedOff
+    );
+  });
+
+  it('SCHED-DATE3 a draft only (even with a future date) has no scheduled date', async () => {
+    const ctx = build();
+    await firstPost(ctx);
+    ctx.activation.getFirstHandoffOfPackage.mockResolvedValue({
+      createdAt: handedOff,
+    });
+    ctx.activation.listPostStatesSince.mockResolvedValue([]);
+    ctx.activation.getLatestDraftSince.mockResolvedValue({
+      publishDate: planned,
+      group: 'g',
+      createdAt: handedOff,
+    });
+    expect((await state(ctx)).firstPost).toMatchObject({
+      scheduled: false,
+      scheduledFor: null,
+    });
+    expect(ctx.activation.getFirstScheduledSince).not.toHaveBeenCalled();
+  });
+
+  it('SCHED-DATE4 a published first post is said as published: no scheduled date, even with another post waiting', async () => {
+    const ctx = build();
+    await firstPost(ctx);
+    ctx.activation.getFirstHandoffOfPackage.mockResolvedValue({
+      createdAt: handedOff,
+    });
+    ctx.activation.listPostStatesSince.mockResolvedValue([
+      { state: 'PUBLISHED' },
+      { state: 'QUEUE' },
+    ]);
+    expect((await state(ctx)).firstPost).toMatchObject({
+      published: true,
+      scheduledFor: null,
+    });
+    expect(ctx.activation.getFirstScheduledSince).not.toHaveBeenCalled();
+  });
+
+  it('a scheduled post deleted meanwhile: still no invented date', async () => {
+    const ctx = build();
+    await firstPost(ctx);
+    ctx.activation.getFirstHandoffOfPackage.mockResolvedValue({
+      createdAt: handedOff,
+    });
+    ctx.activation.listPostStatesSince.mockResolvedValue([{ state: 'QUEUE' }]);
+    expect((await state(ctx)).firstPost).toMatchObject({
+      scheduled: true,
+      scheduledFor: null,
+    });
   });
 });
 

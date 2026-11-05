@@ -2405,6 +2405,7 @@
   "content_studio_first_post_schedule_hint": "Opens the post in the Postiz composer: choose your channels, make final edits and schedule or publish it there.",
   "content_studio_first_post_published": "Your first post is published",
   "content_studio_first_post_scheduled": "Your first post is scheduled",
+  "content_studio_first_post_scheduled_for": "Scheduled for {{date}}",
   "content_studio_first_post_success_hint": "Content Studio used your profile and research preferences to help create it.",
   "content_studio_research_fresh_breaking": "Very current: the last few days",
   "content_studio_research_fresh_week": "The last week",
@@ -2509,5 +2510,7 @@
   "content_studio_handoff_back_yes": "Go back",
   "content_studio_handoff_back": "Back to Content Studio",
   "content_studio_handoff_finish": "Schedule it here to finish your first post. Save for later keeps it as a draft.",
+  "content_studio_handoff_finish_scheduled": "Your first post is already scheduled. Update saves your changes to it; Save for later turns it back into a draft.",
+  "content_studio_handoff_finish_published": "Your first post is already published. There is nothing left to schedule.",
   "content_studio_post_channel_missing": "The channel of this post is no longer connected"
 }

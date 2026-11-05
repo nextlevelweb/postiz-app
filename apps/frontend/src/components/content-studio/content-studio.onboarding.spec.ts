@@ -64,6 +64,7 @@ const {
   ContentStudioFirstPostReminder,
   ContentStudioGetStarted,
   CONTENT_STUDIO_TOUR,
+  tourCardPosition,
 } = require('./content-studio.onboarding');
 
 const T0 = '2026-10-30T10:00:00.000Z';
@@ -356,6 +357,431 @@ describe('After the first post: the success and the tour', () => {
       rect.mockRestore();
       Object.defineProperty(window, 'innerWidth', {
         value: width,
+        configurable: true,
+      });
+    }
+  });
+});
+
+// Activation review 07: the real schedule of review 06 (5 January 2027,
+// 08:20 in Amsterdam) showed a success without its date, a desktop tour
+// card over that success, and a tour that ended on it instead of Home
+describe('After the first post: the scheduled date, the tour card and its end', () => {
+  const PLANNED = '2027-01-05T07:20:00.000Z';
+  const firstPostReply = (patch: Record<string, unknown>) =>
+    mockFetch.mockImplementation(async (url: string) =>
+      new URL(url, 'https://api.test').pathname ===
+      '/content-studio/activation/first-post'
+        ? reply(200, {
+            ...firstPost(state.activated, state.saved),
+            firstPost: {
+              ...firstPost(state.activated, state.saved).firstPost,
+              ...patch,
+            },
+          })
+        : server(url)
+    );
+  // the date as this machine's clock shows it: the composer's timezone
+  const local = (iso: string) => {
+    const date = new Date(iso);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${date.toLocaleString('en-US', {
+      month: 'short',
+    })} ${date.getDate()}, ${date.getFullYear()} ${pad(date.getHours())}:${pad(
+      date.getMinutes()
+    )}`;
+  };
+
+  it('SCHED-DATE2 a scheduled first post says when it goes out, never "published"', async () => {
+    firstPostReply({ scheduledFor: { publishDate: PLANNED } });
+    await show(ContentStudioFirstPostPage);
+    expect(screen.getByText('Your first post is scheduled')).toBeTruthy();
+    expect(screen.getByTestId('first-post-scheduled-for').textContent).toBe(
+      `Scheduled for ${local(PLANNED)}`
+    );
+    expect(screen.queryByText('Your first post is published')).toBeNull();
+    expect(screen.queryByText('Schedule my first post')).toBeNull();
+  });
+
+  it('SCHED-DATE2 the date is the one of the post, never a fixed one', async () => {
+    const other = '2027-03-14T15:45:00.000Z';
+    firstPostReply({ scheduledFor: { publishDate: other } });
+    await show(ContentStudioFirstPostPage);
+    expect(screen.getByTestId('first-post-scheduled-for').textContent).toBe(
+      `Scheduled for ${local(other)}`
+    );
+  });
+
+  it('SCHED-DATE2 scheduled without a known date: the success, without inventing one', async () => {
+    firstPostReply({ scheduledFor: null });
+    await show(ContentStudioFirstPostPage);
+    expect(screen.getByText('Your first post is scheduled')).toBeTruthy();
+    expect(screen.queryByTestId('first-post-scheduled-for')).toBeNull();
+  });
+
+  it('SCHED-DATE3 a first post saved as a draft shows its draft date, never "Scheduled for"', async () => {
+    state.activated = false;
+    state.saved = true;
+    await show(ContentStudioFirstPostPage);
+    expect(screen.getByText('Your first post is saved')).toBeTruthy();
+    expect(screen.getByText(/^Draft date: /).textContent).toContain(
+      local('2026-11-25T07:20:00.000Z')
+    );
+    expect(screen.queryByTestId('first-post-scheduled-for')).toBeNull();
+    expect(screen.queryByText(/Scheduled for/)).toBeNull();
+  });
+
+  it('SCHED-DATE4 a published first post shows no scheduled date', async () => {
+    firstPostReply({
+      scheduled: false,
+      published: true,
+      scheduledFor: { publishDate: PLANNED },
+    });
+    await show(ContentStudioFirstPostPage);
+    expect(screen.getByText('Your first post is published')).toBeTruthy();
+    expect(screen.queryByTestId('first-post-scheduled-for')).toBeNull();
+  });
+
+  it('TOUR-DONE1/TOUR-DONE2 unseen: the tour starts on the scheduled success; Done keeps it completed and goes to Home', async () => {
+    firstPostReply({ scheduledFor: { publishDate: PLANNED } });
+    await show(ContentStudioFirstPostPage);
+    expect(title()).toBe('Research starts in Radar');
+    for (let i = 0; i < 5; i++) {
+      fireEvent.click(
+        within(card()).getByRole('button', { name: i === 4 ? 'Done' : 'Next' })
+      );
+      await flush();
+    }
+    expect(window.localStorage.getItem(TOUR_KEY)).toBe('completed');
+    expect(mockRouter.push).toHaveBeenCalledTimes(1);
+    expect(mockRouter.push).toHaveBeenCalledWith('/content-studio');
+  });
+
+  it('TOUR-DONE3 Skip tour (or Escape) keeps it skipped and goes to Home, like the draft path', async () => {
+    await show(ContentStudioFirstPostPage);
+    fireEvent.click(within(card()).getByRole('button', { name: 'Skip tour' }));
+    await flush();
+    expect(window.localStorage.getItem(TOUR_KEY)).toBe('skipped');
+    expect(mockRouter.push).toHaveBeenCalledWith('/content-studio');
+    cleanup();
+    mockRouter.push.mockClear();
+    // taken again on purpose, then Escape
+    await show(ContentStudioFirstPostPage);
+    fireEvent.click(screen.getByRole('button', { name: 'Take a quick tour' }));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await flush();
+    expect(window.localStorage.getItem(TOUR_KEY)).toBe('skipped');
+    expect(mockRouter.push).toHaveBeenCalledWith('/content-studio');
+  });
+
+  it.each(['completed', 'skipped'])(
+    'TOUR-DONE4 a revisit after the tour was %s: the success only, no tour and no redirect',
+    async (seen) => {
+      window.localStorage.setItem(TOUR_KEY, seen);
+      firstPostReply({ scheduledFor: { publishDate: PLANNED } });
+      await show(ContentStudioFirstPostPage);
+      expect(screen.getByText('Your first post is scheduled')).toBeTruthy();
+      expect(screen.getByTestId('first-post-scheduled-for')).toBeTruthy();
+      expect(screen.queryByTestId('tour-card')).toBeNull();
+      expect(mockRouter.push).not.toHaveBeenCalled();
+    }
+  );
+
+  // the geometry of review 06: Content Studio navigation at 113-153, Radar
+  // at x 346, the success at 120-880 x 271-517, a card of 360 x 234
+  const RADAR = { top: 113, left: 346, width: 85, height: 40 };
+  const SUCCESS = { top: 271, left: 120, width: 760, height: 246 };
+  const CARD = { width: 360, height: 234 };
+  const covers = (
+    position: { top: number; left: number },
+    keep: typeof SUCCESS
+  ) =>
+    position.left < keep.left + keep.width &&
+    keep.left < position.left + CARD.width &&
+    position.top < keep.top + keep.height &&
+    keep.top < position.top + CARD.height;
+
+  it('TOUR-POS1 without anything to keep in view the card stays right below its target, as before', () => {
+    expect(tourCardPosition(RADAR, CARD, { width: 1200, height: 900 })).toEqual(
+      { top: 165, left: 346 }
+    );
+  });
+
+  it('TOUR-POS2 at 1200 x 900 the card no longer covers the success: it goes under it, below Radar', () => {
+    const position = tourCardPosition(
+      RADAR,
+      CARD,
+      { width: 1200, height: 900 },
+      SUCCESS
+    );
+    expect(position).toEqual({ top: 529, left: 346 });
+    expect(covers(position, SUCCESS)).toBe(false);
+    expect(position.top + CARD.height).toBeLessThanOrEqual(900 - 16);
+  });
+
+  it('TOUR-POS3 at 1440 x 900 there is room beside the success: the card sits next to it, at the height of the navigation', () => {
+    const position = tourCardPosition(
+      RADAR,
+      CARD,
+      { width: 1440, height: 900 },
+      SUCCESS
+    );
+    expect(position).toEqual({ top: 165, left: 892 });
+    expect(covers(position, SUCCESS)).toBe(false);
+  });
+
+  it('TOUR-POS4 at 820 x 1180 (a narrower success) the card goes under it, inside the screen', () => {
+    const success = { top: 271, left: 120, width: 600, height: 246 };
+    const position = tourCardPosition(
+      RADAR,
+      CARD,
+      { width: 820, height: 1180 },
+      success
+    );
+    expect(covers(position, success)).toBe(false);
+    expect(position.left + CARD.width).toBeLessThanOrEqual(820 - 16);
+  });
+
+  it('TOUR-POS5 a screen with no free place for a popover gives the sheet at the bottom, never a popover over the success', () => {
+    expect(
+      tourCardPosition(RADAR, CARD, { width: 1200, height: 700 }, SUCCESS)
+    ).toBeNull();
+  });
+
+  const withGeometry = async (
+    keep: { top: number; left: number; width: number; height: number },
+    heights: { sheet: number; popover: number },
+    run: () => Promise<void>
+  ) => {
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    const box = (r: {
+      top: number;
+      left: number;
+      width: number;
+      height: number;
+    }) =>
+      ({
+        ...r,
+        right: r.left + r.width,
+        bottom: r.top + r.height,
+        x: r.left,
+        y: r.top,
+        toJSON: () => ({}),
+      } as DOMRect);
+    const rect = jest
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.dataset?.csSection) {
+          return box(RADAR);
+        }
+        if (this.hasAttribute('data-cs-tour-keep-visible')) {
+          return box(keep);
+        }
+        return box({ top: 0, left: 0, width: 0, height: 0 });
+      });
+    // the sheet is wider than the popover, so its text takes fewer lines
+    const offset = jest
+      .spyOn(HTMLElement.prototype, 'offsetHeight', 'get')
+      .mockImplementation(function (this: HTMLElement) {
+        return this.getAttribute('data-placement') === 'popover'
+          ? heights.popover
+          : heights.sheet;
+      });
+    Object.defineProperty(window, 'innerWidth', {
+      value: 1200,
+      configurable: true,
+    });
+    Object.defineProperty(window, 'innerHeight', {
+      value: 900,
+      configurable: true,
+    });
+    try {
+      firstPostReply({ scheduledFor: { publishDate: PLANNED } });
+      await show(ContentStudioFirstPostPage);
+      await run();
+    } finally {
+      rect.mockRestore();
+      offset.mockRestore();
+      Object.defineProperty(window, 'innerWidth', {
+        value: width,
+        configurable: true,
+      });
+      Object.defineProperty(window, 'innerHeight', {
+        value: height,
+        configurable: true,
+      });
+    }
+  };
+
+  it('TOUR-POS7 a success scrolled out of the screen is not kept free: the card stays right below its target', async () => {
+    await withGeometry(
+      { top: -600, left: 120, width: 760, height: 246 },
+      { sheet: CARD.height, popover: CARD.height },
+      async () => {
+        expect(card().getAttribute('data-placement')).toBe('popover');
+        expect(card().style.top).toBe('165px');
+        expect(card().style.left).toBe('346px');
+      }
+    );
+  });
+
+  it('TOUR-POS8 measured first as the shorter sheet, the card is placed again with its popover height: never a popover running off the screen', async () => {
+    // 150 high it would fit under the success (529-679); 400 high it does
+    // not (529-929 on a 900 high screen), so the sheet it is
+    await withGeometry(SUCCESS, { sheet: 150, popover: 400 }, async () => {
+      expect(card().getAttribute('data-placement')).toBe('sheet');
+    });
+    cleanup();
+    window.localStorage.clear();
+    // a popover height that fits keeps the popover, under the success
+    await withGeometry(
+      SUCCESS,
+      { sheet: 150, popover: CARD.height },
+      async () => {
+        expect(card().getAttribute('data-placement')).toBe('popover');
+        expect(card().style.top).toBe('529px');
+      }
+    );
+  });
+
+  it('TOUR-POS9 like a first load in review 07: the page settles after the card was placed (no resize, no scroll); the card and the highlight follow it', async () => {
+    // laid out mirrored at first: Radar at 1009, the success at 560
+    let settled = false;
+    const radar = () => (settled ? RADAR : { ...RADAR, left: 1009 });
+    const success = () => (settled ? SUCCESS : { ...SUCCESS, left: 560 });
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    const box = (r: {
+      top: number;
+      left: number;
+      width: number;
+      height: number;
+    }) =>
+      ({
+        ...r,
+        right: r.left + r.width,
+        bottom: r.top + r.height,
+        x: r.left,
+        y: r.top,
+        toJSON: () => ({}),
+      } as DOMRect);
+    const rect = jest
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.dataset?.csSection === 'radar') {
+          return box(radar());
+        }
+        if (this.hasAttribute('data-cs-tour-keep-visible')) {
+          return box(success());
+        }
+        return box({ top: 0, left: 0, width: 0, height: 0 });
+      });
+    const offset = jest
+      .spyOn(HTMLElement.prototype, 'offsetHeight', 'get')
+      .mockReturnValue(CARD.height);
+    Object.defineProperty(window, 'innerWidth', {
+      value: 1440,
+      configurable: true,
+    });
+    Object.defineProperty(window, 'innerHeight', {
+      value: 900,
+      configurable: true,
+    });
+    try {
+      firstPostReply({ scheduledFor: { publishDate: PLANNED } });
+      await show(ContentStudioFirstPostPage);
+      expect(screen.getByTestId('tour-highlight').style.left).toBe('1009px');
+      settled = true;
+      await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
+      expect(screen.getByTestId('tour-highlight').style.left).toBe('346px');
+      // beside the success where it is now, never over it
+      expect(card().style.left).toBe('892px');
+      expect(card().style.top).toBe('165px');
+    } finally {
+      rect.mockRestore();
+      offset.mockRestore();
+      Object.defineProperty(window, 'innerWidth', {
+        value: width,
+        configurable: true,
+      });
+      Object.defineProperty(window, 'innerHeight', {
+        value: height,
+        configurable: true,
+      });
+    }
+  });
+
+  it('TOUR-POS6 on the page: the success is kept in view on a desktop; a phone still gets the sheet', async () => {
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    const box = (r: {
+      top: number;
+      left: number;
+      width: number;
+      height: number;
+    }) =>
+      ({
+        ...r,
+        right: r.left + r.width,
+        bottom: r.top + r.height,
+        x: r.left,
+        y: r.top,
+        toJSON: () => ({}),
+      } as DOMRect);
+    const rect = jest
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.dataset?.csSection) {
+          return box(RADAR);
+        }
+        if (this.hasAttribute('data-cs-tour-keep-visible')) {
+          return box(SUCCESS);
+        }
+        return box({ top: 0, left: 0, width: 0, height: 0 });
+      });
+    const offset = jest
+      .spyOn(HTMLElement.prototype, 'offsetHeight', 'get')
+      .mockReturnValue(CARD.height);
+    try {
+      Object.defineProperty(window, 'innerWidth', {
+        value: 1200,
+        configurable: true,
+      });
+      Object.defineProperty(window, 'innerHeight', {
+        value: 900,
+        configurable: true,
+      });
+      firstPostReply({ scheduledFor: { publishDate: PLANNED } });
+      await show(ContentStudioFirstPostPage);
+      expect(card().getAttribute('data-placement')).toBe('popover');
+      expect(
+        covers(
+          {
+            top: parseFloat(card().style.top),
+            left: parseFloat(card().style.left),
+          },
+          SUCCESS
+        )
+      ).toBe(false);
+      expect(screen.getByTestId('tour-highlight')).toBeTruthy();
+      cleanup();
+      window.localStorage.clear();
+      Object.defineProperty(window, 'innerWidth', {
+        value: 390,
+        configurable: true,
+      });
+      await show(ContentStudioFirstPostPage);
+      expect(card().getAttribute('data-placement')).toBe('sheet');
+    } finally {
+      rect.mockRestore();
+      offset.mockRestore();
+      Object.defineProperty(window, 'innerWidth', {
+        value: width,
+        configurable: true,
+      });
+      Object.defineProperty(window, 'innerHeight', {
+        value: height,
         configurable: true,
       });
     }

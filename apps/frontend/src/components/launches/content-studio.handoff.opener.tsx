@@ -14,7 +14,10 @@ import {
   AddEditModal,
   AddEditModalProps,
 } from '@gitroom/frontend/components/new-launch/add.edit.modal';
-import { ExistingDataContextProvider } from '@gitroom/frontend/components/launches/helpers/use.existing.data';
+import {
+  ExistingDataContextProvider,
+  useExistingData,
+} from '@gitroom/frontend/components/launches/helpers/use.existing.data';
 import { useToaster } from '@gitroom/react/toaster/toaster';
 import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
@@ -90,11 +93,15 @@ const useRemoveHandoffParam = (param: OpenerParam = 'handoff') => {
 // Edits made in the composer are not kept over a reload. A handoff with a
 // known return page has a visible way back to it above the composer, so
 // the browser's Back is never the only one. Such a flow is there to schedule
-// the post: saving it as a draft is the quiet "Save for later"
+// the post: saving it as a draft is the quiet "Save for later". A post saved
+// before says what is left by its state: a scheduled or published one is
+// never asked to be scheduled again
 const HandoffComposer: FC<
   AddEditModalProps & { handoffId: string; param?: OpenerParam }
 > = ({ handoffId, param = 'handoff', ...props }) => {
   const removeHandoffParam = useRemoveHandoffParam(param);
+  // the post opened again, as the composer reads it (none for a handoff)
+  const postState = useExistingData().posts?.[0]?.state;
   const back = returnPageOf(useSearchParams().get('return'));
   const modal = useModals();
   const t = useT();
@@ -160,10 +167,20 @@ const HandoffComposer: FC<
           data-testid="content-studio-handoff-finish"
           className="text-[13px] text-textItemBlur"
         >
-          {t(
-            'content_studio_handoff_finish',
-            'Schedule it here to finish your first post. Save for later keeps it as a draft.'
-          )}
+          {postState === 'QUEUE'
+            ? t(
+                'content_studio_handoff_finish_scheduled',
+                'Your first post is already scheduled. Update saves your changes to it; Save for later turns it back into a draft.'
+              )
+            : postState === 'PUBLISHED'
+            ? t(
+                'content_studio_handoff_finish_published',
+                'Your first post is already published. There is nothing left to schedule.'
+              )
+            : t(
+                'content_studio_handoff_finish',
+                'Schedule it here to finish your first post. Save for later keeps it as a draft.'
+              )}
         </span>
       </div>
       <AddEditModal {...props} draftForLater={true} />

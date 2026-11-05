@@ -3,6 +3,7 @@
 import { FC, ReactNode, useCallback, useMemo, useState } from 'react';
 import clsx from 'clsx';
 import dayjs from 'dayjs';
+import utc from 'dayjs/plugin/utc';
 import Link from 'next/link';
 import useSWR, { useSWRConfig } from 'swr';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -42,6 +43,7 @@ import {
   useResearchFreshnessOptions,
 } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.editorial-policy';
 import { StringListEditor } from '@gitroom/frontend/components/content-studio/intelligence/content-studio.intelligence.shared';
+dayjs.extend(utc);
 
 // The first post (activation flow 01). Right after the guided setup Content
 // Studio researches what the organization should post about now and drafts
@@ -119,6 +121,8 @@ export interface ContentStudioFirstPostState {
   firstPost: {
     scheduled: boolean;
     published: boolean;
+    // scheduled and not published yet: when the post goes out
+    scheduledFor?: { publishDate: string } | null;
     // saved in the composer as a draft since the first handoff: in the
     // calendar, not scheduled (progress, no activation), with the date
     // chosen for it, its group and when it was saved
@@ -194,9 +198,10 @@ export const firstPostPhase = (
     : 'ready';
 };
 
-// The date chosen for a draft: never "scheduled for"
-export const firstPostDraftDate = (publishDate: string) =>
-  dayjs(publishDate).format('MMM D, YYYY HH:mm');
+// The date of the post, in the timezone the composer shows it in. The
+// words around it say whether it is a draft date or when it goes out
+export const firstPostDate = (publishDate: string) =>
+  dayjs.utc(publishDate).local().format('MMM D, YYYY HH:mm');
 
 const RUNNING: FirstPostPhase[] = ['researching', 'drafting'];
 
@@ -841,7 +846,10 @@ export const ContentStudioFirstPost: FC<{
       success ? (
         success(state)
       ) : (
-        <FirstPostSuccess published={state.firstPost.published} />
+        <FirstPostSuccess
+          published={state.firstPost.published}
+          scheduledFor={state.firstPost.scheduledFor?.publishDate}
+        />
       )
     );
   }
@@ -1164,7 +1172,7 @@ export const ContentStudioFirstPost: FC<{
             {t(
               'content_studio_first_post_draft_date',
               'Draft date: {{date}}. It stays a draft and will not be published until you schedule it.',
-              { date: firstPostDraftDate(saved.publishDate) }
+              { date: firstPostDate(saved.publishDate) }
             )}
           </span>
           <Link
@@ -1356,14 +1364,19 @@ export const FirstPostDrafts: FC<{
   );
 };
 
-// The success moment, without a tour
+// The success moment, without a tour. A scheduled post says when it goes
+// out; the tour keeps it in view
 export const FirstPostSuccess: FC<{
   published: boolean;
+  scheduledFor?: string | null;
   children?: ReactNode;
-}> = ({ published, children }) => {
+}> = ({ published, scheduledFor, children }) => {
   const t = useT();
   return (
-    <section className="flex flex-col items-center text-center gap-[16px] py-[24px]">
+    <section
+      data-cs-tour-keep-visible=""
+      className="flex flex-col items-center text-center gap-[16px] py-[24px]"
+    >
       <span
         aria-hidden="true"
         className="w-[56px] h-[56px] rounded-full bg-[var(--brand-primary,#612ad5)] text-[var(--brand-action-text,#fff)] flex items-center justify-center text-[28px]"
@@ -1381,6 +1394,20 @@ export const FirstPostSuccess: FC<{
               'Your first post is scheduled'
             )}
       </h2>
+      {!published && !!scheduledFor && (
+        <p
+          data-testid="first-post-scheduled-for"
+          className="text-[15px] font-[600]"
+        >
+          {t(
+            'content_studio_first_post_scheduled_for',
+            'Scheduled for {{date}}',
+            {
+              date: firstPostDate(scheduledFor),
+            }
+          )}
+        </p>
+      )}
       <p className="text-[14px] text-textItemBlur max-w-[520px]">
         {t(
           'content_studio_first_post_success_hint',
@@ -1433,7 +1460,7 @@ export const FirstPostSaved: FC<{
           {t(
             'content_studio_first_post_draft_date',
             'Draft date: {{date}}. It stays a draft and will not be published until you schedule it.',
-            { date: firstPostDraftDate(publishDate) }
+            { date: firstPostDate(publishDate) }
           )}
         </p>
       </div>

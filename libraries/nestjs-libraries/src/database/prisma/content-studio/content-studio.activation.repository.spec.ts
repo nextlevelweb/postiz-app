@@ -38,6 +38,22 @@ describe('ContentStudioActivationRepository', () => {
     );
   });
 
+  it('SCHED-DATE1 the first post scheduled since the handoff, of this organization, with its planned date only', async () => {
+    const { repository, post } = setup();
+    await repository.getFirstScheduledSince(ORG, SINCE);
+    expect(post.findFirst).toHaveBeenCalledWith({
+      where: {
+        organizationId: ORG,
+        deletedAt: null,
+        parentPostId: null,
+        createdAt: { gte: SINCE },
+        state: 'QUEUE',
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: { publishDate: true },
+    });
+  });
+
   it('ACT9/D1 the newest draft since the handoff, of this organization, with its planned date, group and save time only', async () => {
     const { repository, post } = setup();
     await repository.getLatestDraftSince(ORG, SINCE);

@@ -46,6 +46,24 @@ export class ContentStudioActivationRepository {
     });
   }
 
+  // The first post the organization scheduled since a moment (a thread
+  // head, not deleted, still waiting to go out): when it is planned for
+  getFirstScheduledSince(organizationId: string, since: Date) {
+    return this._post.model.post.findFirst({
+      where: {
+        organizationId,
+        deletedAt: null,
+        parentPostId: null,
+        createdAt: { gte: since },
+        state: State.QUEUE,
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: {
+        publishDate: true,
+      },
+    });
+  }
+
   // The newest post the organization saved as a draft since a moment (a
   // thread head, not deleted): in the calendar, but not scheduled, so no
   // activation. Its planned date, its group (to open it again) and when it

@@ -22,7 +22,7 @@ import {
   ContentStudioFirstPost,
   FIRST_POST_PAGE,
   FirstPostSuccess,
-  firstPostDraftDate,
+  firstPostDate,
   firstPostDraftPath,
   useContentStudioFirstPost,
 } from '@gitroom/frontend/components/content-studio/content-studio.first-post';
@@ -206,52 +206,147 @@ const useTourSteps = () => {
   return steps;
 };
 
+const GAP_PX = 12;
+
+export interface TourRect {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+}
+
 interface Placement {
   // the highlighted section in the navigation, when it is on the page
-  target: { top: number; left: number; width: number; height: number } | null;
+  target: TourRect | null;
   sheet: boolean;
   card: { top: number; left: number; width: number } | null;
 }
+
+const overlaps = (a: TourRect, b: TourRect) =>
+  a.left < b.left + b.width &&
+  b.left < a.left + a.width &&
+  a.top < b.top + b.height &&
+  b.top < a.top + a.height;
+
+// Where the card goes next to its target: below it, or above when there is
+// no room below. What the page keeps in view (the first post's success) is
+// never covered: then beside it, or under it, and the sheet at the bottom
+// when nothing on the screen is free. Measured, never waited for
+export const tourCardPosition = (
+  target: TourRect,
+  card: { width: number; height: number },
+  viewport: { width: number; height: number },
+  keep: TourRect | null = null
+): { top: number; left: number } | null => {
+  const left = Math.min(
+    Math.max(target.left, EDGE_PX),
+    viewport.width - card.width - EDGE_PX
+  );
+  const below = target.top + target.height + GAP_PX;
+  const above = target.top - card.height - GAP_PX;
+  const candidates = [
+    { top: below, left },
+    { top: above, left },
+    ...(keep
+      ? [
+          { top: below, left: keep.left + keep.width + GAP_PX },
+          { top: below, left: keep.left - card.width - GAP_PX },
+          { top: keep.top + keep.height + GAP_PX, left },
+        ]
+      : []),
+  ];
+  const free = candidates.find(
+    (candidate) =>
+      candidate.left >= EDGE_PX &&
+      candidate.left + card.width <= viewport.width - EDGE_PX &&
+      candidate.top >= EDGE_PX &&
+      candidate.top + card.height <= viewport.height - EDGE_PX &&
+      !(keep && overlaps({ ...candidate, ...card }, keep))
+  );
+  if (free) {
+    return free;
+  }
+  if (keep) {
+    return null;
+  }
+  return {
+    left,
+    top:
+      below + card.height > viewport.height - EDGE_PX
+        ? Math.max(EDGE_PX, above)
+        : below,
+  };
+};
+
+const rectOf = (element: HTMLElement | null): TourRect | null => {
+  const rect = element?.getBoundingClientRect();
+  return rect && rect.width
+    ? {
+        top: rect.top,
+        left: rect.left,
+        width: rect.width,
+        height: rect.height,
+      }
+    : null;
+};
+
+// only what is on the screen now can be covered
+const onScreen = (rect: TourRect | null) =>
+  rect &&
+  rect.top < window.innerHeight &&
+  rect.top + rect.height > 0 &&
+  rect.left < window.innerWidth &&
+  rect.left + rect.width > 0
+    ? rect
+    : null;
+
+const targetOf = (section: ContentStudioTourSection) =>
+  rectOf(document.querySelector<HTMLElement>(`[data-cs-section="${section}"]`));
+const keptOf = () =>
+  rectOf(document.querySelector<HTMLElement>('[data-cs-tour-keep-visible]'));
+
+// Where the target and what is kept in view are now, in whole pixels
+const geometryOf = (section: ContentStudioTourSection) =>
+  [
+    targetOf(section),
+    keptOf(),
+    { width: window.innerWidth, height: window.innerHeight },
+  ]
+    .map((rect) =>
+      rect
+        ? Object.values(rect)
+            .map((value) => Math.round(value))
+            .join(',')
+        : '-'
+    )
+    .join('|');
 
 const place = (
   section: ContentStudioTourSection,
   cardHeight: number
 ): Placement => {
-  const element = document.querySelector<HTMLElement>(
-    `[data-cs-section="${section}"]`
-  );
+  const target = targetOf(section);
   const width = window.innerWidth;
-  const sheet = width < SHEET_BELOW_PX;
-  const rect = element?.getBoundingClientRect();
-  const target =
-    rect && rect.width
-      ? {
-          top: rect.top,
-          left: rect.left,
-          width: rect.width,
-          height: rect.height,
-        }
-      : null;
-  if (sheet || !target) {
+  if (width < SHEET_BELOW_PX || !target) {
     return { target, sheet: true, card: null };
   }
   const cardWidth = Math.min(CARD_WIDTH_PX, width - 2 * EDGE_PX);
-  const left = Math.min(
-    Math.max(target.left, EDGE_PX),
-    width - cardWidth - EDGE_PX
+  const position = tourCardPosition(
+    target,
+    { width: cardWidth, height: cardHeight },
+    { width, height: window.innerHeight },
+    onScreen(keptOf())
   );
-  const below = target.top + target.height + 12;
-  const top =
-    below + cardHeight > window.innerHeight - EDGE_PX
-      ? Math.max(EDGE_PX, target.top - cardHeight - 12)
-      : below;
-  return { target, sheet: false, card: { top, left, width: cardWidth } };
+  return position
+    ? { target, sheet: false, card: { ...position, width: cardWidth } }
+    : { target, sheet: true, card: null };
 };
 
 // One step at a time: its section in the navigation is highlighted, and a
 // card says what it is for, with Next and Skip tour. On a phone the card is
-// a sheet at the bottom, so it can never leave the screen. Done after the
-// last step completes it; Skip tour or Escape skips it
+// a sheet at the bottom, so it can never leave the screen. What the page
+// marks with data-cs-tour-keep-visible stays readable next to the card.
+// Done after the last step completes it; Skip tour or Escape skips it
 export const ContentStudioTour: FC<{
   onClose: (how: 'skipped' | 'completed') => void;
 }> = ({ onClose }) => {
@@ -261,12 +356,46 @@ export const ContentStudioTour: FC<{
   const [index, setIndex] = useState(0);
   const [placement, setPlacement] = useState<Placement | null>(null);
   const card = useRef<HTMLDivElement>(null);
+  // the card height and the page geometry the placement was worked out with
+  const measuredHeight = useRef(0);
+  const measuredGeometry = useRef('');
   const section = CONTENT_STUDIO_TOUR[index];
   const last = index === CONTENT_STUDIO_TOUR.length - 1;
 
   const measure = useCallback(() => {
-    setPlacement(place(section, card.current?.offsetHeight ?? 180));
+    measuredHeight.current = card.current?.offsetHeight ?? 180;
+    measuredGeometry.current = geometryOf(section);
+    setPlacement(place(section, measuredHeight.current));
   }, [section]);
+
+  // The page can still move after the card was placed, without a resize or
+  // a scroll: a first load settles its layout and direction, a font or an
+  // image arrives. While the tour is open the target and what is kept in
+  // view are followed each frame, and the card is placed again only when
+  // they really moved
+  useEffect(() => {
+    let frame = 0;
+    const follow = () => {
+      if (geometryOf(section) !== measuredGeometry.current) {
+        measure();
+      }
+      frame = window.requestAnimationFrame(follow);
+    };
+    frame = window.requestAnimationFrame(follow);
+    return () => window.cancelAnimationFrame(frame);
+  }, [section, measure]);
+
+  // a card measured as the sheet (wider, so shorter) is placed again with
+  // its height as a popover; a sheet is never measured again from here
+  useLayoutEffect(() => {
+    if (
+      placement?.sheet === false &&
+      card.current &&
+      card.current.offsetHeight !== measuredHeight.current
+    ) {
+      measure();
+    }
+  }, [placement, measure]);
 
   useLayoutEffect(() => {
     document
@@ -692,18 +821,34 @@ export const ContentStudioGetStarted: FC = () => {
   );
 };
 
-// The success of the first post, and right after it the tour, once
-const FirstPostSuccessWithTour: FC<{ published: boolean }> = ({
-  published,
-}) => {
-  const t = useT();
+// The tour from the first post page ends on Home, finished or skipped: it
+// has just shown what is there
+const useTourThenHome = () => {
+  const router = useRouter();
   const tour = useContentStudioTour();
+  const close = useCallback(
+    (how: 'skipped' | 'completed') => {
+      tour.close(how);
+      router.push(CONTENT_STUDIO_HOME_PATH);
+    },
+    [tour.close, router]
+  );
+  return { ...tour, close };
+};
+
+// The success of the first post, and right after it the tour, once
+const FirstPostSuccessWithTour: FC<{
+  published: boolean;
+  scheduledFor?: string | null;
+}> = ({ published, scheduledFor }) => {
+  const t = useT();
+  const tour = useTourThenHome();
   useEffect(() => {
     tour.startOnce();
   }, [tour.startOnce]);
   return (
     <>
-      <FirstPostSuccess published={published}>
+      <FirstPostSuccess published={published} scheduledFor={scheduledFor}>
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-[8px]">
           <Button onClick={tour.start}>
             {t('content_studio_tour_start', 'Take a quick tour')}
@@ -726,17 +871,9 @@ const FirstPostSuccessWithTour: FC<{ published: boolean }> = ({
 // stays for a scheduled or published post
 const FirstPostExplore: FC = () => {
   const t = useT();
-  const router = useRouter();
   const user = useUser();
   const organizationId = user?.orgId || '';
-  const tour = useContentStudioTour();
-  const close = useCallback(
-    (how: 'skipped' | 'completed') => {
-      tour.close(how);
-      router.push(CONTENT_STUDIO_HOME_PATH);
-    },
-    [tour.close, router]
-  );
+  const tour = useTourThenHome();
   return (
     <>
       <button
@@ -753,7 +890,7 @@ const FirstPostExplore: FC = () => {
           'Continue exploring Content Studio'
         )}
       </button>
-      {tour.open && <ContentStudioTour onClose={close} />}
+      {tour.open && <ContentStudioTour onClose={tour.close} />}
     </>
   );
 };
@@ -820,7 +957,7 @@ export const ContentStudioFirstPostReminder: FC = () => {
           {t(
             'content_studio_first_post_draft_date',
             'Draft date: {{date}}. It stays a draft and will not be published until you schedule it.',
-            { date: firstPostDraftDate(saved.publishDate) }
+            { date: firstPostDate(saved.publishDate) }
           )}
         </p>
       </div>
@@ -854,7 +991,10 @@ export const ContentStudioFirstPostReminder: FC = () => {
 export const ContentStudioFirstPostPage: FC = () => (
   <ContentStudioFirstPost
     success={(state) => (
-      <FirstPostSuccessWithTour published={state.firstPost.published} />
+      <FirstPostSuccessWithTour
+        published={state.firstPost.published}
+        scheduledFor={state.firstPost.scheduledFor?.publishDate}
+      />
     )}
     explore={<FirstPostExplore />}
   />

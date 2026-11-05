@@ -1265,6 +1265,89 @@ describe('ContentStudioPostOpener: the first post saved as a draft, opened again
     expect(composerOpens()).toHaveLength(1);
   });
 
+  it('BAR1 a handoff (a new post) is asked to be scheduled, as a DRAFT is', async () => {
+    renderOpener(`/launches?handoff=${newId()}&return=first-post`);
+    await waitFor(() => expect(composerOpens()).toHaveLength(1));
+    expect(
+      screen.getByTestId('content-studio-handoff-finish').textContent
+    ).toBe(
+      'Schedule it here to finish your first post. Save for later keeps it as a draft.'
+    );
+  });
+
+  it('BAR2 like the clone after review 06: the first post already scheduled (QUEUE) for 5 January 2027 is never asked to be scheduled again', async () => {
+    const group = 'a5b2d54d-54a8-463e-8e85-7fcffd560181';
+    groupReply = (g) => {
+      const body = groupBody(g);
+      return reply(200, {
+        ...body,
+        posts: [
+          {
+            ...body.posts[0],
+            state: 'QUEUE',
+            publishDate: '2027-01-05T07:20:00.000Z',
+          },
+        ],
+      });
+    };
+    renderPostOpener(`/launches?post=${group}&return=first-post`);
+    await waitFor(() => expect(composerOpens()).toHaveLength(1));
+    const finish = screen.getByTestId('content-studio-handoff-finish');
+    expect(finish.textContent).toBe(
+      'Your first post is already scheduled. Update saves your changes to it; Save for later turns it back into a draft.'
+    );
+    expect(finish.textContent).not.toMatch(/Schedule it here/);
+    expect(lastComposerProps().date.toISOString()).toBe(
+      '2027-01-05T07:20:00.000Z'
+    );
+    // opening it sends nothing
+    expect(mockFetch.mock.calls.filter(([, init]) => init?.method)).toEqual([]);
+  });
+
+  it('BAR3 a published first post is not asked to be scheduled', async () => {
+    groupReply = (g) => {
+      const body = groupBody(g);
+      return reply(200, {
+        ...body,
+        posts: [{ ...body.posts[0], state: 'PUBLISHED' }],
+      });
+    };
+    renderPostOpener(`/launches?post=${SAVED_GROUP}&return=first-post`);
+    await waitFor(() => expect(composerOpens()).toHaveLength(1));
+    expect(
+      screen.getByTestId('content-studio-handoff-finish').textContent
+    ).toBe(
+      'Your first post is already published. There is nothing left to schedule.'
+    );
+  });
+
+  it('BAR4 a post that failed (ERROR) still has to be scheduled: the first-post wording stays', async () => {
+    groupReply = (g) => {
+      const body = groupBody(g);
+      return reply(200, {
+        ...body,
+        posts: [{ ...body.posts[0], state: 'ERROR' }],
+      });
+    };
+    renderPostOpener(`/launches?post=${SAVED_GROUP}&return=first-post`);
+    await waitFor(() => expect(composerOpens()).toHaveLength(1));
+    expect(
+      screen.getByTestId('content-studio-handoff-finish').textContent
+    ).toBe(
+      'Schedule it here to finish your first post. Save for later keeps it as a draft.'
+    );
+  });
+
+  it('GROUP1 an old group (the composer gave the post a new one when it was scheduled) opens nothing and goes back to the first post page', async () => {
+    groupReply = (g) => reply(200, { group: g, posts: [] });
+    renderPostOpener(`/launches?post=${SAVED_GROUP}&return=first-post`);
+    await flush();
+    expect(composerOpens()).toEqual([]);
+    expect(toasts()).toEqual(['Post not found']);
+    expect(mockRouter.push).toHaveBeenCalledWith('/content-studio/first-post');
+    expect(mockFetch.mock.calls.filter(([, init]) => init?.method)).toEqual([]);
+  });
+
   it('a group that is no group is never sent to the backend', async () => {
     renderPostOpener(
       `/launches?post=${encodeURIComponent('../posts/x?y')}&return=first-post`
