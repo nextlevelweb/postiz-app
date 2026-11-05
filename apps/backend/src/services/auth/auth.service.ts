@@ -152,7 +152,13 @@ export class AuthService {
 
     try {
       const getOrg: any = AuthChecker.verifyJWT(cookie);
-      if (dayjs(getOrg.timeLimit).isBefore(dayjs())) {
+      if (
+        typeof getOrg.orgId !== 'string' ||
+        typeof getOrg.id !== 'string' ||
+        !['USER', 'ADMIN'].includes(getOrg.role) ||
+        !getOrg.timeLimit ||
+        dayjs(getOrg.timeLimit).isBefore(dayjs())
+      ) {
         return false;
       }
 
@@ -278,7 +284,7 @@ export class AuthService {
       id: string;
       expires: string;
     };
-    if (dayjs(user.expires).isBefore(dayjs())) {
+    if (typeof user.id !== 'string' || dayjs(user.expires).isBefore(dayjs())) {
       return false;
     }
 
