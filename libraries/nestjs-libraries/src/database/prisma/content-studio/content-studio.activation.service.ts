@@ -249,7 +249,15 @@ export class ContentStudioActivationService {
     const existing = research?.packageId
       ? await this._contentStudioService
           .getPackage(input.organizationId, research.packageId)
-          .catch(() => null)
+          .catch((err) => {
+            // only a package that is gone starts again. Anything else (the
+            // database, a stored draft that no longer reads) is said, never
+            // turned into a second package and paid research
+            if (err instanceof HttpException && err.getStatus() === 404) {
+              return null;
+            }
+            throw err;
+          })
       : null;
     const usable = existing && !existing.archivedAt ? existing : null;
 
@@ -367,22 +375,24 @@ export class ContentStudioActivationService {
         organizationId,
         packageId
       );
-    const states = handoff
-      ? await this._contentStudioActivationRepository.listPostStatesSince(
-          organizationId,
-          handoff.createdAt
-        )
-      : [];
-    const scheduled = states.some((post) => post.state === 'QUEUE');
-    const published = states.some((post) => post.state === 'PUBLISHED');
-    // scheduled and not published yet: when it goes out, said on the success
-    const scheduledFor =
-      handoff && scheduled && !published
-        ? await this._contentStudioActivationRepository.getFirstScheduledSince(
+    // one row at most for each: a post published, and the first one still
+    // scheduled (its date is said on the success)
+    const [publishedPost, scheduledPost] = handoff
+      ? await Promise.all([
+          this._contentStudioActivationRepository.getFirstPublishedSince(
             organizationId,
             handoff.createdAt
-          )
-        : null;
+          ),
+          this._contentStudioActivationRepository.getFirstScheduledSince(
+            organizationId,
+            handoff.createdAt
+          ),
+        ])
+      : [null, null];
+    const scheduled = !!scheduledPost;
+    const published = !!publishedPost;
+    // scheduled and not published yet: when it goes out, said on the success
+    const scheduledFor = scheduled && !published ? scheduledPost : null;
     // saved in the composer as a draft only: progress, not activation. Its
     // group opens the same post in the composer again
     const savedAsDraft =

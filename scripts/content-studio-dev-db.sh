@@ -179,5 +179,10 @@ if [ "$profile" = existing-data ]; then
   unset mirror
 fi
 
+# the backend's development-only exceptions (the LAN dev origins of
+# apps/backend/src/dev.frontend.origins.ts) need positive proof of
+# development; an unset NODE_ENV, as in the image, is not
+export NODE_ENV=development
+
 echo "content-studio-dev-db: profile $profile, database $DB_NAME on $DB_HOST:$DB_PORT, Secret Box configured (local key)$media" >&2
 exec "$@"
