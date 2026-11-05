@@ -917,7 +917,7 @@ describe('After the first post: the getting-started list on Home', () => {
     expect(link('Create a visual in Creative Studio')).toBe(
       '/content-studio/designs'
     );
-    expect(link('Decide who approves posts')).toBe(
+    expect(link('Decide whether posts need approval')).toBe(
       '/content-studio/intelligence?tab=editorial'
     );
     // done from the organization's data, nothing ticked by hand
@@ -1020,7 +1020,7 @@ describe('After the first post: approval is a decision either way', () => {
     expect(task('approval').getAttribute('data-done')).toBe('false');
     expect(
       within(task('approval')).getByRole('link', {
-        name: 'Decide who approves posts',
+        name: 'Decide whether posts need approval',
       })
     ).toBeTruthy();
     expect(
@@ -1028,6 +1028,221 @@ describe('After the first post: approval is a decision either way', () => {
         name: 'No approval needed',
       })
     ).toBeTruthy();
+  });
+});
+
+// Activation review 11 (iPhone Safari): the policy stores whether approval
+// is required, never who approves (every member may decide), so the task
+// promises that decision only, and leads to where it is made
+describe('After the first post: the approval task says what it decides', () => {
+  const task = () =>
+    document.querySelector('[data-task="approval"]') as HTMLElement;
+  beforeEach(() => {
+    window.localStorage.setItem(TOUR_KEY, '1');
+  });
+
+  it('APPROVAL-COPY1 asks whether posts need approval, never who approves, and opens the Editorial Policy', async () => {
+    await show(ContentStudioGetStarted);
+    const link = within(task()).getByRole('link', {
+      name: 'Decide whether posts need approval',
+    });
+    expect(link.getAttribute('href')).toBe(
+      '/content-studio/intelligence?tab=editorial'
+    );
+    expect(task().textContent).toContain(
+      'Choose whether a post must be approved before it goes to publishing (Require approval before handoff, under Editorial Policy), or confirm that no approval is needed.'
+    );
+    expect(task().textContent).not.toMatch(/who approves|approver/i);
+    expect(
+      within(task()).getByRole('button', { name: 'No approval needed' })
+    ).toBeTruthy();
+  });
+
+  it('APPROVAL-COPY2 the English translations match the text in the code', () => {
+    const en = JSON.parse(
+      require('fs').readFileSync(
+        require('path').join(
+          __dirname,
+          '../../../../../libraries/react-shared-libraries/src/translation/locales/en/translation.json'
+        ),
+        'utf8'
+      )
+    );
+    expect(en.content_studio_get_started_approval).toBe(
+      'Decide whether posts need approval'
+    );
+    expect(en.content_studio_get_started_approval_hint).toBe(
+      'Choose whether a post must be approved before it goes to publishing (Require approval before handoff, under Editorial Policy), or confirm that no approval is needed.'
+    );
+    // the setting the hint names, in the policy form
+    expect(
+      require('fs').readFileSync(
+        require('path').join(
+          __dirname,
+          'intelligence/content-studio.editorial-policy.tsx'
+        ),
+        'utf8'
+      )
+    ).toContain("'Require approval before handoff'");
+  });
+});
+
+// Activation review 11 (iPhone Safari): the steps scroll the navigation row
+// to their sections, so a tour ended on Home left the Home pill current but
+// off the screen. The row on a phone: 350px wide from x 20, six pills of
+// 90px every 100px (590px, so it scrolls up to 240px)
+describe('After the first post: the tour gives the navigation back', () => {
+  const SECTIONS = ['home', 'sources', 'radar', 'creative', 'reviews', 'brand'];
+  const fakeRow = (current: string | null) => {
+    const nav = document.createElement('nav');
+    let scroll = 0;
+    Object.defineProperty(nav, 'clientWidth', { value: 350 });
+    Object.defineProperty(nav, 'scrollLeft', {
+      configurable: true,
+      get: () => scroll,
+      set: (value: number) => {
+        scroll = Math.min(Math.max(0, value), 240);
+      },
+    });
+    nav.getBoundingClientRect = () =>
+      ({ top: 20, left: 20, width: 350, height: 44 } as DOMRect);
+    SECTIONS.forEach((section, index) => {
+      const pill = document.createElement('a');
+      pill.dataset.csSection = section;
+      if (section === current) {
+        pill.setAttribute('aria-current', 'page');
+      }
+      pill.getBoundingClientRect = () =>
+        ({
+          top: 20,
+          left: 20 + index * 100 - scroll,
+          width: 90,
+          height: 40,
+        } as DOMRect);
+      // what the browser does for the step: the pill to the middle
+      pill.scrollIntoView = () => {
+        nav.scrollLeft = index * 100 - (350 - 90) / 2;
+      };
+      nav.appendChild(pill);
+    });
+    document.body.appendChild(nav);
+    return nav;
+  };
+  const homeInView = () => {
+    const left = (
+      document.querySelector('[data-cs-section="home"]') as HTMLElement
+    ).getBoundingClientRect().left;
+    return left >= 20 && left + 90 <= 370;
+  };
+  const toLastStep = () => {
+    for (let step = 1; step < CONTENT_STUDIO_TOUR.length; step++) {
+      fireEvent.click(within(card()).getByRole('button', { name: 'Next' }));
+    }
+    expect(title()).toBe('Approvals');
+  };
+  let row: HTMLElement;
+  afterEach(() => row?.remove());
+
+  it('NAV-TOUR1 Done on Home: the tour scrolled to Approvals, and Home comes back into view, current', async () => {
+    window.localStorage.setItem(TOUR_KEY, '1');
+    row = fakeRow('home');
+    await show(ContentStudioGetStarted);
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Take the tour again' })
+    );
+    toLastStep();
+    expect(row.scrollLeft).toBe(240);
+    expect(homeInView()).toBe(false);
+    fireEvent.click(within(card()).getByRole('button', { name: 'Done' }));
+    await flush();
+    expect(screen.queryByTestId('tour-card')).toBeNull();
+    expect(row.scrollLeft).toBe(0);
+    expect(homeInView()).toBe(true);
+  });
+
+  it('NAV-TOUR2 Skip tour, or Escape, halfway: Home comes back into view too', async () => {
+    window.localStorage.setItem(TOUR_KEY, '1');
+    row = fakeRow('home');
+    await show(ContentStudioGetStarted);
+    for (const close of [
+      () =>
+        fireEvent.click(
+          within(card()).getByRole('button', { name: 'Skip tour' })
+        ),
+      () => fireEvent.keyDown(document, { key: 'Escape' }),
+    ]) {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Take the tour again' })
+      );
+      fireEvent.click(within(card()).getByRole('button', { name: 'Next' }));
+      fireEvent.click(within(card()).getByRole('button', { name: 'Next' }));
+      fireEvent.click(within(card()).getByRole('button', { name: 'Next' }));
+      expect(title()).toBe('Creative Studio');
+      expect(homeInView()).toBe(false);
+      close();
+      await flush();
+      expect(screen.queryByTestId('tour-card')).toBeNull();
+      expect(row.scrollLeft).toBe(0);
+    }
+  });
+
+  it('NAV-TOUR3 on the first post page (no current section) the row is left alone, and Done still goes to Home', async () => {
+    row = fakeRow(null);
+    await show(ContentStudioFirstPostPage);
+    toLastStep();
+    fireEvent.click(within(card()).getByRole('button', { name: 'Done' }));
+    await flush();
+    expect(row.scrollLeft).toBe(240);
+    expect(mockRouter.push).toHaveBeenCalledWith('/content-studio');
+  });
+});
+
+// Activation review 11: a calm pulse around the highlighted section, on a
+// pseudo-element of the highlight only, and none without motion
+describe('After the first post: the tour highlight', () => {
+  const css = () =>
+    require('fs').readFileSync(
+      require('path').join(__dirname, '../../app/global.scss'),
+      'utf8'
+    ) as string;
+
+  it('TOURPULSE1 the highlight keeps its ring and carries the pulse class', async () => {
+    const row = document.createElement('a');
+    row.dataset.csSection = 'radar';
+    row.getBoundingClientRect = () =>
+      ({ top: 20, left: 20, width: 90, height: 40 } as DOMRect);
+    document.body.appendChild(row);
+    try {
+      await show(ContentStudioFirstPostPage);
+      const highlight = screen.getByTestId('tour-highlight');
+      expect(highlight.className).toContain('content-studio-tour-highlight');
+      expect(highlight.className).toContain('ring-2');
+      expect(highlight.getAttribute('aria-hidden')).toBe('true');
+      expect(highlight.className).toContain('pointer-events-none');
+    } finally {
+      row.remove();
+    }
+  });
+
+  it('TOURPULSE2-TOURPULSE5 only a shadow and its opacity move, on the pseudo-element, and only where motion is allowed', () => {
+    const all = css();
+    const start = all.indexOf('@keyframes content-studio-tour-pulse');
+    const media = all.indexOf(
+      '@media (prefers-reduced-motion: no-preference)',
+      start
+    );
+    const keyframes = all.slice(start, media);
+    expect(keyframes).toContain('box-shadow');
+    expect(keyframes).not.toMatch(
+      /transform|width|height|top|left|margin|padding|inset/
+    );
+    const rule = all.slice(media);
+    expect(rule).toMatch(
+      /^@media \(prefers-reduced-motion: no-preference\) \{\s*\.content-studio-tour-highlight::after \{/
+    );
+    expect(rule).toContain('animation: content-studio-tour-pulse 2.4s');
+    // the animation is nowhere else, so reduced motion keeps the ring still
+    expect(all.match(/content-studio-tour-pulse/g)).toHaveLength(2);
   });
 });
 

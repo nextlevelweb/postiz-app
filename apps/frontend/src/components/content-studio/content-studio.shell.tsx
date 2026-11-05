@@ -125,11 +125,33 @@ export const ContentStudioDocumentClass: FC = () => {
   return null;
 };
 
+// Brings the current section to the middle of its navigation row, at once:
+// only the row scrolls sideways, never the page. Measured on the screen, so
+// it holds whatever the row's offset parent or text direction. Nothing
+// happens on a page of no section or a row that does not scroll
+export const showCurrentContentStudioSection = (
+  root: ParentNode = document
+) => {
+  const current = root.querySelector<HTMLElement>(
+    '[data-cs-section][aria-current="page"]'
+  );
+  const row = current?.closest('nav');
+  if (!current || !row) {
+    return;
+  }
+  const pill = current.getBoundingClientRect();
+  row.scrollLeft +=
+    pill.left -
+    row.getBoundingClientRect().left -
+    (row.clientWidth - pill.width) / 2;
+};
+
 // The local navigation of every Content Studio list page, in the pattern of
 // the Settings tabs: one row of pills that scrolls sideways (swipe on a
 // phone) instead of wrapping, the current section filled with the brand
 // colour. Only the row scrolls, never the page, and the current section is
-// scrolled into view
+// scrolled into view when it changes (the tour does it again when it
+// closes); a row scrolled by hand stays where it was left
 export const ContentStudioNav: FC = () => {
   const t = useT();
   const pathname = usePathname() || CONTENT_STUDIO_HOME_PATH;
@@ -137,13 +159,8 @@ export const ContentStudioNav: FC = () => {
   const labels = useContentStudioSectionLabels();
   const row = useRef<HTMLElement>(null);
   useEffect(() => {
-    const nav = row.current;
-    const current = nav?.querySelector<HTMLElement>('[aria-current="page"]');
-    if (nav && current) {
-      nav.scrollLeft = Math.max(
-        0,
-        current.offsetLeft - (nav.clientWidth - current.offsetWidth) / 2
-      );
+    if (row.current) {
+      showCurrentContentStudioSection(row.current);
     }
   }, [active]);
   return (

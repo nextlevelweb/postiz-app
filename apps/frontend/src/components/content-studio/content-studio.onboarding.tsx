@@ -26,7 +26,10 @@ import {
   firstPostDraftPath,
   useContentStudioFirstPost,
 } from '@gitroom/frontend/components/content-studio/content-studio.first-post';
-import { CONTENT_STUDIO_HOME_PATH } from '@gitroom/frontend/components/content-studio/content-studio.shell';
+import {
+  CONTENT_STUDIO_HOME_PATH,
+  showCurrentContentStudioSection,
+} from '@gitroom/frontend/components/content-studio/content-studio.shell';
 
 // After the first post (activation flow 01): a short tour of Content Studio,
 // once, starting with the research the user just used, then a checklist of
@@ -405,6 +408,10 @@ export const ContentStudioTour: FC<{
     card.current?.focus();
   }, [section, measure]);
 
+  // the steps scroll the navigation to their sections; once the tour is
+  // gone it shows the page's own section again, wherever the tour ended
+  useEffect(() => () => showCurrentContentStudioSection(), []);
+
   useEffect(() => {
     window.addEventListener('resize', measure);
     window.addEventListener('scroll', measure, true);
@@ -428,7 +435,7 @@ export const ContentStudioTour: FC<{
         <div
           aria-hidden="true"
           data-testid="tour-highlight"
-          className="fixed z-[200] pointer-events-none rounded-[8px] ring-2 ring-[var(--brand-primary,#612ad5)] ring-offset-2"
+          className="content-studio-tour-highlight fixed z-[200] pointer-events-none rounded-[8px] ring-2 ring-[var(--brand-primary,#612ad5)] ring-offset-2"
           style={{
             top: placement.target.top,
             left: placement.target.left,
@@ -650,11 +657,11 @@ export const useContentStudioGetStartedTasks = () => {
       key: 'approval',
       label: t(
         'content_studio_get_started_approval',
-        'Decide who approves posts'
+        'Decide whether posts need approval'
       ),
       hint: t(
         'content_studio_get_started_approval_hint',
-        'Either is a decision: require approval before a post goes to publishing (under Editorial Policy), or say no approval is needed.'
+        'Choose whether a post must be approved before it goes to publishing (Require approval before handoff, under Editorial Policy), or confirm that no approval is needed.'
       ),
       href: '/content-studio/intelligence?tab=editorial',
       // approval switched on, or no approval needed on purpose

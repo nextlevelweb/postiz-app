@@ -329,6 +329,115 @@ describe('Dialogs and navigation', () => {
     ).toEqual([links[3]]);
   });
 
+  // Activation review 11 (iPhone Safari): the row of pills scrolls
+  // sideways, and a section reached while the row was scrolled elsewhere was
+  // current but off the screen. The row on a phone: 350px wide from x 20,
+  // six pills of 90px every 100px (590px, so it scrolls up to 240px)
+  describe('NAVVIS the current section is brought into view', () => {
+    const stubRow = (nav: HTMLElement, clientWidth: number) => {
+      let scroll = 0;
+      Object.defineProperty(nav, 'clientWidth', { value: clientWidth });
+      Object.defineProperty(nav, 'scrollLeft', {
+        configurable: true,
+        get: () => scroll,
+        set: (value: number) => {
+          scroll = Math.min(Math.max(0, value), Math.max(0, 590 - clientWidth));
+        },
+      });
+      nav.getBoundingClientRect = () =>
+        ({ top: 20, left: 20, width: clientWidth, height: 44 } as DOMRect);
+      Array.from(nav.children).forEach((pill, index) => {
+        (pill as HTMLElement).getBoundingClientRect = () =>
+          ({
+            top: 20,
+            left: 20 + index * 100 - scroll,
+            width: 90,
+            height: 40,
+          } as DOMRect);
+      });
+    };
+    const row = () =>
+      screen.getByRole('navigation', { name: 'Content Studio' });
+    const left = (section: string) =>
+      (
+        document.querySelector(`[data-cs-section="${section}"]`) as HTMLElement
+      ).getBoundingClientRect().left;
+    const inView = (section: string) =>
+      left(section) >= 20 && left(section) + 90 <= 20 + 350;
+    let pageScroll: jest.SpyInstance;
+    beforeEach(() => {
+      pageScroll = jest.spyOn(window, 'scrollTo').mockImplementation(() => {});
+    });
+    afterEach(() => pageScroll.mockRestore());
+
+    it('NAVVIS1 back on Home with the row scrolled to the end: Home is in view and current', () => {
+      mockPathname = '/content-studio/reviews';
+      const view = render(h(ContentStudioNav));
+      stubRow(row(), 350);
+      row().scrollLeft = 240;
+      expect(inView('home')).toBe(false);
+      mockPathname = '/content-studio';
+      view.rerender(h(ContentStudioNav));
+      expect(row().scrollLeft).toBe(0);
+      expect(inView('home')).toBe(true);
+      expect(
+        document
+          .querySelector('[data-cs-section="home"]')
+          ?.getAttribute('aria-current')
+      ).toBe('page');
+    });
+
+    it('NAVVIS2 Radar from Home with the row scrolled by hand to the end: Radar is in the middle of the row', () => {
+      const view = render(h(ContentStudioNav));
+      stubRow(row(), 350);
+      row().scrollLeft = 240;
+      mockPathname = '/content-studio/research';
+      view.rerender(h(ContentStudioNav));
+      // 200 - (350 - 90) / 2
+      expect(row().scrollLeft).toBe(70);
+      expect(inView('radar')).toBe(true);
+    });
+
+    it('NAVVIS3 a wide screen where every pill fits: the row never scrolls', () => {
+      mockPathname = '/content-studio/reviews';
+      const view = render(h(ContentStudioNav));
+      stubRow(row(), 1000);
+      mockPathname = '/content-studio/intelligence';
+      view.rerender(h(ContentStudioNav));
+      expect(row().scrollLeft).toBe(0);
+    });
+
+    it('NAVVIS4 only the row moves: the page is never scrolled, nothing is scrolled into view', () => {
+      const into = jest.fn();
+      (HTMLElement.prototype as any).scrollIntoView = into;
+      try {
+        mockPathname = '/content-studio/reviews';
+        const view = render(h(ContentStudioNav));
+        stubRow(row(), 350);
+        mockPathname = '/content-studio/sources';
+        view.rerender(h(ContentStudioNav));
+        expect(row().scrollLeft).toBe(0);
+        expect(into).not.toHaveBeenCalled();
+        expect(pageScroll).not.toHaveBeenCalled();
+      } finally {
+        delete (HTMLElement.prototype as any).scrollIntoView;
+      }
+    });
+
+    it('NAVVIS6 a row scrolled by hand stays where it was left while the section is the same', () => {
+      mockPathname = '/content-studio/reviews';
+      const view = render(h(ContentStudioNav));
+      stubRow(row(), 350);
+      row().scrollLeft = 12;
+      view.rerender(h(ContentStudioNav));
+      expect(row().scrollLeft).toBe(12);
+      // another page of the same section
+      mockPathname = '/content-studio/reviews/abc';
+      view.rerender(h(ContentStudioNav));
+      expect(row().scrollLeft).toBe(12);
+    });
+  });
+
   it('N6 breadcrumbs name every parent and the page itself', () => {
     render(
       h(ContentStudioBreadcrumbs, {

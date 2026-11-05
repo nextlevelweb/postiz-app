@@ -845,3 +845,28 @@ html.content-studio-open {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }
+
+/* Content Studio tour: a calm pulse around the highlighted section, so it is
+   clear what the step is about. Only a shadow of the highlight's own
+   pseudo-element grows and fades: the section, the highlight and the card
+   never move. Without motion (prefers-reduced-motion) the ring stays still */
+@keyframes content-studio-tour-pulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--brand-primary, #612ad5);
+    opacity: 0.5;
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 8px var(--brand-primary, #612ad5);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .content-studio-tour-highlight::after {
+    content: '';
+    position: absolute;
+    inset: -4px;
+    border-radius: 12px;
+    animation: content-studio-tour-pulse 2.4s ease-out infinite;
+  }
+}
