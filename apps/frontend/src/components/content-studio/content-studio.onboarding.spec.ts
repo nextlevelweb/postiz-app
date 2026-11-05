@@ -1140,27 +1140,98 @@ describe('After the first post: the tour gives the navigation back', () => {
     }
     expect(title()).toBe('Approvals');
   };
+  // the frames by hand: what the tour asks for when it closes happens only
+  // when the browser draws the next frames, and nothing before
+  let frames = new Map<number, FrameRequestCallback>();
+  let lastFrame = 0;
+  const nextFrame = () =>
+    act(() => {
+      const due = [...frames.values()];
+      frames = new Map();
+      due.forEach((callback) => callback(0));
+    });
   let row: HTMLElement;
-  afterEach(() => row?.remove());
+  let pageScroll: jest.SpyInstance;
+  let pillScroll: number;
+  beforeEach(() => {
+    frames = new Map();
+    jest
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((callback) => {
+        frames.set(++lastFrame, callback);
+        return lastFrame;
+      });
+    jest
+      .spyOn(window, 'cancelAnimationFrame')
+      .mockImplementation((frame) => frames.delete(frame));
+    pageScroll = jest.spyOn(window, 'scrollTo').mockImplementation(() => {
+      // the page itself never scrolls
+    });
+  });
+  afterEach(() => {
+    row?.remove();
+    jest.restoreAllMocks();
+  });
+  const countPillScrolls = (nav: HTMLElement) => {
+    pillScroll = 0;
+    nav.querySelectorAll<HTMLElement>('[data-cs-section]').forEach((pill) => {
+      const scroll = pill.scrollIntoView;
+      pill.scrollIntoView = (...args) => {
+        pillScroll++;
+        scroll.apply(pill, args);
+      };
+    });
+  };
+  // after the tour is gone: the row is still where the last step left it in
+  // the update that removed the tour and in the frame that draws that, and
+  // the page's own section is shown in the frame after, by the row alone
+  const homeComesBackAfterTheTour = async () => {
+    await flush();
+    expect(screen.queryByTestId('tour-card')).toBeNull();
+    expect(screen.queryByTestId('tour-highlight')).toBeNull();
+    expect(row.scrollLeft).toBe(240);
+    countPillScrolls(row);
+    await nextFrame();
+    expect(row.scrollLeft).toBe(240);
+    await nextFrame();
+    expect(row.scrollLeft).toBe(0);
+    expect(homeInView()).toBe(true);
+    expect(
+      document
+        .querySelector('[data-cs-section="home"]')
+        ?.getAttribute('aria-current')
+    ).toBe('page');
+    expect(pillScroll).toBe(0);
+    expect(pageScroll).not.toHaveBeenCalled();
+    // swiped by hand afterwards: the row stays where it is left
+    row.scrollLeft = 150;
+    for (let i = 0; i < 5; i++) {
+      await nextFrame();
+    }
+    expect(row.scrollLeft).toBe(150);
+    // nothing keeps running: no frame asks for the row again
+    expect(frames.size).toBe(0);
+  };
 
-  it('NAV-TOUR1 Done on Home: the tour scrolled to Approvals, and Home comes back into view, current', async () => {
+  it('NAV-TOUR1/SAFARI-NAV1/SAFARI-NAV10 Done on Home, the route unchanged: Home comes back into view in the frame after the tour is gone', async () => {
     window.localStorage.setItem(TOUR_KEY, '1');
     row = fakeRow('home');
+    // swiped to the far right by hand before the tour
+    row.scrollLeft = 240;
     await show(ContentStudioGetStarted);
     fireEvent.click(
       screen.getByRole('button', { name: 'Take the tour again' })
     );
+    await nextFrame();
     toLastStep();
     expect(row.scrollLeft).toBe(240);
     expect(homeInView()).toBe(false);
     fireEvent.click(within(card()).getByRole('button', { name: 'Done' }));
-    await flush();
-    expect(screen.queryByTestId('tour-card')).toBeNull();
-    expect(row.scrollLeft).toBe(0);
-    expect(homeInView()).toBe(true);
+    await homeComesBackAfterTheTour();
+    expect(window.localStorage.getItem(TOUR_KEY)).toBe('completed');
   });
 
-  it('NAV-TOUR2 Skip tour, or Escape, halfway: Home comes back into view too', async () => {
+  it('NAV-TOUR2/SAFARI-NAV2/SAFARI-NAV3 Skip tour, or Escape, halfway: Home comes back into view the same way', async () => {
     window.localStorage.setItem(TOUR_KEY, '1');
     row = fakeRow('home');
     await show(ContentStudioGetStarted);
@@ -1178,11 +1249,12 @@ describe('After the first post: the tour gives the navigation back', () => {
       fireEvent.click(within(card()).getByRole('button', { name: 'Next' }));
       fireEvent.click(within(card()).getByRole('button', { name: 'Next' }));
       expect(title()).toBe('Creative Studio');
+      // the row swiped on to its far end by hand during the step
+      row.scrollLeft = 240;
       expect(homeInView()).toBe(false);
       close();
-      await flush();
-      expect(screen.queryByTestId('tour-card')).toBeNull();
-      expect(row.scrollLeft).toBe(0);
+      await homeComesBackAfterTheTour();
+      expect(window.localStorage.getItem(TOUR_KEY)).toBe('skipped');
     }
   });
 
@@ -1192,6 +1264,9 @@ describe('After the first post: the tour gives the navigation back', () => {
     toLastStep();
     fireEvent.click(within(card()).getByRole('button', { name: 'Done' }));
     await flush();
+    for (let i = 0; i < 3; i++) {
+      await nextFrame();
+    }
     expect(row.scrollLeft).toBe(240);
     expect(mockRouter.push).toHaveBeenCalledWith('/content-studio');
   });

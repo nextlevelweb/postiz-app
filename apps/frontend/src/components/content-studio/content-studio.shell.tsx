@@ -150,8 +150,8 @@ export const showCurrentContentStudioSection = (
 // the Settings tabs: one row of pills that scrolls sideways (swipe on a
 // phone) instead of wrapping, the current section filled with the brand
 // colour. Only the row scrolls, never the page, and the current section is
-// scrolled into view when it changes (the tour does it again when it
-// closes); a row scrolled by hand stays where it was left
+// scrolled into view when it changes (the tour does it again once it
+// has closed); a row scrolled by hand stays where it was left
 export const ContentStudioNav: FC = () => {
   const t = useT();
   const pathname = usePathname() || CONTENT_STUDIO_HOME_PATH;

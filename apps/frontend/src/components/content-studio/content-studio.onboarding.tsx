@@ -408,9 +408,20 @@ export const ContentStudioTour: FC<{
     card.current?.focus();
   }, [section, measure]);
 
-  // the steps scroll the navigation to their sections; once the tour is
-  // gone it shows the page's own section again, wherever the tour ended
-  useEffect(() => () => showCurrentContentStudioSection(), []);
+  // The steps scroll the navigation to their sections; once the tour is gone
+  // it shows the page's own section again, wherever the tour ended. Not in
+  // the update that takes the tour away but in the frame after it is off the
+  // screen: Safari on iOS scrolls the row apart from the page, and a scroll
+  // asked for while the highlight and the card above the row are being
+  // removed can be lost there, leaving the row where the last step left it
+  useEffect(
+    () => () => {
+      window.requestAnimationFrame(() =>
+        window.requestAnimationFrame(() => showCurrentContentStudioSection())
+      );
+    },
+    []
+  );
 
   useEffect(() => {
     window.addEventListener('resize', measure);
