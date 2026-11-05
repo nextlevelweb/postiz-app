@@ -1,4 +1,5 @@
 import sharp from 'sharp';
+import type { OutputInfo } from 'sharp';
 import { layoutContentStudioDesign } from '@gitroom/nestjs-libraries/content-studio/design/layout/design.layout';
 import {
   ContentStudioDesignLayoutError,
@@ -54,7 +55,7 @@ export async function rasterizeContentStudioDesignSvg(
   width: number,
   height: number
 ): Promise<Buffer> {
-  let output: { data: Buffer; info: sharp.OutputInfo };
+  let output: { data: Buffer; info: OutputInfo };
   try {
     output = await sharp(Buffer.from(svg, 'utf8'), {
       density: 72,

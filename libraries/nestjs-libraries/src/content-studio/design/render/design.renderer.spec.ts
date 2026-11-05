@@ -32,7 +32,7 @@ import {
 // dependency, 16.3.1; SIL Open Font License 1.1), read at test time and
 // never copied: see design.render.fonts.spec.ts. Test images are made with
 // Sharp at test time. Pixel values and the two pinned hashes hold for the
-// installed Sharp 0.33.5 / libvips 8.15.3 / librsvg 2.58.93 and fontkit 1.9.0
+// installed Sharp 0.35.5 / libvips 8.18.7 / librsvg 2.63.2 and fontkit 1.9.0
 const GEIST = fs.readFileSync(
   path.join(
     path.dirname(require.resolve('next/package.json')),
@@ -317,9 +317,12 @@ const pixelsOf = async (png: Buffer) => {
   const { data, info } = await sharp(png)
     .raw()
     .toBuffer({ resolveWithObject: true });
+  // sharp types data as Buffer<ArrayBuffer>, which @types/node 18 does not
+  // declare, so name the Buffer the pixels are read from
+  const pixels: Buffer = data;
   return (x: number, y: number) =>
     Array.from(
-      data.subarray(
+      pixels.subarray(
         (y * info.width + x) * info.channels,
         (y * info.width + x + 1) * info.channels
       )
@@ -1915,7 +1918,7 @@ describe('design renderer: representative page', () => {
 const GOLDEN_SVG_SHA256 =
   '03a765441d41ddf89f369ae870f2a9d517191a68c9b263f95974864ddbefa88f';
 const GOLDEN_PNG_SHA256 =
-  '35627d7750f3aebbedf672d07eb9b99965cf014c808589742e0fde4da7636992';
+  '1267575fc0410398c469ffbcc859f5a7e2904d7b86d5572717960c5d266069c9';
 
 // ---------------------------------------------------------------------------
 // Boundaries
@@ -2098,7 +2101,7 @@ describe('design renderer: boundaries', () => {
   it('pins fontkit as a direct dependency', () => {
     const manifest = JSON.parse(read(path.join(ROOT_DIR, 'package.json')));
     expect(manifest.dependencies.fontkit).toBe('1.9.0');
-    expect(manifest.dependencies.sharp).toBe('^0.33.4');
+    expect(manifest.dependencies.sharp).toBe('^0.35.5');
   });
 });
 

@@ -1,4 +1,5 @@
 import sharp from 'sharp';
+import type { OutputInfo } from 'sharp';
 import {
   DESIGN_LAYOUT_IMAGE_PIXELS_MAX,
   DESIGN_LAYOUT_IMAGE_SIZE_MAX,
@@ -95,7 +96,7 @@ export function contentStudioDesignRenderImages(
     ) {
       throw new ContentStudioDesignRenderError('IMAGE_ASSET_UNSUPPORTED');
     }
-    let normalized: { data: Buffer; info: sharp.OutputInfo };
+    let normalized: { data: Buffer; info: OutputInfo };
     try {
       normalized = await sharp(bytes)
         .rotate()
