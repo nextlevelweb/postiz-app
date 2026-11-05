@@ -191,3 +191,57 @@ describe('isSafePublicHttpsUrl (literal hosts only, no DNS)', () => {
     await expect(isSafePublicHttpsUrl(url)).resolves.toBe(true);
   });
 });
+
+// Upstream 5f18f1ca (v2.25.2) rewrote the classification with net.BlockList.
+// This base keeps its own classifier, which blocks a superset: every address
+// in the first table is blocked by upstream's v2.25.3 code, and the public
+// addresses in the second table are allowed by both
+describe('parity with upstream v2.25.3', () => {
+  it.each([
+    ['0.0.0.1'],
+    ['10.1.2.3'],
+    ['127.0.0.1'],
+    ['169.254.169.254'],
+    ['172.16.0.1'],
+    ['172.31.255.255'],
+    ['192.168.1.1'],
+    ['100.64.0.1'],
+    ['198.18.0.1'],
+    ['198.19.255.255'],
+    ['224.0.0.1'],
+    ['239.255.255.255'],
+    ['240.0.0.1'],
+    ['255.255.255.255'],
+    ['::'],
+    ['::1'],
+    ['::ffff:127.0.0.1'],
+    ['::ffff:7f00:1'],
+    ['::ffff:a9fe:a9fe'],
+    ['::127.0.0.1'],
+    ['::7f00:1'],
+    ['64:ff9b::7f00:1'],
+    ['64:ff9b::a00:1'],
+    ['64:ff9b::c0a8:101'],
+    ['2002:7f00:1::'],
+    ['2002:a9fe:a9fe::1'],
+    ['2002:c0a8:101::'],
+    ['fe80::1'],
+    ['febf::1'],
+    ['fec0::1'],
+    ['fc00::1'],
+    ['fdff::1'],
+    ['ff02::1'],
+  ])('blocks %s like upstream', (ip) => {
+    expect(isBlockedIp(ip)).toBe(true);
+  });
+
+  it.each([
+    ['8.8.8.8'],
+    ['1.1.1.1'],
+    ['2606:4700:4700::1111'],
+    ['64:ff9b::808:808'],
+    ['2002:808:808::'],
+  ])('allows public %s like upstream', (ip) => {
+    expect(isBlockedIp(ip)).toBe(false);
+  });
+});
