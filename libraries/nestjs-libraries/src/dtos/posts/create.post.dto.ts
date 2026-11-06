@@ -90,10 +90,16 @@ class Tags {
   label: string;
 }
 
+// What happens to a post: 'draft' saves it and never publishes it,
+// 'schedule' publishes it at `date`, 'now' publishes it at once and 'update'
+// edits existing posts without starting a publish workflow
+export const POST_TYPES = ['draft', 'schedule', 'now', 'update'] as const;
+export type PostType = (typeof POST_TYPES)[number];
+
 export class CreatePostDto {
   @IsDefined()
-  @IsIn(['draft', 'schedule', 'now', 'update'])
-  type: 'draft' | 'schedule' | 'now' | 'update';
+  @IsIn(POST_TYPES as unknown as string[])
+  type: PostType;
 
   @IsOptional()
   @IsString()

@@ -5,7 +5,11 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { PostsRepository } from '@gitroom/nestjs-libraries/database/prisma/posts/posts.repository';
-import { CreatePostDto } from '@gitroom/nestjs-libraries/dtos/posts/create.post.dto';
+import {
+  CreatePostDto,
+  POST_TYPES,
+  PostType,
+} from '@gitroom/nestjs-libraries/dtos/posts/create.post.dto';
 import dayjs from 'dayjs';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
 import {
@@ -283,6 +287,34 @@ export class PostsService {
     return {
       clicks: shortLinksTracking,
     };
+  }
+
+  // The public API's post type (Review 20): one of POST_TYPES exactly as
+  // sent, or a draft when it is left out, so a post is only published when
+  // that was asked for. Anything else is refused before anything is read
+  publicPostType(type: unknown): PostType {
+    if (type === undefined || type === null) {
+      return 'draft';
+    }
+    if ((POST_TYPES as readonly unknown[]).includes(type)) {
+      return type as PostType;
+    }
+    throw new BadRequestException(
+      `type must be one of: ${POST_TYPES.join(', ')}`
+    );
+  }
+
+  // A public post scheduled for a moment already gone would be published at
+  // once: that takes type 'now'. A minute of clock difference is allowed
+  assertPublicPublishDate(body: Pick<CreatePostDto, 'type' | 'date'>) {
+    if (
+      body.type === 'schedule' &&
+      dayjs.utc(body.date).isBefore(dayjs.utc().subtract(1, 'minute'))
+    ) {
+      throw new BadRequestException(
+        "date must be in the future for type 'schedule'; use type 'now' to publish at once"
+      );
+    }
   }
 
   async mapTypeToPost(

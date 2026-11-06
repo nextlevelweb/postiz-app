@@ -132,12 +132,13 @@ export class PublicIntegrationsController {
     @Body() rawBody: any
   ) {
     Sentry.metrics.count('public_api-request', 1);
-    const body = await this._postsService.mapTypeToPost(
-      rawBody,
-      org.id,
-      rawBody?.type === 'draft' || true
-    );
-    body.type = rawBody.type;
+    // explicit: draft (also when left out), schedule, now or update; any
+    // other value is a 400 and never publishes (Review 20)
+    const type = this._postsService.publicPostType(rawBody?.type);
+    // every post is checked with the settings of a scheduled one, drafts too
+    const body = await this._postsService.mapTypeToPost(rawBody, org.id, true);
+    body.type = type;
+    this._postsService.assertPublicPublishDate(body);
 
     if (
       process.env.RESTRICT_UPLOAD_DOMAINS &&
