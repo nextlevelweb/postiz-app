@@ -125,6 +125,11 @@ export const designAIErrorMessage = (t: Translate, error: unknown) => {
   const code =
     error instanceof ContentStudioRequestError ? error.code : undefined;
   switch (code) {
+    case 'CS_RATE_LIMITED':
+      return t(
+        'content_studio_rate_limited',
+        'Too many requests in a short time. Wait a few minutes and try again.'
+      );
     case 'CS_AI_DESIGN_BASE_STALE':
       return t(
         'content_studio_design_ai_error_stale',

@@ -2546,5 +2546,6 @@
   "content_studio_render_fonts": "Render fonts",
   "content_studio_approval_admin_only": "Only organization administrators decide on approval.",
   "content_studio_approval_not_own": "You requested this review, so another administrator approves it.",
-  "content_studio_policy_require_approval_admin": "Only organization administrators can change this."
+  "content_studio_policy_require_approval_admin": "Only organization administrators can change this.",
+  "content_studio_rate_limited": "Too many requests in a short time. Wait a few minutes and try again."
 }

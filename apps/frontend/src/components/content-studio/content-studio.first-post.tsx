@@ -279,6 +279,11 @@ type Translate = (
 
 export const firstPostErrorMessage = (t: Translate, code?: string) => {
   switch (code) {
+    case 'CS_RATE_LIMITED':
+      return t(
+        'content_studio_rate_limited',
+        'Too many requests in a short time. Wait a few minutes and try again.'
+      );
     case 'CS_AI_RATE_LIMITED':
       return t(
         'content_studio_first_post_error_rate',

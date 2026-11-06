@@ -467,6 +467,11 @@ const codeOf = (error: unknown) =>
 
 export const aiConnectionErrorMessage = (t: Translate, error: unknown) => {
   switch (codeOf(error)) {
+    case 'CS_RATE_LIMITED':
+      return t(
+        'content_studio_rate_limited',
+        'Too many requests in a short time. Wait a few minutes and try again.'
+      );
     case 'CS_AI_ADMIN_REQUIRED':
       return t(
         'content_studio_ai_error_admin_required',

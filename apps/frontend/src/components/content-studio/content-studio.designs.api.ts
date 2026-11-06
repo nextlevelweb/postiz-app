@@ -706,6 +706,11 @@ export const designRenderErrorMessage = (
   scope: 'page' | 'all'
 ) => {
   switch (designErrorCode(error)) {
+    case 'CS_RATE_LIMITED':
+      return t(
+        'content_studio_rate_limited',
+        'Too many requests in a short time. Wait a few minutes and try again.'
+      );
     case 'CS_DESIGN_RENDER_PAGE_INVALID':
       return t(
         'content_studio_design_render_page_invalid',
