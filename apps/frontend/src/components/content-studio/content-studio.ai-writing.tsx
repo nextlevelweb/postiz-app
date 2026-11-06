@@ -1,6 +1,6 @@
 'use client';
 
-import { FC, useMemo, useState } from 'react';
+import { FC, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@gitroom/react/form/button';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
@@ -326,6 +326,20 @@ export const ProfileChoice: FC<{
   const t = useT();
   // the active profiles, as names only
   const { data } = useContentStudioProfiles(base, false, 1);
+  // Exactly one active profile of this kind: it is chosen to start with
+  // (Review 20). Nothing is stored as a default, and once the member picks
+  // something, None included, it is never chosen again in this dialog
+  const picked = useRef(false);
+  const only =
+    data && data.pages <= 1 && data.results.length === 1
+      ? data.results[0].id
+      : null;
+  useEffect(() => {
+    if (only && !picked.current && value === '') {
+      picked.current = true;
+      onChange(only);
+    }
+  }, [only, value, onChange]);
   return (
     <ChoiceField
       label={label}
@@ -338,7 +352,10 @@ export const ProfileChoice: FC<{
           label: profile.name,
         })),
       ]}
-      onChange={onChange}
+      onChange={(next) => {
+        picked.current = true;
+        onChange(next);
+      }}
     />
   );
 };

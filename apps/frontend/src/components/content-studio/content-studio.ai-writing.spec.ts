@@ -865,10 +865,48 @@ describe('AI writing: context selection', () => {
     expect(aiPosts()[0].body.editorialPolicy).toBe(false);
   });
 
-  it('FS10/FS11 starts empty every time: nothing chosen earlier is kept', async () => {
+  // Review 20 (S4): the only active profile of a kind is chosen to start
+  const valueOf = (label: string) =>
+    (
+      within(dialog()).getByRole('combobox', {
+        name: label,
+      }) as HTMLSelectElement
+    ).value;
+
+  it('PD1 the only active profile of each kind is chosen when the dialog opens', async () => {
     await renderWorkspace();
     await openItem();
-    choose('Writing Profile', WRITING);
+    expect(valueOf('Writing Profile')).toBe(WRITING);
+    expect(valueOf('Audience Profile')).toBe(AUDIENCE);
+    expect(valueOf('Expertise Profile')).toBe(EXPERTISE);
+    // nothing is stored as a default: profiles are only read
+    expect(
+      calls().filter((c) => c.method !== 'GET' && /-profiles/.test(c.url))
+    ).toEqual([]);
+  });
+
+  it('PD2 with two active profiles of a kind, none of them is chosen', async () => {
+    ai.profiles.audience.push(
+      profile('b9999999-1111-4111-8111-111111111111', 'Investors')
+    );
+    await renderWorkspace();
+    await openItem();
+    expect(valueOf('Audience Profile')).toBe('');
+    expect(valueOf('Writing Profile')).toBe(WRITING);
+  });
+
+  it('PD3 None, once chosen, stays None', async () => {
+    await renderWorkspace();
+    await openItem();
+    choose('Expertise Profile', '');
+    instruction('Additional instruction', 'Rerender');
+    expect(valueOf('Expertise Profile')).toBe('');
+  });
+
+  it('FS10/FS11 starts fresh every time: nothing chosen earlier is kept (the only active profile is chosen again, Review 20)', async () => {
+    await renderWorkspace();
+    await openItem();
+    choose('Writing Profile', '');
     choose('Model', 'gpt-6.1-sol');
     instruction('Additional instruction', 'Mention the sale');
     await click('Cancel', dialog());
@@ -880,7 +918,7 @@ describe('AI writing: context selection', () => {
           name: 'Writing Profile',
         }) as HTMLSelectElement
       ).value
-    ).toBe('');
+    ).toBe(WRITING);
     expect(
       (
         within(dialog()).getByRole('combobox', {
@@ -1076,9 +1114,16 @@ describe('AI writing: item actions', () => {
     });
   });
 
-  it('sends null for every context left at None, and no instruction when blank', async () => {
+  it('sends null for every context set to None, and no instruction when blank', async () => {
     await renderWorkspace();
     await openItem();
+    for (const label of [
+      'Writing Profile',
+      'Audience Profile',
+      'Expertise Profile',
+    ]) {
+      choose(label, '');
+    }
     await generate();
     expect(aiPosts()[0].body).toEqual({
       operation: 'rewrite_item',
@@ -1116,8 +1161,9 @@ describe('AI writing: thread', () => {
       model: 'gpt-6-luna',
       writingProfileId: WRITING,
       editorialPolicy: false,
-      audienceProfileId: null,
-      expertiseProfileId: null,
+      // the only active profile of each kind, chosen to start with
+      audienceProfileId: AUDIENCE,
+      expertiseProfileId: EXPERTISE,
       sourceIds: [],
       instruction: null,
       baseDraftVersion: 4,
