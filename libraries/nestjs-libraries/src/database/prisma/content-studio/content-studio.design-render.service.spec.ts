@@ -51,6 +51,11 @@ const GEIST = fs.readFileSync(
     'dist/compiled/@vercel/og/Geist-Regular.ttf'
   )
 );
+// the pinned hashes of the bundled default fonts (fonts/FONTLOG.txt)
+const NOTO_REGULAR_SHA =
+  'f3961a9cde016d41a4879aecda1474d3a36d6bf54fa0e4643de029cc2248b0e8';
+const NOTO_BOLD_SHA =
+  '87cb2d84472a7d66da659ee47b6cdb9552326e8c128245231f191b6ac72529d9';
 // the same outlines under another valid sfnt tag: another file, another hash
 const GEIST_B = Buffer.from(GEIST);
 GEIST_B.write('true', 0, 'latin1');
@@ -972,7 +977,40 @@ describe('ContentStudioDesignRenderService fonts', () => {
     expect(result.assetSnapshotHash).toBe(s.world.renders[0].assetSnapshotHash);
   });
 
-  it('RFT3/RFT4/RFT5/M10 a missing, disabled or foreign mapping fails the render as an unavailable asset', async () => {
+  it('DF1 a fresh organization without render fonts or private storage draws text with the bundled default font', async () => {
+    const s = setup({ fontStorage: 'unavailable' });
+    s.addDesign(
+      document([
+        page('p1', [
+          text('t1', 'Één café', {
+            font: {
+              type: 'family',
+              family: 'Inter',
+              weight: 700,
+              style: 'normal',
+            },
+          }),
+        ]),
+      ])
+    );
+    const result = await s.run();
+    expect(result.status).toBe('completed');
+    expect(s.fontStorage.readFontAsset).not.toHaveBeenCalled();
+    const snapshot = parseVerifiedContentStudioRenderAssetSnapshot(
+      s.world.renders[0] as never
+    );
+    expect(snapshot.fonts).toEqual([
+      {
+        defaultFontId: 'noto-sans-bold',
+        family: 'Inter',
+        weight: 700,
+        style: 'normal',
+        sha256: NOTO_BOLD_SHA,
+      },
+    ]);
+  });
+
+  it('RFT3/RFT4/RFT5/M10/DF2 a missing, disabled or foreign mapping draws with the bundled default font, never another organization font', async () => {
     for (const prepare of [
       async () => undefined,
       async (s: Setup) => {
@@ -986,18 +1024,111 @@ describe('ContentStudioDesignRenderService fonts', () => {
       const s = setup();
       await prepare(s);
       s.addDesign(textDesign());
-      expect(await failure(s.run())).toEqual({
-        status: 409,
-        msg: 'A design render asset is unavailable.',
-        code: 'CS_DESIGN_RENDER_ASSET_UNAVAILABLE',
+      expect((await s.run()).status).toBe('completed');
+      expect(s.fontStorage.readFontAsset).not.toHaveBeenCalled();
+      const resolved = s.render.mock.calls[0][0].fonts.resolveFont({
+        family: 'Geist',
+        weight: 400,
+        style: 'normal',
       });
-      expect(s.world.renders[0]).toMatchObject({
-        status: 'failed',
-        errorCode: 'FONT_ASSET_UNAVAILABLE',
-      });
-      expect(s.render).toHaveBeenCalledTimes(1);
-      expect(s.world.savedMedia).toEqual([]);
+      expect(resolved?.key).toBe('default:noto-sans-regular:0');
+      expect(Buffer.from(resolved!.bytes).equals(GEIST)).toBe(false);
+      expect(
+        parseVerifiedContentStudioRenderAssetSnapshot(
+          s.world.renders[0] as never
+        ).fonts
+      ).toEqual([
+        {
+          defaultFontId: 'noto-sans-regular',
+          family: 'Geist',
+          weight: 400,
+          style: 'normal',
+          sha256: NOTO_REGULAR_SHA,
+        },
+      ]);
+      expect(s.world.savedMedia).toHaveLength(1);
     }
+  });
+
+  it('DF3 an enabled organization font overrides the bundled default for its exact tuple only', async () => {
+    const s = setup();
+    const mapping = await s.addFont('Geist');
+    s.addDesign(
+      document([
+        page('p1', [
+          text('t1', 'a'),
+          text('t2', 'b', {
+            font: {
+              type: 'family',
+              family: 'Geist',
+              weight: 700,
+              style: 'italic',
+            },
+          }),
+        ]),
+      ])
+    );
+    await s.run();
+    const snapshot = parseVerifiedContentStudioRenderAssetSnapshot(
+      s.world.renders[0] as never
+    );
+    expect(snapshot.fonts).toEqual([
+      {
+        mappingId: mapping.id,
+        fontAssetId: s.world.assets[0].id,
+        family: 'Geist',
+        weight: 400,
+        style: 'normal',
+        sha256: sha(GEIST),
+      },
+      {
+        defaultFontId: 'noto-sans-bold',
+        family: 'Geist',
+        weight: 700,
+        style: 'italic',
+        sha256: NOTO_BOLD_SHA,
+      },
+    ]);
+  });
+
+  it('DF4 two families drawn with the same bundled font are two tuples with their own keys', async () => {
+    const s = setup();
+    s.addDesign(
+      document([
+        page('p1', [
+          text('t1', 'a', {
+            font: {
+              type: 'family',
+              family: 'Inter',
+              weight: 400,
+              style: 'normal',
+            },
+          }),
+          text('t2', 'b', {
+            font: {
+              type: 'family',
+              family: 'Arial',
+              weight: 500,
+              style: 'normal',
+            },
+          }),
+        ]),
+      ])
+    );
+    await s.run();
+    const fonts = s.render.mock.calls[0][0].fonts;
+    expect([
+      fonts.resolveFont({ family: 'Inter', weight: 400, style: 'normal' })?.key,
+      fonts.resolveFont({ family: 'Arial', weight: 500, style: 'normal' })?.key,
+    ]).toEqual(['default:noto-sans-regular:0', 'default:noto-sans-regular:1']);
+    expect(
+      parseVerifiedContentStudioRenderAssetSnapshot(
+        s.world.renders[0] as never
+      ).fonts.map((font) => [font.family, 'defaultFontId' in font])
+    ).toEqual([
+      ['Inter', true],
+      ['Arial', true],
+    ]);
   });
 
   it('RFT7/49 a mapped font whose stored object is gone is an asset integrity error', async () => {
@@ -1489,7 +1620,9 @@ describe('ContentStudioDesignRenderService success', () => {
       { mediaId: 'blue', sha256: sha(BLUE) },
       { mediaId: 'red', sha256: sha(RED) },
     ]);
-    expect(snapshot.fonts.map((f) => f.mappingId)).toEqual([mapping.id]);
+    expect(
+      snapshot.fonts.map((f) => ('mappingId' in f ? f.mappingId : null))
+    ).toEqual([mapping.id]);
     expect(result.assetSnapshotHash).toBe(row.assetSnapshotHash);
     expect(row.assetSnapshot).toMatch(
       /^\{"fonts":\[\{"family":"Geist","fontAssetId":/
@@ -2139,7 +2272,10 @@ describe('ContentStudioDesignRenderService.renderAllPages font freeze', () => {
     s.world.renders = [];
     await s.runAll();
     expect(
-      childrenOf(s).map((c) => snapshotOf(c).fonts[0].fontAssetId)
+      childrenOf(s).map((c) => {
+        const font = snapshotOf(c).fonts[0];
+        return 'fontAssetId' in font ? font.fontAssetId : null;
+      })
     ).toEqual([assetB.id, assetB.id]);
   });
 

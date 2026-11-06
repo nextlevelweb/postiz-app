@@ -23,6 +23,10 @@ import {
 import { ContentStudioDesignFontSpec } from '@gitroom/nestjs-libraries/content-studio/design/layout/design.layout.types';
 import { renderContentStudioDesignPage } from '@gitroom/nestjs-libraries/content-studio/design/render/design.renderer';
 import {
+  contentStudioDefaultRenderFontId,
+  readContentStudioDefaultRenderFont,
+} from '@gitroom/nestjs-libraries/content-studio/design/render/design.render.default.font';
+import {
   ContentStudioDesignRenderError,
   ContentStudioDesignRenderResult,
   ContentStudioRenderFontAsset,
@@ -207,8 +211,10 @@ interface CompletedPage {
 // 2. a running render with that provenance;
 // 3. those fonts loaded through their current enabled mappings, each from
 //    its immutable private font asset and checked against its SHA-256 (the
-//    renderer's font resolver is synchronous; an unmapped font is left to
-//    the renderer to report). Mappings of unused fonts are never read;
+//    renderer's font resolver is synchronous); a font without an enabled
+//    mapping is drawn with the bundled default font, so a fresh organization
+//    renders without uploads or private storage. Mappings of unused fonts are
+//    never read;
 // 4. the renderer, called once, with images read from Media on demand;
 // 5. the asset snapshot from what the rendered page actually used, mapped
 //    back to what step 3 captured (never read again);
@@ -631,23 +637,44 @@ export class ContentStudioDesignRenderService {
   }
 
   // One after the other, in the order the layout asks, so the first failure
-  // is always the same one. A font without an enabled mapping is left out
-  // (the renderer reports it where the layout needs it); a mapped font must
-  // be readable and exactly its asset's bytes. A batch counts each loaded
-  // asset (loaded may throw to stop)
+  // is always the same one. A font without an enabled mapping is the bundled
+  // default font, under a key of its own per tuple (when its file cannot be
+  // read the font is left out and the renderer reports it where the layout
+  // needs it); a mapped font must be readable and exactly its asset's bytes.
+  // A batch counts each loaded asset (loaded may throw to stop)
   private async preloadFonts(
     organizationId: string,
     requests: ContentStudioDesignFontSpec[],
     loaded?: (asset: { id: string }, bytes: Buffer) => void
   ) {
     const fonts = new Map<string, PreloadedFont>();
-    for (const request of requests) {
+    for (const [index, request] of requests.entries()) {
       const mapping =
         await this._contentStudioRenderFontRepository.getActiveMappingBySpec(
           organizationId,
           request
         );
       if (!mapping) {
+        const defaultFontId = contentStudioDefaultRenderFontId(request);
+        const font = readContentStudioDefaultRenderFont(defaultFontId);
+        if (!font) {
+          continue;
+        }
+        loaded?.({ id: `default:${defaultFontId}` }, font.bytes);
+        fonts.set(fontRequest(request), {
+          asset: {
+            key: `default:${defaultFontId}:${index}`,
+            bytes: font.bytes,
+            sha256: font.sha256,
+          },
+          snapshot: {
+            defaultFontId,
+            family: request.family,
+            weight: request.weight,
+            style: request.style,
+            sha256: font.sha256,
+          },
+        });
         continue;
       }
       const asset = mapping.fontAsset;

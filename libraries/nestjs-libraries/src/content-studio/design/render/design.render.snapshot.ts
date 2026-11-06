@@ -19,13 +19,18 @@ import {
 } from '@gitroom/nestjs-libraries/content-studio/design/design.document';
 import { ContentStudioDesignFontSpec } from '@gitroom/nestjs-libraries/content-studio/design/layout/design.layout.types';
 import { ContentStudioDesignRenderError } from '@gitroom/nestjs-libraries/content-studio/design/render/design.render.types';
+import {
+  CONTENT_STUDIO_DEFAULT_RENDER_FONT_IDS,
+  ContentStudioDefaultRenderFontId,
+} from '@gitroom/nestjs-libraries/content-studio/design/render/design.render.default.font';
 
 // What a stored render records about its inputs, beside the exact design and
 // Brand Kit revision: the renderer and layout contract it ran under and the
 // asset snapshot, the exact fonts and images the rendered page was drawn
 // with. Fonts are the immutable font assets the organization's mappings
 // pointed to at that moment (the mapping id is kept for audit only: a later
-// mapping change does not change what a render used), images the Media ids
+// mapping change does not change what a render used), or the bundled default
+// font that drew a family without an enabled mapping, images the Media ids
 // and SHA-256s of the design. Ids, semantics and hashes only: never bytes,
 // URLs, storage keys or file names. Stored as canonical JSON with its SHA-256
 
@@ -43,21 +48,37 @@ const SHA256_HEX = /^[0-9a-f]{64}$/;
 // the Design Document image rule (the Content Package media id rule)
 const MEDIA_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
-const fontEntry = z
+// the tuple the design asked for and the SHA-256 of the bytes that drew it
+const fontRequest = {
+  family: trimmedText(DESIGN_FONT_FAMILY_MAX, 1),
+  weight: z
+    .number()
+    .refine(
+      (weight) => (BRAND_FONT_WEIGHTS as readonly number[]).includes(weight),
+      'Unsupported weight'
+    ),
+  style: z.enum(BRAND_FONT_STYLES),
+  sha256: z.string().regex(SHA256_HEX),
+};
+const mappedFontEntry = z
   .object({
     mappingId: z.string().regex(LOWER_UUID),
     fontAssetId: z.string().regex(LOWER_UUID),
-    family: trimmedText(DESIGN_FONT_FAMILY_MAX, 1),
-    weight: z
-      .number()
-      .refine(
-        (weight) => (BRAND_FONT_WEIGHTS as readonly number[]).includes(weight),
-        'Unsupported weight'
-      ),
-    style: z.enum(BRAND_FONT_STYLES),
-    sha256: z.string().regex(SHA256_HEX),
+    ...fontRequest,
   })
   .strict();
+const defaultFontEntry = z
+  .object({
+    defaultFontId: z.enum(
+      CONTENT_STUDIO_DEFAULT_RENDER_FONT_IDS as [
+        ContentStudioDefaultRenderFontId,
+        ...ContentStudioDefaultRenderFontId[]
+      ]
+    ),
+    ...fontRequest,
+  })
+  .strict();
+const fontEntry = z.union([mappedFontEntry, defaultFontEntry]);
 
 const imageEntry = z
   .object({
@@ -79,17 +100,21 @@ const snapshotSchema = z
     const mappings = new Set<string>();
     const assets = new Set<string>();
     const tuples = new Set<string>();
+    // a bundled default font may draw several tuples; a mapping and its
+    // asset draw one
     snapshot.fonts.forEach((font, index) => {
       const tuple = JSON.stringify([font.family, font.weight, font.style]);
       if (
-        mappings.has(font.mappingId) ||
-        assets.has(font.fontAssetId) ||
-        tuples.has(tuple)
+        tuples.has(tuple) ||
+        ('mappingId' in font &&
+          (mappings.has(font.mappingId) || assets.has(font.fontAssetId)))
       ) {
         issue(['fonts', index]);
       }
-      mappings.add(font.mappingId);
-      assets.add(font.fontAssetId);
+      if ('mappingId' in font) {
+        mappings.add(font.mappingId);
+        assets.add(font.fontAssetId);
+      }
       tuples.add(tuple);
     });
     // the same Media id with another SHA-256 is another image
@@ -103,14 +128,21 @@ const snapshotSchema = z
     });
   });
 
-export interface ContentStudioRenderAssetSnapshotFont {
-  mappingId: string;
-  fontAssetId: string;
+interface ContentStudioRenderAssetSnapshotFontRequest {
   family: string;
   weight: (typeof BRAND_FONT_WEIGHTS)[number];
   style: (typeof BRAND_FONT_STYLES)[number];
   sha256: string;
 }
+
+export type ContentStudioRenderAssetSnapshotFont =
+  | (ContentStudioRenderAssetSnapshotFontRequest & {
+      mappingId: string;
+      fontAssetId: string;
+    })
+  | (ContentStudioRenderAssetSnapshotFontRequest & {
+      defaultFontId: ContentStudioDefaultRenderFontId;
+    });
 
 export interface ContentStudioRenderAssetSnapshotV1 {
   schemaVersion: 1;

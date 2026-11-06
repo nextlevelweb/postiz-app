@@ -157,6 +157,33 @@ describe('render asset snapshot v1', () => {
     refused(snapshot({ fonts: [font(1), font(2, { family: 'Family 1' })] }));
   });
 
+  it('DS1 accepts the bundled default font for several tuples, with exactly its fields', () => {
+    const regular = (family: string, extra: Plain = {}) => ({
+      defaultFontId: 'noto-sans-regular',
+      family,
+      weight: 400,
+      style: 'normal',
+      sha256: SHA_A,
+      ...extra,
+    });
+    const input = snapshot({
+      fonts: [font(1), regular('Inter'), regular('Arial')],
+    });
+    expect(parseContentStudioRenderAssetSnapshot(input).fonts).toEqual(
+      input.fonts
+    );
+    for (const entry of [
+      regular('Inter', { defaultFontId: 'inter-regular' }),
+      regular('Inter', { mappingId: uuid(9) }),
+      regular('Inter', { path: '/fonts/x.ttf' }),
+      { ...regular('Inter'), defaultFontId: undefined },
+    ]) {
+      refused(snapshot({ fonts: [entry] }));
+    }
+    // a tuple is drawn by one font only
+    refused(snapshot({ fonts: [font(1, { family: 'Inter' }), regular('Inter')] }));
+  });
+
   it('RS13/RS14 refuses an image pair twice and keeps another SHA-256 apart', () => {
     refused(snapshot({ images: [image(1), image(1)] }));
     expect(
@@ -193,7 +220,9 @@ describe('render asset snapshot v1', () => {
       images: [image(9), image(2)],
     });
     expect(
-      parseContentStudioRenderAssetSnapshot(input).fonts.map((f) => f.mappingId)
+      parseContentStudioRenderAssetSnapshot(input).fonts.map((f) =>
+        'mappingId' in f ? f.mappingId : null
+      )
     ).toEqual([uuid(3), uuid(1), uuid(2)]);
     expect(
       parseContentStudioRenderAssetSnapshot(input).images.map((i) => i.mediaId)

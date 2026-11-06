@@ -13,7 +13,12 @@
     "tsConfigPath": "./tsconfig.build.json",
     "webpack": false,
     "deleteOutDir": true,
-    "assets": [],
+    "assets": [
+      {
+        "include": "../../../libraries/nestjs-libraries/src/content-studio/design/render/fonts/*",
+        "outDir": "dist/libraries/nestjs-libraries/src"
+      }
+    ],
     "watchAssets": false,
     "plugins": []
   }

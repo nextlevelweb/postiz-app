@@ -1,0 +1,24 @@
+Content Studio bundled render fonts
+===================================
+
+NotoSans-Regular.ttf and NotoSans-Bold.ttf are unmodified files of Noto Sans
+2.015 (unhinted TrueType), licensed under the SIL Open Font License 1.1. The
+license is in OFL.txt next to this file and must be kept with the fonts.
+
+Source: the official Noto release
+  https://github.com/notofonts/latin-greek-cyrillic/releases/tag/NotoSans-v2.015
+  NotoSans-v2.015.zip
+  sha256 0c34df072a3fa7efbb7cbf34950e1f971a4447cffe365d3a359e2d4089b958f5
+  (the same checksum Homebrew's font-noto-sans cask pins for that file)
+
+Files taken from the zip:
+  NotoSans/unhinted/ttf/NotoSans-Regular.ttf
+    sha256 f3961a9cde016d41a4879aecda1474d3a36d6bf54fa0e4643de029cc2248b0e8
+  NotoSans/unhinted/ttf/NotoSans-Bold.ttf
+    sha256 87cb2d84472a7d66da659ee47b6cdb9552326e8c128245231f191b6ac72529d9
+  OFL.txt
+    sha256 cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a
+
+The renderer pins the font hashes (design.render.default.font.ts) and refuses
+any other bytes. To update a font, replace the file and its pinned hash in the
+same change; a new file draws text differently.

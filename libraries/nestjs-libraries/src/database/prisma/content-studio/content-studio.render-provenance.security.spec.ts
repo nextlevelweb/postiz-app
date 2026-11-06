@@ -153,18 +153,23 @@ describe('P4-05 render provenance trust boundaries', () => {
     const text = code(
       `${LIB}/content-studio/design/render/design.render.snapshot.ts`
     );
-    expect(text.match(/\.strict\(\)/g)).toHaveLength(3);
+    expect(text.match(/\.strict\(\)/g)).toHaveLength(4);
     const schema = text.slice(
-      text.indexOf('const fontEntry'),
+      text.indexOf('const fontRequest'),
       text.indexOf('const snapshotSchema')
     );
-    expect(schema.match(/^\s{4}(\w+):/gm)?.map((key) => key.trim())).toEqual([
-      'mappingId:',
-      'fontAssetId:',
+    // the requested tuple and its hash, then a mapping and its asset, or a
+    // bundled default font by its fixed id
+    expect(
+      schema.match(/^\s{2,4}(\w+):/gm)?.map((key) => key.trim())
+    ).toEqual([
       'family:',
       'weight:',
       'style:',
       'sha256:',
+      'mappingId:',
+      'fontAssetId:',
+      'defaultFontId:',
       'mediaId:',
       'sha256:',
     ]);
