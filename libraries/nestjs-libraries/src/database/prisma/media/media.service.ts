@@ -137,7 +137,6 @@ export class MediaService {
         async () => {
           if (generatePromptFirst) {
             prompt = await this._openAi.generatePromptForPicture(prompt);
-            console.log('Prompt:', prompt);
           }
           return this._openAi.generateImage(prompt);
         }
