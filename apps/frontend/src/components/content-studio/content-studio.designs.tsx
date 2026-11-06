@@ -27,6 +27,7 @@ import {
 } from '@gitroom/frontend/components/content-studio/content-studio.designs.api';
 import { designPageSetErrorMessage } from '@gitroom/frontend/components/content-studio/content-studio.design-page-sets.api';
 import { DesignPageSetPicker } from '@gitroom/frontend/components/content-studio/content-studio.design-page-sets';
+import { ContentStudioRenderFonts } from '@gitroom/frontend/components/content-studio/content-studio.render-fonts';
 
 export const DESIGN_LIBRARY_PATH = '/content-studio/designs';
 // the template library (P4-11): new designs from a template start there
@@ -562,6 +563,15 @@ export const ContentStudioDesigns: FC = () => {
     [modals, t]
   );
 
+  const openRenderFonts = useCallback(
+    () =>
+      modals.openModal({
+        title: t('content_studio_render_fonts', 'Render fonts'),
+        children: () => <ContentStudioRenderFonts />,
+      }),
+    [modals, t]
+  );
+
   return (
     <ContentStudioPage
       title={t('content_studio_creative_studio', 'Creative Studio')}
@@ -581,6 +591,9 @@ export const ContentStudioDesigns: FC = () => {
           >
             {t('content_studio_from_template', 'From template')}
           </Link>
+          <Button secondary onClick={openRenderFonts}>
+            {t('content_studio_render_fonts', 'Render fonts')}
+          </Button>
           <Button onClick={createDesign}>
             {t('content_studio_create_design', 'Create design')}
           </Button>

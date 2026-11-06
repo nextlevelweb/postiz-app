@@ -2371,8 +2371,24 @@ describe('Creative Studio: frontend boundaries', () => {
     expect(api).toMatch(
       /`\$\{brandKitRevisionPath\(revisionId\)\}\/design-ref`/
     );
+    // Review 20 (M1): render fonts have their own panel and API module; the
+    // design surfaces only open that panel (one import), and the font routes
+    // stay in content-studio.render-fonts.api.ts
+    const panelImport =
+      "import { ContentStudioRenderFonts } from '@gitroom/frontend/components/content-studio/content-studio.render-fonts';";
+    expect(
+      sources.filter(([, text]) => text.includes(panelImport)).map(([f]) => f)
+    ).toEqual(['content-studio.designs.tsx']);
+    const fontApi = code(
+      readFileSync(join(dir, 'content-studio.render-fonts.api.ts'), 'utf8')
+    );
+    expect(
+      Array.from(fontApi.matchAll(/['`](\/content-studio[^'`]*)['`]/g), (m) =>
+        m[1].replace(/\s+/g, '')
+      )
+    ).toEqual(['/content-studio/render-fonts']);
     for (const [file, text] of sources) {
-      expect([file, code(text)]).not.toEqual([
+      expect([file, code(text.replace(panelImport, ''))]).not.toEqual([
         file,
         expect.stringMatching(
           /render-fonts|'DELETE'|organizationId|userId|mediaIds|fontBytes|upload/i
