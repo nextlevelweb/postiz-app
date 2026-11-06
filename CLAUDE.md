@@ -13,7 +13,7 @@ We have 3 important folders
 
 - apps/backend - this is where the API code is (NESTJS)
 - apps/orchestrator - this is temporal, it's for background jobs (NESTJS) it contains all the workflows and activities
-- apps/frontend - this is the code of the frontend (Vite ReactJS)
+- apps/frontend - this is the code of the frontend (Next.js 16, App Router, React)
 - /libraries contains a lot of services shared between backend and orchestrator and frontend components.
 
 We are using only pnpm, don't use any other dependency manager.
