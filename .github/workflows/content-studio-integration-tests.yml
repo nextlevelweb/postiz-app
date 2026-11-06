@@ -1,0 +1,121 @@
+---
+name: Content Studio Integration Tests
+
+# Fork-only: the Content Studio PostgreSQL and Temporal integration suites
+# (jest.content-studio.integration.config.ts, jest.content-studio.temporal
+# .config.ts) against disposable servers that live only in this job: the
+# addresses, users and passwords are the throwaway ones the suites' guards
+# require (jest.content-studio.postgres.guard.ts, jest.content-studio
+# .temporal.guard.ts). No secrets, no production data, no real credentials.
+# Separate from Unit Tests so a small push does not wait for it.
+
+on:
+  pull_request:
+    paths:
+      - 'libraries/**'
+      - 'apps/backend/src/**'
+      - 'apps/orchestrator/src/**'
+      - 'jest.content-studio.*.ts'
+      - 'tsconfig*.json'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/content-studio-integration-tests.yml'
+  push:
+    branches:
+      - 'nlw/**'
+      - 'custom/nextlevelweb'
+    paths:
+      - 'libraries/**'
+      - 'apps/backend/src/**'
+      - 'apps/orchestrator/src/**'
+      - 'jest.content-studio.*.ts'
+      - 'tsconfig*.json'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/content-studio-integration-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: content-studio-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CONTENT_STUDIO_POSTGRES_INTEGRATION_URL: postgresql://p306:p306_local_only@127.0.0.1:55434/postiz_content_studio_p306
+  # the command runtime suite reads the database from DATABASE_URL too
+  DATABASE_URL: postgresql://p306:p306_local_only@127.0.0.1:55434/postiz_content_studio_p306
+  REDIS_URL: ''
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: p306
+          POSTGRES_PASSWORD: p306_local_only
+          POSTGRES_DB: postiz_content_studio_p306
+        ports:
+          - 55434:5432
+        options: >-
+          --health-cmd "pg_isready -U p306 -d postiz_content_studio_p306"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Create the schema in the disposable database
+        run: |
+          pnpm exec prisma migrate diff --from-empty \
+            --to-schema-datamodel libraries/nestjs-libraries/src/database/prisma/schema.prisma \
+            --script > "$RUNNER_TEMP/schema.sql"
+          docker exec -i ${{ job.services.postgres.id }} \
+            psql -q -v ON_ERROR_STOP=1 -U p306 -d postiz_content_studio_p306 \
+            < "$RUNNER_TEMP/schema.sql"
+
+      - name: PostgreSQL integration suites
+        env:
+          # the whole suite runs in one process (one shared database)
+          NODE_OPTIONS: --max-old-space-size=10240
+        run: node_modules/.bin/jest --config jest.content-studio.integration.config.ts --runInBand
+
+      - name: Start a disposable Temporal dev server
+        run: |
+          docker run -d --name content-studio-ci-temporal \
+            -p 127.0.0.1:57233:7233 --entrypoint temporal \
+            temporalio/admin-tools:1.28.1-tctl-1.18.4-cli-1.4.1 \
+            server start-dev --ip 0.0.0.0 --headless
+          for i in $(seq 1 60); do
+            if docker exec content-studio-ci-temporal \
+              temporal operator cluster health --address 127.0.0.1:7233 >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs content-studio-ci-temporal
+          exit 1
+
+      - name: Temporal integration suite
+        env:
+          CONTENT_STUDIO_TEMPORAL_INTEGRATION_ADDRESS: 127.0.0.1:57233
+        run: node_modules/.bin/jest --config jest.content-studio.temporal.config.ts --runInBand
