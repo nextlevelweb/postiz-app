@@ -12,6 +12,14 @@ import { ContentStudioAIExecutionService } from '@gitroom/nestjs-libraries/conte
 import { ContentStudioAIProviderError } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.error';
 import { ContentStudioAITextRequest } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.types';
 import { parseContentStudioEditorialPolicyContent } from '@gitroom/nestjs-libraries/content-studio/editorial/editorial.policy';
+import { ContentStudioAIProviderGate } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.gate';
+
+// the servers' provider gate: Codex on, as before the gate (Review 20); a
+// test that needs it off sets another one before its setup
+let gate = new ContentStudioAIProviderGate({ codex: true });
+beforeEach(() => {
+  gate = new ContentStudioAIProviderGate({ codex: true });
+});
 
 // The first post (activation flow 01) through the real activation and AI
 // execution services: research, then the draft that follows it on the
@@ -283,7 +291,8 @@ const build = (
     policyService as never,
     discoveries as never,
     service as never,
-    activation as never
+    activation as never,
+    gate
   );
   return {
     activationService,
@@ -390,6 +399,19 @@ describe('First post: research and draft that outlive the request', () => {
     await start(ctx, 'angle');
     expect(ctx.calls).toHaveLength(1);
     expect(ctx.service.createPackage).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('First post: Codex gate (Review 20)', () => {
+  it('CG6 a Codex connection is refused while the gate is off; another provider still starts', async () => {
+    gate = new ContentStudioAIProviderGate({ codex: false });
+    const ctx = build({ provider: 'codex' });
+    await expect(start(ctx, 'first')).rejects.toMatchObject({
+      response: { code: 'CS_AI_PROVIDER_UNSUPPORTED' },
+    });
+    expect(ctx.calls).toHaveLength(0);
+    const openai = build({ provider: 'openai' });
+    await expect(start(openai, 'first')).resolves.toBeDefined();
   });
 });
 

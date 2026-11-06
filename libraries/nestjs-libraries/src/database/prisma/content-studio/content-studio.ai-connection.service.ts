@@ -7,10 +7,9 @@ import {
   getContentStudioAIDefaultModel,
   getContentStudioAIModel,
   isContentStudioAIModelSupported,
-  isContentStudioAIProvider,
-  listContentStudioAIProviders,
   parseContentStudioAICredential,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.catalog';
+import { ContentStudioAIProviderGate } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.gate';
 import { sealContentStudioAICredential } from '@gitroom/nestjs-libraries/content-studio/ai/ai.credential';
 import { ContentStudioAIResolutionError } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.error';
 import {
@@ -197,11 +196,13 @@ export const toPublicAIConnection = (row: ConnectionRow) => ({
 export class ContentStudioAIConnectionService {
   constructor(
     private _contentStudioAIConnectionRepository: ContentStudioAIConnectionRepository,
-    private _contentStudioAIProviderResolver: ContentStudioAIProviderResolver
+    private _contentStudioAIProviderResolver: ContentStudioAIProviderResolver,
+    private _contentStudioAIProviderGate: ContentStudioAIProviderGate
   ) {}
 
+  // only the providers this server offers (Codex only when switched on)
   listProviders() {
-    return listContentStudioAIProviders();
+    return this._contentStudioAIProviderGate.listProviders();
   }
 
   async listConnections(organizationId: string) {
@@ -227,7 +228,7 @@ export class ContentStudioAIConnectionService {
   ) {
     this.assertManager(actor);
     const name = this.connectionName(input.name);
-    if (!isContentStudioAIProvider(input.provider)) {
+    if (!this._contentStudioAIProviderGate.isEnabled(input.provider)) {
       throw providerUnsupported();
     }
     // left out, the connection gets its provider's default model

@@ -13,8 +13,8 @@ import {
 import {
   getContentStudioAIDefaultModel,
   getContentStudioAIModel,
-  isContentStudioAIProvider,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.catalog';
+import { ContentStudioAIProviderGate } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.gate';
 import {
   AI_SETUP_PROMPT_MAX_BYTES,
   buildContentStudioAISetupPrompt,
@@ -108,7 +108,8 @@ export class ContentStudioAISetupService {
   constructor(
     private _contentStudioAIConnectionRepository: ContentStudioAIConnectionRepository,
     private _contentStudioAIExecutionService: ContentStudioAIExecutionService,
-    private _contentStudioAIOperationRepository: ContentStudioAIOperationRepository
+    private _contentStudioAIOperationRepository: ContentStudioAIOperationRepository,
+    private _contentStudioAIProviderGate: ContentStudioAIProviderGate
   ) {}
 
   // Checks the request and starts the operation. What can be refused without
@@ -133,7 +134,7 @@ export class ContentStudioAISetupService {
     if (!connection) {
       throw connectionRequired();
     }
-    if (!isContentStudioAIProvider(connection.provider)) {
+    if (!this._contentStudioAIProviderGate.isEnabled(connection.provider)) {
       throw providerUnsupported();
     }
     // the connection's own model while its provider offers it, else the

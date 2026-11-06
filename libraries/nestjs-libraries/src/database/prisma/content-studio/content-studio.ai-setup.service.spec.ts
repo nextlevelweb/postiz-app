@@ -22,6 +22,14 @@ import {
   CONTENT_STUDIO_AI_SETUP_PROMPT_VERSION,
   CONTENT_STUDIO_AI_SETUP_SCHEMA_NAME,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.setup.prompt';
+import { ContentStudioAIProviderGate } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.gate';
+
+// the servers' provider gate: Codex on, as before the gate (Review 20); a
+// test that needs it off sets another one before its setup
+let gate = new ContentStudioAIProviderGate({ codex: true });
+beforeEach(() => {
+  gate = new ContentStudioAIProviderGate({ codex: true });
+});
 
 // The guided setup's AI draft through the real setup and AI execution
 // services. Only the repositories, the provider resolver and its adapter are
@@ -182,7 +190,8 @@ const build = (
   const service = new ContentStudioAISetupService(
     connections as unknown as ContentStudioAIConnectionRepository,
     execution,
-    operations as unknown as ContentStudioAIOperationRepository
+    operations as unknown as ContentStudioAIOperationRepository,
+    gate
   );
   return {
     service,
@@ -239,6 +248,24 @@ const failure = async (run: () => Promise<unknown>) => {
 };
 const body = (err: HttpException) =>
   err.getResponse() as { code: string; msg: string };
+
+describe('AI setup: Codex gate (Review 20)', () => {
+  it('CG5 a Codex connection is refused while the gate is off, before any operation starts', async () => {
+    gate = new ContentStudioAIProviderGate({ codex: false });
+    const ctx = build({ provider: 'codex' });
+    await expect(
+      ctx.service.startSetup({
+        organizationId: ORG,
+        userId: USER,
+        request: request(),
+      })
+    ).rejects.toMatchObject({
+      response: { code: 'CS_AI_PROVIDER_UNSUPPORTED' },
+    });
+    expect(ctx.operations.createRunningOperation).not.toHaveBeenCalled();
+    expect(ctx.adapter.generateText).not.toHaveBeenCalled();
+  });
+});
 
 describe('ContentStudioAISetupService: the setup draft', () => {
   it('returns a validated draft and records one organization operation, with hashes only', async () => {

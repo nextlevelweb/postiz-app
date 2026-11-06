@@ -12,6 +12,14 @@ import { createOpenAIProviderAdapter } from '@gitroom/nestjs-libraries/content-s
 import { createOpenRouterProviderAdapter } from '@gitroom/nestjs-libraries/content-studio/ai/providers/openrouter.provider';
 import { createAnthropicProviderAdapter } from '@gitroom/nestjs-libraries/content-studio/ai/providers/anthropic.provider';
 import { ContentStudioAIConnectionRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.repository';
+import { ContentStudioAIProviderGate } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.gate';
+
+// the servers' provider gate: Codex on, as before the gate (Review 20); a
+// test that needs it off sets another one before its setup
+let gate = new ContentStudioAIProviderGate({ codex: true });
+beforeEach(() => {
+  gate = new ContentStudioAIProviderGate({ codex: true });
+});
 
 // No database and no provider: the repository is mocked, the credential
 // wrapper and SecretBox run for real on a test keyring (null: not
@@ -121,7 +129,8 @@ const setup = (overrides: Record<string, unknown> = {}) => {
     ),
   };
   const resolver = new ContentStudioAIProviderResolver(
-    repository as unknown as ContentStudioAIConnectionRepository
+    repository as unknown as ContentStudioAIConnectionRepository,
+    gate
   );
   return { repository, resolver };
 };
@@ -161,6 +170,53 @@ beforeEach(() => {
   anthropicFactory.mockImplementation(
     actualAnthropic.createAnthropicProviderAdapter
   );
+});
+
+// Codex has no key: its credential is the empty object
+const sealedCodex = () =>
+  actualCredential.sealContentStudioAICredential({
+    organizationId: ORG,
+    connectionId: ID,
+    provider: 'codex',
+    credential: {},
+  });
+
+describe('ContentStudioAIProviderResolver: Codex gate (Review 20)', () => {
+  it('CG1 refuses a stored Codex connection while the gate is off, before its credential is opened', async () => {
+    gate = new ContentStudioAIProviderGate({ codex: false });
+    const { resolver } = setup({
+      provider: 'codex',
+      sealedCredential: sealedCodex(),
+    });
+    open.mockClear();
+    expect(
+      await resolutionError(
+        resolver.resolve({ organizationId: ORG, connectionId: ID })
+      )
+    ).toBe('PROVIDER_UNSUPPORTED');
+    expect(open).not.toHaveBeenCalled();
+    factoriesUnused();
+  });
+
+  it('CG2 resolves Codex when switched on, and every other provider either way', async () => {
+    for (const codex of [false, true]) {
+      gate = new ContentStudioAIProviderGate({ codex });
+      const { resolver } = setup();
+      expect(
+        (await resolver.resolve({ organizationId: ORG, connectionId: ID }))
+          .provider
+      ).toBe('openai');
+    }
+    gate = new ContentStudioAIProviderGate({ codex: true });
+    const { resolver } = setup({
+      provider: 'codex',
+      sealedCredential: sealedCodex(),
+    });
+    expect(
+      (await resolver.resolve({ organizationId: ORG, connectionId: ID }))
+        .provider
+    ).toBe('codex');
+  });
 });
 
 describe('ContentStudioAIProviderResolver', () => {

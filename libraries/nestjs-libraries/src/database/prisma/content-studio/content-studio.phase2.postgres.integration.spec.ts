@@ -42,6 +42,10 @@ import { storedContentStudioEditorialPolicyContent } from '@gitroom/nestjs-libra
 import { storedContentStudioAudienceProfileContent } from '@gitroom/nestjs-libraries/content-studio/editorial/audience.profile.revision';
 import { storedContentStudioExpertiseProfileContent } from '@gitroom/nestjs-libraries/content-studio/editorial/expertise.profile.revision';
 import { createContentStudioPostgresClient } from '../../../../../../jest.content-studio.postgres.guard';
+import { ContentStudioAIProviderGate } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.gate';
+
+// every catalog provider on, as before the Codex gate (Review 20)
+const CODEX_GATE = new ContentStudioAIProviderGate({ codex: true });
 
 // Phase 2 on a real PostgreSQL (P2-11). Opt-in: runs only through
 // jest.content-studio.integration.config.ts against the disposable local
@@ -824,7 +828,8 @@ describe('AI connections: sealed credentials on PostgreSQL (local test keyring)'
   const service = () =>
     new ContentStudioAIConnectionService(
       connections,
-      new ContentStudioAIProviderResolver(connections)
+      new ContentStudioAIProviderResolver(connections, CODEX_GATE),
+      CODEX_GATE
     );
   const create = (organizationId: string, apiKey = KEY_MARKER) =>
     service().createConnection(admin(organizationId), {
@@ -878,7 +883,8 @@ describe('AI connections: sealed credentials on PostgreSQL (local test keyring)'
   it('SB3 the resolver opens the envelope of its own organization and connection', async () => {
     const created = await create(ORG_A);
     const resolved = await new ContentStudioAIProviderResolver(
-      connections
+      connections,
+      CODEX_GATE
     ).resolve({ organizationId: ORG_A, connectionId: created.id });
     expect(resolved.provider).toBe('openai');
     expect(resolved.connectionId).toBe(created.id);
@@ -904,7 +910,7 @@ describe('AI connections: sealed credentials on PostgreSQL (local test keyring)'
         data: { sealedCredential: envelope },
       });
     }
-    const resolver = new ContentStudioAIProviderResolver(connections);
+    const resolver = new ContentStudioAIProviderResolver(connections, CODEX_GATE);
     for (const [organizationId, connectionId] of [
       [ORG_A, sameOrg.id],
       [ORG_B, otherOrg.id],
@@ -2155,7 +2161,7 @@ describe('AI execution and AI writing on PostgreSQL (fake adapter, no network)',
     const connectionB = await createConnection(ORG_B);
     expect(
       await httpRefusal(
-        writing(new ContentStudioAIProviderResolver(connections)).proposeItem({
+        writing(new ContentStudioAIProviderResolver(connections, CODEX_GATE)).proposeItem({
           organizationId: ORG_A,
           userId: USER_A,
           packageId,

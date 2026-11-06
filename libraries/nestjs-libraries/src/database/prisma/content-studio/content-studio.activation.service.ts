@@ -23,8 +23,8 @@ import {
 import {
   getContentStudioAIDefaultModel,
   getContentStudioAIModel,
-  isContentStudioAIProvider,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.catalog';
+import { ContentStudioAIProviderGate } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.gate';
 import { ContentStudioAIProviderError } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.error';
 import {
   AI_REQUEST_TIMEOUT_MAX_MS,
@@ -173,7 +173,8 @@ export class ContentStudioActivationService {
     private _contentStudioEditorialPolicyService: ContentStudioEditorialPolicyService,
     private _contentStudioSourceDiscoveryRepository: ContentStudioSourceDiscoveryRepository,
     private _contentStudioService: ContentStudioService,
-    private _contentStudioActivationRepository: ContentStudioActivationRepository
+    private _contentStudioActivationRepository: ContentStudioActivationRepository,
+    private _contentStudioAIProviderGate: ContentStudioAIProviderGate
   ) {}
 
   // Starts what the mode asks for and answers at once with the package. A
@@ -523,7 +524,7 @@ export class ContentStudioActivationService {
     if (!connection) {
       throw connectionRequired();
     }
-    if (!isContentStudioAIProvider(connection.provider)) {
+    if (!this._contentStudioAIProviderGate.isEnabled(connection.provider)) {
       throw providerUnsupported();
     }
     const model = getContentStudioAIModel(

@@ -63,6 +63,10 @@ import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/
 import { ContentStudioAIConnectionRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.repository';
 import { ContentStudioAIConnectionService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.service';
 import { ContentStudioAIProviderResolver } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.resolver';
+import {
+  ContentStudioAIProviderGate,
+  contentStudioCodexEnabled,
+} from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.gate';
 import { ContentStudioAIOperationRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-operation.repository';
 import { ContentStudioAIExecutionService } from '@gitroom/nestjs-libraries/content-studio/ai/ai.execution.service';
 import { ContentStudioWritingProfileRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.writing-profile.repository';
@@ -178,6 +182,16 @@ import { ContentStudioReviewService } from '@gitroom/nestjs-libraries/database/p
     ContentStudioAIConnectionRepository,
     ContentStudioAIConnectionService,
     ContentStudioAIProviderResolver,
+    // Codex only where the operator switched it on (off by default)
+    {
+      provide: ContentStudioAIProviderGate,
+      useFactory: () =>
+        new ContentStudioAIProviderGate({
+          codex: contentStudioCodexEnabled(
+            process.env.CONTENT_STUDIO_ENABLE_CODEX
+          ),
+        }),
+    },
     ContentStudioAIOperationRepository,
     ContentStudioAIExecutionService,
     ContentStudioWritingProfileRepository,

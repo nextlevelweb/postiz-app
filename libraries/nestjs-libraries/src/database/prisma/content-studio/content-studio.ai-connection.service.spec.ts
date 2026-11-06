@@ -21,6 +21,14 @@ import {
   ContentStudioAIConnectionService,
   toPublicAIConnection,
 } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.service';
+import { ContentStudioAIProviderGate } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.gate';
+
+// the servers' provider gate: Codex on, as before the gate (Review 20); a
+// test that needs it off sets another one before its setup
+let gate = new ContentStudioAIProviderGate({ codex: true });
+beforeEach(() => {
+  gate = new ContentStudioAIProviderGate({ codex: true });
+});
 
 // No database and no provider: the repository is mocked, while the credential
 // wrapper and SecretBox run for real on a test keyring (null: not configured).
@@ -173,7 +181,8 @@ const setup = () => {
   };
   const service = new ContentStudioAIConnectionService(
     repository as unknown as ContentStudioAIConnectionRepository,
-    resolver as unknown as ContentStudioAIProviderResolver
+    resolver as unknown as ContentStudioAIProviderResolver,
+    gate
   );
   return { repository, resolver, adapter, service };
 };
@@ -588,6 +597,54 @@ describe('ContentStudioAIConnectionService: read', () => {
     expect(
       Object.values(repository).every((fn) => fn.mock.calls.length === 0)
     ).toBe(true);
+  });
+});
+
+describe('ContentStudioAIConnectionService: Codex gate (Review 20)', () => {
+  it('CG3 leaves Codex out of the providers while the gate is off, and only then', () => {
+    gate = new ContentStudioAIProviderGate({ codex: false });
+    expect(
+      setup()
+        .service.listProviders()
+        .map((p) => p.provider)
+    ).toEqual(['openai', 'openrouter', 'anthropic']);
+    gate = new ContentStudioAIProviderGate({ codex: true });
+    expect(
+      setup()
+        .service.listProviders()
+        .map((p) => p.provider)
+    ).toEqual(['openai', 'openrouter', 'anthropic', 'codex']);
+  });
+
+  it('CG4 refuses to create a Codex connection while the gate is off, before anything is sealed or stored', async () => {
+    gate = new ContentStudioAIProviderGate({ codex: false });
+    const { repository, service } = setup();
+    seal.mockClear();
+    const err = await service
+      .createConnection(ADMIN, {
+        name: 'Codex',
+        provider: 'codex',
+        credential: {},
+      })
+      .then(
+        () => null,
+        (e: unknown) => e
+      );
+    expect(err).toBeInstanceOf(HttpException);
+    expect((err as HttpException).getStatus()).toBe(400);
+    expect((err as HttpException).getResponse()).toEqual({
+      msg: 'This AI provider is not supported.',
+      code: 'CS_AI_PROVIDER_UNSUPPORTED',
+    });
+    expect(seal).not.toHaveBeenCalled();
+    expect(repository.createConnection).not.toHaveBeenCalled();
+    // other providers are not affected
+    await service.createConnection(ADMIN, {
+      name: 'Main OpenAI',
+      provider: 'openai',
+      credential: { apiKey: MARKER },
+    });
+    expect(repository.createConnection).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1207,8 +1264,10 @@ describe('ContentStudioAIConnectionService: test connection', () => {
       const service = new ContentStudioAIConnectionService(
         context.repository as unknown as ContentStudioAIConnectionRepository,
         new ContentStudioAIProviderResolver(
-          context.repository as unknown as ContentStudioAIConnectionRepository
-        )
+          context.repository as unknown as ContentStudioAIConnectionRepository,
+          new ContentStudioAIProviderGate({ codex: true })
+        ),
+        new ContentStudioAIProviderGate({ codex: true })
       );
       return { ...context, service };
     };

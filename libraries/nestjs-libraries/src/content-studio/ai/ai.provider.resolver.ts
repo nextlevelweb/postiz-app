@@ -7,6 +7,7 @@ import {
   isContentStudioAIProvider,
 } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.catalog';
 import { openContentStudioAICredential } from '@gitroom/nestjs-libraries/content-studio/ai/ai.credential';
+import { ContentStudioAIProviderGate } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.gate';
 import { ContentStudioAIResolutionError } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.error';
 import { ContentStudioAIProviderAdapter } from '@gitroom/nestjs-libraries/content-studio/ai/ai.provider.types';
 import { createOpenAIProviderAdapter } from '@gitroom/nestjs-libraries/content-studio/ai/providers/openai.provider';
@@ -65,7 +66,8 @@ const fromCredentialError = (err: unknown) => {
 @Injectable()
 export class ContentStudioAIProviderResolver {
   constructor(
-    private _contentStudioAIConnectionRepository: ContentStudioAIConnectionRepository
+    private _contentStudioAIConnectionRepository: ContentStudioAIConnectionRepository,
+    private _contentStudioAIProviderGate: ContentStudioAIProviderGate
   ) {}
 
   async resolve(input: {
@@ -98,7 +100,12 @@ export class ContentStudioAIProviderResolver {
     if (!row.sealedCredential) {
       throw new ContentStudioAIResolutionError('CREDENTIAL_INVALID');
     }
-    if (!isContentStudioAIProvider(row.provider)) {
+    // a provider this server does not offer (Codex while its gate is off)
+    // is refused like one it does not know
+    if (
+      !isContentStudioAIProvider(row.provider) ||
+      !this._contentStudioAIProviderGate.isEnabled(row.provider)
+    ) {
       throw new ContentStudioAIResolutionError('PROVIDER_UNSUPPORTED');
     }
 
