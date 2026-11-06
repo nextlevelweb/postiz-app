@@ -583,6 +583,8 @@ describe('ContentStudioController review routes', () => {
       expect(reviews.decideApproval).toHaveBeenCalledWith({
         organizationId: 'org-a',
         userId: 'user-1',
+        // the request's own membership: the service checks its role
+        memberships: (ORG as { users?: unknown }).users,
         reviewId: ID,
         action,
         note: 'Because.',

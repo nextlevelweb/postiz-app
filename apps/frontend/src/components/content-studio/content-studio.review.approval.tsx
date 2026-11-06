@@ -6,6 +6,7 @@ import { Button } from '@gitroom/react/form/button';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
 import { useToaster } from '@gitroom/react/toaster/toaster';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
+import { useUser } from '@gitroom/frontend/components/layout/user.context';
 import {
   CONTENT_STUDIO_APPROVAL_ACTIONS,
   CONTENT_STUDIO_APPROVAL_NOTE_MAX,
@@ -37,6 +38,10 @@ import { designErrorCode } from '@gitroom/frontend/components/content-studio/con
 // hands off or publishes
 
 type Translate = (key: string, fallback: string) => string;
+
+// Only these membership roles decide, as on the server (Review 20), and
+// never the member who requested the review approves it
+const APPROVAL_MANAGER_ROLES = ['ADMIN', 'SUPERADMIN'];
 
 const textareaClass =
   'bg-newBgColorInner min-h-[64px] p-[10px] border-newTableBorder border rounded-[8px] text-textColor text-[14px] w-full min-w-0';
@@ -186,9 +191,14 @@ export const ContentStudioReviewApproval: FC<{
     reviewId: string;
     action: ContentStudioApprovalAction;
   } | null>(null);
+  const user = useUser();
+  const canDecide = APPROVAL_MANAGER_ROLES.includes(user?.role as string);
+  const requestedByMe = !!user?.id && user.id === review.requestedBy?.id;
   const data =
     approval.data?.reviewId === review.id ? approval.data : undefined;
-  const open = data ? contentStudioApprovalActions(data.state) : [];
+  const open = (
+    data && canDecide ? contentStudioApprovalActions(data.state) : []
+  ).filter((entry) => !(requestedByMe && entry === 'approve'));
   const action =
     deciding?.reviewId === review.id && open.includes(deciding.action)
       ? deciding.action
@@ -259,6 +269,24 @@ export const ContentStudioReviewApproval: FC<{
           <div className="text-[12px] text-textItemBlur">
             {applies} {review.targetRevisionNumber}.
           </div>
+          {data && !canDecide && (
+            <div className="text-[12px] text-textItemBlur">
+              {t(
+                'content_studio_approval_admin_only',
+                'Only organization administrators decide on approval.'
+              )}
+            </div>
+          )}
+          {canDecide &&
+            requestedByMe &&
+            contentStudioApprovalActions(data.state).includes('approve') && (
+              <div className="text-[12px] text-textItemBlur">
+                {t(
+                  'content_studio_approval_not_own',
+                  'You requested this review, so another administrator approves it.'
+                )}
+              </div>
+            )}
           {!action && !!open.length && (
             <div className="flex flex-wrap gap-[8px]">
               {open.map((entry) => (

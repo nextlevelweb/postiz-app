@@ -1,5 +1,5 @@
 import { HttpException, Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { ContentStudioEditorialPolicyRepository } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.editorial-policy.repository';
 import {
@@ -17,6 +17,18 @@ import {
 // Fixed messages only: never policy text, ids, zod or Prisma errors. The codes
 // are the generic CS_PROFILE_* ones of the Writing Profiles. A policy cannot be
 // archived, so there is no archived error
+// whether posts need approval is set by administrators only (Review 20); a
+// refused member is a plain 403 (HttpForbiddenException would log them out)
+const approvalSettingAdminRequired = () =>
+  new HttpException(
+    {
+      msg: 'Only organization administrators can change whether posts need approval.',
+      code: 'CS_EDITORIAL_POLICY_ADMIN_REQUIRED',
+    },
+    403
+  );
+const MANAGER_ROLES: string[] = [Role.ADMIN, Role.SUPERADMIN];
+
 const notFound = () =>
   new HttpException(
     { msg: 'Editorial policy revision not found.', code: 'CS_NOT_FOUND' },
@@ -101,10 +113,13 @@ const revisionSummary = (row: RevisionRow) => ({
 
 // The one editorial policy of an organization. It does not exist until its
 // first save, and is addressed by the organization alone. Every member may
-// read and revise it: no role, plan or billing check. It is entered by hand
-// and is context for later generation and review, not a compliance check;
-// nothing here calls an AI provider. Its workflow is the one part that is
-// enforced, by the handoff (P5-07), always from the current revision
+// read and revise it (no plan or billing check), except its workflow: only an
+// ADMIN or SUPERADMIN member may change whether a revision must be approved
+// before handoff (Review 20), checked against the current revision from the
+// request's own membership. It is entered by hand and is context for later
+// generation and review, not a compliance check; nothing here calls an AI
+// provider. Its workflow is the one part that is enforced, by the handoff
+// (P5-07), always from the current revision
 @Injectable()
 export class ContentStudioEditorialPolicyService {
   constructor(
@@ -155,6 +170,8 @@ export class ContentStudioEditorialPolicyService {
   async createRevision(input: {
     organizationId: string;
     userId: string;
+    // the request's own membership, as the auth middleware puts it
+    memberships: unknown;
     baseRevisionNumber: unknown;
     content: unknown;
   }) {
@@ -168,6 +185,13 @@ export class ContentStudioEditorialPolicyService {
     const baseRevisionNumber = input.baseRevisionNumber as number;
     const content = this.parseContent(input.content);
     const stored = storedContentStudioEditorialPolicyContent(content);
+    // the approval requirement changes only by an administrator
+    if (
+      isContentStudioApprovalRequiredForHandoff(content) !==
+      (await this.isApprovalRequiredForHandoff(input.organizationId))
+    ) {
+      this.assertManager(input.memberships, input.userId);
+    }
 
     if (baseRevisionNumber === 0) {
       return this.createFirstRevision(input, content, stored);
@@ -273,6 +297,27 @@ export class ContentStudioEditorialPolicyService {
   // Only when the organization has no policy yet. Two first saves at once:
   // the unique organizationId lets one through, the other is a conflict with
   // the revision that won
+  // Exactly one membership, the requesting user's own, enabled, with a
+  // manager role (the AI connection rule)
+  private assertManager(memberships: unknown, userId: string) {
+    if (!Array.isArray(memberships) || memberships.length !== 1) {
+      throw approvalSettingAdminRequired();
+    }
+    const [membership] = memberships as Array<{
+      role?: string;
+      disabled?: boolean;
+      userId?: string;
+    }>;
+    if (
+      !membership ||
+      membership.disabled ||
+      (membership.userId !== undefined && membership.userId !== userId) ||
+      !MANAGER_ROLES.includes(membership.role as string)
+    ) {
+      throw approvalSettingAdminRequired();
+    }
+  }
+
   private async createFirstRevision(
     input: { organizationId: string; userId: string },
     content: ContentStudioEditorialPolicyContentV1,

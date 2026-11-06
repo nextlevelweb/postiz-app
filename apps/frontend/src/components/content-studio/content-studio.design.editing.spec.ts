@@ -1784,8 +1784,17 @@ describe('Creative Studio editing: boundaries', () => {
       .split('\n')
       .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
       .join('\n');
+  // Review 20 (M1): the designs page opens the render font panel, its own
+  // module; that one import is not a font download from the editor
   const sources = FILES.map(
-    (file) => [file, code(readFileSync(join(dir, file), 'utf8'))] as const
+    (file) =>
+      [
+        file,
+        code(readFileSync(join(dir, file), 'utf8')).replace(
+          "import { ContentStudioRenderFonts } from '@gitroom/frontend/components/content-studio/content-studio.render-fonts';",
+          ''
+        ),
+      ] as const
   );
 
   it('P408-1/P408-2/P408-3/122/123/124/M33 Design Document v1 only: no Fabric, canvas state or editor fields in what is saved', () => {

@@ -84,9 +84,11 @@ const mockFetch = jest.fn();
 jest.mock('@gitroom/helpers/utils/custom.fetch', () => ({
   useFetch: () => mockFetch,
 }));
-// the signed-in member: user-1 (Ann)
+// the signed-in member: user-1 (Ann), who requests the reviews; the
+// approval tests sign in another administrator (Review 20)
+let mockUser: { id: string; role?: string } = { id: 'user-1' };
 jest.mock('@gitroom/frontend/components/layout/user.context', () => ({
-  useUser: () => ({ id: 'user-1' }),
+  useUser: () => mockUser,
 }));
 const mockToast = jest.fn();
 jest.mock('@gitroom/react/toaster/toaster', () => ({
@@ -1994,6 +1996,13 @@ describe('Claims & evidence in a package review (P5-03B)', () => {
 // --- approval decisions (P5-04) ---
 
 describe('Approval of a ready review (P5-04)', () => {
+  // an administrator who did not request the review decides
+  beforeEach(() => {
+    mockUser = { id: 'user-3', role: 'ADMIN' };
+  });
+  afterEach(() => {
+    mockUser = { id: 'user-1' };
+  });
   const read = (file: string) =>
     readFileSync(join(__dirname, file), 'utf8').replace(/\/\/.*$/gm, '');
   const readyReview = (
@@ -2088,6 +2097,27 @@ describe('Approval of a ready review (P5-04)', () => {
     ]);
     // a ready review is still not approved
     expect(state()).toBe('Ready for approval');
+  });
+
+  it('FA15 a member who is not an administrator sees the approval but no decision', async () => {
+    mockUser = { id: 'user-3', role: 'USER' };
+    readyReview();
+    await showRevision();
+    expect(approvalState()).toBe('PENDING');
+    expect(approvalButtons()).toEqual([]);
+    expect(section().textContent).toContain(
+      'Only organization administrators decide on approval.'
+    );
+  });
+
+  it('FA16 the administrator who requested the review may refuse it but not approve it', async () => {
+    mockUser = { id: 'user-1', role: 'ADMIN' };
+    readyReview();
+    await showRevision();
+    expect(approvalButtons()).toEqual(['Refuse approval']);
+    expect(section().textContent).toContain(
+      'You requested this review, so another administrator approves it.'
+    );
   });
 
   it('FA9 approving takes an optional note: sent as null when empty, nothing else in the body', async () => {
@@ -2353,6 +2383,13 @@ describe('Approval of a ready review (P5-04)', () => {
 });
 
 describe('Approval status of exact revisions (P5-05)', () => {
+  // an administrator who did not request the review decides
+  beforeEach(() => {
+    mockUser = { id: 'user-3', role: 'ADMIN' };
+  });
+  afterEach(() => {
+    mockUser = { id: 'user-1' };
+  });
   const read = (file: string) =>
     readFileSync(join(__dirname, file), 'utf8').replace(/\/\/.*$/gm, '');
   const ready = (targetType: string, revisionId: string, n: number) => {

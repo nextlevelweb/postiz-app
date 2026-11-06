@@ -27,9 +27,11 @@ const CONNECTION_SERVICE = code(
 const CONNECTION_REPOSITORY = code(
   `${SERVICES}/content-studio.ai-connection.repository.ts`
 );
+// The editorial policy is for every member too, except its approval switch,
+// which only administrators change since Review 20 (pinned in
+// content-studio.editorial-policy.service.spec.ts ES8)
 const MEMBER_SERVICES = [
   'content-studio.writing-profile.service.ts',
-  'content-studio.editorial-policy.service.ts',
   'content-studio.audience-profile.service.ts',
   'content-studio.expertise-profile.service.ts',
   'content-studio.ai-writing.service.ts',

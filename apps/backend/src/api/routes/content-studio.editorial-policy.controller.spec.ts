@@ -185,6 +185,8 @@ describe('ContentStudioController editorial policy routes', () => {
     expect(policy.createRevision).toHaveBeenCalledWith({
       organizationId: 'org-a',
       userId: 'user-1',
+      // the request's own membership, for the approval switch (Review 20)
+      memberships: (ORG as { users?: unknown }).users,
       baseRevisionNumber: 0,
       content: content(),
     });

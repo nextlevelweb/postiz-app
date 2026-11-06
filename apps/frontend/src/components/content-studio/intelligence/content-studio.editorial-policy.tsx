@@ -6,6 +6,7 @@ import { useToaster } from '@gitroom/react/toaster/toaster';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
+import { useUser } from '@gitroom/frontend/components/layout/user.context';
 import { useSingleFlight } from '@gitroom/frontend/components/content-studio/content-studio.projects.modal';
 import {
   ContentStudioEditorialPolicyState,
@@ -246,11 +247,18 @@ export const emptyEditorialPolicyContent = (): EditorialPolicyContent => ({
   complianceNotes: '',
 });
 
+// Whether posts need approval is set by these membership roles only, as on
+// the server (Review 20); the rest of the policy is for every member
+const APPROVAL_SETTING_ROLES = ['ADMIN', 'SUPERADMIN'];
+
 export const EditorialPolicyForm: ContentStudioContentForm<
   EditorialPolicyContent
 > = ({ value, onChange, disabled }) => {
   const t = useT();
   const hintId = useId();
+  const canSetApproval = APPROVAL_SETTING_ROLES.includes(
+    useUser()?.role as string
+  );
   const set = (patch: Partial<EditorialPolicyContent>) =>
     onChange({ ...value, ...patch });
   const requireApproval = value.workflow?.requireApprovalForHandoff === true;
@@ -307,7 +315,7 @@ export const EditorialPolicyForm: ContentStudioContentForm<
           <input
             type="checkbox"
             checked={requireApproval}
-            disabled={disabled}
+            disabled={disabled || !canSetApproval}
             aria-describedby={hintId}
             onChange={(e) => {
               // off is sent as no workflow at all
@@ -330,6 +338,11 @@ export const EditorialPolicyForm: ContentStudioContentForm<
             'content_studio_policy_require_approval_hint',
             'Only revisions that are currently approved can be handed off to Postiz.'
           )}
+          {!canSetApproval &&
+            ` ${t(
+              'content_studio_policy_require_approval_admin',
+              'Only organization administrators can change this.'
+            )}`}
           {requireApproval &&
             ` ${t(
               'content_studio_policy_require_approval_on',

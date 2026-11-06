@@ -22,6 +22,8 @@ const ORG = '11111111-1111-4111-8111-111111111111';
 const OTHER_ORG = '22222222-2222-4222-8222-222222222222';
 const POLICY = '33333333-3333-4333-8333-333333333333';
 const USER = '55555555-5555-4555-8555-555555555555';
+// the request's own membership as an administrator (Review 20)
+const ADMIN = [{ role: 'ADMIN', userId: USER }];
 const REVISION = '66666666-6666-4666-8666-666666666666';
 const NEW_ID = '77777777-7777-4777-8777-777777777777';
 const T0 = new Date('2026-10-14T10:00:00.000Z');
@@ -169,6 +171,8 @@ const save = (
   service.createRevision({
     organizationId: ORG,
     userId: USER,
+    // an ordinary member: everything but the approval switch is theirs
+    memberships: [{ role: 'USER', userId: USER }],
     baseRevisionNumber: 2,
     content: content(),
     ...overrides,
@@ -512,9 +516,10 @@ describe('ContentStudioEditorialPolicyService: later saves', () => {
     repository.createRevisionWithCompareAndSwap.mockResolvedValue({
       status: 'changed',
     });
-    repository.getPolicyForOrganization.mockResolvedValueOnce(
-      policyRow({ latestRevisionNumber: 4 })
-    );
+    // the approval switch is read first (Review 20), then where the policy is
+    repository.getPolicyForOrganization
+      .mockResolvedValueOnce(policyRow())
+      .mockResolvedValueOnce(policyRow({ latestRevisionNumber: 4 }));
     expect(await httpError(save(service))).toEqual({
       status: 409,
       body: conflict(4),
@@ -526,9 +531,10 @@ describe('ContentStudioEditorialPolicyService: later saves', () => {
     repository.createRevisionWithCompareAndSwap.mockRejectedValueOnce(
       uniqueError()
     );
-    repository.getPolicyForOrganization.mockResolvedValueOnce(
-      policyRow({ latestRevisionNumber: 3 })
-    );
+    // the approval switch is read first (Review 20), then where the policy is
+    repository.getPolicyForOrganization
+      .mockResolvedValueOnce(policyRow())
+      .mockResolvedValueOnce(policyRow({ latestRevisionNumber: 3 }));
     expect(await httpError(save(service))).toEqual({
       status: 409,
       body: conflict(3),
@@ -728,18 +734,101 @@ describe('ContentStudioEditorialPolicyService: approval before handoff (P5-07)',
     ).toBe('CS_PROFILE_INTEGRITY_ERROR');
   });
 
+  it('AP1 a member who is not an administrator cannot switch approval on or off, and nothing is written', async () => {
+    for (const [current, next] of [
+      [null, true],
+      [false, true],
+      [true, false],
+    ] as const) {
+      for (const memberships of [
+        [{ role: 'USER', userId: USER }],
+        [{ role: 'ADMIN', userId: USER, disabled: true }],
+        [{ role: 'ADMIN', userId: 'someone-else' }],
+        undefined,
+      ]) {
+        const { repository, service } = setup(
+          current === null ? null : undefined
+        );
+        if (current !== null) {
+          repository.getRevisionByNumber.mockResolvedValue(
+            revisionRow(storedOf(requiring(current)))
+          );
+        }
+        expect(
+          await httpError(
+            service.createRevision({
+              organizationId: ORG,
+              userId: USER,
+              memberships,
+              baseRevisionNumber: current === null ? 0 : 2,
+              content: requiring(next),
+            })
+          )
+        ).toEqual({
+          status: 403,
+          body: {
+            msg: 'Only organization administrators can change whether posts need approval.',
+            code: 'CS_EDITORIAL_POLICY_ADMIN_REQUIRED',
+          },
+        });
+        expect(writes(repository)).toEqual([]);
+      }
+    }
+  });
+
+  it('AP2 every member still revises the rest of the policy while the switch stays as it is', async () => {
+    for (const current of [false, true]) {
+      const { repository, service } = setup();
+      repository.getRevisionByNumber.mockResolvedValue(
+        revisionRow(storedOf(requiring(current)))
+      );
+      await service.createRevision({
+        organizationId: ORG,
+        userId: USER,
+        memberships: [{ role: 'USER', userId: USER }],
+        baseRevisionNumber: 2,
+        content: { ...requiring(current), principles: ['A new principle'] },
+      });
+      expect(writes(repository)).toHaveLength(1);
+    }
+  });
+
+  it('AP3 an ADMIN or SUPERADMIN switches approval on and off', async () => {
+    for (const role of ['ADMIN', 'SUPERADMIN']) {
+      for (const [current, next] of [
+        [false, true],
+        [true, false],
+      ]) {
+        const { repository, service } = setup();
+        repository.getRevisionByNumber.mockResolvedValue(
+          revisionRow(storedOf(requiring(current)))
+        );
+        await service.createRevision({
+          organizationId: ORG,
+          userId: USER,
+          memberships: [{ role, userId: USER }],
+          baseRevisionNumber: 2,
+          content: requiring(next),
+        });
+        expect(writes(repository)).toHaveLength(1);
+      }
+    }
+  });
+
   it('POL3 saving the setting on is a new revision; off again is the content of before (same hash)', async () => {
     const { repository, service } = setup();
     uuid.mockReturnValue(NEW_ID as ReturnType<typeof randomUUID>);
     await service.createRevision({
       organizationId: ORG,
       userId: USER,
+      memberships: ADMIN,
       baseRevisionNumber: 2,
       content: requiring(true),
     });
     await service.createRevision({
       organizationId: ORG,
       userId: USER,
+      memberships: ADMIN,
       baseRevisionNumber: 3,
       content: requiring(false),
     });
@@ -776,6 +865,7 @@ describe('ContentStudioEditorialPolicyService: approval before handoff (P5-07)',
             service.createRevision({
               organizationId: ORG,
               userId: USER,
+              memberships: ADMIN,
               baseRevisionNumber: 2,
               content: bad,
             })
@@ -797,10 +887,17 @@ describe('ContentStudioEditorialPolicyService source', () => {
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '');
 
-  it('ES8/ES29 has no role, billing, AI, provider, fetching or checker dependency', () => {
+  it('ES8/ES29 has no billing, AI, provider, fetching or checker dependency; its one role check is the approval switch (Review 20)', () => {
     expect(text).not.toMatch(
-      /Role\.|assertManager|CheckPolicies|Sections\.|subscription|stripe|credit|AIExecution|ai\.execution|ai\.provider|AIProviderResolver|AIConnection|generateText|from 'openai'|@anthropic-ai|@ai-sdk|safeFetch|\bfetch\(|score|compliant/i
+      /CheckPolicies|Sections\.|subscription|stripe|credit|AIExecution|ai\.execution|ai\.provider|AIProviderResolver|AIConnection|generateText|from 'openai'|@anthropic-ai|@ai-sdk|safeFetch|\bfetch\(|score|compliant/i
     );
+    expect(text.match(/this\.assertManager\(/g)).toHaveLength(1);
+    expect(text).toContain(`    if (
+      isContentStudioApprovalRequiredForHandoff(content) !==
+      (await this.isApprovalRequiredForHandoff(input.organizationId))
+    ) {
+      this.assertManager(input.memberships, input.userId);
+    }`);
   });
 
   it('logs nothing and never serializes the policy for a message', () => {

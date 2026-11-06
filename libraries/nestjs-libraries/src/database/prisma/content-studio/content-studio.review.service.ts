@@ -1,5 +1,5 @@
 import { HttpException, Injectable, Logger } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import {
   ContentStudioApprovalRow,
@@ -254,6 +254,26 @@ const approvalNoteInvalid = () =>
     },
     400
   );
+const APPROVAL_MANAGER_ROLES: string[] = [Role.ADMIN, Role.SUPERADMIN];
+
+// a refused decider is a plain 403 (HttpForbiddenException would log the
+// user out)
+const approvalAdminRequired = () =>
+  new HttpException(
+    {
+      msg: 'Only organization administrators can decide on approval.',
+      code: 'CS_APPROVAL_ADMIN_REQUIRED',
+    },
+    403
+  );
+const approvalSelfNotAllowed = () =>
+  new HttpException(
+    {
+      msg: 'The member who requested the review cannot approve it.',
+      code: 'CS_APPROVAL_SELF_NOT_ALLOWED',
+    },
+    403
+  );
 const approvalConflict = () =>
   new HttpException(
     {
@@ -436,10 +456,12 @@ const parented = (
 // it was made on: one made on a history someone else has since extended
 // is a conflict, never reinterpreted. Before any approval is read or
 // decided, the review, its exact revision and (for a package review) every
-// claim assessment are checked again, without changing any of them. Every
-// member may decide, the requester and the reviewers included: there are
-// no approver roles yet. A refusal requests no changes and posts nothing;
-// nothing here gates a handoff or publishing.
+// claim assessment are checked again, without changing any of them. Only an
+// ADMIN or SUPERADMIN member decides (Review 20), from the request's own
+// membership as for AI connections, and the member who requested the review
+// never approves it (refusing or withdrawing stays open to them). There are
+// no named approvers or groups. A refusal requests no changes and posts
+// nothing; nothing here gates a handoff or publishing.
 //
 // Approval binding (P5-05) answers whether exactly one immutable revision is
 // approved now, from that revision, its one review and that review's whole
@@ -1256,21 +1278,28 @@ export class ContentStudioReviewService {
     return this.approvalDetail(review, this.approvalHistory(review, history));
   }
 
-  // One decision by the request user: approve (an optional note), refuse
-  // or withdraw (a note saying why). It is appended onto exactly the
-  // history read here, or not at all. The review does not change
+  // One decision by the request user, an organization administrator:
+  // approve (an optional note), refuse or withdraw (a note saying why). It
+  // is appended onto exactly the history read here, or not at all. The
+  // review does not change
   async decideApproval(input: {
     organizationId: string;
     userId: string;
+    // the request's own membership, as the auth middleware puts it
+    memberships: unknown;
     reviewId: string;
     action: ContentStudioApprovalAction;
     note: unknown;
   }) {
+    this.assertApprovalManager(input.memberships, input.userId);
     const decision: ContentStudioApprovalDecision =
       CONTENT_STUDIO_APPROVAL_ACTIONS[input.action];
     const review = this.reviewDetail(
       await this.getRow(input.organizationId, input.reviewId)
     );
+    if (decision === 'APPROVED' && review.requestedBy.id === input.userId) {
+      throw approvalSelfNotAllowed();
+    }
     if (!isContentStudioApprovalAvailable(review.state)) {
       throw approvalUnavailable();
     }
@@ -1338,6 +1367,27 @@ export class ContentStudioReviewService {
         )
       )
     );
+  }
+
+  // Exactly one membership, the requesting user's own, enabled, with a
+  // manager role. Anything else is refused (the AI connection rule)
+  private assertApprovalManager(memberships: unknown, userId: string) {
+    if (!Array.isArray(memberships) || memberships.length !== 1) {
+      throw approvalAdminRequired();
+    }
+    const [membership] = memberships as Array<{
+      role?: string;
+      disabled?: boolean;
+      userId?: string;
+    }>;
+    if (
+      !membership ||
+      membership.disabled ||
+      (membership.userId !== undefined && membership.userId !== userId) ||
+      !APPROVAL_MANAGER_ROLES.includes(membership.role as string)
+    ) {
+      throw approvalAdminRequired();
+    }
   }
 
   // --- approval binding (P5-05) ---

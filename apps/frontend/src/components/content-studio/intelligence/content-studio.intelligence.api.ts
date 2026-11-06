@@ -598,6 +598,11 @@ export const profileErrorMessage = (
   error: unknown
 ) => {
   switch (codeOf(error)) {
+    case 'CS_EDITORIAL_POLICY_ADMIN_REQUIRED':
+      return t(
+        'content_studio_policy_require_approval_admin',
+        'Only organization administrators can change this.'
+      );
     case 'CS_PROFILE_INVALID':
       return t(
         'content_studio_profile_error_invalid',

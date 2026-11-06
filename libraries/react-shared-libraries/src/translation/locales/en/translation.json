@@ -2543,5 +2543,8 @@
   "content_studio_render_font_storage_unavailable": "Private render font storage is not configured, so fonts cannot be uploaded yet. Designs still render with the built-in font.",
   "content_studio_render_font_not_found": "This render font no longer exists.",
   "content_studio_render_font_error": "The render font could not be saved. Try again.",
-  "content_studio_render_fonts": "Render fonts"
+  "content_studio_render_fonts": "Render fonts",
+  "content_studio_approval_admin_only": "Only organization administrators decide on approval.",
+  "content_studio_approval_not_own": "You requested this review, so another administrator approves it.",
+  "content_studio_policy_require_approval_admin": "Only organization administrators can change this."
 }

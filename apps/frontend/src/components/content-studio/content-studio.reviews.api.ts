@@ -674,6 +674,16 @@ export const reviewErrorMessage = (t: Translate, error: unknown) => {
         'Approval is only available once the review is ready for approval.'
       );
     case 'CS_APPROVAL_INVALID_DECISION':
+    case 'CS_APPROVAL_ADMIN_REQUIRED':
+      return t(
+        'content_studio_approval_admin_only',
+        'Only organization administrators decide on approval.'
+      );
+    case 'CS_APPROVAL_SELF_NOT_ALLOWED':
+      return t(
+        'content_studio_approval_not_own',
+        'You requested this review, so another administrator approves it.'
+      );
     case 'CS_APPROVAL_CONFLICT':
       return t(
         'content_studio_approval_error_state',

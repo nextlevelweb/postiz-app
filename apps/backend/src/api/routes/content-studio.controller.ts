@@ -178,6 +178,12 @@ const contentStudioValidationPipe = new ValidationPipe({
   forbidNonWhitelisted: true,
 });
 
+// The request user's own membership: the organization as the auth
+// middleware puts it on the request holds only that one (the approval
+// services check its role)
+const requestMembership = (org: Organization) =>
+  (org as Organization & { users?: unknown }).users;
+
 // A render font upload: one `file` part held in memory (never written to a
 // temporary or upload folder, never through the Media upload engine) and the
 // three tuple fields. One byte over the renderer's limit still reaches the
@@ -1045,7 +1051,9 @@ export class ContentStudioController {
   }
 
   // The editorial policy: one per organization, addressed by the request
-  // organization and never by an id. Every member may read and revise it
+  // organization and never by an id. Every member may read and revise it;
+  // whether posts need approval is changed by an administrator only (checked
+  // by the service from the request's own membership, Review 20)
   @Get('/editorial-policy')
   getEditorialPolicy(@GetOrgFromRequest() org: Organization) {
     return this._contentStudioEditorialPolicyService.getPolicy(org.id);
@@ -1060,6 +1068,7 @@ export class ContentStudioController {
     return this._contentStudioEditorialPolicyService.createRevision({
       organizationId: org.id,
       userId: user.id,
+      memberships: requestMembership(org),
       baseRevisionNumber: body.baseRevisionNumber,
       content: body.content,
     });
@@ -1940,7 +1949,8 @@ export class ContentStudioController {
 
   // Approval (P5-04) of a review that is ready for approval: its current
   // state and decision history, and one route per decision. Every member
-  // may decide. The decision comes from the route, its note from the body;
+  // reads it; an organization administrator decides, and never approves a
+  // review they requested (checked by the service, Review 20). The decision comes from the route, its note from the body;
   // the actor, sequence, revision and hash from the request and the server.
   // A decision is never edited or deleted: it is withdrawn. Nothing here
   // changes the review or gates a handoff
@@ -1966,6 +1976,7 @@ export class ContentStudioController {
     return this._contentStudioReviewService.decideApproval({
       organizationId: org.id,
       userId: user.id,
+      memberships: requestMembership(org),
       reviewId: id,
       action: 'approve',
       note: body.note,
@@ -1983,6 +1994,7 @@ export class ContentStudioController {
     return this._contentStudioReviewService.decideApproval({
       organizationId: org.id,
       userId: user.id,
+      memberships: requestMembership(org),
       reviewId: id,
       action: 'refuse',
       note: body.note,
@@ -2001,6 +2013,7 @@ export class ContentStudioController {
     return this._contentStudioReviewService.decideApproval({
       organizationId: org.id,
       userId: user.id,
+      memberships: requestMembership(org),
       reviewId: id,
       action: 'withdraw',
       note: body.note,

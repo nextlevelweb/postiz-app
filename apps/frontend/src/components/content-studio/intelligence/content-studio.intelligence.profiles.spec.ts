@@ -1062,6 +1062,10 @@ describe('Editorial policy', () => {
 });
 
 describe('Editorial policy: approval before handoff (P5-07)', () => {
+  // the switch is an administrator's (Review 20)
+  beforeEach(() => {
+    mockUser.mockReturnValue({ orgId: 'org', tier: 'PRO', role: 'ADMIN' });
+  });
   const toggle = (root: HTMLElement = document.body) =>
     within(root).getByRole('checkbox', {
       name: 'Require approval before handoff',
@@ -1088,6 +1092,21 @@ describe('Editorial policy: approval before handoff (P5-07)', () => {
     )!;
     expect(hint.textContent).toBe(HINT);
     expect(document.body.textContent).not.toContain(ON_HINT);
+  });
+
+  it('FP7 a member who is not an administrator sees the switch but cannot change it; the rest stays editable', async () => {
+    mockUser.mockReturnValue({ orgId: 'org', tier: 'PRO', role: 'USER' });
+    policy = [revision(1, policyContent())];
+    await openTab('editorial', 'Version 1');
+    const box = toggle();
+    expect(box.disabled).toBe(true);
+    const hint = document.getElementById(
+      box.getAttribute('aria-describedby')!
+    )!;
+    expect(hint.textContent).toBe(
+      `${HINT} Only organization administrators can change this.`
+    );
+    expect(first('Save policy')).toBeTruthy();
   });
 
   it('FP3/FP6 turning it on saves exactly the one switch in a new policy version', async () => {

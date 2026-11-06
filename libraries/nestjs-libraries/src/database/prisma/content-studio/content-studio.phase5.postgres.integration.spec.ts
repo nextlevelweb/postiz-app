@@ -64,8 +64,9 @@ const ORG_B = '50400000-0000-4000-8000-00000000000b';
 const USER_A1 = '50400000-0000-4000-8000-0000000000a1';
 const USER_A2 = '50400000-0000-4000-8000-0000000000a2';
 const USER_B1 = '50400000-0000-4000-8000-0000000000b1';
+const USER_B2 = '50400000-0000-4000-8000-0000000000b2';
 const ORGS = [ORG_A, ORG_B];
-const USERS = [USER_A1, USER_A2, USER_B1];
+const USERS = [USER_A1, USER_A2, USER_B1, USER_B2];
 const OWNER: Record<string, string> = { [ORG_A]: USER_A1, [ORG_B]: USER_B1 };
 const REFUSAL = 'Legal has not cleared the offer.';
 const WITHDRAWAL = 'Decided too early.';
@@ -409,9 +410,12 @@ const designRevision = async (organizationId = ORG_A) => {
   });
 };
 
+// the request membership the auth middleware loads: an administrator, who
+// may decide on approval and set whether it is needed (Review 20)
 const as = (organizationId: string, userId: string) => ({
   organizationId,
   userId,
+  memberships: [{ role: 'ADMIN', userId }],
 });
 const A1 = as(ORG_A, USER_A1);
 const A2 = as(ORG_A, USER_A2);
@@ -535,11 +539,12 @@ beforeAll(async () => {
   for (const id of ORGS) {
     await client.organization.create({ data: { id, name: `P504 ${id}` } });
   }
-  // ordinary members: nothing here needs a manager or approver role
+  // administrators: since Review 20 only they decide on approval
   for (const [user, org] of [
     [USER_A1, ORG_A],
     [USER_A2, ORG_A],
     [USER_B1, ORG_B],
+    [USER_B2, ORG_B],
   ]) {
     await client.user.create({
       data: {
@@ -551,7 +556,7 @@ beforeAll(async () => {
       },
     });
     await client.userOrganization.create({
-      data: { userId: user, organizationId: org, role: 'USER' },
+      data: { userId: user, organizationId: org, role: 'ADMIN' },
     });
   }
 });
@@ -1413,8 +1418,9 @@ describe('PQ1-PQ8. The Review & Approval queue on the real database (P5-06)', ()
     for (const action of ['start', 'ready-for-approval'] as const) {
       await service.transitionReview({ ...b, id: review.id, action });
     }
+    // decided by another administrator: the requester never approves
     await service.decideApproval({
-      ...b,
+      ...as(ORG_B, USER_B2),
       reviewId: review.id,
       action: 'approve',
       note: null,
@@ -1733,8 +1739,7 @@ const requireApproval = async (organizationId: string, on: boolean) => {
   const policy = policies();
   const { latestRevisionNumber } = await policy.getPolicy(organizationId);
   await policy.createRevision({
-    organizationId,
-    userId: OWNER[organizationId],
+    ...as(organizationId, OWNER[organizationId]),
     baseRevisionNumber: latestRevisionNumber,
     content: {
       ...emptyContentStudioEditorialPolicyContent(),

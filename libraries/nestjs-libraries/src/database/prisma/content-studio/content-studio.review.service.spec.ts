@@ -57,6 +57,9 @@ const ORG_B = 'org-b';
 const USER_A = 'user-a';
 const USER_A2 = 'user-a2';
 const USER_B = 'user-b';
+// administrators who decide on reviews they did not request (Review 20)
+const USER_A3 = 'user-a3';
+const USER_B2 = 'user-b2';
 const uuid = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const PKG_REV_4 = uuid(4);
@@ -158,6 +161,8 @@ const createDb = () => {
       { id: USER_A, name: 'Ann' },
       { id: USER_A2, name: 'Bo' },
       { id: USER_B, name: 'Other' },
+      { id: USER_A3, name: 'Cy' },
+      { id: USER_B2, name: 'Other Two' },
     ] as Row[],
   };
   let clock = Date.parse('2026-10-19T10:00:00.000Z');
@@ -4419,11 +4424,14 @@ const decide = (
   action: 'approve' | 'refuse' | 'withdraw',
   note?: unknown,
   user = USER_A2,
-  org = ORG_A
+  org = ORG_A,
+  // the request's own membership: an administrator unless a test says not
+  memberships: unknown = [{ role: 'ADMIN', userId: user }]
 ) =>
   db.service.decideApproval({
     organizationId: org,
     userId: user,
+    memberships,
     reviewId,
     action,
     note,
@@ -4550,6 +4558,7 @@ describe('ContentStudioReviewService: approving (P5-04)', () => {
     await db.service.decideApproval({
       organizationId: ORG_A,
       userId: USER_A2,
+      memberships: [{ role: 'ADMIN', userId: USER_A2 }],
       reviewId: review.id,
       action: 'approve',
       note: null,
@@ -4631,12 +4640,78 @@ describe('ContentStudioReviewService: approving (P5-04)', () => {
     });
   });
 
-  it('the requester and a reviewer of the review may decide too (no approver role yet)', async () => {
+  // Review 20 (S2): administrators decide, never on their own request
+  const refusedWith = async (promise: Promise<unknown>, code: string) => {
+    const err = await promise.then(
+      () => null,
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(HttpException);
+    expect((err as HttpException).getStatus()).toBe(403);
+    expect(
+      ((err as HttpException).getResponse() as { code: string }).code
+    ).toBe(code);
+  };
+
+  it('AG1 the member who requested the review never approves it, even as an administrator; refusing stays open', async () => {
     const { db, review } = await readyPackage();
     // USER_A requested, started and readied it
-    expect((await decide(db, review.id, 'approve', null, USER_A)).state).toBe(
-      'APPROVED'
+    for (const role of ['ADMIN', 'SUPERADMIN']) {
+      await refusedWith(
+        decide(db, review.id, 'approve', null, USER_A, ORG_A, [
+          { role, userId: USER_A },
+        ]),
+        'CS_APPROVAL_SELF_NOT_ALLOWED'
+      );
+    }
+    expect(db.tables.approval).toEqual([]);
+    expect((await decide(db, review.id, 'refuse', REFUSAL, USER_A)).state).toBe(
+      'REFUSED'
     );
+  });
+
+  it('AG2 a member without an administrator membership decides nothing', async () => {
+    for (const memberships of [
+      [{ role: 'USER', userId: USER_A2 }],
+      [{ role: 'ADMIN', userId: USER_A2, disabled: true }],
+      [{ role: 'ADMIN', userId: USER_B }],
+      [
+        { role: 'ADMIN', userId: USER_A2 },
+        { role: 'ADMIN', userId: USER_A2 },
+      ],
+      [],
+      null,
+      [{ userId: USER_A2 }],
+    ]) {
+      const { db, review } = await readyPackage();
+      for (const action of ['approve', 'refuse', 'withdraw'] as const) {
+        await refusedWith(
+          decide(db, review.id, action, REFUSAL, USER_A2, ORG_A, memberships),
+          'CS_APPROVAL_ADMIN_REQUIRED'
+        );
+      }
+      expect(db.tables.approval).toEqual([]);
+    }
+  });
+
+  it('AG3 an ADMIN or SUPERADMIN who did not request the review decides', async () => {
+    for (const role of ['ADMIN', 'SUPERADMIN']) {
+      const { db, review } = await readyPackage();
+      expect(
+        (
+          await decide(db, review.id, 'approve', null, USER_A2, ORG_A, [
+            { role, userId: USER_A2 },
+          ])
+        ).state
+      ).toBe('APPROVED');
+      expect(
+        (
+          await decide(db, review.id, 'withdraw', WITHDRAWAL, USER_A2, ORG_A, [
+            { role, userId: USER_A2 },
+          ])
+        ).state
+      ).toBe('PENDING');
+    }
   });
 });
 
@@ -4830,6 +4905,7 @@ describe('ContentStudioReviewService: legal approval decisions (P5-04)', () => {
       db.service.decideApproval({
         organizationId: ORG_A,
         userId: USER_A,
+        memberships: [{ role: 'ADMIN', userId: USER_A }],
         reviewId: review.id,
         action: 'reject' as 'approve',
         note: 'x',
@@ -5204,7 +5280,7 @@ describe('ContentStudioReviewService: approval races (P5-04)', () => {
           : decide(db, review.id, 'refuse', REFUSAL),
         first === 'approve'
           ? decide(db, review.id, 'refuse', REFUSAL, USER_A)
-          : decide(db, review.id, 'approve', null, USER_A)
+          : decide(db, review.id, 'approve', null, USER_A3)
       );
       expect(results).toEqual(['ok', 'CS_APPROVAL_CONFLICT']);
       expect(db.tables.approval).toHaveLength(1);
@@ -5229,7 +5305,7 @@ describe('ContentStudioReviewService: approval races (P5-04)', () => {
     expect(
       await settle(
         decide(db, review.id, 'approve'),
-        decide(db, review.id, 'approve', null, USER_A)
+        decide(db, review.id, 'approve', null, USER_A3)
       )
     ).toEqual(['ok', 'CS_APPROVAL_CONFLICT']);
     expect(decisions(db)).toEqual([[1, 'APPROVED']]);
@@ -5256,7 +5332,7 @@ describe('ContentStudioReviewService: approval races (P5-04)', () => {
     // someone else withdraws and approves again in the meantime
     between(db, async () => {
       await decide(db, review.id, 'withdraw', 'Rechecking.', USER_A);
-      await decide(db, review.id, 'approve', 'Rechecked.', USER_A);
+      await decide(db, review.id, 'approve', 'Rechecked.', USER_A3);
     });
     expect(await code(decide(db, review.id, 'withdraw', WITHDRAWAL))).toEqual({
       status: 409,
@@ -5317,7 +5393,7 @@ describe('ContentStudioReviewService: approval races (P5-04)', () => {
       await settle(
         decide(db, review.id, 'approve'),
         decide(db, review.id, 'refuse', REFUSAL, USER_A),
-        decide(db, review.id, 'approve', null, USER_A)
+        decide(db, review.id, 'approve', null, USER_A3)
       );
       await settle(
         decide(db, review.id, 'withdraw', WITHDRAWAL),
@@ -5825,7 +5901,7 @@ describe('ContentStudioReviewService: approval binding states (P5-05)', () => {
     const { db, review } = await readyPackage();
     await decide(db, review.id, 'approve', 'First.');
     await decide(db, review.id, 'withdraw', WITHDRAWAL);
-    await decide(db, review.id, 'approve', 'Second.', USER_A);
+    await decide(db, review.id, 'approve', 'Second.', USER_A3);
     expect(await bindingOf(db, 'PACKAGE_REVISION', PKG_REV_4)).toMatchObject({
       approved: true,
       state: 'APPROVED',
@@ -5834,7 +5910,7 @@ describe('ContentStudioReviewService: approval binding states (P5-05)', () => {
         sequence: 3,
         decision: 'APPROVED',
         note: 'Second.',
-        actor: { id: USER_A, name: 'Ann' },
+        actor: { id: USER_A3, name: 'Cy' },
       },
     });
     expect(decisions(db)).toHaveLength(3);
@@ -6877,7 +6953,7 @@ const board = async () => {
   const pb = await request(db, 'PACKAGE_REVISION', PKG_REV_B, ORG_B, USER_B);
   await act(db, pb.id, 'start', ORG_B, USER_B);
   await act(db, pb.id, 'ready-for-approval', ORG_B, USER_B);
-  await decide(db, pb.id, 'approve', undefined, USER_B, ORG_B);
+  await decide(db, pb.id, 'approve', undefined, USER_B2, ORG_B);
   await request(db, 'DESIGN_REVISION', DESIGN_REV_B, ORG_B, USER_B);
   return { db, r };
 };
@@ -6887,7 +6963,7 @@ const boardB = async () => {
   const pb = await request(db, 'PACKAGE_REVISION', PKG_REV_B, ORG_B, USER_B);
   await act(db, pb.id, 'start', ORG_B, USER_B);
   await act(db, pb.id, 'ready-for-approval', ORG_B, USER_B);
-  await decide(db, pb.id, 'approve', undefined, USER_B, ORG_B);
+  await decide(db, pb.id, 'approve', undefined, USER_B2, ORG_B);
   const dbB = await request(db, 'DESIGN_REVISION', DESIGN_REV_B, ORG_B, USER_B);
   return { db, pb, dbB };
 };
@@ -9236,7 +9312,7 @@ describe('Phase 5 audit: the tenant graph (P5-08)', () => {
     );
     await act(db, reviewB.id, 'start', ORG_B, USER_B);
     await act(db, reviewB.id, 'ready-for-approval', ORG_B, USER_B);
-    await decide(db, reviewB.id, 'approve', undefined, USER_B, ORG_B);
+    await decide(db, reviewB.id, 'approve', undefined, USER_B2, ORG_B);
     await say(db, a.reviewId, `A private remark ${SECRET}`);
     return { ...a, reviewB: reviewB.id };
   };
