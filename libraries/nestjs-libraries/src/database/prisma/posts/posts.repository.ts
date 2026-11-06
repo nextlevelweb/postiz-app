@@ -605,10 +605,14 @@ export class PostsRepository {
         },
       });
 
+      // Only a post of this organization is ever updated: an id of another
+      // organization matches nothing, so like an unknown id it creates a new
+      // post (with its own id) and leaves the other one untouched
       posts.push(
         await this._post.model.post.upsert({
           where: {
             id: value.id || uuidv4(),
+            organizationId: orgId,
           },
           create: { ...updateData('create') },
           update: {
@@ -667,6 +671,7 @@ export class PostsRepository {
       ? (
           await this._post.model.post.findFirst({
             where: {
+              organizationId: orgId,
               group: body.group,
               deletedAt: null,
               parentPostId: null,
@@ -678,9 +683,11 @@ export class PostsRepository {
         )?.id!
       : undefined;
 
+    // the sweeps only ever touch this organization's posts of the group
     if (body.group && !keepGroup) {
       await this._post.model.post.updateMany({
         where: {
+          organizationId: orgId,
           group: body.group,
           deletedAt: null,
         },
@@ -696,6 +703,7 @@ export class PostsRepository {
     if (body.group && keepGroup) {
       await this._post.model.post.updateMany({
         where: {
+          organizationId: orgId,
           group: body.group,
           deletedAt: null,
           id: {
