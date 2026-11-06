@@ -97,7 +97,9 @@ export class AuthService {
         await this._emailService.sendEmail(
           body.email,
           'Activate your account',
-          `Click <a href="${process.env.FRONTEND_URL}/auth/activate/${obj.jwt}">here</a> to activate your account`,
+          `Click <a href="${process.env.FRONTEND_URL}/auth/activate/${this.activationJwt(
+            createdUser
+          )}">here</a> to activate your account`,
           'top'
         );
         return obj;
@@ -153,6 +155,8 @@ export class AuthService {
     try {
       const getOrg: any = AuthChecker.verifyJWT(cookie);
       if (
+        // an invite only (one signed before purposes existed has none)
+        (getOrg.purpose !== undefined && getOrg.purpose !== 'invite') ||
         typeof getOrg.orgId !== 'string' ||
         typeof getOrg.id !== 'string' ||
         !['USER', 'ADMIN'].includes(getOrg.role) ||
@@ -267,10 +271,14 @@ export class AuthService {
       return false;
     }
 
-    const resetValues = AuthChecker.signJWT({
-      id: user.id,
-      expires: dayjs().add(20, 'minutes').format('YYYY-MM-DD HH:mm:ss'),
-    });
+    const resetValues = AuthChecker.signJWT(
+      {
+        id: user.id,
+        expires: dayjs().add(20, 'minutes').format('YYYY-MM-DD HH:mm:ss'),
+        purpose: 'password_reset',
+      },
+      { expiresIn: '20m' }
+    );
 
     await this._notificationService.sendEmail(
       user.email,
@@ -283,8 +291,15 @@ export class AuthService {
     const user = AuthChecker.verifyJWT(body.token) as {
       id: string;
       expires: string;
+      purpose?: string;
     };
-    if (typeof user.id !== 'string' || dayjs(user.expires).isBefore(dayjs())) {
+    // a reset link only (one signed before purposes existed has none)
+    if (
+      typeof user.id !== 'string' ||
+      typeof user.expires !== 'string' ||
+      (user.purpose !== undefined && user.purpose !== 'password_reset') ||
+      dayjs(user.expires).isBefore(dayjs())
+    ) {
       return false;
     }
 
@@ -296,7 +311,12 @@ export class AuthService {
       id: string;
       activated: boolean;
       email: string;
+      purpose?: string;
     };
+    // an activation link only (one signed before purposes existed has none)
+    if (user.purpose !== undefined && user.purpose !== 'activation') {
+      return false;
+    }
     if (user.id && !user.activated) {
       const getUserAgain = await this._userService.getUserByEmail(user.email);
       if (getUserAgain.activated) {
@@ -323,7 +343,7 @@ export class AuthService {
       throw new Error('Account is already activated');
     }
 
-    const jwt = await this.jwt(user);
+    const jwt = this.activationJwt(user);
 
     await this._emailService.sendEmail(
       user.email,
@@ -374,10 +394,33 @@ export class AuthService {
     return { token };
   }
 
+  // A login session: the user row without its password, marked as a
+  // session; it has no expiry (the cookie has one)
   private async jwt(user: User) {
     if (user.password) {
       delete user.password;
     }
-    return AuthChecker.signJWT(user);
+    return AuthChecker.signJWT({ ...this.claims(user), purpose: 'session' });
+  }
+
+  // The emailed activation link: the same user row, marked as one, valid for
+  // 7 days (a new one can be sent from the login page)
+  private activationJwt(user: User) {
+    return AuthChecker.signJWT(
+      { ...this.claims(user), purpose: 'activation' },
+      { expiresIn: '7d' }
+    );
+  }
+
+  // what a token carries about the user: never the password, nor the
+  // purpose and times of the token it may come from (activate() re-signs an
+  // activation link as a session)
+  private claims(user: User) {
+    const { password, iat, exp, purpose, ...claims } = user as User & {
+      iat?: number;
+      exp?: number;
+      purpose?: string;
+    };
+    return claims;
   }
 }

@@ -1,4 +1,4 @@
-import { sign, verify } from 'jsonwebtoken';
+import { sign, SignOptions, verify } from 'jsonwebtoken';
 import { hashSync, compareSync } from 'bcrypt';
 import crypto from 'crypto';
 // @ts-ignore
@@ -39,11 +39,42 @@ export class AuthService {
   static comparePassword(password: string, hash: string) {
     return compareSync(password, hash);
   }
-  static signJWT(value: object) {
-    return sign(value, process.env.JWT_SECRET!);
+  // Tokens signed since Review 20 say what they are for (`purpose`: session,
+  // password_reset, invite, activation, connect-link) and, unless they are a
+  // session, when they expire (`exp`, enforced by verify)
+  static signJWT(value: object, options?: Pick<SignOptions, 'expiresIn'>) {
+    return sign(value, process.env.JWT_SECRET!, options);
   }
   static verifyJWT(token: string) {
     return verify(token, process.env.JWT_SECRET!);
+  }
+
+  // A login session only. Every token kind shares JWT_SECRET, so a password
+  // reset, invite or activation link would otherwise work as a session.
+  // Refused: another purpose, and the shapes those links had before they
+  // carried one (a reset has `expires`, an invite `timeLimit` and `orgId`, an
+  // activation link `activated: false`). A session is the user row, which has
+  // none of these, so sessions signed before purposes existed stay valid
+  static verifySessionJWT(token: string): { id: string } & Record<
+    string,
+    unknown
+  > {
+    const payload = verify(token, process.env.JWT_SECRET!) as unknown;
+    if (!payload || typeof payload !== 'object') {
+      throw new Error('Not a session token');
+    }
+    const claims = payload as Record<string, unknown>;
+    if (
+      (claims.purpose !== undefined && claims.purpose !== 'session') ||
+      'expires' in claims ||
+      'timeLimit' in claims ||
+      'orgId' in claims ||
+      claims.activated === false ||
+      typeof claims.id !== 'string'
+    ) {
+      throw new Error('Not a session token');
+    }
+    return claims as { id: string } & Record<string, unknown>;
   }
 
   static fixedEncryption(value: string) {

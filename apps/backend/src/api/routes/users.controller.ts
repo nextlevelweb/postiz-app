@@ -227,8 +227,8 @@ export class UsersController {
   private getRequestUserId(req: Request): string | null {
     try {
       const auth = (req.headers.auth as string) || req.cookies?.auth;
-      const payload = AuthChecker.verifyJWT(auth) as { id?: string } | null;
-      return payload?.id || null;
+      const payload = AuthChecker.verifySessionJWT(auth);
+      return payload.id || null;
     } catch {
       return null;
     }

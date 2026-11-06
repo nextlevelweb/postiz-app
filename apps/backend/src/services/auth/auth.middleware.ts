@@ -37,10 +37,11 @@ export class AuthMiddleware implements NestMiddleware {
       throw new HttpForbiddenException();
     }
     try {
-      // Verify the JWT signature only. Never trust authorization-relevant
-      // claims (id, isSuperAdmin, activated) from the token body — always
-      // re-resolve the user from the database using the id.
-      const payload = AuthService.verifyJWT(auth) as User | null;
+      // Verify the JWT signature and that it is a session (no reset, invite
+      // or activation link). Never trust authorization-relevant claims (id,
+      // isSuperAdmin, activated) from the token body — always re-resolve the
+      // user from the database using the id.
+      const payload = AuthService.verifySessionJWT(auth) as unknown as User;
       const orgHeader = req.cookies.showorg || req.headers.showorg;
 
       if (!payload?.id || typeof payload.id !== 'string') {

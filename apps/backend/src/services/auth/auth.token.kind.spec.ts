@@ -124,8 +124,22 @@ describe('team invite cookie', () => {
       new URL(url, 'https://app.example.com').searchParams.get('org')!
     ) as Record<string, unknown>;
 
+    // Review 20: an invite says it is one and expires with its time limit
     expect(Object.keys(payload).sort()).toEqual(
-      ['email', 'iat', 'id', 'orgId', 'role', 'timeLimit'].sort()
+      [
+        'email',
+        'exp',
+        'iat',
+        'id',
+        'orgId',
+        'purpose',
+        'role',
+        'timeLimit',
+      ].sort()
+    );
+    expect(payload.purpose).toBe('invite');
+    expect((payload.exp as number) - (payload.iat as number)).toBe(
+      2 * 24 * 3600
     );
     expect(payload).toEqual(
       expect.objectContaining({ orgId: 'org-1', role: 'USER' })
@@ -158,6 +172,223 @@ describe('password reset', () => {
       } as any)
     ).toBe('updated');
     expect(updatePassword).toHaveBeenCalledWith('user-1', 'new-password');
+  });
+});
+
+// Review 20 (S1): what the session middleware takes, with a real verify and
+// a user lookup that finds an activated user for any string id
+const middlewareFor = () => {
+  const getUserById = jest.fn(async (id: string) => ({
+    id,
+    activated: true,
+    isSuperAdmin: false,
+  }));
+  const getOrgsByUserId = jest.fn(async () => [
+    { id: 'org-1', apiKey: 'stored-key', users: [{ role: 'USER' }] },
+  ]);
+  const middleware = new AuthMiddleware(
+    { getOrgsByUserId } as any,
+    { getUserById } as any
+  );
+  const run = async (auth: string) => {
+    const req = { headers: { auth }, cookies: {} } as any;
+    const next = jest.fn();
+    await middleware.use(
+      req,
+      { cookie: jest.fn(), header: jest.fn() } as any,
+      next
+    );
+    return { req, next };
+  };
+  return { getUserById, run };
+};
+const userRow = (extra: object = {}) => ({
+  id: 'user-1',
+  email: 'user@example.com',
+  providerName: 'LOCAL',
+  name: 'User',
+  isSuperAdmin: false,
+  activated: true,
+  timezone: 0,
+  ...extra,
+});
+
+describe('auth middleware: only sessions (Review 20)', () => {
+  it('TK1 accepts a session signed before purposes existed, and one marked as a session', async () => {
+    for (const token of [
+      loginToken(),
+      sign(userRow()),
+      sign(userRow({ purpose: 'session' })),
+    ]) {
+      const { run } = middlewareFor();
+      const { req, next } = await run(token);
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(req.user.id).toBe('user-1');
+    }
+  });
+
+  it('TK2 refuses every other purpose before any lookup', async () => {
+    for (const purpose of [
+      'password_reset',
+      'invite',
+      'activation',
+      'connect-link',
+      'extension',
+      '',
+      null,
+      1,
+    ]) {
+      const { run, getUserById } = middlewareFor();
+      await expect(run(sign(userRow({ purpose })))).rejects.toThrow();
+      expect(getUserById).not.toHaveBeenCalled();
+    }
+  });
+
+  it('TK3 refuses reset, invite and activation links signed before purposes existed', async () => {
+    for (const token of [
+      // a password reset: a real user id and `expires`
+      resetToken(),
+      sign({ id: 'user-1', expires: '2999-01-01 00:00:00' }),
+      // an invite
+      inviteToken(),
+      sign(userRow({ orgId: 'org-1' })),
+      sign(userRow({ timeLimit: future() })),
+      // an activation link: the user row while it was not activated
+      sign(userRow({ activated: false })),
+    ]) {
+      const { run, getUserById } = middlewareFor();
+      await expect(run(token)).rejects.toThrow();
+      expect(getUserById).not.toHaveBeenCalled();
+    }
+  });
+
+  it('TK4 refuses an expired, malformed, unsigned or foreign token', async () => {
+    const expired = AuthChecker.signJWT(userRow({ purpose: 'session' }), {
+      expiresIn: -10,
+    });
+    const header = Buffer.from('{"alg":"none","typ":"JWT"}').toString(
+      'base64url'
+    );
+    const body = Buffer.from(JSON.stringify(userRow())).toString('base64url');
+    const foreign = require('jsonwebtoken').sign(userRow(), 'another-secret');
+    for (const token of [
+      expired,
+      'not-a-jwt',
+      `${header}.${body}.`,
+      foreign,
+      sign({ id: { not: '' } }),
+    ]) {
+      const { run, getUserById } = middlewareFor();
+      await expect(run(token)).rejects.toThrow();
+      expect(getUserById).not.toHaveBeenCalled();
+    }
+  });
+});
+
+describe('purpose-marked links (Review 20)', () => {
+  const users = (activated = false) => ({
+    getUserByEmail: jest.fn(async () => ({ ...userRow(), activated })),
+    activateUser: jest.fn(),
+    updatePassword: jest.fn().mockReturnValue('updated'),
+  });
+
+  it('TK5 a password reset says it is one, expires in 20 minutes and works only as a reset', async () => {
+    const sendEmail = jest.fn();
+    const service = new AuthService(
+      {
+        getUserByEmail: jest.fn(async () => ({
+          ...userRow(),
+          password: 'hash',
+        })),
+      } as any,
+      {} as any,
+      { sendEmail } as any,
+      {} as any,
+      {} as any
+    );
+    await service.forgot('user@example.com');
+    const link = (sendEmail.mock.calls[0][2] as string).match(
+      /auth\/forgot\/([^"]+)"/
+    )![1];
+    const payload = AuthChecker.verifyJWT(link) as Record<string, any>;
+    expect(payload).toMatchObject({ id: 'user-1', purpose: 'password_reset' });
+    expect(payload.exp - payload.iat).toBe(20 * 60);
+    // a reset, never a session
+    const { run } = middlewareFor();
+    await expect(run(link)).rejects.toThrow();
+    const reset = authService({ users: users() });
+    expect(
+      reset.forgotReturn({ token: link, password: 'new-password' } as any)
+    ).toBe('updated');
+    // a session or an invite is not a reset
+    for (const token of [
+      sign(userRow({ purpose: 'session' })),
+      sign({ id: 'user-1', expires: future(), purpose: 'invite' }),
+      loginToken(),
+    ]) {
+      expect(
+        reset.forgotReturn({ token, password: 'new-password' } as any)
+      ).toBe(false);
+    }
+  });
+
+  it('TK6 an activation link is one, expires in 7 days, and activates into a session without its purpose or expiry', async () => {
+    const sendEmail = jest.fn();
+    const store = users(false);
+    const service = new AuthService(
+      store as any,
+      {} as any,
+      {} as any,
+      { sendEmail } as any,
+      {} as any
+    );
+    // the tracking and newsletter side effects are not under test
+    (service as any)._track = jest.fn(async () => undefined);
+    jest
+      .spyOn(
+        require('@gitroom/nestjs-libraries/newsletter/newsletter.service')
+          .NewsletterService,
+        'register'
+      )
+      .mockResolvedValue(undefined as never);
+    await service.resendActivationEmail('user@example.com');
+    const link = (sendEmail.mock.calls[0][2] as string).match(
+      /auth\/activate\/([^"]+)"/
+    )![1];
+    const payload = AuthChecker.verifyJWT(link) as Record<string, any>;
+    expect(payload).toMatchObject({ purpose: 'activation', activated: false });
+    expect(payload.password).toBeUndefined();
+    expect(payload.exp - payload.iat).toBe(7 * 24 * 3600);
+    // a link, never a session
+    await expect(middlewareFor().run(link)).rejects.toThrow();
+
+    const session = (await service.activate(link, '')) as string;
+    const claims = AuthChecker.verifyJWT(session) as Record<string, any>;
+    expect(claims).toMatchObject({
+      id: 'user-1',
+      purpose: 'session',
+      activated: true,
+    });
+    expect(claims.exp).toBeUndefined();
+    expect(store.activateUser).toHaveBeenCalledWith('user-1');
+    const { next } = await middlewareFor().run(session);
+    expect(next).toHaveBeenCalledTimes(1);
+    // a session or a reset is not an activation link
+    for (const token of [
+      sign(userRow({ purpose: 'session', activated: false })),
+      sign(userRow({ purpose: 'password_reset', activated: false })),
+    ]) {
+      expect(await service.activate(token, '')).toBe(false);
+    }
+  });
+
+  it('TK7 an invite with another purpose is not an invite', () => {
+    expect(
+      authService().getOrgFromCookie(inviteToken({ purpose: 'session' }))
+    ).toBe(false);
+    expect(
+      authService().getOrgFromCookie(inviteToken({ purpose: 'invite' }))
+    ).toEqual(expect.objectContaining({ orgId: 'org-1' }));
   });
 });
 
