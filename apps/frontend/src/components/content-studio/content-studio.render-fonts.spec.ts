@@ -135,7 +135,9 @@ describe('Render fonts', () => {
   it('RF3 an administrator uploads the file with exactly the tuple, then the list reloads', async () => {
     mockRole = 'ADMIN';
     show();
-    await screen.findByText('No fonts uploaded. Designs use the built-in font.');
+    await screen.findByText(
+      'No fonts uploaded. Designs use the built-in font.'
+    );
     const upload = file(16);
     fill('  Acme Sans ', upload);
     fireEvent.click(screen.getByRole('button', { name: 'Save font' }));
@@ -163,7 +165,9 @@ describe('Render fonts', () => {
   it('RF4 refuses a file over 32 MB and a missing family before anything is sent', async () => {
     mockRole = 'SUPERADMIN';
     show();
-    await screen.findByText('No fonts uploaded. Designs use the built-in font.');
+    await screen.findByText(
+      'No fonts uploaded. Designs use the built-in font.'
+    );
     fill('Acme', file(33_554_433));
     fireEvent.click(screen.getByRole('button', { name: 'Save font' }));
     expect(
@@ -181,7 +185,9 @@ describe('Render fonts', () => {
     mockRole = 'ADMIN';
     uploadReply = reply(503, { code: 'CS_RENDER_FONT_STORAGE_UNAVAILABLE' });
     show();
-    await screen.findByText('No fonts uploaded. Designs use the built-in font.');
+    await screen.findByText(
+      'No fonts uploaded. Designs use the built-in font.'
+    );
     fill('Acme', file(16));
     fireEvent.click(screen.getByRole('button', { name: 'Save font' }));
     expect(

@@ -181,7 +181,9 @@ describe('render asset snapshot v1', () => {
       refused(snapshot({ fonts: [entry] }));
     }
     // a tuple is drawn by one font only
-    refused(snapshot({ fonts: [font(1, { family: 'Inter' }), regular('Inter')] }));
+    refused(
+      snapshot({ fonts: [font(1, { family: 'Inter' }), regular('Inter')] })
+    );
   });
 
   it('RS13/RS14 refuses an image pair twice and keeps another SHA-256 apart', () => {

@@ -910,7 +910,10 @@ describe('AI connections: sealed credentials on PostgreSQL (local test keyring)'
         data: { sealedCredential: envelope },
       });
     }
-    const resolver = new ContentStudioAIProviderResolver(connections, CODEX_GATE);
+    const resolver = new ContentStudioAIProviderResolver(
+      connections,
+      CODEX_GATE
+    );
     for (const [organizationId, connectionId] of [
       [ORG_A, sameOrg.id],
       [ORG_B, otherOrg.id],
@@ -1658,6 +1661,8 @@ describe('Editorial policy on PostgreSQL', () => {
     service().createRevision({
       organizationId,
       userId: OWNER[organizationId],
+      // the request membership: these saves leave the approval switch off
+      memberships: [{ role: 'USER', userId: OWNER[organizationId] }],
       baseRevisionNumber,
       content: editorialContent(marker),
     });
@@ -2161,7 +2166,9 @@ describe('AI execution and AI writing on PostgreSQL (fake adapter, no network)',
     const connectionB = await createConnection(ORG_B);
     expect(
       await httpRefusal(
-        writing(new ContentStudioAIProviderResolver(connections, CODEX_GATE)).proposeItem({
+        writing(
+          new ContentStudioAIProviderResolver(connections, CODEX_GATE)
+        ).proposeItem({
           organizationId: ORG_A,
           userId: USER_A,
           packageId,

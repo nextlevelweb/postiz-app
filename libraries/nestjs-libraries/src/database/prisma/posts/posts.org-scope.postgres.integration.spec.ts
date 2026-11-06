@@ -133,9 +133,9 @@ describe('Post create and update stay inside the organization (PostgreSQL)', () 
     expect(made.organizationId).toBe(ORG_A);
     expect(made.integrationId).toBe(INTEGRATION[ORG_A]);
     expect(made.content).toBe('Org A takeover');
-    expect(
-      await client.post.count({ where: { organizationId: ORG_B } })
-    ).toBe(1);
+    expect(await client.post.count({ where: { organizationId: ORG_B } })).toBe(
+      1
+    );
   });
 
   it('PO2 a comment id of another organization is not taken over either', async () => {

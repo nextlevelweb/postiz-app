@@ -160,9 +160,7 @@ describe('P4-05 render provenance trust boundaries', () => {
     );
     // the requested tuple and its hash, then a mapping and its asset, or a
     // bundled default font by its fixed id
-    expect(
-      schema.match(/^\s{2,4}(\w+):/gm)?.map((key) => key.trim())
-    ).toEqual([
+    expect(schema.match(/^\s{2,4}(\w+):/gm)?.map((key) => key.trim())).toEqual([
       'family:',
       'weight:',
       'style:',

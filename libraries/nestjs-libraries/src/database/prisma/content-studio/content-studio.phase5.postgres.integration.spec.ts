@@ -65,8 +65,10 @@ const USER_A1 = '50400000-0000-4000-8000-0000000000a1';
 const USER_A2 = '50400000-0000-4000-8000-0000000000a2';
 const USER_B1 = '50400000-0000-4000-8000-0000000000b1';
 const USER_B2 = '50400000-0000-4000-8000-0000000000b2';
+// a third administrator of A, who never requests a review here
+const USER_A3 = '50400000-0000-4000-8000-0000000000a3';
 const ORGS = [ORG_A, ORG_B];
-const USERS = [USER_A1, USER_A2, USER_B1, USER_B2];
+const USERS = [USER_A1, USER_A2, USER_A3, USER_B1, USER_B2];
 const OWNER: Record<string, string> = { [ORG_A]: USER_A1, [ORG_B]: USER_B1 };
 const REFUSAL = 'Legal has not cleared the offer.';
 const WITHDRAWAL = 'Decided too early.';
@@ -419,6 +421,7 @@ const as = (organizationId: string, userId: string) => ({
 });
 const A1 = as(ORG_A, USER_A1);
 const A2 = as(ORG_A, USER_A2);
+const A3 = as(ORG_A, USER_A3);
 
 const requestReview = (targetType: string, targetRevisionId: string) =>
   service.requestReview({ ...A1, targetType, targetRevisionId });
@@ -543,6 +546,7 @@ beforeAll(async () => {
   for (const [user, org] of [
     [USER_A1, ORG_A],
     [USER_A2, ORG_A],
+    [USER_A3, ORG_A],
     [USER_B1, ORG_B],
     [USER_B2, ORG_B],
   ]) {
@@ -783,7 +787,7 @@ describe('PG5-PG10. Approval decisions under real concurrency', () => {
     const results = await Promise.all(
       actions.map((action, index) =>
         outcome(
-          decide(reviewId, action, services[index].service, index % 2 ? A1 : A2)
+          decide(reviewId, action, services[index].service, index % 2 ? A3 : A2)
         )
       )
     );
@@ -928,8 +932,8 @@ describe('PG5-PG10. Approval decisions under real concurrency', () => {
     );
     stale.repository.appendApprovalDecision = async (input) => {
       // someone else withdraws and approves again, both committed
-      await decide(reviewId, 'withdraw', service, A1);
-      await decide(reviewId, 'approve', service, A1);
+      await decide(reviewId, 'withdraw', service, A3);
+      await decide(reviewId, 'approve', service, A3);
       return original(input);
     };
     expect(await failure(decide(reviewId, 'withdraw', stale.service))).toBe(
@@ -943,8 +947,8 @@ describe('PG5-PG10. Approval decisions under real concurrency', () => {
       ])
     ).toEqual([
       [1, 'APPROVED', USER_A2],
-      [2, 'WITHDRAWN', USER_A1],
-      [3, 'APPROVED', USER_A1],
+      [2, 'WITHDRAWN', USER_A3],
+      [3, 'APPROVED', USER_A3],
     ]);
     expect((await service.getApproval({ ...A1, reviewId })).state).toBe(
       'APPROVED'
