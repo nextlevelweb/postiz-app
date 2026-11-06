@@ -16,6 +16,7 @@ on:
     paths-ignore:
       - '**/*.md'
       - 'apps/docs/**'
+  workflow_dispatch:
 
 permissions:
   contents: read
