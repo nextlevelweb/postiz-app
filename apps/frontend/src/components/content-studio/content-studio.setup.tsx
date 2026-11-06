@@ -12,7 +12,6 @@ import {
 import clsx from 'clsx';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import i18next from 'i18next';
 import { Button } from '@gitroom/react/form/button';
 import { Input } from '@gitroom/react/form/input';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
@@ -947,8 +946,12 @@ export const ContentStudioSetupWizard: FC = () => {
       });
       const saved = loadContentStudioSetupDraft<SetupDraft>(organizationId);
       const choice = chooseContentStudioSetupStart(saved, savedBase);
+      // the language posts are written in comes from the content settings
+      // only (the latest audience's own language), never from the language
+      // of the interface; without one it is English, as on the server, until
+      // it is chosen in step 2 (Review 20)
       const language =
-        [audience?.currentRevision.content.locale, i18next.resolvedLanguage]
+        [audience?.currentRevision.content.locale]
           .map((value) => value?.split('-')[0])
           .find((value) => LANGUAGES.some((entry) => entry.value === value)) ??
         'en';

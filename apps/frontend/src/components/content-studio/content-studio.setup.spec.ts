@@ -1928,6 +1928,56 @@ describe('Setup assistant: the saved setup wins over this browser', () => {
       i18n.resolvedLanguage = 'nl';
     });
 
+    it('LANG8 without an audience language the posts start in English whatever the interface language', async () => {
+      for (const ui of ['nl', 'en', 'de']) {
+        i18n.resolvedLanguage = ui;
+        window.localStorage.clear();
+        state.profiles['/content-studio/audience-profiles'] = [];
+        await show();
+        fireEvent.click(button('Next'));
+        await flush();
+        expect(language()).toBe('en');
+        cleanup();
+      }
+    });
+
+    it('LANG9 a Dutch interface writes English and an English interface writes Dutch when chosen', async () => {
+      for (const [ui, chosen] of [
+        ['nl', 'en'],
+        ['en', 'nl'],
+      ]) {
+        i18n.resolvedLanguage = ui;
+        window.localStorage.clear();
+        state.profiles['/content-studio/audience-profiles'] = [];
+        mockFetch.mockClear();
+        await show();
+        fireEvent.click(button('Next'));
+        await flush();
+        fillCompany();
+        choose(chosen);
+        fireEvent.click(button('Draft my profile with AI'));
+        await flush();
+        expect(
+          writes().find((w) => w.url === '/content-studio/ai/setup/proposal')
+            ?.body.language
+        ).toBe(chosen);
+        cleanup();
+      }
+    });
+
+    it('LANG10 changing the interface language changes no chosen post language', async () => {
+      state.profiles['/content-studio/audience-profiles'] = [];
+      await show();
+      fireEvent.click(button('Next'));
+      await flush();
+      choose('nl');
+      i18n.resolvedLanguage = 'de';
+      cleanup();
+      await show();
+      opened(2);
+      expect(language()).toBe('nl');
+    });
+
     it('LANG1/LANG7 an explicit Nederlands survives a reload, and is not reset to the interface language', async () => {
       savedIn('en');
       await show();
