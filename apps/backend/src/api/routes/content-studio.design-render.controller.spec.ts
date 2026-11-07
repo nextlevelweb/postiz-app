@@ -15,6 +15,8 @@ import {
   PIPES_METADATA,
 } from '@nestjs/common/constants';
 import fs from 'fs';
+import { Readable } from 'stream';
+import { of } from 'rxjs';
 import path from 'path';
 import { Organization, User } from '@prisma/client';
 import { ContentStudioController } from '@gitroom/backend/api/routes/content-studio.controller';
@@ -261,7 +263,7 @@ describe('ContentStudioController design render and render font routes', () => {
       "@UseInterceptors(FileInterceptor('file', renderFontUploadOptions))"
     );
     expect(text).toMatch(
-      /const renderFontUploadOptions = \{\n\s+limits: \{\n\s+fileSize: RENDER_FONT_FILE_MAX_BYTES \+ 1,\n\s+files: 1,\n\s+fields: 3,\n\s+parts: 4,\n\s+\},\n\};/
+      /const renderFontUploadOptions = \{\n\s+limits: \{\n\s+fileSize: RENDER_FONT_FILE_MAX_BYTES \+ 1,\n\s+files: 1,\n\s+fields: 3,\n\s+parts: 5,\n\s+\},\n\};/
     );
     expect(RENDER_FONT_FILE_MAX_BYTES).toBe(33_554_432);
     expect(text).not.toMatch(
@@ -446,6 +448,90 @@ describe('Render font upload DTO validation', () => {
     ]) {
       await rejected(UploadContentStudioRenderFontDto, { ...valid, ...extra });
     }
+  });
+});
+
+// Review 20: the upload's real interceptor, fed real multipart bodies. The
+// pinned limits above only said what the options were, not that a normal
+// upload passes them
+describe('Render font upload multipart limits', () => {
+  const BOUNDARY = 'r20fontboundary';
+  const multipart = (
+    parts: Array<{ name: string; value: string | Buffer; file?: boolean }>
+  ) =>
+    Buffer.concat([
+      ...parts.map(({ name, value, file }) =>
+        Buffer.concat([
+          Buffer.from(
+            `--${BOUNDARY}\r\nContent-Disposition: form-data; name="${name}"${
+              file ? '; filename="font.ttf"\r\nContent-Type: font/ttf' : ''
+            }\r\n\r\n`
+          ),
+          Buffer.from(value),
+          Buffer.from('\r\n'),
+        ])
+      ),
+      Buffer.from(`--${BOUNDARY}--\r\n`),
+    ]);
+  const intercept = async (body: Buffer) => {
+    const [Interceptor] = Reflect.getMetadata(
+      INTERCEPTORS_METADATA,
+      handler('uploadRenderFont')
+    );
+    const req = Object.assign(Readable.from([body]), {
+      headers: {
+        'content-type': `multipart/form-data; boundary=${BOUNDARY}`,
+        'content-length': String(body.length),
+      },
+    }) as Readable & { file?: { buffer: Buffer }; body?: object };
+    const next = { handle: () => of('handled') };
+    const context = {
+      switchToHttp: () => ({ getRequest: () => req, getResponse: () => ({}) }),
+    };
+    await new Interceptor().intercept(context, next);
+    return req;
+  };
+  const FONT = Buffer.from('not a real font, only bytes');
+  const fields = [
+    { name: 'family', value: 'Acme Sans' },
+    { name: 'weight', value: '400' },
+    { name: 'style', value: 'normal' },
+  ];
+
+  it('UL1 takes the three fields and the file, in either order, into memory', async () => {
+    for (const parts of [
+      [...fields, { name: 'file', value: FONT, file: true }],
+      [{ name: 'file', value: FONT, file: true }, ...fields],
+    ]) {
+      const req = await intercept(multipart(parts));
+      expect(req.body).toEqual({
+        family: 'Acme Sans',
+        weight: '400',
+        style: 'normal',
+      });
+      expect(req.file?.buffer.equals(FONT)).toBe(true);
+    }
+  });
+
+  it('UL2 still refuses a second file or a fourth field', async () => {
+    await expect(
+      intercept(
+        multipart([
+          ...fields,
+          { name: 'file', value: FONT, file: true },
+          { name: 'file', value: FONT, file: true },
+        ])
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      intercept(
+        multipart([
+          ...fields,
+          { name: 'extra', value: 'x' },
+          { name: 'file', value: FONT, file: true },
+        ])
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 });
 

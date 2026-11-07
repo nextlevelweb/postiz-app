@@ -187,13 +187,15 @@ const requestMembership = (org: Organization) =>
 // A render font upload: one `file` part held in memory (never written to a
 // temporary or upload folder, never through the Media upload engine) and the
 // three tuple fields. One byte over the renderer's limit still reaches the
-// service, which refuses it with its own code; multer stops anything larger
+// service, which refuses it with its own code; multer stops anything larger.
+// busboy refuses a request once its part count reaches `parts`, so the four
+// parts of an upload need a limit of five
 const renderFontUploadOptions = {
   limits: {
     fileSize: RENDER_FONT_FILE_MAX_BYTES + 1,
     files: 1,
     fields: 3,
-    parts: 4,
+    parts: 5,
   },
 };
 
