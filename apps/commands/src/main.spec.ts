@@ -28,6 +28,24 @@ const runMain = async () => {
 describe('apps/commands main', () => {
   let exit: jest.SpyInstance;
   let error: jest.SpyInstance;
+  // The first require of ./main compiles it, and ts-jest type-checks it with
+  // the whole import graph of the command module behind it. With no cache,
+  // as on CI, that alone can take longer than a test may: one quiet run here
+  // pays it, so each test below times only what main does. The timeout is
+  // the budget of that compile, not a wait
+  beforeAll(async () => {
+    app.select.mockImplementation(() => app);
+    app.get.mockImplementation(() => app);
+    app.exec.mockImplementation(async () => undefined);
+    app.close.mockImplementation(async () => undefined);
+    const quiet = jest.spyOn(process, 'exit').mockImplementation(((
+      code?: number
+    ) => {
+      calls.push(`exit(${code ?? ''})`);
+    }) as never);
+    await runMain();
+    quiet.mockRestore();
+  }, 60_000);
   beforeEach(() => {
     calls.length = 0;
     app.select.mockImplementation(() => app);
