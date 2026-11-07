@@ -8,6 +8,7 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import {
+  GUARDS_METADATA,
   HTTP_CODE_METADATA,
   METHOD_METADATA,
   PATH_METADATA,
@@ -15,6 +16,10 @@ import {
 } from '@nestjs/common/constants';
 import { Organization, User } from '@prisma/client';
 import { ContentStudioController } from '@gitroom/backend/api/routes/content-studio.controller';
+import {
+  CONTENT_STUDIO_RATE_WINDOW_MS,
+  ThrottlerContentStudioGuard,
+} from '@gitroom/nestjs-libraries/throttler/throttler.provider';
 import { ContentStudioService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.service';
 import { ContentStudioHandoffService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.handoff.service';
 import { ContentStudioAIConnectionService } from '@gitroom/nestjs-libraries/database/prisma/content-studio/content-studio.ai-connection.service';
@@ -483,6 +488,53 @@ describe('ContentStudioController wiring', () => {
       'PUT /packages/:id/draft',
       'PUT /reviews/:id/claims/:claimId',
     ]);
+  });
+
+  // Review 20 (S3): the writes that call an AI provider or render carry the
+  // Content Studio guard and their limit per 10 minutes; nothing else does
+  it('RL5 limits exactly the expensive writes, per user, in a 10 minute window', () => {
+    const limited = Object.getOwnPropertyNames(
+      ContentStudioController.prototype
+    )
+      .filter((name) => name !== 'constructor')
+      .map(
+        (name) =>
+          (
+            ContentStudioController.prototype as unknown as Record<
+              string,
+              object
+            >
+          )[name]
+      )
+      .filter((handler) =>
+        (Reflect.getMetadata(GUARDS_METADATA, handler) ?? []).includes(
+          ThrottlerContentStudioGuard
+        )
+      )
+      .map((handler) => {
+        expect(Reflect.getMetadata(GUARDS_METADATA, handler)).toHaveLength(1);
+        expect(Reflect.getMetadata('THROTTLER:TTLdefault', handler)).toBe(
+          CONTENT_STUDIO_RATE_WINDOW_MS
+        );
+        return [
+          `${
+            RequestMethod[Reflect.getMetadata(METHOD_METADATA, handler)]
+          } ${Reflect.getMetadata(PATH_METADATA, handler)}`,
+          Reflect.getMetadata('THROTTLER:LIMITdefault', handler),
+        ];
+      })
+      .sort();
+    expect(limited).toEqual([
+      ['POST /activation/first-post', 10],
+      ['POST /ai/connections/:id/test', 10],
+      ['POST /ai/setup/proposal', 10],
+      ['POST /designs/:id/render', 60],
+      ['POST /designs/:id/render-all', 20],
+      ['POST /designs/:id/revisions/:revisionId/ai/propose', 30],
+      ['POST /packages/:id/ai/item', 30],
+      ['POST /packages/:id/ai/thread', 30],
+    ]);
+    expect(CONTENT_STUDIO_RATE_WINDOW_MS).toBe(600_000);
   });
 });
 

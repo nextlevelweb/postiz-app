@@ -10,10 +10,16 @@ import {
   Query,
   Res,
   UploadedFile,
+  UseGuards,
   UseInterceptors,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
+import {
+  CONTENT_STUDIO_RATE_WINDOW_MS,
+  ThrottlerContentStudioGuard,
+} from '@gitroom/nestjs-libraries/throttler/throttler.provider';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
@@ -377,6 +383,8 @@ export class ContentStudioController {
   // connection, model, profiles and sources the user chose. Any member may
   // ask; the draft is never changed here: an accepted suggestion is saved
   // like any edit. 200, since nothing is created for the user to keep
+  @UseGuards(ThrottlerContentStudioGuard)
+  @Throttle({ default: { limit: 30, ttl: CONTENT_STUDIO_RATE_WINDOW_MS } })
   @Post('/packages/:id/ai/item')
   @HttpCode(200)
   generateItemProposal(
@@ -405,6 +413,8 @@ export class ContentStudioController {
     });
   }
 
+  @UseGuards(ThrottlerContentStudioGuard)
+  @Throttle({ default: { limit: 30, ttl: CONTENT_STUDIO_RATE_WINDOW_MS } })
   @Post('/packages/:id/ai/thread')
   @HttpCode(200)
   generateThreadProposal(
@@ -556,6 +566,8 @@ export class ContentStudioController {
   // the reviewed draft is saved through the routes of each profile. Starting
   // answers at once (202) with the operation: the draft is made on the
   // server even when this request is gone, and read back below
+  @UseGuards(ThrottlerContentStudioGuard)
+  @Throttle({ default: { limit: 10, ttl: CONTENT_STUDIO_RATE_WINDOW_MS } })
   @Post('/ai/setup/proposal')
   @HttpCode(202)
   async proposeAISetup(
@@ -597,6 +609,8 @@ export class ContentStudioController {
 
   // Starts its research, another angle, a new draft or putting the draft in
   // again, and answers at once
+  @UseGuards(ThrottlerContentStudioGuard)
+  @Throttle({ default: { limit: 10, ttl: CONTENT_STUDIO_RATE_WINDOW_MS } })
   @Post('/activation/first-post')
   @HttpCode(202)
   async startFirstPost(
@@ -699,6 +713,8 @@ export class ContentStudioController {
   }
 
   // Answers { ok, code? } with 200 whatever the provider said; see the service
+  @UseGuards(ThrottlerContentStudioGuard)
+  @Throttle({ default: { limit: 10, ttl: CONTENT_STUDIO_RATE_WINDOW_MS } })
   @Post('/ai/connections/:id/test')
   @HttpCode(200)
   testAIConnection(
@@ -1302,6 +1318,8 @@ export class ContentStudioController {
   // profiles; the model comes from the connection. Any member may ask;
   // nothing of the design is changed here: an accepted suggestion is saved
   // from the editor like any edit. 200, since nothing is created to keep
+  @UseGuards(ThrottlerContentStudioGuard)
+  @Throttle({ default: { limit: 30, ttl: CONTENT_STUDIO_RATE_WINDOW_MS } })
   @Post('/designs/:id/revisions/:revisionId/ai/propose')
   @HttpCode(200)
   proposeDesignAI(
@@ -2024,6 +2042,8 @@ export class ContentStudioController {
 
   // Renders one page of exactly the revision asked for (never the latest) to
   // a PNG Media of the organization. Any member may render
+  @UseGuards(ThrottlerContentStudioGuard)
+  @Throttle({ default: { limit: 60, ttl: CONTENT_STUDIO_RATE_WINDOW_MS } })
   @Post('/designs/:id/render')
   @HttpCode(200)
   renderDesign(
@@ -2044,6 +2064,8 @@ export class ContentStudioController {
   // Renders every page of exactly the revision asked for, in the design's
   // order, to one PNG Media each. Any member may render; the server, not the
   // request, decides the pages and their order
+  @UseGuards(ThrottlerContentStudioGuard)
+  @Throttle({ default: { limit: 20, ttl: CONTENT_STUDIO_RATE_WINDOW_MS } })
   @Post('/designs/:id/render-all')
   @HttpCode(200)
   renderAllDesignPages(

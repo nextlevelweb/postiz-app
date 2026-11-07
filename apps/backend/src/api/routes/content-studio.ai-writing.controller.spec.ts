@@ -243,7 +243,10 @@ describe('ContentStudioController AI writing routes', () => {
       text.indexOf("@Get('/packages/:id/revisions')")
     );
     expect(block).toContain('generateThreadProposal');
-    expect(block).not.toMatch(
+    // only Review 20's rate limit, which decides nothing about who may ask
+    expect(
+      block.replace(/@UseGuards\(ThrottlerContentStudioGuard\)/g, '')
+    ).not.toMatch(
       /CheckPolicies|Sections\.|Role\.|ADMIN|assertManager|UseGuards|billing|subscription|credit/i
     );
     expect(text).not.toMatch(/CheckPolicies|@Delete\(/);

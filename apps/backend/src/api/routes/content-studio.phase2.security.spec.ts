@@ -155,7 +155,14 @@ describe('Phase 2 authorization decisions', () => {
   });
 
   it('AUTH8/AUTH9 no Content Studio route uses CheckPolicies, a guard or the AI subscription section', () => {
-    expect(CONTROLLER).not.toMatch(
+    // the one guard is Review 20's rate limit of the expensive writes, which
+    // decides nothing about who may call them (RL5 pins where it is)
+    expect(
+      CONTROLLER.replace(
+        /@UseGuards\(ThrottlerContentStudioGuard\)/g,
+        ''
+      ).replace(/^  UseGuards,$/m, '')
+    ).not.toMatch(
       /CheckPolicies|UseGuards|Sections\.|AuthorizationActions|permissions\.ability/
     );
     for (const [, source] of MEMBER_SERVICES) {
