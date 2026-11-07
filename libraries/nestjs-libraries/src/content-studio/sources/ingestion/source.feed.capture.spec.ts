@@ -853,6 +853,11 @@ describe('feed capture: dedup and repeated captures', () => {
     w.pages.set(page(1), html('One'));
     w.pages.set(page(2), html('Two'));
     await capture(t);
+    // seen a minute ago: a sighting moves lastSeenAt only forward, so one in
+    // the same millisecond would not move it
+    for (const d of t.state.discoveries) {
+      d.lastSeenAt = new Date(d.lastSeenAt.getTime() - 60_000);
+    }
     const first = t.state.discoveries.map((d) => ({ ...d }));
 
     const again = await capture(t);
@@ -3760,7 +3765,9 @@ describe('conditional fetching (P8-G1)', () => {
     archived: 0,
     entriesLimited: 0,
   };
-  // a feed listing one page, both read once with their validators
+  // a feed listing one page, both read once with their validators, a minute
+  // ago. A success is written only after the feed's last capture, so a next
+  // capture in the same millisecond would change nothing
   const capturedOnce = async () => {
     const t = setup();
     t.addFeed();
@@ -3768,6 +3775,8 @@ describe('conditional fetching (P8-G1)', () => {
     w.feed(rss([page(1)]), { etag: A, lastModified: L1 });
     w.pageAt(page(1), html('One'), { etag: '"p1"', lastModified: L1 });
     await scheduled(t, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    const feed = feedRow(t);
+    feed.lastCapturedAt = new Date(feed.lastCapturedAt.getTime() - 60_000);
     w.requests.length = 0;
     return { t, w };
   };
