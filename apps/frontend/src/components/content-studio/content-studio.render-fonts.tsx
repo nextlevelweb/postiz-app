@@ -48,6 +48,8 @@ const UploadRenderFontForm: FC = () => {
   const [weight, setWeight] = useState(400);
   const [style, setStyle] = useState<string>('normal');
   const [file, setFile] = useState<File | null>(null);
+  // a new key empties the file picker after a save
+  const [picker, setPicker] = useState(0);
   const [error, setError] = useState('');
   const { busy, run } = useSingleFlight();
 
@@ -81,6 +83,7 @@ const UploadRenderFontForm: FC = () => {
         );
         setFamily('');
         setFile(null);
+        setPicker((n) => n + 1);
       } catch (err) {
         setError(renderFontErrorMessage(t, err));
       }
@@ -156,6 +159,7 @@ const UploadRenderFontForm: FC = () => {
       <label className="flex flex-col gap-[6px] text-[14px]">
         {t('content_studio_render_font_file', 'Font file (.ttf or .otf)')}
         <input
+          key={picker}
           type="file"
           name="file"
           accept={RENDER_FONT_ACCEPT}

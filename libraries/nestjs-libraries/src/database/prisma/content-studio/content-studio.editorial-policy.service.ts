@@ -294,9 +294,6 @@ export class ContentStudioEditorialPolicyService {
     return this.revisionDetail(row);
   }
 
-  // Only when the organization has no policy yet. Two first saves at once:
-  // the unique organizationId lets one through, the other is a conflict with
-  // the revision that won
   // Exactly one membership, the requesting user's own, enabled, with a
   // manager role (the AI connection rule)
   private assertManager(memberships: unknown, userId: string) {
@@ -318,6 +315,9 @@ export class ContentStudioEditorialPolicyService {
     }
   }
 
+  // Only when the organization has no policy yet. Two first saves at once:
+  // the unique organizationId lets one through, the other is a conflict with
+  // the revision that won
   private async createFirstRevision(
     input: { organizationId: string; userId: string },
     content: ContentStudioEditorialPolicyContentV1,

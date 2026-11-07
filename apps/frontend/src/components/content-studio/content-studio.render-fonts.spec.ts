@@ -155,6 +155,11 @@ describe('Render fonts', () => {
     expect(body.get('weight')).toBe('700');
     expect(body.get('style')).toBe('normal');
     expect(body.get('file')).toBe(upload);
+    // the form is empty again, the file picker too
+    const picker = screen.getByLabelText(
+      'Font file (.ttf or .otf)'
+    ) as HTMLInputElement;
+    expect(picker.files?.length ?? 0).toBe(0);
     expect(
       calls().filter(
         (c) => c.method === 'GET' && c.url === '/content-studio/render-fonts'
